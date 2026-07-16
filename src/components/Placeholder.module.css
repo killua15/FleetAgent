@@ -1,0 +1,23 @@
+.wrap {
+  width: 100%;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--txt);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-family: var(--font-ui);
+}
+
+.tag {
+  font: 500 11px var(--font-mono);
+  letter-spacing: 0.12em;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+
+.title {
+  font: 600 20px var(--font-ui);
+}

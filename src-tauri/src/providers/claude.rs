@@ -1,0 +1,179 @@
+use super::Mode;
+
+pub const BINARY: &str = "claude";
+
+/// Absolute path to the `claude` binary (see `providers::resolve_binary`).
+pub fn binary() -> String {
+    super::resolve_binary(BINARY)
+}
+
+/// Args to launch the interactive subscription login (`claude auth login`).
+/// Prints a sign-in URL, opens the browser, then prompts for the OAuth code
+/// on stdin. Writes credentials into `CLAUDE_CONFIG_DIR` on success.
+pub fn login_args() -> Vec<String> {
+    vec!["auth".to_string(), "login".to_string(), "--claudeai".to_string()]
+}
+
+/// Args to query auth state as JSON (`claude auth status --json`) — respects
+/// `CLAUDE_CONFIG_DIR`, so it reports the state of one isolated account.
+pub fn auth_status_args() -> Vec<String> {
+    vec!["auth".to_string(), "status".to_string(), "--json".to_string()]
+}
+
+/// Args to sign out of an account (`claude auth logout`), scoped to a config dir.
+pub fn logout_args() -> Vec<String> {
+    vec!["auth".to_string(), "logout".to_string()]
+}
+
+/// Maps Fleet's session mode to Claude Code CLI's `--permission-mode` values.
+/// TODO: re-verify these exact flag names/values against the installed CLI
+/// version — this is the "flags investigated during phase 2" item from the plan.
+fn permission_mode_str(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Plan => "plan",
+        Mode::AskEdits => "default",
+        Mode::AutoEdit => "acceptEdits",
+        Mode::Yolo => "bypassPermissions",
+    }
+}
+
+/// For interactive-PTY use (see process_manager::spawn) — not used by the
+/// headless turn runner, which builds its own args via `build_turn_args`.
+#[allow(dead_code)]
+pub fn build_args(mode: Mode, prompt: Option<&str>) -> Vec<String> {
+    let mut args = vec!["--permission-mode".to_string(), permission_mode_str(mode).to_string()];
+    if let Some(p) = prompt {
+        args.push(p.to_string());
+    }
+    args
+}
+
+pub struct TurnArgs<'a> {
+    pub mode: Mode,
+    pub prompt: &'a str,
+    pub resume: Option<&'a str>,
+    /// `--model` value — a CLI alias ("opus", "sonnet") or full model id
+    /// ("claude-opus-4-8"), as returned by `list_provider_models`.
+    pub model: &'a str,
+    /// `--effort` value: one of low/medium/high/xhigh/max.
+    pub effort: &'a str,
+    /// `--name` — shows up in the CLI's own `/resume` picker and terminal
+    /// title, separate from (but usually equal to) Fleet's own session name.
+    pub name: &'a str,
+}
+
+/// Args for one headless turn: `claude -p "<prompt>" --output-format
+/// stream-json`, optionally continuing a prior conversation via `--resume`.
+pub fn build_turn_args(args: TurnArgs) -> Vec<String> {
+    let mut out = vec![
+        "-p".to_string(),
+        args.prompt.to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--verbose".to_string(),
+        "--permission-mode".to_string(),
+        permission_mode_str(args.mode).to_string(),
+    ];
+    if !args.model.trim().is_empty() {
+        out.push("--model".to_string());
+        out.push(args.model.to_string());
+    }
+    if !args.effort.trim().is_empty() {
+        out.push("--effort".to_string());
+        out.push(args.effort.to_string());
+    }
+    if !args.name.trim().is_empty() {
+        out.push("--name".to_string());
+        out.push(args.name.to_string());
+    }
+    if let Some(r) = args.resume {
+        out.push("--resume".to_string());
+        out.push(r.to_string());
+    }
+    out
+}
+
+/// Isolates a Claude Code login to this account's own config dir, so two
+/// accounts on this provider don't share/clobber the same login session.
+/// `api_key` is set for "key"-billed accounts (fetched from the OS keychain
+/// by the caller) and left `None` for subscription accounts, which rely on
+/// the CLI login stored under `config_dir`.
+pub fn env_for_account(config_dir: &str, api_key: Option<&str>) -> Vec<(String, String)> {
+    let mut env = vec![("CLAUDE_CONFIG_DIR".to_string(), config_dir.to_string())];
+    if let Some(key) = api_key {
+        env.push(("ANTHROPIC_API_KEY".to_string(), key.to_string()));
+    }
+    env
+}
+
+/// Model aliases Claude Code CLI accepts for `--model`. Used directly for
+/// subscription accounts (no raw API key to query the live catalog with)
+/// and as a fallback if the live `/v1/models` fetch fails for any reason.
+pub fn known_model_aliases() -> Vec<crate::models::ModelOption> {
+    vec![
+        crate::models::ModelOption { id: "opus".to_string(), label: "Opus 4.8".to_string() },
+        crate::models::ModelOption { id: "sonnet".to_string(), label: "Sonnet 5".to_string() },
+        crate::models::ModelOption { id: "haiku".to_string(), label: "Haiku 4.5".to_string() },
+        crate::models::ModelOption { id: "fable".to_string(), label: "Fable 5".to_string() },
+    ]
+}
+
+const EXHAUSTION_MARKERS: &[&str] = &[
+    "usage limit reached",
+    "rate limit",
+    "rate_limit_error",
+    "please try again later",
+];
+
+pub fn is_exhaustion_signal(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    EXHAUSTION_MARKERS.iter().any(|marker| lower.contains(marker))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_turn_args_includes_model_effort_and_name_flags() {
+        let args = build_turn_args(TurnArgs {
+            mode: Mode::AutoEdit,
+            prompt: "hello",
+            resume: None,
+            model: "opus",
+            effort: "high",
+            name: "fix-billing-rounding",
+        });
+        assert_eq!(
+            args,
+            vec![
+                "-p", "hello", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
+                "--model", "opus", "--effort", "high", "--name", "fix-billing-rounding",
+            ]
+        );
+    }
+
+    #[test]
+    fn build_turn_args_includes_resume_when_continuing() {
+        let args = build_turn_args(TurnArgs {
+            mode: Mode::Plan,
+            prompt: "continue",
+            resume: Some("session-123"),
+            model: "sonnet",
+            effort: "medium",
+            name: "",
+        });
+        assert_eq!(args.last().cloned(), Some("session-123".to_string()));
+        assert_eq!(args[args.len() - 2], "--resume");
+        // Empty name must be omitted rather than passing `--name ""`.
+        assert!(!args.contains(&"--name".to_string()));
+    }
+
+    #[test]
+    fn known_model_aliases_are_valid_cli_aliases() {
+        let aliases = known_model_aliases();
+        let ids: Vec<_> = aliases.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"opus"));
+        assert!(ids.contains(&"sonnet"));
+    }
+}

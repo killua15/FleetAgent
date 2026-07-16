@@ -1,0 +1,318 @@
+@keyframes flBlink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+.screen {
+  width: 100%;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--txt);
+  font-family: var(--font-ui);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background-image: radial-gradient(var(--line) 1px, transparent 1px);
+  background-size: 26px 26px;
+}
+
+.card {
+  width: 620px;
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.headerTitle {
+  font: 600 13px var(--font-ui);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.steps {
+  display: flex;
+  gap: 14px;
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stepDot {
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font: 700 9px var(--font-mono);
+  border: 1px solid var(--line);
+}
+
+.stepLabel {
+  font: 500 10px var(--font-mono);
+  color: var(--dim);
+}
+
+.closeBtn {
+  color: var(--dim);
+  cursor: pointer;
+  margin-left: 6px;
+  background: none;
+  border: none;
+  font-size: 13px;
+}
+
+.body {
+  min-height: 400px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.hint {
+  font: 400 12px var(--font-ui);
+  color: var(--mut);
+}
+
+.providerGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+}
+
+.billingGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.card2 {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 16px;
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: left;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  color: inherit;
+}
+
+.card2:hover {
+  border-color: var(--line2);
+}
+
+.card2.selected {
+  background: var(--panel2);
+  border: 1.5px solid var(--acc);
+}
+
+.providerCard {
+  composes: card2;
+  align-items: center;
+  text-align: center;
+  gap: 9px;
+  padding: 22px 12px;
+}
+
+.providerIcon {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  font: 700 15px var(--font-mono);
+}
+
+.providerName {
+  font: 600 13px var(--font-ui);
+  color: var(--txt);
+}
+
+.providerCli {
+  font: 400 10.5px var(--font-mono);
+  color: var(--dim);
+}
+
+.billingName {
+  font: 600 13px var(--font-ui);
+  color: var(--txt);
+}
+
+.billingDesc {
+  font: 400 11px var(--font-ui);
+  color: var(--mut);
+  line-height: 1.5;
+}
+
+.terminal {
+  border-radius: 9px;
+  border: 1px solid var(--line2);
+  background: #0b0b10;
+  padding: 14px 16px;
+  font: 400 11.5px var(--font-mono);
+  line-height: 1.8;
+  color: #c9c9d8;
+}
+
+.cursor {
+  display: inline-block;
+  width: 8px;
+  height: 14px;
+  background: var(--teal);
+  animation: flBlink 1s infinite;
+  vertical-align: middle;
+}
+
+.simulateBtn {
+  align-self: flex-start;
+  font: 500 11px var(--font-mono);
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--mut);
+  cursor: pointer;
+}
+
+.simulateBtn:hover {
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
+.input {
+  font: 500 12px var(--font-mono);
+  padding: 10px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--bg2);
+  color: var(--txt);
+  outline: none;
+}
+
+.input:focus {
+  border-color: var(--teal);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.fieldRow {
+  display: flex;
+  gap: 12px;
+}
+
+.fieldRow .field {
+  flex: 1;
+}
+
+.label {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.13em;
+  color: var(--dim);
+}
+
+.nameInput {
+  font: 600 13px var(--font-ui);
+  padding: 9px 11px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--bg2);
+  color: var(--txt);
+  outline: none;
+}
+
+.nameInput:focus {
+  border-color: var(--acc);
+}
+
+.select {
+  font: 500 12px var(--font-mono);
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--bg2);
+  color: var(--txt);
+  outline: none;
+}
+
+.note {
+  font: 400 11px var(--font-ui);
+  color: var(--dim);
+  line-height: 1.6;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg2);
+  border: 1px dashed var(--line);
+}
+
+.noteAccent {
+  color: var(--acc);
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 18px;
+  border-top: 1px solid var(--line);
+  background: var(--bg2);
+}
+
+.backBtn {
+  font: 500 11.5px var(--font-ui);
+  padding: 7px 14px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--mut);
+  cursor: pointer;
+}
+
+.nextBtn {
+  font: 600 12px var(--font-ui);
+  padding: 7px 18px;
+  border-radius: 7px;
+  border: none;
+  cursor: pointer;
+  background: var(--acc);
+  color: #15151c;
+}
+
+.nextBtn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.nextBtn.done {
+  background: var(--tealD);
+  color: var(--teal);
+}

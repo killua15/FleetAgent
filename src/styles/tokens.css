@@ -1,0 +1,71 @@
+/* Design tokens ported from the Fleet .dc.html mockups (.fl block). */
+
+:root {
+  --bg: #0e0f14;
+  --bg2: #12131a;
+  --panel: #171822;
+  --panel2: #1d1e2a;
+  --line: #262838;
+  --line2: #3a3d58;
+
+  --txt: #e8e8f2;
+  --mut: #9a9ab0;
+  --dim: #61627a;
+
+  --acc: #b48cff;
+  --accD: rgba(180, 140, 255, 0.13);
+
+  --teal: #3ecfc0;
+  --tealD: rgba(62, 207, 192, 0.12);
+
+  --amber: #e0a458;
+  --amberD: rgba(224, 164, 88, 0.12);
+
+  --red: #e56a7b;
+  --redD: rgba(229, 106, 123, 0.12);
+
+  --grn: #5fd39a;
+  --grnD: rgba(95, 211, 154, 0.12);
+
+  /* Gemini identity color — hardcoded (not tokenized) in the mockups; promoted to a token here. */
+  --gemini: #7aa2ff;
+  --geminiD: rgba(122, 162, 255, 0.13);
+
+  --shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+
+  --font-ui: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+:root[data-theme='light'] {
+  --bg: #f2f2f6;
+  --bg2: #eaeaf0;
+  --panel: #ffffff;
+  --panel2: #f5f4f9;
+  --line: #dcdce6;
+  --line2: #b9b9d0;
+
+  --txt: #1d1e2a;
+  --mut: #5b5c72;
+  --dim: #8f90a6;
+
+  --acc: #7d4fd6;
+  --accD: rgba(125, 79, 214, 0.1);
+
+  --teal: #0f9c8f;
+  --tealD: rgba(15, 156, 143, 0.1);
+
+  --amber: #b07a2a;
+  --amberD: rgba(176, 122, 42, 0.12);
+
+  --red: #c94459;
+  --redD: rgba(201, 68, 89, 0.1);
+
+  --grn: #1f9d63;
+  --grnD: rgba(31, 157, 99, 0.1);
+
+  --gemini: #3f66d6;
+  --geminiD: rgba(63, 102, 214, 0.1);
+
+  --shadow: 0 8px 28px rgba(30, 30, 60, 0.14);
+}

@@ -1,0 +1,2 @@
+{"type":"mode","mode":"normal","sessionId":"bbbbbbbb-1111-2222-3333-444444444444"}
+{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"unrelated question about a different project"},"uuid":"u1","timestamp":"2026-07-10T10:00:00.000Z","cwd":"/repo/other-project","sessionId":"bbbbbbbb-1111-2222-3333-444444444444"}

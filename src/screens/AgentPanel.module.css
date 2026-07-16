@@ -1,0 +1,230 @@
+@keyframes flPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.screen {
+  width: 100%;
+  height: 100vh;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+  color: var(--txt);
+  font-family: var(--font-ui);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.backBtn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--dim);
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  flex: none;
+  cursor: pointer;
+}
+
+.backBtn:hover {
+  color: var(--txt);
+}
+
+.title {
+  font: 600 12px var(--font-mono);
+  white-space: nowrap;
+  flex: none;
+}
+
+.projectTag {
+  font: 400 9.5px var(--font-mono);
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--panel2);
+  color: var(--dim);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.headerSelect {
+  font: 500 10.5px var(--font-mono);
+  padding: 5px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--txt);
+  outline: none;
+}
+
+.accountLabel {
+  font: 500 10.5px var(--font-mono);
+  padding: 5px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--acc);
+}
+
+.thinkingBtn {
+  font: 500 10.5px var(--font-mono);
+  padding: 5px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--dim);
+}
+
+.thinkingBtn.on {
+  border-color: var(--acc);
+  background: var(--accD);
+  color: var(--acc);
+}
+
+.timeline {
+  flex: 1;
+  overflow: auto;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.empty {
+  color: var(--dim);
+  font: 400 12px var(--font-mono);
+  text-align: center;
+  padding: 24px 0;
+}
+
+.block {
+  padding: 9px 12px;
+  border-radius: 8px;
+}
+
+.blockHead {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 5px;
+}
+
+.tag {
+  font: 700 8.5px var(--font-mono);
+  letter-spacing: 0.1em;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.time {
+  font: 400 9.5px var(--font-mono);
+  color: var(--dim);
+}
+
+.liveDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--teal);
+  animation: flPulse 1.2s infinite;
+}
+
+.blockText {
+  font: 400 11.5px var(--font-mono);
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.composer {
+  flex: none;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.workingHint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 400 10px var(--font-mono);
+  color: var(--dim);
+  margin-bottom: 8px;
+}
+
+.workingDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--amber);
+  animation: flPulse 1.2s infinite;
+}
+
+.composerBox {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  border-radius: 9px;
+  padding: 10px 12px;
+}
+
+.composerInput {
+  font: 400 12px var(--font-mono);
+  color: var(--txt);
+  flex: 1;
+  line-height: 1.5;
+  background: none;
+  border: none;
+  outline: none;
+  resize: none;
+  max-height: 120px;
+}
+
+.composerInput::placeholder {
+  color: var(--dim);
+}
+
+.kbdHint {
+  font: 400 9.5px var(--font-mono);
+  color: var(--dim);
+}
+
+.sendBtn {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  border: none;
+  background: var(--acc);
+  color: #15151c;
+  cursor: pointer;
+  font-weight: 700;
+  flex: none;
+}
+
+.sendBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

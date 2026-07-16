@@ -1,0 +1,130 @@
+.screen {
+  width: 100%;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--txt);
+  font-family: var(--font-ui);
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+}
+
+.title {
+  font: 600 14px var(--font-ui);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.backBtn {
+  font: 500 11.5px var(--font-ui);
+  padding: 7px 14px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--mut);
+  cursor: pointer;
+}
+
+.addBtn {
+  font: 600 11.5px var(--font-ui);
+  padding: 7px 16px;
+  border-radius: 7px;
+  border: none;
+  background: var(--acc);
+  color: #15151c;
+  cursor: pointer;
+}
+
+.list {
+  flex: 1;
+  overflow: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.empty {
+  color: var(--dim);
+  font: 400 12px var(--font-mono);
+  padding: 30px 0;
+  text-align: center;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.badge {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  font: 700 13px var(--font-mono);
+  flex: none;
+}
+
+.info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.name {
+  font: 600 12.5px var(--font-ui);
+}
+
+.meta {
+  font: 400 10.5px var(--font-mono);
+  color: var(--dim);
+}
+
+.scopePill {
+  font: 500 9.5px var(--font-mono);
+  padding: 2px 8px;
+  border-radius: 99px;
+  border: 1px solid var(--line);
+  color: var(--mut);
+}
+
+.statusPill {
+  font: 500 9.5px var(--font-mono);
+  padding: 2px 8px;
+  border-radius: 99px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.deleteBtn {
+  font: 500 11px var(--font-mono);
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  margin-left: auto;
+}
+
+.deleteBtn:hover {
+  border-color: var(--red);
+  color: var(--red);
+}

@@ -1,0 +1,3 @@
+{"type":"mode","mode":"normal","sessionId":"aaaaaaaa-1111-2222-3333-444444444444"}
+{"type":"permission-mode","permissionMode":"default","sessionId":"aaaaaaaa-1111-2222-3333-444444444444"}
+{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"can you refactor the login flow to use the new token format"},"uuid":"u1","timestamp":"2026-07-10T10:00:00.000Z","cwd":"/repo/sample-project","sessionId":"aaaaaaaa-1111-2222-3333-444444444444"}
