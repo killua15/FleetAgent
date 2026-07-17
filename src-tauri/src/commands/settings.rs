@@ -1,14 +1,17 @@
 use crate::commands::accounts::row_to_account;
-use crate::commands::sessions::row_to_session;
+use crate::commands::sessions::{row_to_session, COPY_SKIP_DIRS};
 use crate::credential_vault;
 use crate::db::DbConnection;
 use crate::models::{
-    Account, AppSettings, GroupMembership, MemoryFile, MemoryFileSummary, MemoryGroup, MemoryGroupSummary, ProjectAccountRotation, Session,
+    Account, AppSettings, DiscoveredMemoryFile, GroupMembership, MemoryFile, MemoryFileSummary, MemoryGroup, MemoryGroupSummary,
+    ProjectAccountRotation, Session,
 };
 use crate::providers::{claude, Mode};
 use crate::turn_runner::{self, TurnRequest};
 use chrono::Utc;
 use rusqlite::params;
+use std::collections::HashSet;
+use std::path::Path;
 use tauri::{AppHandle, Runtime, State};
 use uuid::Uuid;
 
@@ -153,6 +156,17 @@ pub fn create_memory_group(db: State<DbConnection>, name: String) -> Result<Memo
     Ok(MemoryGroup { id, name, created_at: now })
 }
 
+/// Only removes the group and its membership rows (`memory_group_projects`
+/// cascades) — the memory files themselves belong to their projects, not to
+/// the group, so they survive and stay visible in any other group they're
+/// also a member of.
+#[tauri::command]
+pub fn delete_memory_group(db: State<DbConnection>, id: String) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM memory_groups WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Every project plus whether it belongs to `group_id` — same left-join
 /// shape as `list_project_account_rotation`, for the same reason.
 #[tauri::command]
@@ -246,6 +260,13 @@ pub fn update_memory_file_content(db: State<DbConnection>, file_id: String, cont
 }
 
 #[tauri::command]
+pub fn delete_memory_file(db: State<DbConnection>, file_id: String) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM memory_files WHERE id = ?1", params![file_id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn create_memory_file(db: State<DbConnection>, project_id: String, filename: String, content_md: String) -> Result<MemoryFile, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let id = Uuid::new_v4().to_string();
@@ -259,6 +280,85 @@ pub fn create_memory_file(db: State<DbConnection>, project_id: String, filename:
     let project_name: String =
         conn.query_row("SELECT name FROM projects WHERE id = ?1", params![project_id], |row| row.get(0)).map_err(|e| e.to_string())?;
     Ok(MemoryFile { id, project_id, project_name, filename, content_md, updated_at: now })
+}
+
+fn collect_markdown_files(dir: &Path, rel_prefix: &str, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if COPY_SKIP_DIRS.contains(&name.as_str()) {
+            continue;
+        }
+        let rel_path = if rel_prefix.is_empty() { name.clone() } else { format!("{rel_prefix}/{name}") };
+        let Ok(file_type) = entry.file_type() else { continue };
+        if file_type.is_dir() {
+            collect_markdown_files(&entry.path(), &rel_path, out);
+        } else if file_type.is_file() && name.to_lowercase().ends_with(".md") {
+            out.push(rel_path);
+        }
+    }
+}
+
+/// Recursively scans every project's directory for `.md` files not already
+/// imported into `memory_files` (same skip-list as subsession copies —
+/// `node_modules`/`.git`/`dist`/etc. — see `COPY_SKIP_DIRS`), so Shared
+/// Memory can offer real docs that already exist (README.md, CLAUDE.md,
+/// docs/*.md, ...) as one-click imports instead of only the blank "+" flow.
+#[tauri::command]
+pub fn list_discoverable_memory_files(db: State<DbConnection>) -> Result<Vec<DiscoveredMemoryFile>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let projects: Vec<(String, String, String)> = {
+        let mut stmt = conn.prepare("SELECT id, name, path FROM projects ORDER BY name").map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+    let already_imported: HashSet<(String, String)> = {
+        let mut stmt = conn.prepare("SELECT project_id, filename FROM memory_files").map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+    drop(conn);
+
+    let mut discovered = Vec::new();
+    for (project_id, project_name, project_path) in projects {
+        if !Path::new(&project_path).is_dir() {
+            continue;
+        }
+        let mut found = Vec::new();
+        collect_markdown_files(Path::new(&project_path), "", &mut found);
+        for relative_path in found {
+            if already_imported.contains(&(project_id.clone(), relative_path.clone())) {
+                continue;
+            }
+            discovered.push(DiscoveredMemoryFile { project_id: project_id.clone(), project_name: project_name.clone(), relative_path });
+        }
+    }
+    Ok(discovered)
+}
+
+/// Reads a discovered file's real content off disk and hands off to
+/// `create_memory_file` — the relative path becomes the memory file's
+/// `filename` (e.g. `docs/architecture.md`), so files with the same base
+/// name in different folders don't collide.
+#[tauri::command]
+pub fn import_discovered_memory_file(db: State<DbConnection>, project_id: String, relative_path: String) -> Result<MemoryFile, String> {
+    let project_path: String = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT path FROM projects WHERE id = ?1", params![project_id], |row| row.get(0)).map_err(|e| e.to_string())?
+    };
+    let content_md = std::fs::read_to_string(Path::new(&project_path).join(&relative_path))
+        .map_err(|e| format!("could not read {relative_path}: {e}"))?;
+    create_memory_file(db, project_id, relative_path, content_md)
 }
 
 /// "Review now" — spawns a new session, owned by the configured reviewer
@@ -480,6 +580,82 @@ mod tests {
         update_memory_file_content(db.clone(), file.id.clone(), "second".to_string()).unwrap();
         let reloaded = get_memory_file(db, file.id).unwrap();
         assert_eq!(reloaded.content_md, "second");
+    }
+
+    #[test]
+    fn delete_memory_group_removes_membership_but_keeps_the_files() {
+        let (app, _acc1, _acc2, proj1) = setup_test_app();
+        let db = app.state::<DbConnection>();
+        let group = create_memory_group(db.clone(), "Personal projects".to_string()).unwrap();
+        set_group_membership(db.clone(), group.id.clone(), proj1.clone(), true).unwrap();
+        let file = create_memory_file(db.clone(), proj1.clone(), "conventions.md".to_string(), "# hi".to_string()).unwrap();
+
+        delete_memory_group(db.clone(), group.id.clone()).expect("delete_memory_group should succeed");
+
+        let groups = list_memory_groups(db.clone()).unwrap();
+        assert!(!groups.iter().any(|g| g.id == group.id), "the group itself must be gone");
+
+        // The file belongs to the project, not the group — it must survive.
+        let still_there = get_memory_file(db, file.id).expect("the memory file must not be deleted along with the group");
+        assert_eq!(still_there.project_id, proj1);
+    }
+
+    #[test]
+    fn delete_memory_file_removes_it_and_drops_it_from_group_listings() {
+        let (app, _acc1, _acc2, proj1) = setup_test_app();
+        let db = app.state::<DbConnection>();
+        let group = create_memory_group(db.clone(), "Personal projects".to_string()).unwrap();
+        set_group_membership(db.clone(), group.id.clone(), proj1.clone(), true).unwrap();
+        let file = create_memory_file(db.clone(), proj1, "conventions.md".to_string(), "# hi".to_string()).unwrap();
+
+        delete_memory_file(db.clone(), file.id.clone()).expect("delete_memory_file should succeed");
+
+        assert!(get_memory_file(db.clone(), file.id.clone()).is_err(), "the file row must be gone");
+        let files = list_group_memory_files(db, group.id).unwrap();
+        assert!(!files.iter().any(|f| f.id == file.id), "the deleted file must not linger in group listings");
+    }
+
+    #[test]
+    fn list_discoverable_memory_files_finds_real_md_recursively_and_skips_noise_dirs() {
+        let (app, _acc1, _acc2, _proj1) = setup_test_app();
+        let db = app.state::<DbConnection>();
+
+        let project_dir = std::env::temp_dir().join(format!("fleet-test-discover-md-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(project_dir.join("docs")).unwrap();
+        std::fs::create_dir_all(project_dir.join("node_modules/some-dep")).unwrap();
+        std::fs::write(project_dir.join("README.md"), "# hi").unwrap();
+        std::fs::write(project_dir.join("docs/architecture.md"), "# arch").unwrap();
+        std::fs::write(project_dir.join("node_modules/some-dep/CHANGELOG.md"), "noise").unwrap();
+        std::fs::write(project_dir.join("not-markdown.txt"), "ignore me").unwrap();
+
+        {
+            let conn = db.0.lock().unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, name, path, created_at) VALUES ('proj-md','MdProject',?1,'now')",
+                params![project_dir.to_string_lossy().to_string()],
+            )
+            .unwrap();
+        }
+
+        let found = list_discoverable_memory_files(db.clone()).unwrap();
+        let paths: Vec<&str> = found.iter().filter(|f| f.project_id == "proj-md").map(|f| f.relative_path.as_str()).collect();
+        assert!(paths.contains(&"README.md"));
+        assert!(paths.contains(&"docs/architecture.md"));
+        assert!(!paths.iter().any(|p| p.contains("node_modules")), "node_modules must be skipped, same as COPY_SKIP_DIRS");
+        assert_eq!(paths.len(), 2, "the .txt file must not show up");
+
+        let imported = import_discovered_memory_file(db.clone(), "proj-md".to_string(), "docs/architecture.md".to_string())
+            .expect("importing a discovered file should succeed");
+        assert_eq!(imported.content_md, "# arch");
+        assert_eq!(imported.filename, "docs/architecture.md");
+
+        let after = list_discoverable_memory_files(db).unwrap();
+        assert!(
+            !after.iter().any(|f| f.project_id == "proj-md" && f.relative_path == "docs/architecture.md"),
+            "an imported file must no longer be listed as discoverable"
+        );
+
+        let _ = std::fs::remove_dir_all(&project_dir);
     }
 
     #[test]

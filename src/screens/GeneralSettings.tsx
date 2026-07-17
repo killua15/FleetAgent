@@ -13,7 +13,7 @@ import type { AccountUsageSummary } from '../types/session';
 import type { AppSettings } from '../types/settings';
 import styles from './GeneralSettings.module.css';
 
-const THEME_OPTS: Theme[] = ['dark', 'light', 'system'];
+const THEME_OPTS: Theme[] = ['dark', 'light', 'glass', 'system'];
 
 export function GeneralSettings() {
   const { theme, setTheme } = useTheme();

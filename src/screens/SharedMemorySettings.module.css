@@ -51,13 +51,11 @@
 .groupRowActive {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px;
+  gap: 2px;
+  padding: 4px;
   border-radius: 8px;
-  cursor: pointer;
   border: 1px solid transparent;
   background: transparent;
-  text-align: left;
 }
 
 .groupRow:hover {
@@ -67,6 +65,41 @@
 .groupRowActive {
   border-color: var(--teal);
   background: var(--panel);
+}
+
+.groupRowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  text-align: left;
+}
+
+.groupIconBtn,
+.fileIconBtn {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 11px;
+  display: grid;
+  place-items: center;
+}
+
+.groupIconBtn:hover,
+.fileIconBtn:hover {
+  background: var(--panel2);
+  color: var(--txt);
 }
 
 .groupDot {
@@ -137,6 +170,94 @@
   font: 400 11.5px var(--font-ui);
   color: var(--mut);
   margin-bottom: 12px;
+}
+
+.discoveredWrap {
+  width: 300px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  padding: 20px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+}
+
+.discoveredHint {
+  font: 400 11px var(--font-ui);
+  color: var(--mut);
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+.discoveredSearch {
+  font: 500 11px var(--font-mono) !important;
+  margin-bottom: 4px;
+}
+
+.discoveredList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.discoveredGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.discoveredGroupHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.discoveredGroupTitle {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.12em;
+  color: var(--dim);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.discoveredGroupRule {
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+.discoveredRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px dashed var(--line);
+}
+
+.discoveredInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+
+.discoveredPath {
+  font: 500 11.5px var(--font-mono);
+  color: var(--txt);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.discoveredProject {
+  font: 400 9.5px var(--font-mono);
+  color: var(--dim);
 }
 
 .memberRow,
@@ -223,18 +344,30 @@
 .fileRowActive {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 8px 9px;
+  gap: 2px;
+  padding: 3px;
   border-radius: 7px;
-  cursor: pointer;
   width: 100%;
   border: 1px solid transparent;
   background: transparent;
-  text-align: left;
 }
 
 .fileRow:hover {
   background: var(--panel2);
+}
+
+.fileRowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  text-align: left;
 }
 
 .fileRowActive {

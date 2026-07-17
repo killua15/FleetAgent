@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { SettingsTabs } from '../components/SettingsTabs';
+import { ConfirmDeleteDialog } from '../components/ConfirmDeleteDialog';
 import { Button } from '../components/ui/button';
 import { Checkbox } from '../components/ui/checkbox';
 import { Input } from '../components/ui/input';
 import { Textarea } from '../components/ui/textarea';
-import type { GroupMembership, MemoryFile, MemoryFileSummary, MemoryGroupSummary } from '../types/settings';
+import type { DiscoveredMemoryFile, GroupMembership, MemoryFile, MemoryFileSummary, MemoryGroupSummary } from '../types/settings';
 import styles from './SharedMemorySettings.module.css';
 
 export function SharedMemorySettings() {
@@ -19,11 +20,21 @@ export function SharedMemorySettings() {
   const [newGroupName, setNewGroupName] = useState('');
   const [savingContent, setSavingContent] = useState(false);
   const [newFileName, setNewFileName] = useState('');
+  const [discovered, setDiscovered] = useState<DiscoveredMemoryFile[]>([]);
+  const [importingKey, setImportingKey] = useState<string | null>(null);
+  const [discoveredSearch, setDiscoveredSearch] = useState('');
 
-  const loadGroups = () => invoke<MemoryGroupSummary[]>('list_memory_groups').then(setGroups);
+  const loadGroups = () =>
+    invoke<MemoryGroupSummary[]>('list_memory_groups').then((list) => {
+      setGroups(list);
+      return list;
+    });
+
+  const loadDiscovered = () => invoke<DiscoveredMemoryFile[]>('list_discoverable_memory_files').then(setDiscovered);
 
   useEffect(() => {
     loadGroups();
+    loadDiscovered();
   }, []);
 
   useEffect(() => {
@@ -79,6 +90,36 @@ export function SharedMemorySettings() {
     loadGroups();
   };
 
+  const handleDeleteGroup = async (id: string) => {
+    await invoke('delete_memory_group', { id });
+    const list = await loadGroups();
+    if (selectedGroupId === id) setSelectedGroupId(list[0]?.id ?? null);
+  };
+
+  const handleDeleteFile = async (id: string) => {
+    if (!selectedGroupId) return;
+    await invoke('delete_memory_file', { fileId: id });
+    const list = await invoke<MemoryFileSummary[]>('list_group_memory_files', { groupId: selectedGroupId });
+    setFiles(list);
+    if (selectedFileId === id) setSelectedFileId(list[0]?.id ?? null);
+    loadGroups();
+  };
+
+  const importDiscovered = async (item: DiscoveredMemoryFile) => {
+    const key = `${item.projectId}:${item.relativePath}`;
+    setImportingKey(key);
+    try {
+      await invoke<MemoryFile>('import_discovered_memory_file', { projectId: item.projectId, relativePath: item.relativePath });
+      setDiscovered((prev) => prev.filter((d) => !(d.projectId === item.projectId && d.relativePath === item.relativePath)));
+      await loadGroups();
+      if (selectedGroupId) {
+        invoke<MemoryFileSummary[]>('list_group_memory_files', { groupId: selectedGroupId }).then(setFiles);
+      }
+    } finally {
+      setImportingKey(null);
+    }
+  };
+
   const saveContent = async () => {
     if (!openFile) return;
     setSavingContent(true);
@@ -93,6 +134,19 @@ export function SharedMemorySettings() {
   const selectedGroup = groups.find((g) => g.id === selectedGroupId);
   const crossScopeWarn = membership.filter((m) => m.member).length > 1 && new Set(membership.filter((m) => m.member).map((m) => m.projectId)).size > 1;
 
+  const filteredDiscovered = discoveredSearch.trim()
+    ? discovered.filter((d) => {
+        const q = discoveredSearch.trim().toLowerCase();
+        return d.relativePath.toLowerCase().includes(q) || d.projectName.toLowerCase().includes(q);
+      })
+    : discovered;
+  const discoveredByProject = Object.values(
+    filteredDiscovered.reduce<Record<string, { projectId: string; projectName: string; files: DiscoveredMemoryFile[] }>>((acc, d) => {
+      (acc[d.projectId] ??= { projectId: d.projectId, projectName: d.projectName, files: [] }).files.push(d);
+      return acc;
+    }, {}),
+  ).sort((a, b) => a.projectName.localeCompare(b.projectName));
+
   return (
     <div className={styles.screen}>
       <SettingsTabs
@@ -106,19 +160,27 @@ export function SharedMemorySettings() {
             <span className={styles.sectionLabel}>MEMORY GROUPS</span>
           </div>
           {groups.map((g) => (
-            <button
-              key={g.id}
-              className={g.id === selectedGroupId ? styles.groupRowActive : styles.groupRow}
-              onClick={() => setSelectedGroupId(g.id)}
-            >
-              <span className={styles.groupDot} />
-              <span className={styles.groupInfo}>
-                <span className={styles.groupName}>{g.name}</span>
-                <span className={styles.groupSub}>
-                  {g.projectCount} projects · {g.fileCount} memory files
+            <div key={g.id} className={g.id === selectedGroupId ? styles.groupRowActive : styles.groupRow}>
+              <button className={styles.groupRowMain} onClick={() => setSelectedGroupId(g.id)}>
+                <span className={styles.groupDot} />
+                <span className={styles.groupInfo}>
+                  <span className={styles.groupName}>{g.name}</span>
+                  <span className={styles.groupSub}>
+                    {g.projectCount} projects · {g.fileCount} memory files
+                  </span>
                 </span>
-              </span>
-            </button>
+              </button>
+              <ConfirmDeleteDialog
+                trigger={
+                  <button className={styles.groupIconBtn} title="Delete group" onClick={(e) => e.stopPropagation()}>
+                    🗑
+                  </button>
+                }
+                title={`Delete "${g.name}"?`}
+                description="This removes the group and its project membership. The memory files themselves stay on their projects and in any other group they belong to."
+                onConfirm={() => handleDeleteGroup(g.id)}
+              />
+            </div>
           ))}
           <div className={styles.newGroupRow}>
             <Input
@@ -158,6 +220,45 @@ export function SharedMemorySettings() {
           )}
         </div>
 
+        <div className={styles.discoveredWrap}>
+          <span className={styles.sectionLabel}>DISCOVERED .MD FILES</span>
+          <span className={styles.discoveredHint}>Real docs already on disk, across every project — one click to import as memory.</span>
+          <Input
+            value={discoveredSearch}
+            onChange={(e) => setDiscoveredSearch(e.target.value)}
+            placeholder="search filename or project…"
+            className={styles.discoveredSearch}
+          />
+          <div className={styles.discoveredList}>
+            {discoveredByProject.map((group) => (
+              <div key={group.projectId} className={styles.discoveredGroup}>
+                <div className={styles.discoveredGroupHeader}>
+                  <span className={styles.discoveredGroupTitle}>{group.projectName}</span>
+                  <span className={styles.discoveredGroupRule} />
+                </div>
+                {group.files.map((d) => {
+                  const key = `${d.projectId}:${d.relativePath}`;
+                  return (
+                    <div key={key} className={styles.discoveredRow}>
+                      <span className={styles.discoveredInfo}>
+                        <span className={styles.discoveredPath}>{d.relativePath}</span>
+                      </span>
+                      <Button variant="outline" disabled={importingKey === key} onClick={() => importDiscovered(d)} title="Import as memory file">
+                        {importingKey === key ? '…' : '+ import'}
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+            {discoveredByProject.length === 0 && (
+              <span className={styles.dimText}>
+                {discoveredSearch.trim() ? 'No matching .md files.' : 'No new .md files found in your projects.'}
+              </span>
+            )}
+          </div>
+        </div>
+
         <div className={styles.viewerWrap}>
           <div className={styles.fileList}>
             <span className={styles.sectionLabel}>MEMORY FILES — POOL</span>
@@ -176,19 +277,27 @@ export function SharedMemorySettings() {
               </div>
             )}
             {files.map((f) => (
-              <button
-                key={f.id}
-                className={f.id === selectedFileId ? styles.fileRowActive : styles.fileRow}
-                onClick={() => setSelectedFileId(f.id)}
-              >
-                <span className={styles.fileGlyph}>M↓</span>
-                <span className={styles.fileInfo}>
-                  <span className={styles.fileName}>{f.filename}</span>
-                  <span className={styles.fileMeta}>
-                    {f.projectName} · {new Date(f.updatedAt).toLocaleDateString()}
+              <div key={f.id} className={f.id === selectedFileId ? styles.fileRowActive : styles.fileRow}>
+                <button className={styles.fileRowMain} onClick={() => setSelectedFileId(f.id)}>
+                  <span className={styles.fileGlyph}>M↓</span>
+                  <span className={styles.fileInfo}>
+                    <span className={styles.fileName}>{f.filename}</span>
+                    <span className={styles.fileMeta}>
+                      {f.projectName} · {new Date(f.updatedAt).toLocaleDateString()}
+                    </span>
                   </span>
-                </span>
-              </button>
+                </button>
+                <ConfirmDeleteDialog
+                  trigger={
+                    <button className={styles.fileIconBtn} title="Delete file" onClick={(e) => e.stopPropagation()}>
+                      🗑
+                    </button>
+                  }
+                  title={`Delete ${f.filename}?`}
+                  description={`This permanently removes ${f.filename} from ${f.projectName}'s memory. This cannot be undone.`}
+                  onConfirm={() => handleDeleteFile(f.id)}
+                />
+              </div>
             ))}
             {files.length === 0 && <span className={styles.dimText}>No memory files in this group yet.</span>}
           </div>

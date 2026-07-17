@@ -17,7 +17,7 @@ interface SettingsTabsProps {
  * `settings / <Title>` breadcrumb, the general|rotation|memory tab strip,
  * and the "← workspace" link back to MainView. */
 export function SettingsTabs({ active, title, subtitle }: SettingsTabsProps) {
-  const { navigate, back, canGoBack } = useNavigation();
+  const { navigate } = useNavigation();
 
   return (
     <div className={styles.header}>
@@ -36,7 +36,11 @@ export function SettingsTabs({ active, title, subtitle }: SettingsTabsProps) {
           </button>
         ))}
       </div>
-      <button className={styles.backLink} onClick={() => (canGoBack ? back() : navigate('main-view'))}>
+      {/* Always jumps straight to the workspace grid — `back()` would just
+       * undo one tab switch (general→rotation→memory all push their own
+       * history entry), landing on another settings tab instead of leaving
+       * Settings entirely. */}
+      <button className={styles.backLink} onClick={() => navigate('main-view')}>
         ← workspace
       </button>
     </div>

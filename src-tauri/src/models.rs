@@ -270,3 +270,14 @@ pub struct MemoryFileSummary {
     pub filename: String,
     pub updated_at: String,
 }
+
+/// A real `.md` file already sitting on disk in a project's directory that
+/// hasn't been imported into `memory_files` yet — surfaced so Shared Memory
+/// can offer it as a one-click import instead of starting blank.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredMemoryFile {
+    pub project_id: String,
+    pub project_name: String,
+    pub relative_path: String,
+}

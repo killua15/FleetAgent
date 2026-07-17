@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 
-export type Theme = 'dark' | 'light' | 'system';
-export type ResolvedTheme = 'dark' | 'light';
+export type Theme = 'dark' | 'light' | 'glass' | 'system';
+export type ResolvedTheme = 'dark' | 'light' | 'glass';
 
 const STORAGE_KEY = 'fleet.theme';
 
@@ -21,7 +21,7 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 function readStoredTheme(): Theme {
   const stored = window.localStorage.getItem(STORAGE_KEY);
-  return stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'dark';
+  return stored === 'light' || stored === 'dark' || stored === 'glass' || stored === 'system' ? stored : 'dark';
 }
 
 function systemPrefersDark(): boolean {

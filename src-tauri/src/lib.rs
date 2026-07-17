@@ -79,12 +79,16 @@ pub fn run() {
             commands::settings::set_project_account_allowed,
             commands::settings::list_memory_groups,
             commands::settings::create_memory_group,
+            commands::settings::delete_memory_group,
             commands::settings::list_group_membership,
             commands::settings::set_group_membership,
             commands::settings::list_group_memory_files,
             commands::settings::get_memory_file,
             commands::settings::update_memory_file_content,
             commands::settings::create_memory_file,
+            commands::settings::delete_memory_file,
+            commands::settings::list_discoverable_memory_files,
+            commands::settings::import_discovered_memory_file,
             commands::settings::trigger_review,
         ])
         .run(tauri::generate_context!())

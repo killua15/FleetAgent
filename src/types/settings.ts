@@ -54,3 +54,11 @@ export interface MemoryFileSummary {
   filename: string;
   updatedAt: string;
 }
+
+/** A real `.md` file already on disk in a project, not yet imported into
+ * memory_files. */
+export interface DiscoveredMemoryFile {
+  projectId: string;
+  projectName: string;
+  relativePath: string;
+}
