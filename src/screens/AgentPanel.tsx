@@ -16,12 +16,14 @@ import {
   type ModelOption,
   type PermissionRequest,
   type ResumableConversation,
+  type Session,
   type SessionBlock,
   type SessionMode,
   type SessionStatus,
   type SessionView,
   type TurnUsage,
 } from '../types/session';
+import type { AppSettings } from '../types/settings';
 import { Button } from '../components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
@@ -177,6 +179,8 @@ export function AgentPanelBody({
   const [resumeOpen, setResumeOpen] = useState(false);
   const [resumeOptions, setResumeOptions] = useState<ResumableConversation[]>([]);
   const [loadingResume, setLoadingResume] = useState(false);
+  const [appSettings, setAppSettings] = useState<AppSettings>({ reviewerEnabled: false, reviewerAccountId: null, notifyNeedsApproval: false, notifySessionWaiting: false, notifyAccountExhausted: false, notifySpendCap: false });
+  const [reviewing, setReviewing] = useState(false);
   const [pendingApproval, setPendingApproval] = useState<PermissionRequest | null>(null);
   const [respondingApproval, setRespondingApproval] = useState(false);
   const pendingApprovalRef = useRef<PermissionRequest | null>(null);
@@ -226,7 +230,22 @@ export function AgentPanelBody({
   useEffect(() => {
     invoke<Account[]>('list_accounts').then(setAccounts).catch(() => setAccounts([]));
     invoke<SessionView[]>('list_workspace_sessions').then(setAllSessions).catch(() => setAllSessions([]));
+    invoke<AppSettings>('get_app_settings').then(setAppSettings).catch(() => {});
   }, []);
+
+  const handleReviewNow = async () => {
+    if (!session || reviewing) return;
+    setReviewing(true);
+    setError(null);
+    try {
+      const reviewSession = await invoke<Session>('trigger_review', { sessionId: session.id });
+      navigate('agent-panel', { sessionId: reviewSession.id });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setReviewing(false);
+    }
+  };
 
   useEffect(() => {
     if (!filesOpen) return;
@@ -765,6 +784,19 @@ export function AgentPanelBody({
           accounts={accounts}
           onCreated={(created) => navigate('agent-panel', { sessionId: created.id })}
         />
+        <Button
+          variant="outline"
+          className={styles.thinkingBtn}
+          disabled={!appSettings.reviewerEnabled || !appSettings.reviewerAccountId || reviewing}
+          onClick={handleReviewNow}
+          title={
+            appSettings.reviewerEnabled && appSettings.reviewerAccountId
+              ? 'Spawn a plan-mode review of this session with the configured reviewer account'
+              : 'Configure a reviewer account in Settings → General first'
+          }
+        >
+          {reviewing ? '…' : '◎ review now'}
+        </Button>
         {isRunning && (
           <Button
             variant="destructive"
@@ -1180,9 +1212,9 @@ function DiffLinesView({ lines }: { lines: DiffLine[] }) {
  * Diff and File tabs. Falls back to a plain (unhighlighted) grammar for
  * extensions Prism's bundled build doesn't ship, rather than erroring. */
 function HighlightedFile({ code, prismLanguage }: { code: string; prismLanguage: string }) {
-  const { theme } = useTheme();
+  const { resolvedTheme } = useTheme();
   return (
-    <Highlight theme={theme === 'light' ? themes.vsLight : themes.vsDark} code={code} language={prismLanguage}>
+    <Highlight theme={resolvedTheme === 'light' ? themes.vsLight : themes.vsDark} code={code} language={prismLanguage}>
       {({ tokens, getTokenProps }) => (
         <div className={styles.fileContentPre}>
           {tokens.map((line, i) => (

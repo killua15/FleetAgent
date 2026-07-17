@@ -69,3 +69,40 @@
 
   --shadow: 0 8px 28px rgba(30, 30, 60, 0.14);
 }
+
+/* Glass — same dark base and accent hues as the default theme, but every
+ * surface (panel/panel2/bg2/line) is a faint ~5% white wash instead of a
+ * flat color, so panels read as translucent layers over --bg rather than
+ * opaque cards. Deliberately subtle — this is a tint, not frosted blur. */
+:root[data-theme='glass'] {
+  --bg: #0e0f14;
+  --bg2: rgba(255, 255, 255, 0.03);
+  --panel: rgba(255, 255, 255, 0.05);
+  --panel2: rgba(255, 255, 255, 0.07);
+  --line: rgba(255, 255, 255, 0.08);
+  --line2: rgba(255, 255, 255, 0.14);
+
+  --txt: #e8e8f2;
+  --mut: #9a9ab0;
+  --dim: #61627a;
+
+  --acc: #b48cff;
+  --accD: rgba(180, 140, 255, 0.13);
+
+  --teal: #3ecfc0;
+  --tealD: rgba(62, 207, 192, 0.12);
+
+  --amber: #e0a458;
+  --amberD: rgba(224, 164, 88, 0.12);
+
+  --red: #e56a7b;
+  --redD: rgba(229, 106, 123, 0.12);
+
+  --grn: #5fd39a;
+  --grnD: rgba(95, 211, 154, 0.12);
+
+  --gemini: #7aa2ff;
+  --geminiD: rgba(122, 162, 255, 0.13);
+
+  --shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}

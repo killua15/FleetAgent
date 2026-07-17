@@ -12,7 +12,7 @@ use std::process::Command;
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
-fn row_to_account(row: &rusqlite::Row) -> rusqlite::Result<Account> {
+pub(crate) fn row_to_account(row: &rusqlite::Row) -> rusqlite::Result<Account> {
     Ok(Account {
         id: row.get("id")?,
         provider: row.get("provider")?,

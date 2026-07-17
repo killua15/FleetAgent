@@ -1,0 +1,453 @@
+.screen {
+  width: 100%;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--txt);
+  font-family: var(--font-ui);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.sectionLabel {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.16em;
+  color: var(--dim);
+  padding: 0 8px 8px;
+}
+
+.dimText {
+  font: 400 10.5px var(--font-mono);
+  color: var(--dim);
+  padding: 0 8px;
+}
+
+/* --- groups column --- */
+.groupList {
+  width: 270px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  background: var(--bg2);
+  padding: 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow: auto;
+}
+
+.groupListHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.groupRow,
+.groupRowActive {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+}
+
+.groupRow:hover {
+  background: var(--panel2);
+}
+
+.groupRowActive {
+  border-color: var(--teal);
+  background: var(--panel);
+}
+
+.groupRowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  text-align: left;
+}
+
+.groupIconBtn,
+.fileIconBtn {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 11px;
+  display: grid;
+  place-items: center;
+}
+
+.groupIconBtn:hover,
+.fileIconBtn:hover {
+  background: var(--panel2);
+  color: var(--txt);
+}
+
+.groupDot {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  flex: none;
+  background: var(--teal);
+}
+
+.groupInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+
+.groupName {
+  font: 600 12.5px var(--font-ui);
+}
+
+.groupSub {
+  font: 400 10.5px var(--font-mono);
+  color: var(--dim);
+}
+
+.newGroupRow {
+  display: flex;
+  gap: 6px;
+  padding: 6px 4px;
+}
+
+.newGroupInput {
+  flex: 1;
+  font: 500 11px var(--font-mono) !important;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.footnote {
+  font: 400 10.5px var(--font-ui);
+  color: var(--dim);
+  line-height: 1.55;
+  padding: 0 8px;
+}
+
+/* --- membership column --- */
+.membership {
+  width: 340px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  padding: 20px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+}
+
+.membershipTitle {
+  font: 600 15px var(--font-mono);
+}
+
+.membershipHint {
+  font: 400 11.5px var(--font-ui);
+  color: var(--mut);
+  margin-bottom: 12px;
+}
+
+.discoveredWrap {
+  width: 300px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  padding: 20px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+}
+
+.discoveredHint {
+  font: 400 11px var(--font-ui);
+  color: var(--mut);
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+.discoveredSearch {
+  font: 500 11px var(--font-mono) !important;
+  margin-bottom: 4px;
+}
+
+.discoveredList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.discoveredGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.discoveredGroupHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.discoveredGroupTitle {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.12em;
+  color: var(--dim);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.discoveredGroupRule {
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+.discoveredRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px dashed var(--line);
+}
+
+.discoveredInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+
+.discoveredPath {
+  font: 500 11.5px var(--font-mono);
+  color: var(--txt);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.discoveredProject {
+  font: 400 9.5px var(--font-mono);
+  color: var(--dim);
+}
+
+.memberRow,
+.memberRowActive {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  background: transparent;
+  border: 1px dashed var(--line);
+  opacity: 0.75;
+}
+
+.memberRowActive {
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  opacity: 1;
+}
+
+.memberIcon {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  font: 700 11px var(--font-mono);
+  background: var(--panel2);
+  color: var(--acc);
+  border: 1px solid var(--line);
+}
+
+.memberName {
+  font: 600 12.5px var(--font-mono);
+  flex: 1;
+}
+
+.crossWarn {
+  display: flex;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: var(--amberD);
+  border: 1px solid var(--amber);
+  margin-top: 8px;
+  color: var(--amber);
+  font: 400 11px var(--font-ui);
+  line-height: 1.5;
+}
+
+/* --- file viewer --- */
+.viewerWrap {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+}
+
+.fileList {
+  width: 250px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  background: var(--bg2);
+  padding: 16px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+}
+
+.newFileRow {
+  display: flex;
+  gap: 6px;
+  padding: 0 4px 8px;
+}
+
+.newFileInput {
+  flex: 1;
+  font: 500 11px var(--font-mono) !important;
+}
+
+.fileRow,
+.fileRowActive {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 7px;
+  width: 100%;
+  border: 1px solid transparent;
+  background: transparent;
+}
+
+.fileRow:hover {
+  background: var(--panel2);
+}
+
+.fileRowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  text-align: left;
+}
+
+.fileRowActive {
+  border-color: var(--teal);
+  background: var(--panel);
+}
+
+.fileGlyph {
+  font: 500 11px var(--font-mono);
+  color: var(--dim);
+  flex: none;
+}
+
+.fileInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+
+.fileName {
+  font: 500 11.5px var(--font-mono);
+  color: var(--txt);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fileMeta {
+  font: 400 9.5px var(--font-mono);
+  color: var(--dim);
+}
+
+.viewer {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.viewerHeader {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.viewerTitle {
+  font: 600 12px var(--font-mono);
+  color: var(--teal);
+}
+
+.sharedTag {
+  font: 500 9.5px var(--font-mono);
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--tealD);
+  color: var(--teal);
+}
+
+.viewerContent {
+  flex: 1;
+  margin: 0;
+  padding: 18px 20px;
+  border: none;
+  border-radius: 0;
+  resize: none;
+  font: 400 11.5px var(--font-mono) !important;
+  line-height: 1.75;
+  color: var(--mut);
+}
+
+.viewerEmpty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  color: var(--dim);
+  font: 400 12px var(--font-mono);
+}

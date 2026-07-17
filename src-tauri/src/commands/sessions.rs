@@ -27,7 +27,7 @@ pub struct StartSessionInput {
     pub mode: String,
 }
 
-fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<Session> {
+pub(crate) fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<Session> {
     Ok(Session {
         id: row.get("id")?,
         name: row.get("name")?,
@@ -109,7 +109,7 @@ pub fn start_session(db: State<DbConnection>, input: StartSessionInput) -> Resul
 // tree being copied. Without this exclusion, copy_project_dir would recurse
 // into its own destination directory as it walks the source, copying the
 // copy into itself indefinitely (surfaces as "File name too long").
-const COPY_SKIP_DIRS: &[&str] = &["node_modules", "dist", "target", ".next", "__pycache__", "venv", ".venv", "build", ".git", ".fleet"];
+pub(crate) const COPY_SKIP_DIRS: &[&str] = &["node_modules", "dist", "target", ".next", "__pycache__", "venv", ".venv", "build", ".git", ".fleet"];
 const ENV_FILE_CANDIDATES: &[&str] = &[".env", ".env.local", ".env.development", ".env.production"];
 
 /// Lowercase, ASCII-alphanumeric-only, dash-separated — used for both the

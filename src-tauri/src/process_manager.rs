@@ -65,6 +65,7 @@ pub(crate) fn emit_block<R: Runtime>(app: &AppHandle<R>, session_id: &str, kind:
 }
 
 pub(crate) fn mark_session_status<R: Runtime>(app: &AppHandle<R>, session_id: &str, status: &str) {
+    let mut session_name = None;
     if let Some(db) = app.try_state::<DbConnection>() {
         match db.0.lock() {
             Ok(conn) => {
@@ -79,11 +80,21 @@ pub(crate) fn mark_session_status<R: Runtime>(app: &AppHandle<R>, session_id: &s
                 if let Err(e) = result {
                     eprintln!("mark_session_status: failed to set session {session_id} to {status}: {e}");
                 }
+                session_name = conn.query_row("SELECT name FROM sessions WHERE id = ?1", params![session_id], |row| row.get::<_, String>(0)).ok();
             }
             Err(e) => eprintln!("mark_session_status: DB mutex poisoned for session {session_id}: {e}"),
         }
     }
     let _ = app.emit("session-status", (session_id.to_string(), status.to_string()));
+
+    // Every real "waiting" transition comes from turn_runner at the tail of
+    // a turn (spawn failure, non-claude provider bailout, or a clean finish)
+    // — never at session creation, which sets the row's initial status
+    // directly via SQL — so there's no spurious case to filter here.
+    if status == "waiting" {
+        let name = session_name.unwrap_or_else(|| "A session".to_string());
+        crate::notifications::notify_if_enabled(app, |s| s.notify_session_waiting, "Session finished", &format!("{name} is waiting for you"));
+    }
 }
 
 pub(crate) fn mark_account_exhausted<R: Runtime>(app: &AppHandle<R>, account_id: &str) {
@@ -110,6 +121,17 @@ pub(crate) fn emit_account_exhausted<R: Runtime>(app: &AppHandle<R>, account_id:
             account_id: account_id.to_string(),
             session_id: session_id.to_string(),
         },
+    );
+
+    let account_name = app
+        .try_state::<DbConnection>()
+        .and_then(|db| db.0.lock().ok().and_then(|conn| conn.query_row("SELECT name FROM accounts WHERE id = ?1", params![account_id], |row| row.get::<_, String>(0)).ok()))
+        .unwrap_or_else(|| "An account".to_string());
+    crate::notifications::notify_if_enabled(
+        app,
+        |s| s.notify_account_exhausted,
+        "Account rate-limited",
+        &format!("{account_name} hit a rate limit and can't run turns until it clears"),
     );
 }
 

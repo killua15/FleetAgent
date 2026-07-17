@@ -24,6 +24,16 @@ impl TurnRegistry {
     }
 }
 
+/// Accounts already notified about a spend-cap breach this app run — see
+/// `check_spend_cap`. In-memory only; resets on restart.
+pub struct SpendCapNotified(pub Mutex<std::collections::HashSet<String>>);
+
+impl SpendCapNotified {
+    pub fn new() -> Self {
+        SpendCapNotified(Mutex::new(std::collections::HashSet::new()))
+    }
+}
+
 fn register_turn<R: Runtime>(app: &AppHandle<R>, session_id: &str, pid: u32) {
     if let Some(reg) = app.try_state::<TurnRegistry>() {
         if let Ok(mut map) = reg.0.lock() {
@@ -653,6 +663,74 @@ fn store_turn_usage<R: Runtime>(app: &AppHandle<R>, session_id: &str, usage: &Tu
             Err(e) => eprintln!("store_turn_usage: DB mutex poisoned for session {session_id}: {e}"),
         }
     }
+    check_spend_cap(app, session_id);
+}
+
+/// Fires a one-time-per-app-run notification when an account's trailing
+/// 7-day recorded spend (`turn_usage.cost_usd`, Fleet's own numbers — not a
+/// live provider quota) crosses its `monthly_cap / 4.345` weekly estimate.
+/// Only meaningful for `billing = 'key'` accounts (subscription accounts
+/// have no $ cap — see `commands::settings::set_account_monthly_cap`'s
+/// callers). The dedup lives only in memory (`SpendCapNotified`, reset on
+/// restart) — this is a "heads up, you're over" nudge, not an exact
+/// per-billing-period counter.
+/// Pure threshold check, isolated so the math is testable without a DB or
+/// app handle: `billing` must be `"key"` (subscription accounts have no $
+/// cap) and a `monthly_cap` must be set, in which case a week's worth of
+/// recorded spend is compared against `monthly_cap / 4.345`.
+fn is_over_weekly_spend_estimate(billing: &str, monthly_cap: Option<f64>, trailing_7day_cost: f64) -> bool {
+    if billing != "key" {
+        return false;
+    }
+    let Some(monthly_cap) = monthly_cap else { return false };
+    let weekly_estimate = monthly_cap / 4.345;
+    weekly_estimate > 0.0 && trailing_7day_cost >= weekly_estimate
+}
+
+fn check_spend_cap<R: Runtime>(app: &AppHandle<R>, session_id: &str) {
+    let Some(db) = app.try_state::<DbConnection>() else { return };
+    let Ok(conn) = db.0.lock() else { return };
+
+    let row: Option<(String, String, Option<f64>, String)> = conn
+        .query_row(
+            "SELECT s.account_id, a.billing, a.monthly_cap, a.name FROM sessions s JOIN accounts a ON a.id = s.account_id WHERE s.id = ?1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .ok();
+    let Some((account_id, billing, monthly_cap, account_name)) = row else { return };
+
+    let seven_days_ago = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
+    let trailing_cost: f64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(tu.cost_usd), 0.0) FROM turn_usage tu JOIN sessions s2 ON s2.id = tu.session_id WHERE s2.account_id = ?1 AND tu.created_at >= ?2",
+            params![account_id, seven_days_ago],
+            |row| row.get(0),
+        )
+        .unwrap_or(0.0);
+    if !is_over_weekly_spend_estimate(&billing, monthly_cap, trailing_cost) {
+        return;
+    }
+
+    let Ok(settings) = crate::commands::settings::read_app_settings(&conn) else { return };
+    drop(conn);
+    if !settings.notify_spend_cap {
+        return;
+    }
+
+    if let Some(notified) = app.try_state::<SpendCapNotified>() {
+        let Ok(mut set) = notified.0.lock() else { return };
+        if !set.insert(account_id) {
+            return; // already notified this app run
+        }
+    }
+
+    crate::notifications::notify_if_enabled(
+        app,
+        |s| s.notify_spend_cap,
+        "Spend cap exceeded",
+        &format!("{account_name} passed its estimated weekly budget (${trailing_cost:.2} spent)"),
+    );
 }
 
 fn store_provider_session_id<R: Runtime>(app: &AppHandle<R>, session_id: &str, provider_session_id: &str) {
@@ -674,6 +752,25 @@ fn store_provider_session_id<R: Runtime>(app: &AppHandle<R>, session_id: &str, p
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_over_weekly_spend_estimate_ignores_subscription_accounts() {
+        assert!(!is_over_weekly_spend_estimate("sub", Some(10.0), 1_000_000.0), "subscription accounts have no $ cap");
+    }
+
+    #[test]
+    fn is_over_weekly_spend_estimate_ignores_accounts_with_no_cap_set() {
+        assert!(!is_over_weekly_spend_estimate("key", None, 1_000_000.0));
+    }
+
+    #[test]
+    fn is_over_weekly_spend_estimate_compares_against_monthly_cap_over_4_345() {
+        // monthly_cap 100 -> weekly estimate ~23.015. Under, exactly at, and over.
+        let weekly_estimate = 100.0 / 4.345;
+        assert!(!is_over_weekly_spend_estimate("key", Some(100.0), 22.0));
+        assert!(is_over_weekly_spend_estimate("key", Some(100.0), weekly_estimate));
+        assert!(is_over_weekly_spend_estimate("key", Some(100.0), 50.0));
+    }
 
     fn parse_fixture(path: &str) -> Vec<LineOutcome> {
         let content = std::fs::read_to_string(path).expect("read fixture");

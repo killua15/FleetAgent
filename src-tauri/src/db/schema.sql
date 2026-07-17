@@ -69,6 +69,14 @@ CREATE TABLE IF NOT EXISTS memory_files (
   updated_at TEXT NOT NULL
 );
 
+-- Small singleton key/value store for app-wide preferences that don't
+-- warrant their own table (e.g. the preferred reviewer account) — read the
+-- whole table into a struct rather than adding a one-off table per setting.
+CREATE TABLE IF NOT EXISTS app_settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS agent_nodes (
   id         TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

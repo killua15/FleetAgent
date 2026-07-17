@@ -32,6 +32,7 @@ import type {
   SessionView,
 } from '../types/session';
 import { EFFORT_OPTIONS, MODE_LABEL } from '../types/session';
+import type { ProjectAccountRotation } from '../types/settings';
 import styles from './MainView.module.css';
 
 const MODE_OPTIONS: SessionMode[] = ['plan', 'ask_edits', 'auto_edit', 'yolo'];
@@ -269,7 +270,7 @@ export function MainView() {
             >
               {selectMode ? '✕ cancel' : '☑ select'}
             </Button>
-            <NewSessionControl accounts={accounts} projects={projects} onCreated={loadAll} />
+            <NewSessionControl accounts={accounts} projects={projects} onCreated={loadAll} accountUsage={accountUsage} />
             <NewMultiSessionControl accounts={accounts} projects={projects} onCreated={loadAll} />
           </>
         }
@@ -730,10 +731,12 @@ function NewSessionControl({
   accounts,
   projects,
   onCreated,
+  accountUsage,
 }: {
   accounts: Account[];
   projects: Project[];
   onCreated: () => Promise<void>;
+  accountUsage: Record<string, AccountUsageSummary>;
 }) {
   const { navigate } = useNavigation();
   const [open, setOpen] = useState(false);
@@ -742,6 +745,7 @@ function NewSessionControl({
   const [newProjectName, setNewProjectName] = useState('');
   const [newProjectPath, setNewProjectPath] = useState('');
   const [accountId, setAccountId] = useState('');
+  const [rotation, setRotation] = useState<ProjectAccountRotation[] | null>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [model, setModel] = useState('');
@@ -751,6 +755,29 @@ function NewSessionControl({
   const [error, setError] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   useClickOutside(wrapRef, () => setOpen(false), open);
+
+  // A brand-new project has no rotation rows yet — nothing to filter
+  // against, so every account stays selectable, same as before this feature.
+  useEffect(() => {
+    if (projectId === '__new__') {
+      setRotation(null);
+      return;
+    }
+    invoke<ProjectAccountRotation[]>('list_project_account_rotation', { projectId }).then(setRotation);
+  }, [projectId]);
+
+  const selectableAccounts = rotation ? accounts.filter((a) => rotation.find((r) => r.accountId === a.id)?.allowed) : accounts;
+
+  // Auto-pick the least-loaded allowed account (by Fleet's own recorded 7-day
+  // spend) once rotation narrows the list, instead of leaving it on whatever
+  // was selected before the project changed.
+  useEffect(() => {
+    if (!rotation) return;
+    if (selectableAccounts.some((a) => a.id === accountId)) return;
+    const leastLoaded = [...selectableAccounts].sort((a, b) => (accountUsage[a.id]?.costUsd ?? 0) - (accountUsage[b.id]?.costUsd ?? 0))[0];
+    setAccountId(leastLoaded?.id ?? '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rotation, projectId]);
 
   useEffect(() => {
     if (!accountId) {
@@ -834,13 +861,18 @@ function NewSessionControl({
                 <SelectValue placeholder="select an account…" />
               </SelectTrigger>
               <SelectContent>
-                {accounts.map((a) => (
+                {selectableAccounts.map((a) => (
                   <SelectItem key={a.id} value={a.id}>
                     {a.name} ({a.provider})
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
+            {rotation && selectableAccounts.length === 0 && (
+              <span style={{ font: "400 10px 'JetBrains Mono', monospace", color: 'var(--red)' }}>
+                no accounts allowed for this project — configure it in Settings → Rotation
+              </span>
+            )}
           </div>
           <div className={styles.field}>
             <Label className={styles.label}>MODEL</Label>
