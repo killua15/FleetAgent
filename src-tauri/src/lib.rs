@@ -3,6 +3,7 @@ mod credential_vault;
 mod db;
 mod login_manager;
 mod models;
+mod notifications;
 mod permission_bridge;
 mod process_manager;
 mod providers;
@@ -15,7 +16,7 @@ use permission_bridge::PendingApprovals;
 use process_manager::ProcessRegistry;
 use std::sync::Mutex;
 use tauri::Manager;
-use turn_runner::TurnRegistry;
+use turn_runner::{SpendCapNotified, TurnRegistry};
 use usage_scraper::UsageCache;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -23,12 +24,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let conn = db::init(&app.handle());
             app.manage(DbConnection(Mutex::new(conn)));
             app.manage(ProcessRegistry::new());
             app.manage(LoginRegistry::new());
             app.manage(TurnRegistry::new());
+            app.manage(SpendCapNotified::new());
             app.manage(UsageCache::new());
             app.manage(PendingApprovals::new());
             Ok(())
@@ -43,6 +46,8 @@ pub fn run() {
             commands::accounts::list_provider_models,
             commands::projects::list_projects,
             commands::projects::create_project,
+            commands::projects::update_project,
+            commands::projects::delete_project,
             commands::sessions::start_session,
             commands::sessions::create_subsession,
             commands::sessions::list_project_sessions,
@@ -67,6 +72,20 @@ pub fn run() {
             commands::login::send_login_input,
             commands::login::check_login_status,
             commands::login::cancel_login,
+            commands::settings::set_account_monthly_cap,
+            commands::settings::get_app_settings,
+            commands::settings::set_app_settings,
+            commands::settings::list_project_account_rotation,
+            commands::settings::set_project_account_allowed,
+            commands::settings::list_memory_groups,
+            commands::settings::create_memory_group,
+            commands::settings::list_group_membership,
+            commands::settings::set_group_membership,
+            commands::settings::list_group_memory_files,
+            commands::settings::get_memory_file,
+            commands::settings::update_memory_file_content,
+            commands::settings::create_memory_file,
+            commands::settings::trigger_review,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -12,6 +12,7 @@ import {
   type SessionMode,
   type SessionView,
 } from '../types/session';
+import type { ProjectAccountRotation } from '../types/settings';
 import { Button } from './ui/button';
 import {
   Dialog,
@@ -47,6 +48,7 @@ export function CreateSubsessionDialog({ trigger, parentSession, accounts, onCre
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
   const [accountId, setAccountId] = useState(parentSession.accountId);
+  const [rotation, setRotation] = useState<ProjectAccountRotation[] | null>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [model, setModel] = useState(parentSession.model);
@@ -68,6 +70,17 @@ export function CreateSubsessionDialog({ trigger, parentSession, accounts, onCre
     setSetupCommand('');
     setError(null);
   }, [open, parentSession.accountId, parentSession.model, parentSession.effort, parentSession.mode]);
+
+  useEffect(() => {
+    if (!open) return;
+    invoke<ProjectAccountRotation[]>('list_project_account_rotation', { projectId: parentSession.projectId }).then(setRotation);
+  }, [open, parentSession.projectId]);
+
+  // The parent's own account is always offered even if rotation would
+  // otherwise exclude it — a subsession naturally inherits it by default.
+  const selectableAccounts = rotation
+    ? accounts.filter((a) => a.id === parentSession.accountId || rotation.find((r) => r.accountId === a.id)?.allowed)
+    : accounts;
 
   useEffect(() => {
     if (!accountId) {
@@ -133,7 +146,7 @@ export function CreateSubsessionDialog({ trigger, parentSession, accounts, onCre
                 <SelectValue placeholder="select an account…" />
               </SelectTrigger>
               <SelectContent>
-                {accounts.map((a) => (
+                {selectableAccounts.map((a) => (
                   <SelectItem key={a.id} value={a.id}>
                     {a.name} ({a.provider})
                   </SelectItem>

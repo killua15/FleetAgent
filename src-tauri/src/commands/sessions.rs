@@ -27,7 +27,7 @@ pub struct StartSessionInput {
     pub mode: String,
 }
 
-fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<Session> {
+pub(crate) fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<Session> {
     Ok(Session {
         id: row.get("id")?,
         name: row.get("name")?,

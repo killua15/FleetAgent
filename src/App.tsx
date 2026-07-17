@@ -7,6 +7,9 @@ import { AddAccount } from './screens/AddAccount';
 import { AccountList } from './screens/AccountList';
 import { AgentPanel } from './screens/AgentPanel';
 import { SplitView } from './screens/SplitView';
+import { GeneralSettings } from './screens/GeneralSettings';
+import { RotationSettings } from './screens/RotationSettings';
+import { SharedMemorySettings } from './screens/SharedMemorySettings';
 import { Placeholder } from './components/Placeholder';
 import { AppErrorOverlay } from './components/ErrorOverlay';
 import './styles/global.css';
@@ -42,6 +45,12 @@ function Screens() {
       return <AgentPanel />;
     case 'split-view':
       return <SplitView />;
+    case 'general-settings':
+      return <GeneralSettings />;
+    case 'rotation-settings':
+      return <RotationSettings />;
+    case 'shared-memory':
+      return <SharedMemorySettings />;
     default:
       return <Placeholder screen={current.screen} />;
   }

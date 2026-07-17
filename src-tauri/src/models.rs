@@ -188,3 +188,85 @@ pub enum FileStatus {
     /// `file_edits` — the best signal available for a copy-kind subsession.
     Touched,
 }
+
+/// App-wide preferences from the `app_settings` key/value table, collapsed
+/// into one struct — the reviewer feature ("Review now") plus which events
+/// fire a real macOS notification, all opt-in (default `false`) so enabling
+/// the first one is the moment Fleet first asks the OS for permission,
+/// rather than surprising the user at first launch.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    pub reviewer_enabled: bool,
+    pub reviewer_account_id: Option<String>,
+    pub notify_needs_approval: bool,
+    pub notify_session_waiting: bool,
+    pub notify_account_exhausted: bool,
+    pub notify_spend_cap: bool,
+}
+
+/// One row of the Rotation settings screen's checklist — an account plus
+/// whether the given project may use it, joined so the frontend doesn't
+/// need a second round-trip to show name/provider/scope next to each box.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAccountRotation {
+    pub account_id: String,
+    pub account_name: String,
+    pub provider: String,
+    pub scope: String,
+    pub allowed: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryGroup {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+}
+
+/// Memory group list-item shape — includes counts so the sidebar can show
+/// "N projects · M memory files" without a separate query per group.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryGroupSummary {
+    pub id: String,
+    pub name: String,
+    pub project_count: i64,
+    pub file_count: i64,
+}
+
+/// One project's membership state for a given memory group.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMembership {
+    pub project_id: String,
+    pub project_name: String,
+    pub member: bool,
+}
+
+/// A memory file's content — returned in full since the viewer shows/edits
+/// the whole markdown body at once (small files, no need to paginate).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryFile {
+    pub id: String,
+    pub project_id: String,
+    pub project_name: String,
+    pub filename: String,
+    pub content_md: String,
+    pub updated_at: String,
+}
+
+/// Lighter shape for the file list in the sidebar (no content_md, which
+/// could be large and isn't needed until a file is actually opened).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryFileSummary {
+    pub id: String,
+    pub project_id: String,
+    pub project_name: String,
+    pub filename: String,
+    pub updated_at: String,
+}
