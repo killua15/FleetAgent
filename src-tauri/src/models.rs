@@ -24,6 +24,10 @@ pub struct Session {
     pub name: String,
     pub project_id: String,
     pub node_id: Option<String>,
+    pub parent_session_id: Option<String>,
+    pub worktree_path: Option<String>,
+    pub worktree_branch: Option<String>,
+    pub worktree_kind: Option<String>,
     pub account_id: String,
     pub model: String,
     pub effort: String,
@@ -41,6 +45,9 @@ pub struct SessionView {
     pub name: String,
     pub project_id: String,
     pub project_name: String,
+    pub parent_session_id: Option<String>,
+    pub worktree_branch: Option<String>,
+    pub worktree_kind: Option<String>,
     pub account_id: String,
     pub account_name: String,
     pub provider: String,
@@ -98,4 +105,86 @@ pub struct ResumableConversation {
     pub provider_session_id: String,
     pub preview: String,
     pub last_active_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewSubsession {
+    pub parent_session_id: String,
+    pub name: String,
+    pub account_id: String,
+    pub model: String,
+    pub effort: String,
+    pub mode: String,
+    /// Shell command to run once inside the new worktree/copy (e.g. `npm
+    /// install`) — optional, remembered on the project for next time.
+    pub setup_command: Option<String>,
+}
+
+/// The real before/after content of one Edit/Write/MultiEdit tool call made
+/// during a session, captured by `turn_runner` and used to render a diff.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileEdit {
+    pub id: String,
+    pub session_id: String,
+    pub block_id: Option<String>,
+    pub file_path: String,
+    pub tool_name: String,
+    pub old_text: Option<String>,
+    pub new_text: Option<String>,
+    pub created_at: String,
+}
+
+/// Token/cost accounting for one completed turn, captured from the `"result"`
+/// message's `usage`/`total_cost_usd` fields and linked back to the `agent`
+/// block it belongs to, for a per-turn token badge and session/context bars.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnUsage {
+    pub id: String,
+    pub session_id: String,
+    pub block_id: Option<String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: Option<i64>,
+    pub cache_creation_tokens: Option<i64>,
+    pub cost_usd: Option<f64>,
+    pub created_at: String,
+}
+
+/// Aggregate spend for one account over a trailing window (e.g. 7 days) —
+/// Fleet's own recorded usage, not a live pull of the provider's real quota.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountUsageSummary {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cost_usd: f64,
+}
+
+/// One entry in a session's working-directory file tree, annotated with its
+/// git (or best-effort touched-file) status so the UI can color it the way
+/// VS Code does: green new/untracked, amber modified, red deleted.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileTreeNode {
+    /// Path relative to the session's working directory (worktree or project root).
+    pub path: String,
+    pub name: String,
+    pub is_dir: bool,
+    pub status: Option<FileStatus>,
+    pub children: Vec<FileTreeNode>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum FileStatus {
+    Added,
+    Modified,
+    Deleted,
+    Untracked,
+    /// No git repo to ask, but this path showed up in this session's own
+    /// `file_edits` — the best signal available for a copy-kind subsession.
+    Touched,
 }

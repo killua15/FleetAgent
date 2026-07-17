@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { AppTopBar } from '../components/AppTopBar';
 import { ConfirmDeleteDialog } from '../components/ConfirmDeleteDialog';
+import { CreateSubsessionDialog } from '../components/CreateSubsessionDialog';
 import { ProjectPicker } from '../components/ProjectPicker';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -11,9 +12,16 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
+import { UsageBar } from '../components/UsageBar';
+import { severityOfLastBlock } from '../lib/blockSeverity';
+import { buildSessionTree, countSessionSubtree } from '../lib/sessionTree';
+import { contextSeverity, contextSeverityColor, formatTokenCount, formatUsd } from '../lib/tokenBudget';
+import { useClickOutside } from '../lib/useClickOutside';
+import { useRealUsage } from '../lib/useRealUsage';
 import { useNavigation } from '../nav/NavigationProvider';
 import { PROVIDER_META, type Account } from '../types/account';
 import type {
+  AccountUsageSummary,
   Effort,
   ModelOption,
   Project,
@@ -50,6 +58,7 @@ function autoGridColumns(panelCount: number): number {
   return Math.ceil(panelCount / rows);
 }
 
+
 export function MainView() {
   const { navigate } = useNavigation();
 
@@ -69,6 +78,7 @@ export function MainView() {
   const [gridColumns, setGridColumns] = useState<number | 'auto'>('auto');
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [accountUsage, setAccountUsage] = useState<Record<string, AccountUsageSummary>>({});
 
   const loadAll = async () => {
     const [acc, proj, sess] = await Promise.all([
@@ -84,6 +94,21 @@ export function MainView() {
   useEffect(() => {
     loadAll();
   }, []);
+
+  useEffect(() => {
+    if (!modules.usage || accounts.length === 0) return;
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    Promise.all(
+      accounts.map((acc) =>
+        invoke<AccountUsageSummary>('get_account_usage_summary', { accountId: acc.id, sinceIso: sevenDaysAgo })
+          .then((summary) => [acc.id, summary] as const)
+          .catch(() => [acc.id, { inputTokens: 0, outputTokens: 0, costUsd: 0 }] as const),
+      ),
+    ).then((entries) => setAccountUsage(Object.fromEntries(entries)));
+    // Re-fetch when sessions change (status updates on session-status events)
+    // for a rough approximation of "live" without polling every output line.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modules.usage, accounts, sessions]);
 
   const handleDeleteAccount = async (acc: Account) => {
     setDeleteError(null);
@@ -308,15 +333,22 @@ export function MainView() {
                       onConfirm={() => handleDeleteAccount(acc)}
                     />
                   </div>
-                  {modules.usage && <div className={styles.usageRow}>usage tracking — coming in rotation phase</div>}
-                  {accSessions.map((s) => (
+                  {modules.usage && <AccountUsageRow acc={acc} usage={accountUsage[acc.id]} />}
+                  {buildSessionTree(accSessions).map(({ session: s, depth }) => (
                     <div
                       className={styles.sessionRow}
                       key={s.id}
+                      style={depth > 0 ? { paddingLeft: 8 + depth * 14 } : undefined}
                       onClick={() => navigate('agent-panel', { sessionId: s.id })}
                     >
+                      {depth > 0 && <span style={{ color: 'var(--dim)', fontSize: 10, flex: 'none' }}>└─</span>}
                       <span className={styles.sessionDot} style={{ background: STATUS_COLOR[s.status] }} />
                       <span className={styles.sessionName}>{s.name || s.projectName}</span>
+                      {s.worktreeKind && (
+                        <span className={styles.sessionProject} title={s.worktreeBranch ?? undefined}>
+                          {s.worktreeKind === 'linked' ? `⑃ ${s.worktreeBranch}` : '⑃ copy'}
+                        </span>
+                      )}
                       <span className={styles.sessionProject}>{s.projectName}</span>
                     </div>
                   ))}
@@ -400,6 +432,13 @@ export function MainView() {
                   selectMode={selectMode}
                   selected={selectedIds.has(s.id)}
                   onToggleSelect={() => toggleSelected(s.id)}
+                  accounts={accounts}
+                  parentName={s.parentSessionId ? visibleSessions.find((p) => p.id === s.parentSessionId)?.name : undefined}
+                  descendantCount={countSessionSubtree(sessions, s.id)}
+                  onSubsessionCreated={async (created) => {
+                    await loadAll();
+                    navigate('agent-panel', { sessionId: created.id });
+                  }}
                 />
               ))}
             </div>
@@ -425,6 +464,10 @@ function SessionPanelCard({
   selectMode,
   selected,
   onToggleSelect,
+  accounts,
+  parentName,
+  descendantCount,
+  onSubsessionCreated,
 }: {
   session: SessionView;
   blocks: SessionBlock[];
@@ -440,11 +483,17 @@ function SessionPanelCard({
   selectMode: boolean;
   selected: boolean;
   onToggleSelect: () => void;
+  accounts: Account[];
+  parentName?: string;
+  descendantCount: number;
+  onSubsessionCreated: (session: Session) => void;
 }) {
   const meta = PROVIDER_META[session.provider];
   const lastBlocks = blocks.slice(-4);
   const lastActivity = blocks.length > 0 ? blocks[blocks.length - 1].text : 'waiting for input…';
   const isRunning = session.status === 'running';
+  const lastSeverity = severityOfLastBlock(blocks);
+  const hasError = lastSeverity === 'error';
 
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -472,6 +521,7 @@ function SessionPanelCard({
       onDragOver={onDragOver}
       onDrop={onDrop}
       className={`${styles.card} ${dragging ? styles.cardDragging : ''}`}
+      style={hasError ? { borderColor: 'var(--red)' } : undefined}
     >
       <div className={styles.cardHeader}>
         {selectMode ? (
@@ -486,6 +536,16 @@ function SessionPanelCard({
           {session.name || session.projectName}
         </Button>
         <span className={styles.cardProject}>{session.projectName}</span>
+        {parentName && (
+          <span className={styles.cardProject} title={`Subsession of ${parentName}`}>
+            ↳ {parentName}
+          </span>
+        )}
+        {session.worktreeKind && (
+          <span className={styles.cardProject} title={session.worktreeBranch ?? undefined}>
+            {session.worktreeKind === 'linked' ? `⑃ ${session.worktreeBranch}` : '⑃ copy'}
+          </span>
+        )}
         <span className={styles.spacer} />
         {session.status === 'running' && (
           <Button
@@ -508,9 +568,25 @@ function SessionPanelCard({
             </Button>
           }
           title="Delete this session?"
-          description="This removes the session and its full transcript. This cannot be undone."
+          description={
+            descendantCount > 0
+              ? `This also removes ${descendantCount} subsession${descendantCount === 1 ? '' : 's'} and their worktree folders, plus this session's own transcript. This cannot be undone.`
+              : "This removes the session and its full transcript. This cannot be undone."
+          }
           onConfirm={onConfirmDelete}
         />
+        {!selectMode && (
+          <CreateSubsessionDialog
+            trigger={
+              <Button variant="ghost" size="icon-sm" title="Branch into a subsession working in its own worktree" style={{ color: 'var(--dim)' }}>
+                ⑃
+              </Button>
+            }
+            parentSession={session}
+            accounts={accounts}
+            onCreated={onSubsessionCreated}
+          />
+        )}
         <Button variant="outline" size="icon-sm" className={styles.collapseBtn} title="Collapse to rail — keeps running" onClick={onCollapse}>
           ▁
         </Button>
@@ -547,10 +623,58 @@ function SessionPanelCard({
         <div style={{ padding: '0 11px 6px', font: '400 9.5px var(--font-mono)', color: 'var(--red)' }}>{sendError}</div>
       )}
       <div className={styles.cardFooter}>
-        <span className={styles.actDot} />
-        <span className={styles.activity}>{lastActivity}</span>
+        <span className={styles.actDot} style={hasError ? { background: 'var(--red)', animation: 'none' } : undefined} />
+        <span className={styles.activity} style={hasError ? { color: 'var(--red)' } : undefined}>{lastActivity}</span>
         <span className={styles.meta}>{session.model}</span>
       </div>
+    </div>
+  );
+}
+
+function AccountUsageRow({ acc, usage }: { acc: Account; usage: AccountUsageSummary | undefined }) {
+  // Only 'sub' accounts have a real /usage percentage worth fetching — 'key'
+  // accounts are billed per token, so their $ figure below is already the
+  // real signal, no need to spawn an interactive CLI for them.
+  const isSubscription = acc.billing === 'sub';
+  const realUsage = useRealUsage(isSubscription ? acc.id : undefined, isSubscription);
+
+  if (!usage) return <div className={styles.usageRow}>loading usage…</div>;
+
+  if (isSubscription) {
+    const real = realUsage.stats?.weeklyPct ?? null;
+    if (real != null) {
+      const color = contextSeverityColor(contextSeverity(real));
+      return (
+        <div className={styles.usageRow}>
+          <UsageBar pct={real} color={color} label={`${Math.min(100, real).toFixed(0)}% / 7d`} title="/usage — real weekly usage" width={60} />
+        </div>
+      );
+    }
+    // No real percentage yet (still fetching, or couldn't be parsed) — fall
+    // back to Fleet's own token counts rather than showing nothing.
+    return (
+      <div className={styles.usageRow}>
+        ↑{formatTokenCount(usage.inputTokens)} ↓{formatTokenCount(usage.outputTokens)} / 7d
+      </div>
+    );
+  }
+
+  // A weekly budget is only a rough slice of the account's own monthly cap
+  // (if the user set one) — not a real provider quota, which Fleet has no
+  // API access to. No cap set → a neutral bar with just the recorded spend
+  // as text.
+  const weeklyCapEstimate = acc.monthlyCap ? acc.monthlyCap / 4.345 : null;
+  const pct = weeklyCapEstimate ? (usage.costUsd / weeklyCapEstimate) * 100 : 0;
+  const color = weeklyCapEstimate ? contextSeverityColor(contextSeverity(pct)) : 'var(--teal)';
+  return (
+    <div className={styles.usageRow}>
+      <UsageBar
+        pct={pct}
+        color={color}
+        label={`${formatUsd(usage.costUsd)} / 7d`}
+        title={`↑${formatTokenCount(usage.inputTokens)} ↓${formatTokenCount(usage.outputTokens)} tokens this week — Fleet's own recorded spend, not a live provider quota`}
+        width={60}
+      />
     </div>
   );
 }
@@ -573,9 +697,11 @@ function ModulesControl({
     { key: 'usage', name: 'Usage meters', tag: 'UsageBars' },
     { key: 'rail', name: 'Pill rail', tag: 'PillRail' },
   ];
+  const wrapRef = useRef<HTMLDivElement>(null);
+  useClickOutside(wrapRef, onToggleOpen, open);
 
   return (
-    <div className={styles.modulesWrap}>
+    <div className={styles.modulesWrap} ref={wrapRef}>
       <Button variant="outline" className={`${styles.modulesBtn} ${open ? styles.on : ''}`} onClick={onToggleOpen}>
         ⬒ modules
       </Button>
@@ -623,6 +749,8 @@ function NewSessionControl({
   const [mode, setMode] = useState<SessionMode>('ask_edits');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  useClickOutside(wrapRef, () => setOpen(false), open);
 
   useEffect(() => {
     if (!accountId) {
@@ -672,7 +800,7 @@ function NewSessionControl({
   };
 
   return (
-    <div className={styles.newSessionWrap}>
+    <div className={styles.newSessionWrap} ref={wrapRef}>
       <Button
         onClick={() => setOpen((v) => !v)}
         style={{ font: "600 11.5px 'IBM Plex Sans', sans-serif", padding: '6px 13px', borderRadius: 6 }}
@@ -813,6 +941,8 @@ function NewMultiSessionControl({
   const [targets, setTargets] = useState<TargetState[]>([newTarget()]);
   const [creating, setCreating] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  useClickOutside(wrapRef, () => setOpen(false), open);
 
   const updateTarget = (id: string, patch: Partial<TargetState>) => {
     setTargets((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
@@ -871,7 +1001,7 @@ function NewMultiSessionControl({
   };
 
   return (
-    <div className={styles.newSessionWrap}>
+    <div className={styles.newSessionWrap} ref={wrapRef}>
       <Button variant="outline" onClick={() => setOpen((v) => !v)}>
         + Multi-session
       </Button>

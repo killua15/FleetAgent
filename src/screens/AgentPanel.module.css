@@ -33,6 +33,53 @@
   overflow-y: hidden;
 }
 
+/* ---- status line: context-window bar + session spend, always visible,
+   not a togglable module (same convention as Claude Code/Codex's own
+   statusline) ---- */
+.statusLine {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+}
+
+.statusLineText {
+  font: 500 9.5px var(--font-mono);
+  color: var(--dim);
+}
+
+.statusLineDivider {
+  color: var(--line2);
+  font-size: 9.5px;
+}
+
+.usageRefreshBtn {
+  flex: none;
+  margin-left: auto;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.usageRefreshBtn:hover:not(:disabled) {
+  color: var(--txt);
+  border-color: var(--line2);
+}
+
+.usageRefreshBtn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 .backBtn {
   width: 24px;
   height: 24px;
@@ -104,6 +151,235 @@
   color: var(--acc);
 }
 
+/* ---- 3-column body: [file tree?] [timeline+composer] [diff?] ---- */
+.bodyRow {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.middleColumn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.sidePanel {
+  width: 280px;
+  flex: none;
+  min-width: 0;
+  overflow: auto;
+  border-left: 1px solid var(--line);
+  background: var(--bg2);
+}
+
+.filesSidePanel {
+  composes: sidePanel;
+  border-left: none;
+  border-right: 1px solid var(--line);
+}
+
+.resizeHandle {
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 5;
+}
+
+.resizeHandle:hover,
+.resizeHandle:active {
+  background: var(--acc);
+  opacity: 0.4;
+}
+
+/* ---- file tree rows (VS Code-style: chevrons, indent guides, file badges) ---- */
+.treeRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 10px 3px 6px;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font: 400 11px var(--font-mono);
+  color: var(--txt);
+}
+
+.treeRow:hover {
+  background: var(--panel2);
+}
+
+.treeChevron {
+  flex: none;
+  width: 12px;
+  text-align: center;
+  color: var(--dim);
+  font-size: 9px;
+}
+
+.indentGuide {
+  flex: none;
+  width: 12px;
+  align-self: stretch;
+  border-left: 1px solid var(--line);
+}
+
+.fileIconBadge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  font: 700 7.5px var(--font-mono);
+  letter-spacing: -0.02em;
+}
+
+/* ---- content panel: Diff / File tabs ---- */
+.contentTabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.contentTab {
+  font: 500 10px var(--font-mono);
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.contentTab:hover {
+  color: var(--txt);
+}
+
+.contentTabActive {
+  border-color: var(--acc);
+  background: var(--accD);
+  color: var(--acc);
+}
+
+.languageTag {
+  flex: none;
+  font: 500 9px var(--font-mono);
+  padding: 3px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--dim);
+}
+
+.fileContentPre {
+  flex: 1;
+  overflow: auto;
+  margin: 0;
+  font: 400 10.5px var(--font-mono);
+  line-height: 1.6;
+  color: var(--mut);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---- real line diff (used by the sidecar's Diff tab and the inline
+   timeline preview) ---- */
+.diffLines {
+  font: 400 10.5px var(--font-mono);
+  line-height: 1.6;
+}
+
+.diffLine {
+  display: flex;
+  gap: 8px;
+  padding: 0 8px;
+  white-space: pre-wrap;
+  color: var(--mut);
+}
+
+.diffLineNo {
+  flex: none;
+  width: 28px;
+  text-align: right;
+  color: var(--dim);
+  user-select: none;
+}
+
+.diffPrefix {
+  flex: none;
+  width: 8px;
+  user-select: none;
+}
+
+.diffText {
+  flex: 1;
+  min-width: 0;
+}
+
+.diffAdd {
+  background: var(--grnD);
+  color: var(--grn);
+}
+
+.diffRemove {
+  background: var(--redD);
+  color: var(--red);
+}
+
+.diffCollapsed {
+  padding: 2px 8px;
+  color: var(--dim);
+  font: 400 9.5px var(--font-mono);
+  text-align: center;
+}
+
+/* ---- inline edit block in the timeline (Claude Code console style: a
+   bullet header + a connected diff preview below) ---- */
+.bullet {
+  flex: none;
+  color: var(--grn);
+  font-size: 10px;
+}
+
+.editPath {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 500 11px var(--font-mono);
+  color: var(--txt);
+}
+
+.diffConnector {
+  margin-top: 6px;
+  padding-left: 14px;
+  border-left: 1px solid var(--line);
+}
+
+.viewFullDiffLink {
+  margin: 4px 0 0 8px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font: 500 10px var(--font-mono);
+  color: var(--acc);
+}
+
+.viewFullDiffLink:hover {
+  text-decoration: underline;
+}
+
 .timeline {
   flex: 1;
   overflow: auto;
@@ -118,6 +394,34 @@
   font: 400 12px var(--font-mono);
   text-align: center;
   padding: 24px 0;
+}
+
+.turnGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.blockHeadButton {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 5px;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.turnChevron {
+  flex: none;
+  width: 10px;
+  color: var(--dim);
+  font-size: 9px;
 }
 
 .block {
@@ -137,6 +441,14 @@
   letter-spacing: 0.1em;
   padding: 2px 6px;
   border-radius: 4px;
+}
+
+.usageTag {
+  font: 500 9px var(--font-mono);
+  color: var(--dim);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--panel2);
 }
 
 .time {

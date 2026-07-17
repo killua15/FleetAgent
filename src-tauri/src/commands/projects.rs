@@ -11,6 +11,7 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub path: String,
+    pub default_setup_command: Option<String>,
     pub created_at: String,
 }
 
@@ -26,6 +27,7 @@ fn row_to_project(row: &rusqlite::Row) -> rusqlite::Result<Project> {
         id: row.get("id")?,
         name: row.get("name")?,
         path: row.get("path")?,
+        default_setup_command: row.get("default_setup_command")?,
         created_at: row.get("created_at")?,
     })
 }

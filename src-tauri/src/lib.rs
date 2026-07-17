@@ -6,6 +6,7 @@ mod models;
 mod process_manager;
 mod providers;
 mod turn_runner;
+mod usage_scraper;
 
 use db::DbConnection;
 use login_manager::LoginRegistry;
@@ -13,6 +14,7 @@ use process_manager::ProcessRegistry;
 use std::sync::Mutex;
 use tauri::Manager;
 use turn_runner::TurnRegistry;
+use usage_scraper::UsageCache;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -25,6 +27,7 @@ pub fn run() {
             app.manage(ProcessRegistry::new());
             app.manage(LoginRegistry::new());
             app.manage(TurnRegistry::new());
+            app.manage(UsageCache::new());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -38,6 +41,7 @@ pub fn run() {
             commands::projects::list_projects,
             commands::projects::create_project,
             commands::sessions::start_session,
+            commands::sessions::create_subsession,
             commands::sessions::list_project_sessions,
             commands::sessions::list_workspace_sessions,
             commands::sessions::get_session_view,
@@ -46,6 +50,12 @@ pub fn run() {
             commands::sessions::stop_session,
             commands::sessions::delete_session,
             commands::sessions::list_session_blocks,
+            commands::sessions::list_file_edits,
+            commands::sessions::list_session_files,
+            commands::sessions::read_session_file,
+            commands::sessions::list_turn_usage,
+            commands::sessions::get_account_usage_summary,
+            usage_scraper::fetch_real_usage,
             commands::sessions::list_resumable_conversations,
             commands::sessions::set_session_resume_target,
             commands::attachments::save_attachment,

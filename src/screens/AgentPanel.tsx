@@ -1,24 +1,50 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { Highlight, themes } from 'prism-react-renderer';
 import { useNavigation } from '../nav/NavigationProvider';
+import { useTheme } from '../theme/ThemeProvider';
+import type { Account } from '../types/account';
 import {
   EFFORT_OPTIONS,
   MODE_LABEL,
+  type AccountUsageSummary,
   type BlockKind,
   type Effort,
+  type FileEdit,
+  type FileTreeNode,
   type ModelOption,
   type ResumableConversation,
   type SessionBlock,
   type SessionMode,
   type SessionStatus,
   type SessionView,
+  type TurnUsage,
 } from '../types/session';
 import { Button } from '../components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
 import { ConfirmDeleteDialog } from '../components/ConfirmDeleteDialog';
+import { CreateSubsessionDialog } from '../components/CreateSubsessionDialog';
+import { UsageBar } from '../components/UsageBar';
+import { severityOfBlock, type Severity } from '../lib/blockSeverity';
+import { diffLines, diffStats, type DiffLine } from '../lib/diffLines';
+import { fileIcon } from '../lib/fileIcon';
+import { FILE_STATUS_COLOR, FILE_STATUS_LABEL } from '../lib/fileStatus';
+import { languageFor } from '../lib/language';
+import { countSessionSubtree } from '../lib/sessionTree';
+import {
+  contextSeverity,
+  contextSeverityColor,
+  contextWindowFor,
+  formatTokenCount,
+  formatUsd,
+  sessionTokenBudgetFor,
+  weeklyTokenBudgetFor,
+} from '../lib/tokenBudget';
+import { groupBlocksIntoTurns } from '../lib/turns';
+import { useRealUsage } from '../lib/useRealUsage';
 import styles from './AgentPanel.module.css';
 
 interface Attachment {
@@ -29,6 +55,17 @@ interface Attachment {
 }
 
 const MODE_OPTIONS: SessionMode[] = ['plan', 'ask_edits', 'auto_edit', 'yolo'];
+
+const FILES_VIEW_WIDTH_KEY = 'fleet.filesViewWidth';
+const FILES_VIEW_WIDTH_DEFAULT = 280;
+const FILES_VIEW_WIDTH_MIN = 260;
+const FILES_VIEW_WIDTH_MAX = 900;
+
+function readStoredFilesViewWidth(): number {
+  const stored = Number(window.localStorage.getItem(FILES_VIEW_WIDTH_KEY));
+  if (Number.isFinite(stored) && stored >= FILES_VIEW_WIDTH_MIN && stored <= FILES_VIEW_WIDTH_MAX) return stored;
+  return FILES_VIEW_WIDTH_DEFAULT;
+}
 
 const TAG_STYLE: Record<BlockKind, { color: string; bg: string }> = {
   you: { color: 'var(--acc)', bg: 'var(--accD)' },
@@ -41,8 +78,16 @@ const TAG_STYLE: Record<BlockKind, { color: string; bg: string }> = {
   rev: { color: 'var(--acc)', bg: 'var(--accD)' },
 };
 
-function wrapStyle(kind: BlockKind): React.CSSProperties {
+const ERROR_TAG_STYLE = { color: 'var(--red)', bg: 'var(--redD)' };
+
+/** Severity overrides kind-based coloring only for the `error` case — "color
+ * = severity, not decoration": a `notable` (agent/sum) or `routine` block
+ * keeps exactly the styling it already had, since those aren't exceptions. */
+function wrapStyle(kind: BlockKind, severity: Severity): React.CSSProperties {
   const base: React.CSSProperties = { opacity: kind === 'think' ? 0.8 : 1, fontStyle: kind === 'think' ? 'italic' : 'normal' };
+  if (severity === 'error') {
+    return { ...base, background: 'var(--redD)', border: '1px solid var(--red)' };
+  }
   if (kind === 'you') {
     return { ...base, background: 'var(--panel)', border: '1px solid var(--line)' };
   }
@@ -50,7 +95,8 @@ function wrapStyle(kind: BlockKind): React.CSSProperties {
   return { ...base, background: 'transparent', border: '1px solid transparent', borderLeft };
 }
 
-function textColor(kind: BlockKind): string {
+function textColor(kind: BlockKind, severity: Severity): string {
+  if (severity === 'error') return 'var(--red)';
   if (kind === 'think') return 'var(--dim)';
   if (kind === 'you') return 'var(--txt)';
   return 'var(--mut)';
@@ -98,9 +144,12 @@ export function AgentPanelBody({
   closeTitle = 'Back to workspace grid',
   embedded = false,
 }: AgentPanelBodyProps) {
+  const { navigate } = useNavigation();
   const [session, setSession] = useState<SessionView | null>(null);
   const [blocks, setBlocks] = useState<SessionBlock[]>([]);
   const [models, setModels] = useState<ModelOption[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [allSessions, setAllSessions] = useState<SessionView[]>([]);
   const [showThinking, setShowThinking] = useState(true);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -110,12 +159,164 @@ export function AgentPanelBody({
   const [resumeOpen, setResumeOpen] = useState(false);
   const [resumeOptions, setResumeOptions] = useState<ResumableConversation[]>([]);
   const [loadingResume, setLoadingResume] = useState(false);
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [fileTree, setFileTree] = useState<FileTreeNode[]>([]);
+  const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(new Set());
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+  const [fileEdits, setFileEdits] = useState<FileEdit[]>([]);
+  const [fileContent, setFileContent] = useState<string | null>(null);
+  const [fileContentError, setFileContentError] = useState<string | null>(null);
+  const [contentTab, setContentTab] = useState<'diff' | 'file'>('diff');
+  const [allFileEdits, setAllFileEdits] = useState<FileEdit[]>([]);
+  const [allTurnUsage, setAllTurnUsage] = useState<TurnUsage[]>([]);
+  const [accountWeeklyUsage, setAccountWeeklyUsage] = useState<AccountUsageSummary | null>(null);
+  const [collapsedTurns, setCollapsedTurns] = useState<Set<string>>(new Set());
+  const [filesViewWidth, setFilesViewWidth] = useState(readStoredFilesViewWidth);
+  const lastSelectedFileRef = useRef<string | null>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
+
+  const startFilesViewResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = filesViewWidth;
+    document.body.style.userSelect = 'none';
+    const handleMove = (moveEvent: MouseEvent) => {
+      const next = startWidth - (moveEvent.clientX - startX);
+      setFilesViewWidth(Math.min(FILES_VIEW_WIDTH_MAX, Math.max(FILES_VIEW_WIDTH_MIN, next)));
+    };
+    const handleUp = () => {
+      document.body.style.userSelect = '';
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+      setFilesViewWidth((w) => {
+        window.localStorage.setItem(FILES_VIEW_WIDTH_KEY, String(w));
+        return w;
+      });
+    };
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+  };
 
   useEffect(() => {
     invoke<SessionView>('get_session_view', { sessionId }).then(setSession);
     invoke<SessionBlock[]>('list_session_blocks', { sessionId }).then(setBlocks);
   }, [sessionId]);
+
+  useEffect(() => {
+    invoke<Account[]>('list_accounts').then(setAccounts).catch(() => setAccounts([]));
+    invoke<SessionView[]>('list_workspace_sessions').then(setAllSessions).catch(() => setAllSessions([]));
+  }, []);
+
+  useEffect(() => {
+    if (!filesOpen) return;
+    invoke<FileTreeNode[]>('list_session_files', { sessionId }).then(setFileTree).catch(() => setFileTree([]));
+    // Re-fetch whenever new activity arrives — a new block usually means a
+    // tool ran, so the tree may have changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filesOpen, sessionId, blocks.length]);
+
+  useEffect(() => {
+    // Fetched unconditionally (not just when the sidecar is open) — the
+    // timeline's own inline diff previews need this regardless of whether
+    // the file explorer sidebar is toggled on.
+    invoke<FileEdit[]>('list_file_edits', { sessionId }).then(setAllFileEdits).catch(() => setAllFileEdits([]));
+  }, [sessionId, blocks.length]);
+
+  useEffect(() => {
+    invoke<TurnUsage[]>('list_turn_usage', { sessionId }).then(setAllTurnUsage).catch(() => setAllTurnUsage([]));
+  }, [sessionId, blocks.length]);
+
+  useEffect(() => {
+    if (!session) return;
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    invoke<AccountUsageSummary>('get_account_usage_summary', { accountId: session.accountId, sinceIso: sevenDaysAgo })
+      .then(setAccountWeeklyUsage)
+      .catch(() => setAccountWeeklyUsage(null));
+  }, [session?.accountId, blocks.length]);
+
+  const editsByBlockId = useMemo(() => {
+    const map = new Map<string, FileEdit[]>();
+    for (const edit of allFileEdits) {
+      if (!edit.blockId) continue;
+      const list = map.get(edit.blockId);
+      if (list) list.push(edit);
+      else map.set(edit.blockId, [edit]);
+    }
+    return map;
+  }, [allFileEdits]);
+
+  const usageByBlockId = useMemo(() => {
+    const map = new Map<string, TurnUsage>();
+    for (const usage of allTurnUsage) {
+      if (usage.blockId) map.set(usage.blockId, usage);
+    }
+    return map;
+  }, [allTurnUsage]);
+
+  const sessionUsage = useMemo(() => {
+    return allTurnUsage.reduce(
+      (acc, u) => ({
+        inputTokens: acc.inputTokens + u.inputTokens,
+        outputTokens: acc.outputTokens + u.outputTokens,
+        costUsd: acc.costUsd + (u.costUsd ?? 0),
+      }),
+      { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+    );
+  }, [allTurnUsage]);
+
+  const latestContextTokens = useMemo(() => {
+    const last = allTurnUsage[allTurnUsage.length - 1];
+    if (!last) return 0;
+    return last.inputTokens + (last.cacheReadTokens ?? 0) + (last.cacheCreationTokens ?? 0);
+  }, [allTurnUsage]);
+
+  const toggleTurnCollapsed = (turnId: string) => {
+    setCollapsedTurns((prev) => {
+      const next = new Set(prev);
+      if (next.has(turnId)) next.delete(turnId);
+      else next.add(turnId);
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    if (!selectedFilePath) return;
+    const filtered = allFileEdits.filter((e) => e.filePath === selectedFilePath || e.filePath.endsWith(`/${selectedFilePath}`));
+    setFileEdits(filtered);
+    // Only pick a default tab the moment a *different* file gets selected —
+    // a later refetch (triggered by new blocks arriving) shouldn't fight a
+    // tab the user already chose for the file they're looking at.
+    if (lastSelectedFileRef.current !== selectedFilePath) {
+      lastSelectedFileRef.current = selectedFilePath;
+      setContentTab(filtered.length > 0 ? 'diff' : 'file');
+    }
+  }, [selectedFilePath, allFileEdits]);
+
+  useEffect(() => {
+    if (!selectedFilePath) {
+      setFileContent(null);
+      setFileContentError(null);
+      return;
+    }
+    invoke<string>('read_session_file', { sessionId, path: selectedFilePath })
+      .then((content) => {
+        setFileContent(content);
+        setFileContentError(null);
+      })
+      .catch((e) => {
+        setFileContent(null);
+        setFileContentError(String(e));
+      });
+  }, [selectedFilePath, sessionId]);
+
+  const toggleCollapsed = (path: string) => {
+    setCollapsedPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (!session) return;
@@ -156,7 +357,12 @@ export function AgentPanelBody({
   }, [blocks, showThinking]);
 
   const visibleBlocks = useMemo(() => blocks.filter((b) => showThinking || b.kind !== 'think'), [blocks, showThinking]);
+  const turns = useMemo(() => groupBlocksIntoTurns(visibleBlocks), [visibleBlocks]);
+  const lastBlockId = visibleBlocks[visibleBlocks.length - 1]?.id;
   const isRunning = session?.status === 'running';
+  const account = accounts.find((a) => a.id === session?.accountId);
+  const isSubscriptionAccount = account?.billing === 'sub';
+  const realUsage = useRealUsage(isSubscriptionAccount ? account?.id : undefined, isSubscriptionAccount);
 
   const persistSettings = async (next: Partial<Pick<SessionView, 'model' | 'effort' | 'mode'>>) => {
     if (!session) return;
@@ -285,6 +491,119 @@ export function AgentPanelBody({
     }
   };
 
+  const blockTagInfo = (b: Pick<SessionBlock, 'kind'>, severity: Severity) => ({
+    label:
+      b.kind === 'you' ? 'YOU' : b.kind === 'think' ? 'THINKING' : b.kind === 'edit' ? 'EDIT' : b.kind === 'cmd' ? 'RUN' : b.kind === 'sum' ? 'CHILD SUMMARY' : b.kind === 'rev' ? 'REVIEW' : b.kind === 'agent' ? 'AGENT' : 'OUT',
+    prefix: severity === 'error' ? '⚠ ' : b.kind === 'cmd' ? '● ' : b.kind === 'out' ? '⎿ ' : '',
+  });
+
+  const renderBlock = (b: SessionBlock) => {
+    const severity = severityOfBlock(b);
+    const tagMeta = severity === 'error' ? ERROR_TAG_STYLE : TAG_STYLE[b.kind];
+    const isLast = b.id === lastBlockId;
+    const { label: tagLabel, prefix: tagPrefix } = blockTagInfo(b, severity);
+
+    const blockEdits = b.kind === 'edit' ? editsByBlockId.get(b.id) : undefined;
+    if (blockEdits && blockEdits.length > 0) {
+      const primary = blockEdits[0];
+      const stats = blockEdits.reduce(
+        (acc, e) => {
+          const s = diffStats(e.oldText, e.newText);
+          return { additions: acc.additions + s.additions, removals: acc.removals + s.removals };
+        },
+        { additions: 0, removals: 0 },
+      );
+      const icon = fileIcon(primary.filePath.split('/').pop() ?? primary.filePath);
+      const preview = diffLines(primary.oldText, primary.newText, 1);
+      const previewCap = 6;
+      const hasMore = preview.length > previewCap || blockEdits.length > 1;
+      return (
+        <div key={b.id} className={styles.block} style={wrapStyle(b.kind, severity)}>
+          <div className={styles.blockHead}>
+            <span className={styles.bullet}>●</span>
+            <span className={styles.fileIconBadge} style={{ color: icon.color }}>
+              {icon.letter}
+            </span>
+            <span className={styles.editPath}>{primary.filePath}</span>
+            {stats.additions > 0 && <span style={{ color: 'var(--grn)', font: '600 10px var(--font-mono)' }}>+{stats.additions}</span>}
+            {stats.removals > 0 && <span style={{ color: 'var(--red)', font: '600 10px var(--font-mono)' }}>-{stats.removals}</span>}
+            <span className={styles.time}>{formatTime(b.createdAt)}</span>
+            {isLast && isRunning && <span className={styles.liveDot} />}
+          </div>
+          <div className={styles.diffConnector}>
+            <DiffLinesView lines={preview.slice(0, previewCap)} />
+            {hasMore && (
+              <button
+                type="button"
+                className={styles.viewFullDiffLink}
+                onClick={() => {
+                  setFilesOpen(true);
+                  setSelectedFilePath(primary.filePath);
+                  setContentTab('diff');
+                }}
+              >
+                view full diff →
+              </button>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div key={b.id} className={styles.block} style={wrapStyle(b.kind, severity)}>
+        <div className={styles.blockHead}>
+          <span className={styles.tag} style={{ color: tagMeta.color, background: tagMeta.bg }}>
+            {tagPrefix}
+            {tagLabel}
+          </span>
+          <span className={styles.time}>{formatTime(b.createdAt)}</span>
+          {isLast && isRunning && <span className={styles.liveDot} />}
+        </div>
+        <div className={styles.blockText} style={{ color: textColor(b.kind, severity) }}>
+          {b.text}
+        </div>
+      </div>
+    );
+  };
+
+  /** The turn's leading block (normally 'you', the prompt) doubles as the
+   * accordion's header — clicking it collapses/expands everything else in
+   * the turn, and it carries the whole turn's token usage (summed across
+   * every block in it, since usage is recorded against the 'agent' block
+   * but reads most naturally attached to "the prompt that caused it"). */
+  const renderTurnHeader = (
+    b: SessionBlock,
+    opts: { collapsed: boolean; onToggle: () => void; turnUsage: { inputTokens: number; outputTokens: number } | null },
+  ) => {
+    const severity = severityOfBlock(b);
+    const tagMeta = severity === 'error' ? ERROR_TAG_STYLE : TAG_STYLE[b.kind];
+    const isLast = b.id === lastBlockId;
+    const { label: tagLabel, prefix: tagPrefix } = blockTagInfo(b, severity);
+    const { collapsed, onToggle, turnUsage } = opts;
+    return (
+      <div key={b.id} className={styles.block} style={wrapStyle(b.kind, severity)}>
+        <button type="button" className={styles.blockHeadButton} onClick={onToggle}>
+          <span className={styles.turnChevron}>{collapsed ? '▸' : '▾'}</span>
+          <span className={styles.tag} style={{ color: tagMeta.color, background: tagMeta.bg }}>
+            {tagPrefix}
+            {tagLabel}
+          </span>
+          {turnUsage && (turnUsage.inputTokens > 0 || turnUsage.outputTokens > 0) && (
+            <span className={styles.usageTag} title={`${turnUsage.inputTokens} in / ${turnUsage.outputTokens} out`}>
+              ↑{formatTokenCount(turnUsage.inputTokens)} ↓{formatTokenCount(turnUsage.outputTokens)}
+            </span>
+          )}
+          <span className={styles.time}>{formatTime(b.createdAt)}</span>
+          {isLast && isRunning && <span className={styles.liveDot} />}
+        </button>
+        <div className={styles.blockText} style={{ color: textColor(b.kind, severity) }}>
+          {b.text}
+        </div>
+      </div>
+    );
+  };
+
   if (!session) {
     return (
       <div className={styles.screen} style={embedded ? { height: '100%' } : undefined}>
@@ -307,6 +626,11 @@ export function AgentPanelBody({
         <span className={styles.title}>{session.name || session.projectName}</span>
         <span className={styles.projectTag}>{session.projectName}</span>
         <span className={styles.projectTag}>{session.status}</span>
+        {session.worktreeKind && (
+          <span className={styles.projectTag} title={session.worktreeBranch ?? undefined}>
+            {session.worktreeKind === 'linked' ? `⑃ ${session.worktreeBranch}` : '⑃ copy'}
+          </span>
+        )}
         <span className={styles.spacer} />
         <span className={styles.accountLabel} title="Account rotation lands in a later phase">
           {session.accountName}
@@ -364,6 +688,28 @@ export function AgentPanelBody({
         >
           ↻ resume
         </Button>
+        <Button
+          variant="outline"
+          className={`${styles.thinkingBtn} ${filesOpen ? styles.on : ''}`}
+          onClick={() => setFilesOpen((v) => !v)}
+          title="Toggle the file explorer sidebar"
+        >
+          ⌂ files
+        </Button>
+        <CreateSubsessionDialog
+          trigger={
+            <Button
+              variant="outline"
+              className={styles.thinkingBtn}
+              title="Branch this session into a subsession working in its own worktree"
+            >
+              + subsession
+            </Button>
+          }
+          parentSession={session}
+          accounts={accounts}
+          onCreated={(created) => navigate('agent-panel', { sessionId: created.id })}
+        />
         {isRunning && (
           <Button
             variant="destructive"
@@ -382,10 +728,95 @@ export function AgentPanelBody({
             </Button>
           }
           title="Delete this session?"
-          description="This removes the session and its full transcript. This cannot be undone."
+          description={(() => {
+            const descendantCount = countSessionSubtree(allSessions, session.id);
+            return descendantCount > 0
+              ? `This also removes ${descendantCount} subsession${descendantCount === 1 ? '' : 's'} and their worktree folders, plus this session's own transcript. This cannot be undone.`
+              : "This removes the session and its full transcript. This cannot be undone.";
+          })()}
           onConfirm={handleDelete}
         />
       </div>
+
+      {(() => {
+        // Prefer real numbers scraped from Claude Code's own `/usage` when
+        // we have them (see src-tauri/src/usage_scraper.rs) — fall back to
+        // Fleet's own token-based estimate for any field that's null
+        // (couldn't be parsed) or while the scrape is still pending, so the
+        // bars never go blank or block on a slow background fetch.
+        const real = realUsage.stats;
+
+        const estimatedContextPct = (latestContextTokens / contextWindowFor(session.provider)) * 100;
+        const contextPct = real?.contextPct ?? estimatedContextPct;
+        const contextIsReal = real?.contextPct != null;
+        const contextColor = contextSeverityColor(contextSeverity(contextPct));
+
+        const sessionTotal = sessionUsage.inputTokens + sessionUsage.outputTokens;
+        const estimatedSessionPct = (sessionTotal / sessionTokenBudgetFor(session.provider)) * 100;
+        const sessionPct = real?.sessionPct ?? estimatedSessionPct;
+        const sessionIsReal = real?.sessionPct != null;
+
+        const weeklyTotal = accountWeeklyUsage ? accountWeeklyUsage.inputTokens + accountWeeklyUsage.outputTokens : 0;
+        const estimatedWeeklyPct = (weeklyTotal / weeklyTokenBudgetFor(session.provider)) * 100;
+        const weeklyPct = real?.weeklyPct ?? estimatedWeeklyPct;
+        const weeklyIsReal = real?.weeklyPct != null;
+
+        return (
+          <div className={styles.statusLine}>
+            <UsageBar
+              pct={contextPct}
+              color={contextColor}
+              label={`${Math.min(100, contextPct).toFixed(0)}% context`}
+              title={contextIsReal ? '/usage — real context usage' : `~${formatTokenCount(latestContextTokens)} tokens of context used (estimate)`}
+            />
+            <span className={styles.statusLineDivider}>·</span>
+            {isSubscriptionAccount ? (
+              <UsageBar
+                pct={sessionPct}
+                color={contextSeverityColor(contextSeverity(sessionPct))}
+                label={`${Math.min(100, sessionPct).toFixed(0)}% session`}
+                title={
+                  sessionIsReal
+                    ? '/usage — real session usage'
+                    : `↑${formatTokenCount(sessionUsage.inputTokens)} ↓${formatTokenCount(sessionUsage.outputTokens)} tokens this session — against an estimated budget, not a real provider limit`
+                }
+              />
+            ) : (
+              <span className={styles.statusLineText}>{formatUsd(sessionUsage.costUsd)} session</span>
+            )}
+            {(accountWeeklyUsage || weeklyIsReal) && (
+              <>
+                <span className={styles.statusLineDivider}>·</span>
+                {isSubscriptionAccount ? (
+                  <UsageBar
+                    pct={weeklyPct}
+                    color={contextSeverityColor(contextSeverity(weeklyPct))}
+                    label={`${Math.min(100, weeklyPct).toFixed(0)}% / 7d`}
+                    title={
+                      weeklyIsReal
+                        ? '/usage — real weekly usage'
+                        : `↑${formatTokenCount(accountWeeklyUsage?.inputTokens ?? 0)} ↓${formatTokenCount(accountWeeklyUsage?.outputTokens ?? 0)} tokens this week — against an estimated budget, not a real provider quota`
+                    }
+                  />
+                ) : (
+                  <span className={styles.statusLineText}>{formatUsd(accountWeeklyUsage?.costUsd ?? 0)} / 7d</span>
+                )}
+              </>
+            )}
+            {isSubscriptionAccount && (
+              <button
+                type="button"
+                className={styles.usageRefreshBtn}
+                onClick={() => realUsage.refresh()}
+                disabled={realUsage.loading}
+                title="Re-check real /usage — spawns Claude Code interactively, takes a few seconds"
+              >
+                {realUsage.loading ? '…' : '↻'}
+              </button>
+            )}
+          </div>
+        );
+      })()}
 
       <Dialog open={resumeOpen} onOpenChange={setResumeOpen}>
         <DialogContent className="sm:max-w-md">
@@ -430,23 +861,31 @@ export function AgentPanelBody({
         </DialogContent>
       </Dialog>
 
+      <div className={styles.bodyRow}>
+        {filesOpen && (
+          <FileTreePanel
+            nodes={fileTree}
+            selectedPath={selectedFilePath}
+            collapsedPaths={collapsedPaths}
+            onToggleCollapsed={toggleCollapsed}
+            onSelectFile={setSelectedFilePath}
+          />
+        )}
+        <div className={styles.middleColumn}>
       <div className={styles.timeline} ref={timelineRef}>
         {visibleBlocks.length === 0 && <div className={styles.empty}>no messages yet — say something below</div>}
-        {visibleBlocks.map((b, i) => {
-          const tagMeta = TAG_STYLE[b.kind];
-          const isLast = i === visibleBlocks.length - 1;
+        {turns.map((turn) => {
+          const collapsed = collapsedTurns.has(turn.id);
+          const [header, ...rest] = turn.blocks;
+          const turnUsage = rest.reduce<{ inputTokens: number; outputTokens: number } | null>((acc, b) => {
+            const u = usageByBlockId.get(b.id);
+            if (!u) return acc;
+            return { inputTokens: (acc?.inputTokens ?? 0) + u.inputTokens, outputTokens: (acc?.outputTokens ?? 0) + u.outputTokens };
+          }, null);
           return (
-            <div key={b.id} className={styles.block} style={wrapStyle(b.kind)}>
-              <div className={styles.blockHead}>
-                <span className={styles.tag} style={{ color: tagMeta.color, background: tagMeta.bg }}>
-                  {b.kind === 'you' ? 'YOU' : b.kind === 'think' ? 'THINKING' : b.kind === 'edit' ? 'EDIT' : b.kind === 'cmd' ? 'RUN' : b.kind === 'sum' ? 'CHILD SUMMARY' : b.kind === 'rev' ? 'REVIEW' : b.kind === 'agent' ? 'AGENT' : 'OUT'}
-                </span>
-                <span className={styles.time}>{formatTime(b.createdAt)}</span>
-                {isLast && isRunning && <span className={styles.liveDot} />}
-              </div>
-              <div className={styles.blockText} style={{ color: textColor(b.kind) }}>
-                {b.text}
-              </div>
+            <div key={turn.id} className={styles.turnGroup}>
+              {header && renderTurnHeader(header, { collapsed, onToggle: () => toggleTurnCollapsed(turn.id), turnUsage })}
+              {!collapsed && rest.map((b) => renderBlock(b))}
             </div>
           );
         })}
@@ -520,6 +959,256 @@ export function AgentPanelBody({
           </Button>
         </div>
       </div>
+        </div>
+        {filesOpen && (
+          <ContentPanel
+            filePath={selectedFilePath}
+            edits={fileEdits}
+            content={fileContent}
+            contentError={fileContentError}
+            activeTab={contentTab}
+            onTabChange={setContentTab}
+            width={filesViewWidth}
+            onResizeStart={startFilesViewResize}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FileTreeRows({
+  nodes,
+  selectedPath,
+  collapsedPaths,
+  onToggleCollapsed,
+  onSelectFile,
+  depth = 0,
+}: {
+  nodes: FileTreeNode[];
+  selectedPath: string | null;
+  collapsedPaths: Set<string>;
+  onToggleCollapsed: (path: string) => void;
+  onSelectFile: (path: string) => void;
+  depth?: number;
+}) {
+  return (
+    <>
+      {nodes.map((node) => {
+        const isCollapsed = node.isDir && collapsedPaths.has(node.path);
+        const icon = node.isDir ? null : fileIcon(node.name);
+        return (
+          <div key={node.path}>
+            <button
+              type="button"
+              className={styles.treeRow}
+              onClick={() => (node.isDir ? onToggleCollapsed(node.path) : onSelectFile(node.path))}
+              title={node.status ? `${node.path} — ${FILE_STATUS_LABEL[node.status]}` : node.path}
+              style={{ background: selectedPath === node.path ? 'var(--panel2)' : 'none' }}
+            >
+              {Array.from({ length: depth }).map((_, i) => (
+                <span key={i} className={styles.indentGuide} />
+              ))}
+              {node.isDir ? (
+                <span className={styles.treeChevron}>{isCollapsed ? '▸' : '▾'}</span>
+              ) : (
+                <span className={styles.fileIconBadge} style={{ color: icon!.color }}>
+                  {icon!.letter}
+                </span>
+              )}
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, color: node.isDir ? 'var(--mut)' : 'var(--txt)' }}>
+                {node.name}
+              </span>
+              {!node.isDir && node.status && (
+                <span
+                  style={{ width: 6, height: 6, borderRadius: '50%', flex: 'none', background: FILE_STATUS_COLOR[node.status] }}
+                />
+              )}
+            </button>
+            {node.isDir && !isCollapsed && node.children.length > 0 && (
+              <FileTreeRows
+                nodes={node.children}
+                selectedPath={selectedPath}
+                collapsedPaths={collapsedPaths}
+                onToggleCollapsed={onToggleCollapsed}
+                onSelectFile={onSelectFile}
+                depth={depth + 1}
+              />
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function FileTreePanel({
+  nodes,
+  selectedPath,
+  collapsedPaths,
+  onToggleCollapsed,
+  onSelectFile,
+}: {
+  nodes: FileTreeNode[];
+  selectedPath: string | null;
+  collapsedPaths: Set<string>;
+  onToggleCollapsed: (path: string) => void;
+  onSelectFile: (path: string) => void;
+}) {
+  return (
+    <div className={`${styles.sidePanel} ${styles.filesSidePanel}`}>
+      <div style={{ padding: '10px 10px 4px', font: '600 9.5px var(--font-mono)', letterSpacing: '0.12em', color: 'var(--dim)' }}>
+        EXPLORER
+      </div>
+      {nodes.length === 0 ? (
+        <div style={{ padding: 10, font: '400 11px var(--font-mono)', color: 'var(--dim)' }}>no files</div>
+      ) : (
+        <FileTreeRows
+          nodes={nodes}
+          selectedPath={selectedPath}
+          collapsedPaths={collapsedPaths}
+          onToggleCollapsed={onToggleCollapsed}
+          onSelectFile={onSelectFile}
+        />
+      )}
+    </div>
+  );
+}
+
+function DiffLinesView({ lines }: { lines: DiffLine[] }) {
+  return (
+    <div className={styles.diffLines}>
+      {lines.map((line, i) => {
+        if (line.type === 'collapsed') {
+          return (
+            <div key={`collapsed-${i}`} className={styles.diffCollapsed}>
+              ⋯ {line.count} unchanged line{line.count === 1 ? '' : 's'} ⋯
+            </div>
+          );
+        }
+        const lineNo = line.type === 'remove' ? line.oldLine : line.newLine;
+        const prefix = line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' ';
+        return (
+          <div
+            key={i}
+            className={`${styles.diffLine} ${line.type === 'add' ? styles.diffAdd : line.type === 'remove' ? styles.diffRemove : ''}`}
+          >
+            <span className={styles.diffLineNo}>{lineNo}</span>
+            <span className={styles.diffPrefix}>{prefix}</span>
+            <span className={styles.diffText}>{line.text}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Read-only syntax-highlighted file view — line-numbered the same way
+ * `DiffLinesView` numbers diff lines, for visual consistency between the
+ * Diff and File tabs. Falls back to a plain (unhighlighted) grammar for
+ * extensions Prism's bundled build doesn't ship, rather than erroring. */
+function HighlightedFile({ code, prismLanguage }: { code: string; prismLanguage: string }) {
+  const { theme } = useTheme();
+  return (
+    <Highlight theme={theme === 'light' ? themes.vsLight : themes.vsDark} code={code} language={prismLanguage}>
+      {({ tokens, getTokenProps }) => (
+        <div className={styles.fileContentPre}>
+          {tokens.map((line, i) => (
+            <div key={i} className={styles.diffLine}>
+              <span className={styles.diffLineNo}>{i + 1}</span>
+              <span className={styles.diffPrefix} />
+              <span className={styles.diffText}>
+                {line.map((token, key) => (
+                  <span key={key} {...getTokenProps({ token })} />
+                ))}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Highlight>
+  );
+}
+
+function ContentPanel({
+  filePath,
+  edits,
+  content,
+  contentError,
+  activeTab,
+  onTabChange,
+  width,
+  onResizeStart,
+}: {
+  filePath: string | null;
+  edits: FileEdit[];
+  content: string | null;
+  contentError: string | null;
+  activeTab: 'diff' | 'file';
+  onTabChange: (tab: 'diff' | 'file') => void;
+  width: number;
+  onResizeStart: (e: React.MouseEvent) => void;
+}) {
+  const language = filePath ? languageFor(filePath.split('/').pop() ?? filePath) : null;
+  return (
+    <div className={styles.sidePanel} style={{ width, padding: 10, display: 'flex', flexDirection: 'column', position: 'relative' }}>
+      <div
+        className={styles.resizeHandle}
+        onMouseDown={onResizeStart}
+        title="Drag to resize"
+      />
+      <div style={{ font: '600 9.5px var(--font-mono)', letterSpacing: '0.12em', color: 'var(--dim)', marginBottom: 8 }}>
+        FILE VIEW
+      </div>
+      {!filePath && <div style={{ font: '400 11px var(--font-mono)', color: 'var(--dim)' }}>select a file to view it</div>}
+      {filePath && (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <span style={{ font: '600 11px var(--font-mono)', color: 'var(--txt)', wordBreak: 'break-all', flex: 1 }}>
+              {filePath}
+            </span>
+            {language && <span className={styles.languageTag}>{language.name}</span>}
+          </div>
+          {edits.length > 0 && (
+            <div className={styles.contentTabs}>
+              <button
+                type="button"
+                className={`${styles.contentTab} ${activeTab === 'diff' ? styles.contentTabActive : ''}`}
+                onClick={() => onTabChange('diff')}
+              >
+                Diff
+              </button>
+              <button
+                type="button"
+                className={`${styles.contentTab} ${activeTab === 'file' ? styles.contentTabActive : ''}`}
+                onClick={() => onTabChange('file')}
+              >
+                File
+              </button>
+            </div>
+          )}
+          {(edits.length === 0 || activeTab === 'file') &&
+            (contentError ? (
+              <div style={{ font: '400 11px var(--font-mono)', color: 'var(--dim)' }}>{contentError}</div>
+            ) : content === null ? (
+              <div style={{ font: '400 11px var(--font-mono)', color: 'var(--dim)' }}>loading…</div>
+            ) : (
+              <HighlightedFile code={content} prismLanguage={language?.prism ?? 'text'} />
+            ))}
+          {edits.length > 0 && activeTab === 'diff' && (
+            <div style={{ overflow: 'auto' }}>
+              {edits.map((edit) => (
+                <div key={edit.id} style={{ marginBottom: 12, border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
+                  <div style={{ padding: '4px 8px', background: 'var(--panel2)', font: '500 9.5px var(--font-mono)', color: 'var(--dim)' }}>
+                    {edit.toolName} · {formatTime(edit.createdAt)}
+                  </div>
+                  <DiffLinesView lines={diffLines(edit.oldText, edit.newText)} />
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

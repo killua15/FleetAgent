@@ -26,5 +26,11 @@ dist-ssr
 # Rust build artifacts
 src-tauri/target
 
-# Local Claude Code permissions (machine-specific paths/account IDs)
-.claude/settings.local.json
+# Local Claude Code runtime state (machine-specific permissions, task locks)
+.claude/
+
+# Fleet subsession worktrees
+.fleet/
+
+# TypeScript incremental build cache
+*.tsbuildinfo

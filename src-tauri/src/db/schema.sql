@@ -16,10 +16,14 @@ CREATE TABLE IF NOT EXISTS accounts (
 );
 
 CREATE TABLE IF NOT EXISTS projects (
-  id         TEXT PRIMARY KEY,
-  name       TEXT NOT NULL,
-  path       TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  id                     TEXT PRIMARY KEY,
+  name                   TEXT NOT NULL,
+  path                   TEXT NOT NULL,
+  -- Last "setup command" used when creating a subsession worktree for this
+  -- project (e.g. `npm install`), remembered so the next subsession dialog
+  -- can default to it instead of starting blank every time.
+  default_setup_command  TEXT,
+  created_at             TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS project_allowed_accounts (
@@ -84,6 +88,19 @@ CREATE TABLE IF NOT EXISTS sessions (
   name               TEXT NOT NULL DEFAULT '',
   project_id         TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   node_id            TEXT REFERENCES agent_nodes(id) ON DELETE SET NULL,
+  -- Subsessions: a session branched off another to work in parallel on the
+  -- same project via its own git worktree (or copied folder). CASCADE so
+  -- deleting a session takes its whole subsession subtree with it.
+  parent_session_id  TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+  -- Absolute path of the subsession's isolated working directory, NULL for
+  -- an ordinary (non-branched) session.
+  worktree_path      TEXT,
+  -- Branch git created for it — only set when worktree_kind = 'linked'.
+  worktree_branch    TEXT,
+  -- 'linked' = real `git worktree` off the project's existing repo.
+  -- 'copy'   = project had no git repo, so the folder was copied and
+  --            `git init`-ed fresh instead (no shared history).
+  worktree_kind      TEXT CHECK (worktree_kind IN ('linked','copy')),
   -- CASCADE (not RESTRICT): deleting an account must delete its sessions
   -- too, rather than blocking the account delete outright.
   account_id         TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -116,7 +133,42 @@ CREATE TABLE IF NOT EXISTS git_checkpoints (
   created_at  TEXT NOT NULL
 );
 
+-- Captures the real before/after content of an Edit/Write/MultiEdit tool call
+-- (turn_runner's parsed session_blocks only keep a human-readable "Edit path"
+-- summary, deliberately dropping the raw diff) so a later diff view has
+-- something real to render instead of just the file path that changed.
+CREATE TABLE IF NOT EXISTS file_edits (
+  id         TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  block_id   TEXT REFERENCES session_blocks(id) ON DELETE SET NULL,
+  file_path  TEXT NOT NULL,
+  tool_name  TEXT NOT NULL,
+  old_text   TEXT,
+  new_text   TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS turn_usage (
+  id                    TEXT PRIMARY KEY,
+  session_id            TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  block_id              TEXT REFERENCES session_blocks(id) ON DELETE SET NULL,
+  input_tokens          INTEGER NOT NULL,
+  output_tokens         INTEGER NOT NULL,
+  cache_read_tokens     INTEGER,
+  cache_creation_tokens INTEGER,
+  cost_usd              REAL,
+  created_at            TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id);
+-- idx_sessions_parent is created in db::run_migrations instead of here: on an
+-- existing database, CREATE TABLE IF NOT EXISTS above is a no-op that does
+-- NOT retroactively add parent_session_id, so creating this index here
+-- unconditionally would crash startup for any pre-existing install (the
+-- ALTER TABLE ADD COLUMN migrations that add the column only run after this
+-- whole schema batch succeeds).
 CREATE INDEX IF NOT EXISTS idx_session_blocks_session ON session_blocks(session_id);
 CREATE INDEX IF NOT EXISTS idx_agent_nodes_project ON agent_nodes(project_id);
 CREATE INDEX IF NOT EXISTS idx_agent_nodes_parent ON agent_nodes(parent_id);
+CREATE INDEX IF NOT EXISTS idx_file_edits_session ON file_edits(session_id);
+CREATE INDEX IF NOT EXISTS idx_turn_usage_session ON turn_usage(session_id);

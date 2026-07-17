@@ -30,6 +30,12 @@ fn run_migrations(conn: &Connection) {
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN provider_session_id TEXT;");
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT '';");
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN effort TEXT NOT NULL DEFAULT 'high';");
+    let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE;");
+    let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN worktree_path TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN worktree_branch TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN worktree_kind TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE projects ADD COLUMN default_setup_command TEXT;");
+    let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);");
     migrate_sessions_account_fk_to_cascade(conn);
     repair_dangling_sessions_fk(conn);
 }
@@ -130,10 +136,10 @@ fn migrate_sessions_account_fk_to_cascade(conn: &Connection) {
         return;
     }
 
-    // The ADD COLUMN migrations for name/effort/provider_session_id already
-    // ran (see run_migrations) by the time this executes, so the old table
-    // being rebuilt here already has them — carry them over rather than
-    // silently dropping that data.
+    // The ADD COLUMN migrations for name/effort/provider_session_id/
+    // parent_session_id/worktree_* already ran (see run_migrations) by the
+    // time this executes, so the old table being rebuilt here already has
+    // them — carry them over rather than silently dropping that data.
     // PRAGMAs are no-ops inside a transaction, so these run outside the
     // BEGIN/COMMIT that does the actual table rebuild.
     let _ = conn.execute_batch("PRAGMA foreign_keys=OFF;");
@@ -145,6 +151,10 @@ fn migrate_sessions_account_fk_to_cascade(conn: &Connection) {
            name                 TEXT NOT NULL DEFAULT '',
            project_id           TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
            node_id              TEXT REFERENCES agent_nodes(id) ON DELETE SET NULL,
+           parent_session_id    TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+           worktree_path        TEXT,
+           worktree_branch      TEXT,
+           worktree_kind        TEXT CHECK (worktree_kind IN ('linked','copy')),
            account_id           TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
            model                TEXT NOT NULL,
            effort               TEXT NOT NULL DEFAULT 'high' CHECK (effort IN ('low','medium','high','xhigh','max')),
@@ -155,11 +165,12 @@ fn migrate_sessions_account_fk_to_cascade(conn: &Connection) {
            started_at           TEXT NOT NULL,
            ended_at             TEXT
          );
-         INSERT INTO sessions (id, name, project_id, node_id, account_id, model, effort, mode, status, pid, provider_session_id, started_at, ended_at)
-           SELECT id, name, project_id, node_id, account_id, model, effort, mode, status, pid, provider_session_id, started_at, ended_at
+         INSERT INTO sessions (id, name, project_id, node_id, parent_session_id, worktree_path, worktree_branch, worktree_kind, account_id, model, effort, mode, status, pid, provider_session_id, started_at, ended_at)
+           SELECT id, name, project_id, node_id, parent_session_id, worktree_path, worktree_branch, worktree_kind, account_id, model, effort, mode, status, pid, provider_session_id, started_at, ended_at
            FROM sessions_old_fk_migration;
          DROP TABLE sessions_old_fk_migration;
          CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id);
+         CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
          COMMIT;",
     );
     if let Err(e) = result {
@@ -172,6 +183,76 @@ fn migrate_sessions_account_fk_to_cascade(conn: &Connection) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reproduces a real production crash: an existing database created
+    /// before the subsession/worktree columns existed. `CREATE TABLE IF NOT
+    /// EXISTS` in schema.sql is a no-op against that pre-existing table, so
+    /// any unconditional `CREATE INDEX ... ON sessions(parent_session_id)`
+    /// left directly in schema.sql (rather than in `run_migrations`, after
+    /// the `ALTER TABLE ADD COLUMN` that actually adds the column) crashes
+    /// `conn.execute_batch(SCHEMA)` on every subsequent app launch. This
+    /// drives the exact call sequence `init` uses — `execute_batch(SCHEMA)`
+    /// then `run_migrations` — against a hand-built old-shape database.
+    #[test]
+    fn execute_batch_schema_does_not_crash_on_a_pre_subsession_database() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+
+        // The exact `sessions`/`projects` shape from before parent_session_id/
+        // worktree_*/default_setup_command existed.
+        conn.execute_batch(
+            "CREATE TABLE projects (
+               id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL
+             );
+             CREATE TABLE accounts (
+               id TEXT PRIMARY KEY, provider TEXT NOT NULL, billing TEXT NOT NULL, name TEXT NOT NULL,
+               scope TEXT NOT NULL, plan_label TEXT NOT NULL DEFAULT '', config_dir_path TEXT NOT NULL,
+               credential_ref TEXT NOT NULL, monthly_cap REAL, status TEXT NOT NULL DEFAULT 'healthy',
+               created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+             );
+             CREATE TABLE sessions (
+               id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '',
+               project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+               account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+               model TEXT NOT NULL, effort TEXT NOT NULL DEFAULT 'high',
+               mode TEXT NOT NULL DEFAULT 'ask_edits', status TEXT NOT NULL DEFAULT 'waiting',
+               pid INTEGER, provider_session_id TEXT, started_at TEXT NOT NULL, ended_at TEXT
+             );",
+        )
+        .unwrap();
+
+        // This must NOT panic — this is the exact call `db::init` makes.
+        conn.execute_batch(SCHEMA).expect("schema batch must succeed against a pre-existing old-shape database");
+        run_migrations(&conn);
+
+        let sessions_sql: String = conn
+            .query_row("SELECT sql FROM sqlite_master WHERE name='sessions'", [], |r| r.get(0))
+            .unwrap();
+        assert!(sessions_sql.contains("parent_session_id"), "parent_session_id must exist after migration");
+        assert!(sessions_sql.contains("worktree_path"), "worktree_path must exist after migration");
+
+        let projects_sql: String = conn
+            .query_row("SELECT sql FROM sqlite_master WHERE name='projects'", [], |r| r.get(0))
+            .unwrap();
+        assert!(projects_sql.contains("default_setup_command"), "default_setup_command must exist after migration");
+
+        // The index migration itself must have actually run and be usable.
+        conn.execute(
+            "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, status, created_at, updated_at)
+             VALUES ('acc1','claude','sub','Test','work','','','acc1','healthy','now','now')",
+            [],
+        ).unwrap();
+        conn.execute("INSERT INTO projects (id, name, path, created_at) VALUES ('proj1','Test','/tmp','now')", []).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, project_id, account_id, model, effort, mode, status, started_at)
+             VALUES ('sess1','proj1','acc1','opus','high','ask_edits','waiting','now')",
+            [],
+        ).unwrap();
+        let found: String = conn
+            .query_row("SELECT id FROM sessions WHERE parent_session_id IS NULL AND id = 'sess1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(found, "sess1");
+    }
 
     /// Rebuilds the exact scenario that shipped in early dev databases: a
     /// `sessions` table with the old `ON DELETE RESTRICT`, holding a real
@@ -225,9 +306,13 @@ mod tests {
 
         // run_migrations always adds these via ALTER TABLE before the FK
         // rebuild runs — mirror that ordering so the rebuild has real
-        // name/effort columns to carry over, same as in production.
+        // name/effort/parent/worktree columns to carry over, same as in production.
         conn.execute_batch("ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT '';").unwrap();
         conn.execute_batch("ALTER TABLE sessions ADD COLUMN effort TEXT NOT NULL DEFAULT 'high';").unwrap();
+        conn.execute_batch("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE;").unwrap();
+        conn.execute_batch("ALTER TABLE sessions ADD COLUMN worktree_path TEXT;").unwrap();
+        conn.execute_batch("ALTER TABLE sessions ADD COLUMN worktree_branch TEXT;").unwrap();
+        conn.execute_batch("ALTER TABLE sessions ADD COLUMN worktree_kind TEXT;").unwrap();
         conn.execute("UPDATE sessions SET name = 'my-session' WHERE id = 'sess1'", []).unwrap();
 
         migrate_sessions_account_fk_to_cascade(&conn);

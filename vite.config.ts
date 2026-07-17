@@ -33,7 +33,13 @@ export default defineConfig(async () => ({
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // 4. and `.fleet/worktrees` — subsession worktrees/copies Fleet itself
+      //    creates under a managed project's own directory. When Fleet is
+      //    used on its own repo (dogfooding), those worktrees land inside
+      //    this very project tree; without this, creating/updating a
+      //    subsession looks like a source change and triggers a full page
+      //    reload of the whole app.
+      ignored: ["**/src-tauri/**", "**/.fleet/**"],
     },
   },
 }));

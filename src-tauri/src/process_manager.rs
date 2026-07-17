@@ -35,8 +35,10 @@ pub struct AccountExhaustedEvent {
 /// Shared by process_manager (raw PTY output) and turn_runner (structured
 /// stream-json turns) so both paths persist/broadcast blocks identically.
 /// Generic over `Runtime` so tests can drive it with `tauri::test::mock_app()`
-/// instead of only the real Wry-backed app.
-pub(crate) fn emit_block<R: Runtime>(app: &AppHandle<R>, session_id: &str, kind: &str, text: &str) {
+/// instead of only the real Wry-backed app. Returns the persisted block's id
+/// so callers that produced it from a tool-use event (turn_runner) can link
+/// a `file_edits` row back to the exact block that caused it.
+pub(crate) fn emit_block<R: Runtime>(app: &AppHandle<R>, session_id: &str, kind: &str, text: &str) -> String {
     let event = SessionOutputEvent {
         session_id: session_id.to_string(),
         kind: kind.to_string(),
@@ -44,18 +46,13 @@ pub(crate) fn emit_block<R: Runtime>(app: &AppHandle<R>, session_id: &str, kind:
     };
     let _ = app.emit("session-output", event);
 
+    let block_id = Uuid::new_v4().to_string();
     match app.try_state::<DbConnection>() {
         Some(db) => match db.0.lock() {
             Ok(conn) => {
                 if let Err(e) = conn.execute(
                     "INSERT INTO session_blocks (id, session_id, kind, text, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![
-                        Uuid::new_v4().to_string(),
-                        session_id,
-                        kind,
-                        text,
-                        chrono::Utc::now().to_rfc3339()
-                    ],
+                    params![block_id, session_id, kind, text, chrono::Utc::now().to_rfc3339()],
                 ) {
                     eprintln!("emit_block: failed to persist block for session {session_id}: {e}");
                 }
@@ -64,6 +61,7 @@ pub(crate) fn emit_block<R: Runtime>(app: &AppHandle<R>, session_id: &str, kind:
         },
         None => eprintln!("emit_block: DbConnection not managed yet, block for session {session_id} lost"),
     }
+    block_id
 }
 
 pub(crate) fn mark_session_status<R: Runtime>(app: &AppHandle<R>, session_id: &str, status: &str) {
@@ -198,7 +196,7 @@ fn handle_line(app: &AppHandle, session_id: &str, provider: &str, account_id: &s
     }
 }
 
-pub fn kill(app: &AppHandle, session_id: &str) -> Result<(), String> {
+pub fn kill<R: Runtime>(app: &AppHandle<R>, session_id: &str) -> Result<(), String> {
     let state = app.state::<ProcessRegistry>();
     let mut registry = state.0.lock().map_err(|e| e.to_string())?;
     if let Some(mut child) = registry.remove(session_id) {

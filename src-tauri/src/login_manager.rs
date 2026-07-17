@@ -64,8 +64,10 @@ pub fn pending_dir(app: &AppHandle, login_id: &str) -> Result<std::path::PathBuf
 
 /// Full parent environment plus an isolated `CLAUDE_CONFIG_DIR` and a sane
 /// `TERM`, so the CLI renders and can find its own helpers regardless of how
-/// Fleet itself was launched.
-fn login_env(config_dir: &str) -> Vec<(String, String)> {
+/// Fleet itself was launched. `pub(crate)` so `usage_scraper` (another
+/// interactive-PTY consumer of the same CLI) can reuse it instead of
+/// duplicating the same env-assembly logic.
+pub(crate) fn login_env(config_dir: &str) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = std::env::vars().collect();
     env.retain(|(k, _)| k != "CLAUDE_CONFIG_DIR");
     env.push(("CLAUDE_CONFIG_DIR".to_string(), config_dir.to_string()));

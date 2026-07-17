@@ -204,11 +204,47 @@ pub struct ParsedBlock {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+// `PartialEq` only (not `Eq`) — `turn_usage.cost_usd` is an `f64`, which has
+// no total ordering/equality in Rust and can't derive `Eq`.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct LineOutcome {
     pub blocks: Vec<ParsedBlock>,
     pub provider_session_id: Option<String>,
     pub exhausted: bool,
+    pub file_edits: Vec<FileEditCapture>,
+    pub turn_usage: Option<TurnUsageCapture>,
+}
+
+/// The real before/after content of one Edit/Write/MultiEdit tool call —
+/// captured separately from `ParsedBlock` (which only keeps a human-readable
+/// "Edit path" summary for the timeline) so a diff view has real text to
+/// render instead of just the path that changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileEditCapture {
+    pub file_path: String,
+    pub tool_name: String,
+    pub old_text: Option<String>,
+    pub new_text: Option<String>,
+    /// Index into the same `LineOutcome::blocks` this capture was produced
+    /// alongside (the "Edit path" summary block for the same tool_use item) —
+    /// lets `apply_line` resolve the real persisted block id to link
+    /// `file_edits.block_id` to. `None` if set outside of `parse_line`'s
+    /// normal per-item loop (shouldn't happen in practice, but keeps the
+    /// field honest rather than defaulting to a fake index).
+    pub source_block_index: Option<usize>,
+}
+
+/// Token/cost accounting from a turn's final `"result"` message — captured
+/// alongside the `agent` block it summarizes, the same way `FileEditCapture`
+/// links to the `edit` block that produced it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TurnUsageCapture {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: Option<i64>,
+    pub cache_creation_tokens: Option<i64>,
+    pub cost_usd: Option<f64>,
+    pub source_block_index: Option<usize>,
 }
 
 const MAX_TOOL_RESULT_CHARS: usize = 4000;
@@ -244,8 +280,20 @@ pub fn parse_line(line: &str, provider: &str) -> LineOutcome {
             let content = value.pointer("/message/content").and_then(|v| v.as_array());
             if let Some(content) = content {
                 for item in content {
-                    if let Some(block) = parse_content_item(item) {
+                    let pushed_index = if let Some(block) = parse_content_item(item) {
                         outcome.blocks.push(block);
+                        Some(outcome.blocks.len() - 1)
+                    } else {
+                        None
+                    };
+                    if item.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                        let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                        let input = item.get("input").unwrap_or(&Value::Null);
+                        let mut edits = capture_file_edits(name, input);
+                        for edit in &mut edits {
+                            edit.source_block_index = pushed_index;
+                        }
+                        outcome.file_edits.extend(edits);
                     }
                 }
             }
@@ -282,8 +330,22 @@ pub fn parse_line(line: &str, provider: &str) -> LineOutcome {
             }
         }
         "result" => {
+            let mut source_block_index = None;
             if let Some(text) = value.get("result").and_then(|v| v.as_str()) {
                 outcome.blocks.push(ParsedBlock { kind: "agent", text: text.to_string() });
+                source_block_index = Some(outcome.blocks.len() - 1);
+            }
+            if let Some(usage) = value.get("usage") {
+                let input_tokens = usage.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                let output_tokens = usage.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                outcome.turn_usage = Some(TurnUsageCapture {
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens: usage.get("cache_read_input_tokens").and_then(|v| v.as_i64()),
+                    cache_creation_tokens: usage.get("cache_creation_input_tokens").and_then(|v| v.as_i64()),
+                    cost_usd: value.get("total_cost_usd").and_then(|v| v.as_f64()),
+                    source_block_index,
+                });
             }
             if providers::is_exhaustion_signal(provider, line) {
                 outcome.exhausted = true;
@@ -320,6 +382,46 @@ fn parse_content_item(item: &Value) -> Option<ParsedBlock> {
             Some(format_tool_use(name, input))
         }
         _ => None,
+    }
+}
+
+/// Extracts the real before/after text of an Edit/Write/MultiEdit tool call,
+/// if any — a `MultiEdit` call can rewrite the same file several times in one
+/// go, so this returns one capture per individual replacement rather than
+/// collapsing them into one. Any other tool (including NotebookEdit, whose
+/// input shape differs — `notebook_path`/`new_source` instead of
+/// `file_path`/`old_string`/`new_string` — is out of scope for now) yields
+/// nothing.
+fn capture_file_edits(name: &str, input: &Value) -> Vec<FileEditCapture> {
+    let Some(file_path) = input.get("file_path").and_then(|v| v.as_str()) else {
+        return Vec::new();
+    };
+    match name {
+        "Edit" => {
+            let old_text = input.get("old_string").and_then(|v| v.as_str()).map(str::to_string);
+            let new_text = input.get("new_string").and_then(|v| v.as_str()).map(str::to_string);
+            vec![FileEditCapture { file_path: file_path.to_string(), tool_name: name.to_string(), old_text, new_text, source_block_index: None }]
+        }
+        "Write" => {
+            let new_text = input.get("content").and_then(|v| v.as_str()).map(str::to_string);
+            vec![FileEditCapture { file_path: file_path.to_string(), tool_name: name.to_string(), old_text: None, new_text, source_block_index: None }]
+        }
+        "MultiEdit" => {
+            let Some(edits) = input.get("edits").and_then(|v| v.as_array()) else {
+                return Vec::new();
+            };
+            edits
+                .iter()
+                .map(|e| FileEditCapture {
+                    file_path: file_path.to_string(),
+                    tool_name: name.to_string(),
+                    old_text: e.get("old_string").and_then(|v| v.as_str()).map(str::to_string),
+                    new_text: e.get("new_string").and_then(|v| v.as_str()).map(str::to_string),
+                    source_block_index: None,
+                })
+                .collect()
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -402,8 +504,18 @@ fn value_to_plain(v: &Value) -> String {
 fn apply_line<R: Runtime>(app: &AppHandle<R>, session_id: &str, account_id: &str, line: &str) -> usize {
     let outcome = parse_line(line, "claude");
 
-    for block in &outcome.blocks {
-        emit_block(app, session_id, block.kind, &block.text);
+    let block_ids: Vec<String> = outcome
+        .blocks
+        .iter()
+        .map(|block| emit_block(app, session_id, block.kind, &block.text))
+        .collect();
+    for file_edit in &outcome.file_edits {
+        let block_id = file_edit.source_block_index.and_then(|i| block_ids.get(i)).map(String::as_str);
+        store_file_edit(app, session_id, file_edit, block_id);
+    }
+    if let Some(usage) = &outcome.turn_usage {
+        let block_id = usage.source_block_index.and_then(|i| block_ids.get(i)).map(String::as_str);
+        store_turn_usage(app, session_id, usage, block_id);
     }
     if let Some(provider_session_id) = &outcome.provider_session_id {
         store_provider_session_id(app, session_id, provider_session_id);
@@ -412,6 +524,59 @@ fn apply_line<R: Runtime>(app: &AppHandle<R>, session_id: &str, account_id: &str
         emit_account_exhausted(app, account_id, session_id);
     }
     outcome.blocks.len()
+}
+
+fn store_file_edit<R: Runtime>(app: &AppHandle<R>, session_id: &str, file_edit: &FileEditCapture, block_id: Option<&str>) {
+    if let Some(db) = app.try_state::<DbConnection>() {
+        match db.0.lock() {
+            Ok(conn) => {
+                if let Err(e) = conn.execute(
+                    "INSERT INTO file_edits (id, session_id, block_id, file_path, tool_name, old_text, new_text, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        uuid::Uuid::new_v4().to_string(),
+                        session_id,
+                        block_id,
+                        file_edit.file_path,
+                        file_edit.tool_name,
+                        file_edit.old_text,
+                        file_edit.new_text,
+                        chrono::Utc::now().to_rfc3339(),
+                    ],
+                ) {
+                    eprintln!("store_file_edit: failed to persist edit for session {session_id}: {e}");
+                }
+            }
+            Err(e) => eprintln!("store_file_edit: DB mutex poisoned for session {session_id}: {e}"),
+        }
+    }
+}
+
+fn store_turn_usage<R: Runtime>(app: &AppHandle<R>, session_id: &str, usage: &TurnUsageCapture, block_id: Option<&str>) {
+    if let Some(db) = app.try_state::<DbConnection>() {
+        match db.0.lock() {
+            Ok(conn) => {
+                if let Err(e) = conn.execute(
+                    "INSERT INTO turn_usage (id, session_id, block_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        uuid::Uuid::new_v4().to_string(),
+                        session_id,
+                        block_id,
+                        usage.input_tokens,
+                        usage.output_tokens,
+                        usage.cache_read_tokens,
+                        usage.cache_creation_tokens,
+                        usage.cost_usd,
+                        chrono::Utc::now().to_rfc3339(),
+                    ],
+                ) {
+                    eprintln!("store_turn_usage: failed to persist usage for session {session_id}: {e}");
+                }
+            }
+            Err(e) => eprintln!("store_turn_usage: DB mutex poisoned for session {session_id}: {e}"),
+        }
+    }
 }
 
 fn store_provider_session_id<R: Runtime>(app: &AppHandle<R>, session_id: &str, provider_session_id: &str) {
@@ -524,6 +689,92 @@ mod tests {
         assert_eq!(block.text, "Edit  src/main.rs");
         // Must not leak the raw diff content into the summary line.
         assert!(!block.text.contains("old_string"));
+    }
+
+    #[test]
+    fn capture_file_edits_extracts_old_and_new_text_for_edit() {
+        let input = serde_json::json!({"file_path": "src/main.rs", "old_string": "let a = 1;", "new_string": "let a = 2;"});
+        let edits = capture_file_edits("Edit", &input);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].file_path, "src/main.rs");
+        assert_eq!(edits[0].tool_name, "Edit");
+        assert_eq!(edits[0].old_text.as_deref(), Some("let a = 1;"));
+        assert_eq!(edits[0].new_text.as_deref(), Some("let a = 2;"));
+    }
+
+    #[test]
+    fn capture_file_edits_for_write_has_no_old_text() {
+        let input = serde_json::json!({"file_path": "src/new.rs", "content": "fn main() {}"});
+        let edits = capture_file_edits("Write", &input);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].old_text, None, "a freshly written file has no prior content");
+        assert_eq!(edits[0].new_text.as_deref(), Some("fn main() {}"));
+    }
+
+    #[test]
+    fn capture_file_edits_for_multi_edit_yields_one_capture_per_replacement() {
+        let input = serde_json::json!({
+            "file_path": "src/lib.rs",
+            "edits": [
+                {"old_string": "foo", "new_string": "bar"},
+                {"old_string": "baz", "new_string": "qux"},
+            ],
+        });
+        let edits = capture_file_edits("MultiEdit", &input);
+        assert_eq!(edits.len(), 2);
+        assert!(edits.iter().all(|e| e.file_path == "src/lib.rs" && e.tool_name == "MultiEdit"));
+        assert_eq!(edits[0].old_text.as_deref(), Some("foo"));
+        assert_eq!(edits[1].new_text.as_deref(), Some("qux"));
+    }
+
+    #[test]
+    fn capture_file_edits_ignores_unrelated_tools_and_missing_file_path() {
+        assert!(capture_file_edits("Bash", &serde_json::json!({"command": "ls"})).is_empty());
+        assert!(capture_file_edits("Edit", &serde_json::json!({"old_string": "a", "new_string": "b"})).is_empty());
+    }
+
+    #[test]
+    fn parse_line_surfaces_file_edits_from_an_assistant_message() {
+        let line = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "name": "Edit", "input": {"file_path": "a.txt", "old_string": "x", "new_string": "y"}}
+                ]
+            }
+        })
+        .to_string();
+        let outcome = parse_line(&line, "claude");
+        assert_eq!(outcome.file_edits.len(), 1);
+        assert_eq!(outcome.file_edits[0].file_path, "a.txt");
+        assert_eq!(
+            outcome.file_edits[0].source_block_index,
+            Some(0),
+            "the Edit tool_use item also pushes exactly one 'edit' block, at index 0 — the capture must point back to it"
+        );
+    }
+
+    #[test]
+    fn multi_edit_captures_all_point_at_the_same_source_block() {
+        let line = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "name": "MultiEdit", "input": {
+                        "file_path": "a.txt",
+                        "edits": [
+                            {"old_string": "x1", "new_string": "y1"},
+                            {"old_string": "x2", "new_string": "y2"},
+                        ]
+                    }}
+                ]
+            }
+        })
+        .to_string();
+        let outcome = parse_line(&line, "claude");
+        assert_eq!(outcome.blocks.len(), 1, "MultiEdit produces a single summary block");
+        assert_eq!(outcome.file_edits.len(), 2);
+        assert!(outcome.file_edits.iter().all(|e| e.source_block_index == Some(0)));
     }
 
     #[test]
@@ -679,5 +930,126 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&isolated_config_dir);
+    }
+
+    /// `apply_line` must thread the real persisted block id through to
+    /// `file_edits.block_id` — regression test for the bug where it was
+    /// always inserted as NULL because `emit_block` generated its uuid
+    /// internally and discarded it.
+    #[test]
+    fn apply_line_links_file_edits_to_their_source_block() {
+        use rusqlite::Connection;
+        use std::sync::Mutex as StdMutex;
+
+        let app = tauri::test::mock_app();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, status, created_at, updated_at)
+             VALUES ('acc1','claude','sub','Test','work','','','acc1','healthy','now','now')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, name, path, created_at) VALUES ('proj1','Test','/tmp','now')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, name, project_id, account_id, model, effort, mode, status, started_at)
+             VALUES ('sess1','test-session','proj1','acc1','','high','ask_edits','waiting','now')",
+            [],
+        ).unwrap();
+        app.manage(crate::db::DbConnection(StdMutex::new(conn)));
+
+        let line = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "name": "Edit", "input": {"file_path": "a.txt", "old_string": "x", "new_string": "y"}}
+                ]
+            }
+        })
+        .to_string();
+        apply_line(&app.handle().clone(), "sess1", "acc1", &line);
+
+        let db = app.state::<crate::db::DbConnection>();
+        let conn = db.0.lock().unwrap();
+        let block_id: String = conn
+            .query_row("SELECT id FROM session_blocks WHERE session_id = 'sess1' AND kind = 'edit'", [], |r| r.get(0))
+            .expect("apply_line must persist the 'edit' summary block");
+        let edit_block_id: Option<String> = conn
+            .query_row("SELECT block_id FROM file_edits WHERE session_id = 'sess1'", [], |r| r.get(0))
+            .expect("apply_line must persist the file_edits row");
+        assert_eq!(edit_block_id, Some(block_id), "file_edits.block_id must point at the real 'edit' block, not NULL");
+    }
+
+    #[test]
+    fn parse_line_captures_usage_from_result_message() {
+        let line = serde_json::json!({
+            "type": "result",
+            "result": "Done.",
+            "total_cost_usd": 0.0123,
+            "usage": {
+                "input_tokens": 150,
+                "output_tokens": 70,
+                "cache_read_input_tokens": 40,
+                "cache_creation_input_tokens": 10,
+            }
+        })
+        .to_string();
+        let outcome = parse_line(&line, "claude");
+        assert_eq!(outcome.blocks.len(), 1, "the result text produces a single 'agent' block");
+        let usage = outcome.turn_usage.expect("usage must be captured from the result message");
+        assert_eq!(usage.input_tokens, 150);
+        assert_eq!(usage.output_tokens, 70);
+        assert_eq!(usage.cache_read_tokens, Some(40));
+        assert_eq!(usage.cache_creation_tokens, Some(10));
+        assert_eq!(usage.cost_usd, Some(0.0123));
+        assert_eq!(usage.source_block_index, Some(0), "usage must point at the 'agent' block from the same result message");
+    }
+
+    #[test]
+    fn apply_line_links_turn_usage_to_its_source_block() {
+        use rusqlite::Connection;
+        use std::sync::Mutex as StdMutex;
+
+        let app = tauri::test::mock_app();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, status, created_at, updated_at)
+             VALUES ('acc1','claude','sub','Test','work','','','acc1','healthy','now','now')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, name, path, created_at) VALUES ('proj1','Test','/tmp','now')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, name, project_id, account_id, model, effort, mode, status, started_at)
+             VALUES ('sess1','test-session','proj1','acc1','','high','ask_edits','waiting','now')",
+            [],
+        ).unwrap();
+        app.manage(crate::db::DbConnection(StdMutex::new(conn)));
+
+        let line = serde_json::json!({
+            "type": "result",
+            "result": "Done.",
+            "total_cost_usd": 0.05,
+            "usage": {"input_tokens": 200, "output_tokens": 80}
+        })
+        .to_string();
+        apply_line(&app.handle().clone(), "sess1", "acc1", &line);
+
+        let db = app.state::<crate::db::DbConnection>();
+        let conn = db.0.lock().unwrap();
+        let block_id: String = conn
+            .query_row("SELECT id FROM session_blocks WHERE session_id = 'sess1' AND kind = 'agent'", [], |r| r.get(0))
+            .expect("apply_line must persist the 'agent' block");
+        let usage_block_id: Option<String> = conn
+            .query_row("SELECT block_id FROM turn_usage WHERE session_id = 'sess1'", [], |r| r.get(0))
+            .expect("apply_line must persist the turn_usage row");
+        assert_eq!(usage_block_id, Some(block_id), "turn_usage.block_id must point at the real 'agent' block, not NULL");
     }
 }

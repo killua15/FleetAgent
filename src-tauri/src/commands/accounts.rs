@@ -1,3 +1,4 @@
+use crate::commands::sessions::{cleanup_worktree_rows, WorktreeCleanupRow};
 use crate::credential_vault;
 use crate::db::DbConnection;
 use crate::login_manager;
@@ -267,6 +268,32 @@ pub fn delete_account(db: State<DbConnection>, id: String) -> Result<(), String>
     let config_dir_path: Option<String> = conn
         .query_row("SELECT config_dir_path FROM accounts WHERE id = ?1", params![id], |row| row.get(0))
         .ok();
+
+    // A subsession can belong to a different account than its parent, so
+    // deleting an account can take worktrees with it too — clean those up
+    // before the cascade removes the session rows that reference them.
+    {
+        let mut stmt = conn.prepare(
+            "SELECT s.worktree_path, s.worktree_branch, s.worktree_kind, p.path
+             FROM sessions s
+             JOIN projects p ON p.id = s.project_id
+             WHERE s.account_id = ?1 AND s.worktree_path IS NOT NULL",
+        );
+        if let Ok(ref mut stmt) = stmt {
+            let rows = stmt.query_map(params![id], |row| {
+                Ok(WorktreeCleanupRow {
+                    worktree_path: row.get(0)?,
+                    worktree_branch: row.get(1)?,
+                    worktree_kind: row.get(2)?,
+                    project_path: row.get(3)?,
+                })
+            });
+            if let Ok(rows) = rows {
+                let rows: Vec<_> = rows.filter_map(Result::ok).collect();
+                cleanup_worktree_rows(&rows);
+            }
+        }
+    }
     drop(conn);
 
     if let Some(dir) = &config_dir_path {
