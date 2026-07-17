@@ -60,20 +60,42 @@ pub struct TurnArgs<'a> {
     /// `--name` — shows up in the CLI's own `/resume` picker and terminal
     /// title, separate from (but usually equal to) Fleet's own session name.
     pub name: &'a str,
+    /// Set only for `Mode::AskEdits`/`Mode::AutoEdit` (the only modes that
+    /// can still block on live approval in headless `-p` mode). When true,
+    /// `build_turn_args` wires up Claude Code's own stdio control protocol
+    /// (`--permission-prompt-tool stdio` + `--input-format stream-json`) —
+    /// the same mechanism its Agent SDK's `canUseTool` and the VS Code
+    /// extension use — instead of passing the prompt as a `-p` argument.
+    /// Verified empirically against a real `claude` 2.1.212 install: a
+    /// `control_request` JSON line appears on stdout for a blocked tool
+    /// call, and Claude Code blocks on its own stdin (no timeout of its
+    /// own) until a matching `control_response` line arrives there — see
+    /// the plan this shipped with for the exact transcript. `false` for
+    /// every other mode, which never blocks on approval in the first place.
+    pub use_permission_prompt: bool,
 }
 
 /// Args for one headless turn: `claude -p "<prompt>" --output-format
 /// stream-json`, optionally continuing a prior conversation via `--resume`.
+/// When `use_permission_prompt` is set, the prompt moves off the command
+/// line and onto stdin instead (see `turn_runner::spawn_turn`), since
+/// `--input-format stream-json` expects the initial message there.
 pub fn build_turn_args(args: TurnArgs) -> Vec<String> {
-    let mut out = vec![
-        "-p".to_string(),
-        args.prompt.to_string(),
-        "--output-format".to_string(),
-        "stream-json".to_string(),
-        "--verbose".to_string(),
-        "--permission-mode".to_string(),
-        permission_mode_str(args.mode).to_string(),
-    ];
+    let mut out = vec!["-p".to_string()];
+    if !args.use_permission_prompt {
+        out.push(args.prompt.to_string());
+    }
+    out.push("--output-format".to_string());
+    out.push("stream-json".to_string());
+    out.push("--verbose".to_string());
+    out.push("--permission-mode".to_string());
+    out.push(permission_mode_str(args.mode).to_string());
+    if args.use_permission_prompt {
+        out.push("--permission-prompt-tool".to_string());
+        out.push("stdio".to_string());
+        out.push("--input-format".to_string());
+        out.push("stream-json".to_string());
+    }
     if !args.model.trim().is_empty() {
         out.push("--model".to_string());
         out.push(args.model.to_string());
@@ -143,6 +165,7 @@ mod tests {
             model: "opus",
             effort: "high",
             name: "fix-billing-rounding",
+            use_permission_prompt: false,
         });
         assert_eq!(
             args,
@@ -162,11 +185,49 @@ mod tests {
             model: "sonnet",
             effort: "medium",
             name: "",
+            use_permission_prompt: false,
         });
         assert_eq!(args.last().cloned(), Some("session-123".to_string()));
         assert_eq!(args[args.len() - 2], "--resume");
         // Empty name must be omitted rather than passing `--name ""`.
         assert!(!args.contains(&"--name".to_string()));
+    }
+
+    #[test]
+    fn build_turn_args_omits_stdio_flags_when_permission_prompt_not_needed() {
+        let args = build_turn_args(TurnArgs {
+            mode: Mode::AskEdits,
+            prompt: "hi",
+            resume: None,
+            model: "",
+            effort: "",
+            name: "",
+            use_permission_prompt: false,
+        });
+        assert!(args.contains(&"hi".to_string()), "prompt must be a positional arg when not using the stdio protocol");
+        assert!(!args.contains(&"--permission-prompt-tool".to_string()));
+        assert!(!args.contains(&"--input-format".to_string()));
+    }
+
+    #[test]
+    fn build_turn_args_uses_stdio_control_protocol_and_moves_prompt_off_the_command_line() {
+        let args = build_turn_args(TurnArgs {
+            mode: Mode::AskEdits,
+            prompt: "hi",
+            resume: None,
+            model: "",
+            effort: "",
+            name: "",
+            use_permission_prompt: true,
+        });
+        // The prompt must NOT appear as a `-p` positional arg — it goes over
+        // stdin instead (see turn_runner::spawn_turn).
+        assert!(!args.contains(&"hi".to_string()));
+        assert!(args.contains(&"-p".to_string()));
+        let tool_index = args.iter().position(|a| a == "--permission-prompt-tool").expect("must include --permission-prompt-tool");
+        assert_eq!(args[tool_index + 1], "stdio");
+        let format_index = args.iter().position(|a| a == "--input-format").expect("must include --input-format");
+        assert_eq!(args[format_index + 1], "stream-json");
     }
 
     #[test]

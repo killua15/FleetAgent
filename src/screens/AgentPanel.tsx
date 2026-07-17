@@ -14,6 +14,7 @@ import {
   type FileEdit,
   type FileTreeNode,
   type ModelOption,
+  type PermissionRequest,
   type ResumableConversation,
   type SessionBlock,
   type SessionMode,
@@ -108,6 +109,23 @@ function formatTime(iso: string): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+/** Short, human-readable summary of a tool_input for the permission banner —
+ * the field that actually matters differs per tool (a shell command for
+ * Bash, a file path for Edit/Write/MultiEdit), so this isn't just a raw
+ * JSON dump. Returns '' when there's nothing worth summarizing. */
+function summarizePermissionInput(toolName: string, toolInput: unknown): string {
+  if (!toolInput || typeof toolInput !== 'object') return '';
+  const input = toolInput as Record<string, unknown>;
+  if (toolName === 'Bash' && typeof input.command === 'string') return input.command;
+  if (typeof input.file_path === 'string') return input.file_path;
+  try {
+    const json = JSON.stringify(input);
+    return json.length > 160 ? `${json.slice(0, 160)}…` : json;
+  } catch {
+    return '';
+  }
+}
+
 export function AgentPanel() {
   const { current, back } = useNavigation();
   const sessionId = current.params?.sessionId as string | undefined;
@@ -159,6 +177,9 @@ export function AgentPanelBody({
   const [resumeOpen, setResumeOpen] = useState(false);
   const [resumeOptions, setResumeOptions] = useState<ResumableConversation[]>([]);
   const [loadingResume, setLoadingResume] = useState(false);
+  const [pendingApproval, setPendingApproval] = useState<PermissionRequest | null>(null);
+  const [respondingApproval, setRespondingApproval] = useState(false);
+  const pendingApprovalRef = useRef<PermissionRequest | null>(null);
   const [filesOpen, setFilesOpen] = useState(false);
   const [fileTree, setFileTree] = useState<FileTreeNode[]>([]);
   const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(new Set());
@@ -346,11 +367,32 @@ export function AgentPanelBody({
       if (sid !== sessionId) return;
       setSession((prev) => (prev ? { ...prev, status: status as SessionStatus } : prev));
     });
+    const unlistenPermission = listen<PermissionRequest>('permission-request', (event) => {
+      if (event.payload.sessionId !== sessionId) return;
+      setPendingApproval(event.payload);
+    });
     return () => {
       unlistenOutput.then((f) => f());
       unlistenStatus.then((f) => f());
+      unlistenPermission.then((f) => f());
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    pendingApprovalRef.current = pendingApproval;
+  }, [pendingApproval]);
+
+  useEffect(() => {
+    // Runs only on true unmount (empty deps) — an approval the user never
+    // answered before navigating away or closing the session must resolve
+    // as denied, not leave the hook (and the turn) hanging server-side.
+    return () => {
+      if (pendingApprovalRef.current) {
+        invoke('respond_to_permission_request', { requestId: pendingApprovalRef.current.requestId, allow: false }).catch(() => {});
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     timelineRef.current?.scrollTo({ top: timelineRef.current.scrollHeight });
@@ -488,6 +530,19 @@ export function AgentPanelBody({
       setError(String(e));
     } finally {
       setStopping(false);
+    }
+  };
+
+  const respondToPermission = async (allow: boolean) => {
+    if (!pendingApproval) return;
+    setRespondingApproval(true);
+    try {
+      await invoke('respond_to_permission_request', { requestId: pendingApproval.requestId, allow });
+      setPendingApproval(null);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setRespondingApproval(false);
     }
   };
 
@@ -890,6 +945,23 @@ export function AgentPanelBody({
           );
         })}
       </div>
+
+      {pendingApproval && (
+        <div className={styles.permissionBanner}>
+          <span className={styles.permissionText}>
+            El agente quiere ejecutar <strong>{pendingApproval.toolName}</strong>
+            {summarizePermissionInput(pendingApproval.toolName, pendingApproval.toolInput) && (
+              <>: <code className={styles.permissionCode}>{summarizePermissionInput(pendingApproval.toolName, pendingApproval.toolInput)}</code></>
+            )}
+          </span>
+          <Button size="sm" disabled={respondingApproval} onClick={() => respondToPermission(true)}>
+            Aprobar
+          </Button>
+          <Button size="sm" variant="destructive" disabled={respondingApproval} onClick={() => respondToPermission(false)}>
+            Rechazar
+          </Button>
+        </div>
+      )}
 
       <div className={styles.composer}>
         {isRunning && (

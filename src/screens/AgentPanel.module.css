@@ -493,6 +493,32 @@
   animation: flPulse 1.2s infinite;
 }
 
+.permissionBanner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--amber);
+  border-bottom: 1px solid var(--amber);
+  background: var(--amberD);
+}
+
+.permissionText {
+  flex: 1;
+  min-width: 0;
+  font: 400 11.5px var(--font-mono);
+  color: var(--txt);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.permissionCode {
+  color: var(--amber);
+  font: 400 11px var(--font-mono);
+}
+
 .composerBox {
   display: flex;
   align-items: flex-end;

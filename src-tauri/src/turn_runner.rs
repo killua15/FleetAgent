@@ -1,10 +1,11 @@
 use crate::db::DbConnection;
+use crate::permission_bridge;
 use crate::process_manager::{emit_account_exhausted, emit_block, mark_session_status};
 use crate::providers::{self, claude, Mode};
 use rusqlite::params;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, Runtime};
@@ -97,6 +98,26 @@ pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) {
     emit_block(&req.app, &req.session_id, "you", &req.prompt);
     mark_session_status(&req.app, &req.session_id, "running");
 
+    // AskEdits (`--permission-mode default`) and AutoEdit (`acceptEdits`)
+    // can both still block on approval in headless `-p` mode with no way to
+    // answer it — acceptEdits auto-approves file edits but NOT arbitrary
+    // Bash commands (verified against a real `claude` install: running a
+    // build script under acceptEdits hits the same "requires approval" dead
+    // end as default mode). Claude Code's own stdio control protocol
+    // (`--permission-prompt-tool stdio`, wired up by `build_turn_args` below)
+    // is the real approval channel for both — Fleet answers `control_request`
+    // lines directly over this same child's stdin/stdout further down. Plan
+    // never reaches this (the model explores read-only instead of invoking
+    // risky commands) and Yolo (`bypassPermissions`) never blocks in the
+    // first place, so neither needs it.
+    let use_permission_prompt = matches!(req.mode, Mode::AskEdits | Mode::AutoEdit);
+    // AutoEdit still needs the control protocol wired up (acceptEdits alone
+    // doesn't cover Bash), but the user explicitly wants "auto" to mean
+    // auto — Fleet answers every control_request itself with "allow" and
+    // never shows the banner, matching the name instead of Claude Code's
+    // own stricter default for acceptEdits. Only AskEdits still asks a human.
+    let auto_approve = req.mode == Mode::AutoEdit;
+
     let args = claude::build_turn_args(claude::TurnArgs {
         mode: req.mode,
         prompt: &req.prompt,
@@ -104,12 +125,14 @@ pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) {
         model: &req.model,
         effort: &req.effort,
         name: &req.name,
+        use_permission_prompt,
     });
 
     std::thread::spawn(move || {
         let mut cmd = Command::new(claude::binary());
         cmd.args(&args)
             .current_dir(&req.cwd)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for (k, v) in &req.env {
@@ -125,6 +148,22 @@ pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) {
             }
         };
         register_turn(&req.app, &req.session_id, child.id());
+
+        // With `use_permission_prompt`, `build_turn_args` left the prompt off
+        // the command line (`--input-format stream-json` expects it as the
+        // first stdin message instead) and this same stdin doubles as the
+        // channel `control_response` lines go back over, further down.
+        let mut stdin = child.stdin.take();
+        if use_permission_prompt {
+            if let Some(stdin) = &mut stdin {
+                let initial = json!({
+                    "type": "user",
+                    "message": { "role": "user", "content": [{ "type": "text", "text": req.prompt }] },
+                })
+                .to_string();
+                let _ = writeln!(stdin, "{initial}");
+            }
+        }
 
         // Drain stderr on its own thread. Both pipes have a bounded OS
         // buffer (~64KB) — if the child writes enough to stderr while we're
@@ -153,14 +192,43 @@ pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) {
         });
 
         let mut stdout_blocks = 0usize;
+        let mut saw_final_result = false;
         if let Some(stdout) = child.stdout.take() {
             for line in BufReader::new(stdout).lines() {
                 let Ok(line) = line else { continue };
                 if line.trim().is_empty() {
                     continue;
                 }
+
+                if use_permission_prompt {
+                    if let Some(control_req) = permission_bridge::parse_control_request(&line) {
+                        let allow = if auto_approve { true } else { permission_bridge::await_decision(&req.app, &req.session_id, &control_req) };
+                        if let Some(stdin) = &mut stdin {
+                            let response = permission_bridge::build_control_response(&control_req.request_id, allow);
+                            let _ = writeln!(stdin, "{response}");
+                        }
+                        continue;
+                    }
+                }
+
                 stdout_blocks += apply_line(&req.app, &req.session_id, &req.account_id, &line);
+
+                // `--input-format stream-json` (only set when
+                // `use_permission_prompt`) keeps the CLI alive waiting for
+                // more turns even after stdin closes — verified empirically:
+                // it stayed running well past its final `result` line with
+                // nothing left to say. Fleet's model is one process per
+                // turn, so the terminal `result` line IS the end of this
+                // turn; kill the process here instead of waiting on an exit
+                // that will never come on its own.
+                if use_permission_prompt && is_final_result_line(&line) {
+                    saw_final_result = true;
+                    break;
+                }
             }
+        }
+        if saw_final_result {
+            let _ = child.kill();
         }
 
         let exit_status = child.wait();
@@ -501,6 +569,14 @@ fn value_to_plain(v: &Value) -> String {
 /// Returns how many blocks were emitted, so the caller can tell "the CLI
 /// ran and said nothing" apart from "the CLI never produced valid output"
 /// (the latter is when stderr should be surfaced as a fallback).
+/// Cheap check for `claude --output-format stream-json`'s terminal message
+/// (`{"type":"result",...}`) — a separate pass from `parse_line`/`apply_line`
+/// since the caller needs to know this *before* deciding whether to keep
+/// reading, not just what block to emit for it.
+fn is_final_result_line(line: &str) -> bool {
+    serde_json::from_str::<Value>(line).ok().and_then(|v| v.get("type").and_then(|t| t.as_str()).map(str::to_string)).as_deref() == Some("result")
+}
+
 fn apply_line<R: Runtime>(app: &AppHandle<R>, session_id: &str, account_id: &str, line: &str) -> usize {
     let outcome = parse_line(line, "claude");
 

@@ -3,6 +3,7 @@ mod credential_vault;
 mod db;
 mod login_manager;
 mod models;
+mod permission_bridge;
 mod process_manager;
 mod providers;
 mod turn_runner;
@@ -10,6 +11,7 @@ mod usage_scraper;
 
 use db::DbConnection;
 use login_manager::LoginRegistry;
+use permission_bridge::PendingApprovals;
 use process_manager::ProcessRegistry;
 use std::sync::Mutex;
 use tauri::Manager;
@@ -28,6 +30,7 @@ pub fn run() {
             app.manage(LoginRegistry::new());
             app.manage(TurnRegistry::new());
             app.manage(UsageCache::new());
+            app.manage(PendingApprovals::new());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -56,6 +59,7 @@ pub fn run() {
             commands::sessions::list_turn_usage,
             commands::sessions::get_account_usage_summary,
             usage_scraper::fetch_real_usage,
+            permission_bridge::respond_to_permission_request,
             commands::sessions::list_resumable_conversations,
             commands::sessions::set_session_resume_target,
             commands::attachments::save_attachment,

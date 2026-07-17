@@ -123,6 +123,18 @@ export interface RealUsageStats {
   fetchedAt: string;
 }
 
+/** A live "may I run this?" request from Claude Code's own stdio control
+ * protocol (`--permission-prompt-tool stdio`, used for `AskEdits`/`AutoEdit`
+ * turns) — Claude Code can't prompt interactively in headless mode, so this
+ * is the real approval channel, surfaced as a banner in AgentPanel and
+ * resolved via `respond_to_permission_request`. */
+export interface PermissionRequest {
+  requestId: string;
+  sessionId: string;
+  toolName: string;
+  toolInput: unknown;
+}
+
 /** Mirrors VS Code's file-explorer convention: untracked/added → green,
  * modified → amber, deleted → red. `touched` is the best-effort fallback for
  * a copy-kind subsession with no git history to ask. */
