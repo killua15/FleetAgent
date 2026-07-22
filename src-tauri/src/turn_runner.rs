@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, Runtime};
 
 /// Tracks the PID of each in-flight one-shot `claude -p` turn, keyed by
@@ -62,9 +63,35 @@ pub fn kill_turn<R: Runtime>(app: &AppHandle<R>, session_id: &str) {
         None => None,
     };
     let Some(pid) = pid else { return };
+    kill_pid_with_grace(pid);
+}
 
+#[cfg(unix)]
+fn pid_is_alive(pid: u32) -> bool {
+    // `kill -0` sends no actual signal — it's a pure liveness/permission
+    // probe, the standard Unix way to ask "does this pid still exist?"
+    Command::new("kill").args(["-0", &pid.to_string()]).status().map(|s| s.success()).unwrap_or(false)
+}
+
+/// Same theory as the post-turn kill in `spawn_turn`: forcing the CLI down
+/// with zero warning risks catching it mid-write to its own on-disk
+/// resumable-conversation transcript — corrupting every future `--resume`
+/// of this same session — whether that kill is the automatic end-of-turn
+/// one or (here) the user pressing "Stop" on a turn that looks stuck.
+/// SIGTERM first gives a well-behaved process a chance to catch it and
+/// flush/close files before exiting; a short grace window, then SIGKILL,
+/// guarantees it actually goes down either way.
+fn kill_pid_with_grace(pid: u32) {
     #[cfg(unix)]
     {
+        let _ = Command::new("kill").args(["-TERM", &pid.to_string()]).output();
+        let deadline = Instant::now() + Duration::from_millis(800);
+        while Instant::now() < deadline {
+            if !pid_is_alive(pid) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
         let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
     }
     #[cfg(windows)]
@@ -203,6 +230,12 @@ pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) {
 
         let mut stdout_blocks = 0usize;
         let mut saw_final_result = false;
+        // Tracks the most recently emitted 'agent' block (id, text) across
+        // this whole turn — `apply_line` uses it to detect the terminal
+        // `result` message echoing the same text as the assistant's own
+        // last response (see its doc comment) instead of emitting a
+        // duplicate block for it.
+        let mut last_agent_block: Option<(String, String)> = None;
         if let Some(stdout) = child.stdout.take() {
             for line in BufReader::new(stdout).lines() {
                 let Ok(line) = line else { continue };
@@ -221,7 +254,7 @@ pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) {
                     }
                 }
 
-                stdout_blocks += apply_line(&req.app, &req.session_id, &req.account_id, &line);
+                stdout_blocks += apply_line(&req.app, &req.session_id, &req.account_id, &line, &mut last_agent_block);
 
                 // `--input-format stream-json` (only set when
                 // `use_permission_prompt`) keeps the CLI alive waiting for
@@ -238,7 +271,25 @@ pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) {
             }
         }
         if saw_final_result {
-            let _ = child.kill();
+            // `--input-format stream-json` never exits on its own after its
+            // final `result` line (verified empirically — see the comment
+            // above), so it still has to be killed. But killing the instant
+            // that line is read off stdout risks catching the CLI mid-write
+            // to its own on-disk resumable-conversation transcript (the file
+            // `--resume <provider_session_id>` reads back on the next
+            // turn) — give it a short window to finish any such bookkeeping
+            // and exit on its own first, and only force it down if it doesn't.
+            let deadline = Instant::now() + Duration::from_millis(800);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+                    _ => {
+                        let _ = child.kill();
+                        break;
+                    }
+                }
+            }
         }
 
         let exit_status = child.wait();
@@ -410,8 +461,18 @@ pub fn parse_line(line: &str, provider: &str) -> LineOutcome {
         "result" => {
             let mut source_block_index = None;
             if let Some(text) = value.get("result").and_then(|v| v.as_str()) {
-                outcome.blocks.push(ParsedBlock { kind: "agent", text: text.to_string() });
-                source_block_index = Some(outcome.blocks.len() - 1);
+                // Claude Code can end a turn with an empty `result` string in
+                // abort/error conditions — an empty AGENT block would look
+                // like a real (if silent) response instead of the failure it
+                // actually is, and would suppress the "never finish in total
+                // silence" backstop in `spawn_turn` below, which needs
+                // `stdout_blocks` to stay at 0 to kick in. Mirrors the same
+                // empty-text guard `parse_content_item`'s "text"/"thinking"
+                // arms already use.
+                if !text.trim().is_empty() {
+                    outcome.blocks.push(ParsedBlock { kind: "agent", text: text.to_string() });
+                    source_block_index = Some(outcome.blocks.len() - 1);
+                }
             }
             if let Some(usage) = value.get("usage") {
                 let input_tokens = usage.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -587,14 +648,38 @@ fn is_final_result_line(line: &str) -> bool {
     serde_json::from_str::<Value>(line).ok().and_then(|v| v.get("type").and_then(|t| t.as_str()).map(str::to_string)).as_deref() == Some("result")
 }
 
-fn apply_line<R: Runtime>(app: &AppHandle<R>, session_id: &str, account_id: &str, line: &str) -> usize {
+/// `last_agent_block` tracks the most recently emitted 'agent' block (id,
+/// text) across the whole turn — see the dedup comment below for why.
+fn apply_line<R: Runtime>(app: &AppHandle<R>, session_id: &str, account_id: &str, line: &str, last_agent_block: &mut Option<(String, String)>) -> usize {
     let outcome = parse_line(line, "claude");
+    let is_result_line = is_final_result_line(line);
 
-    let block_ids: Vec<String> = outcome
-        .blocks
-        .iter()
-        .map(|block| emit_block(app, session_id, block.kind, &block.text))
-        .collect();
+    let mut block_ids: Vec<String> = Vec::with_capacity(outcome.blocks.len());
+    for block in &outcome.blocks {
+        // Claude Code's terminal `result` message typically echoes the
+        // exact text of the assistant's own last response verbatim in its
+        // `result` field (confirmed against real captured output — see
+        // `tests/fixtures/real_turn_simple.jsonl`) — emitting a second
+        // AGENT block for it would just duplicate the same response in the
+        // transcript. Only ever suppressed for the `result` line's own
+        // block (never an ordinary assistant text block) and only when
+        // it's a byte-for-byte repeat of the immediately preceding one, so
+        // a turn with no prior text (or a result that's genuinely
+        // different) still surfaces normally.
+        if is_result_line && block.kind == "agent" {
+            if let Some((existing_id, existing_text)) = last_agent_block.as_ref() {
+                if existing_text == &block.text {
+                    block_ids.push(existing_id.clone());
+                    continue;
+                }
+            }
+        }
+        let id = emit_block(app, session_id, block.kind, &block.text);
+        if block.kind == "agent" {
+            *last_agent_block = Some((id.clone(), block.text.clone()));
+        }
+        block_ids.push(id);
+    }
     for file_edit in &outcome.file_edits {
         let block_id = file_edit.source_block_index.and_then(|i| block_ids.get(i)).map(String::as_str);
         store_file_edit(app, session_id, file_edit, block_id);
@@ -1143,7 +1228,7 @@ mod tests {
             }
         })
         .to_string();
-        apply_line(&app.handle().clone(), "sess1", "acc1", &line);
+        apply_line(&app.handle().clone(), "sess1", "acc1", &line, &mut None);
 
         let db = app.state::<crate::db::DbConnection>();
         let conn = db.0.lock().unwrap();
@@ -1181,6 +1266,18 @@ mod tests {
         assert_eq!(usage.source_block_index, Some(0), "usage must point at the 'agent' block from the same result message");
     }
 
+    /// A turn that aborts/errors can end with `{"type":"result","result":""}`
+    /// — this must NOT produce a blank 'agent' block, both because it's
+    /// misleading (looks like a real, if silent, response) and because a
+    /// non-empty `blocks` count would suppress `spawn_turn`'s "never finish
+    /// in total silence" backstop, which needs `stdout_blocks == 0` to fire.
+    #[test]
+    fn parse_line_ignores_empty_result_text() {
+        let line = serde_json::json!({ "type": "result", "result": "" }).to_string();
+        let outcome = parse_line(&line, "claude");
+        assert_eq!(outcome.blocks.len(), 0, "an empty result string must not produce an 'agent' block");
+    }
+
     #[test]
     fn apply_line_links_turn_usage_to_its_source_block() {
         use rusqlite::Connection;
@@ -1213,7 +1310,7 @@ mod tests {
             "usage": {"input_tokens": 200, "output_tokens": 80}
         })
         .to_string();
-        apply_line(&app.handle().clone(), "sess1", "acc1", &line);
+        apply_line(&app.handle().clone(), "sess1", "acc1", &line, &mut None);
 
         let db = app.state::<crate::db::DbConnection>();
         let conn = db.0.lock().unwrap();
@@ -1224,5 +1321,52 @@ mod tests {
             .query_row("SELECT block_id FROM turn_usage WHERE session_id = 'sess1'", [], |r| r.get(0))
             .expect("apply_line must persist the turn_usage row");
         assert_eq!(usage_block_id, Some(block_id), "turn_usage.block_id must point at the real 'agent' block, not NULL");
+    }
+
+    /// The exact bug reported live: Claude Code's terminal `result` message
+    /// echoes the same text as the assistant's own last response verbatim
+    /// (confirmed against `tests/fixtures/real_turn_simple.jsonl`) — without
+    /// the dedup in `apply_line`, this produced two identical AGENT blocks
+    /// in the transcript for a single actual response.
+    #[test]
+    fn apply_line_skips_duplicate_agent_block_when_result_echoes_last_assistant_text() {
+        use rusqlite::Connection;
+        use std::sync::Mutex as StdMutex;
+
+        let app = tauri::test::mock_app();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, status, created_at, updated_at)
+             VALUES ('acc1','claude','sub','Test','work','','','acc1','healthy','now','now')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, name, path, created_at) VALUES ('proj1','Test','/tmp','now')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, name, project_id, account_id, model, effort, mode, status, started_at)
+             VALUES ('sess1','test-session','proj1','acc1','','high','ask_edits','waiting','now')",
+            [],
+        ).unwrap();
+        app.manage(crate::db::DbConnection(StdMutex::new(conn)));
+
+        let assistant_line = serde_json::json!({
+            "type": "assistant",
+            "message": { "content": [{ "type": "text", "text": "Same text." }] }
+        })
+        .to_string();
+        let result_line = serde_json::json!({ "type": "result", "result": "Same text." }).to_string();
+
+        let mut last_agent_block: Option<(String, String)> = None;
+        apply_line(&app.handle().clone(), "sess1", "acc1", &assistant_line, &mut last_agent_block);
+        apply_line(&app.handle().clone(), "sess1", "acc1", &result_line, &mut last_agent_block);
+
+        let db = app.state::<crate::db::DbConnection>();
+        let conn = db.0.lock().unwrap();
+        let agent_block_count: i64 = conn.query_row("SELECT COUNT(*) FROM session_blocks WHERE session_id = 'sess1' AND kind = 'agent'", [], |r| r.get(0)).unwrap();
+        assert_eq!(agent_block_count, 1, "the result's echoed text must not create a second 'agent' block");
     }
 }
