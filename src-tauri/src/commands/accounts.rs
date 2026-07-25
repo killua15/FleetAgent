@@ -463,7 +463,10 @@ pub async fn list_account_auth(app: AppHandle) -> Result<Vec<AccountAuth>, Strin
                     // An account that isn't logged in gets its login command,
                     // since that's what selecting it would actually run.
                     let init = if logged_in { crate::terminals::InitCommand::Start } else { crate::terminals::InitCommand::Login };
-                    let command = crate::terminals::account_command_line(&account, init, None).ok();
+                    // No session id in the *displayed* example command — each
+                    // real terminal gets its own, and `--session-id <uuid>`
+                    // would just be noise on the account row.
+                    let command = crate::terminals::account_command_line(&account, init, None, None).ok();
                     AccountAuth { account_id: id, logged_in, auth_method, supported, command }
                 })
             })

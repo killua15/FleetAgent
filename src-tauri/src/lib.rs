@@ -2,6 +2,7 @@ mod blocking;
 mod commands;
 mod credential_vault;
 mod db;
+mod handoff;
 mod login_manager;
 mod models;
 mod notifications;

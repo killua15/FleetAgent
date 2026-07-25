@@ -76,8 +76,14 @@ pub struct TerminalTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum InitCommand {
-    /// Launch the provider's CLI interactively (`claude`).
+    /// Launch the provider's CLI interactively, on a fresh conversation whose
+    /// id Fleet owns (`claude --session-id <uuid>`). Owning the id is what
+    /// lets Fleet later find and move that exact transcript — see the
+    /// conversation-continuity plan.
     Start,
+    /// Re-attach the CLI to a conversation Fleet already knows the id of
+    /// (`claude --resume <uuid>`). Requires a `session_uuid`.
+    Resume,
     /// Re-authenticate the account (`claude auth login --claudeai`). This is
     /// the only path in Fleet that can recover an account whose OAuth token
     /// expired — everything else assumes an account stays logged in for life,
@@ -105,6 +111,13 @@ pub struct TerminalInfo {
     /// its account (for the "this account is out of quota" banner) by this,
     /// and the rotation poller learns which accounts are in use from it.
     pub account_id: Option<String>,
+    /// The Claude Code session id Fleet started this terminal on
+    /// (`claude --session-id <uuid>`), when it's an account-scoped claude
+    /// terminal. This is what makes the conversation addressable — the
+    /// transcript lives at `<config_dir>/projects/<slug>/<session_uuid>.jsonl`
+    /// — so it can be resumed or copied to another account later. `None` for a
+    /// plain shell, a login, or a non-claude terminal.
+    pub session_uuid: Option<String>,
 }
 
 /// One chunk of terminal output on its way to the frontend.
@@ -294,7 +307,7 @@ fn shell_quote(value: &str) -> String {
 /// PR comments to a terminal" gets the review feedback in front of the agent.
 /// A prompt with newlines would trip zsh's PS2 continuation prompt inside the
 /// quotes, so callers pass a single-line prompt.
-pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitCommand, prompt: Option<&str>) -> Result<String, String> {
+pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitCommand, session_uuid: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
     if account.provider != "claude" {
         // No `env_for_account` equivalent exists for these, so nothing would
         // actually scope the CLI to this account. Refusing beats opening a
@@ -306,12 +319,25 @@ pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitComma
         return Err(format!("the {binary} CLI isn't installed on this machine"));
     }
     let config = shell_quote(&account.config_dir_path);
+    // The trailing prompt, if any — a positional first message. Shared by Start
+    // and Resume (both open an interactive session that can carry one).
+    let prompt_arg = || match prompt.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => format!(" {}", shell_quote(p)),
+        None => String::new(),
+    };
     let args = match init {
-        InitCommand::Start => match prompt.map(str::trim).filter(|p| !p.is_empty()) {
-            Some(p) => format!(" {}", shell_quote(p)),
-            None => String::new(),
+        // Fleet owns the id so it can locate this exact transcript later. A
+        // caller with no uuid still gets a plain `claude` (backwards-safe), but
+        // the real flows always supply one.
+        InitCommand::Start => match session_uuid {
+            Some(uuid) => format!(" --session-id {}{}", shell_quote(uuid), prompt_arg()),
+            None => prompt_arg(),
         },
-        // A login command takes no prompt — there's no session to seed yet.
+        InitCommand::Resume => {
+            let uuid = session_uuid.ok_or("resuming a terminal needs the session id to resume")?;
+            format!(" --resume {}{}", shell_quote(uuid), prompt_arg())
+        }
+        // A login command takes no prompt or session — there's nothing to seed.
         InitCommand::Login => format!(" {}", crate::providers::claude::login_args().join(" ")),
     };
     Ok(format!("CLAUDE_CONFIG_DIR={config} {binary}{args}"))
@@ -327,8 +353,8 @@ pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitComma
 /// otherwise leave the CLI running somewhere the user never chose. Setting
 /// `cwd` on the spawn as well makes this redundant in the normal case, which
 /// is the point.
-pub(crate) fn terminal_script(cwd: &str, account: &AccountForTerminal, init: InitCommand, prompt: Option<&str>) -> Result<String, String> {
-    Ok(format!("cd {}\n{}", shell_quote(cwd), account_command_line(account, init, prompt)?))
+pub(crate) fn terminal_script(cwd: &str, account: &AccountForTerminal, init: InitCommand, session_uuid: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
+    Ok(format!("cd {}\n{}", shell_quote(cwd), account_command_line(account, init, session_uuid, prompt)?))
 }
 
 /// Resolves a target to the directory its terminal should start in, plus the
@@ -368,6 +394,7 @@ pub fn open_terminal<R: Runtime>(
     target: TerminalTarget,
     account_id: Option<String>,
     init: Option<InitCommand>,
+    session_uuid: Option<String>,
     init_prompt: Option<String>,
     cols: u16,
     rows: u16,
@@ -386,11 +413,20 @@ pub fn open_terminal<R: Runtime>(
         return Err(format!("{cwd} no longer exists on disk — the worktree may have been removed"));
     }
 
+    // Fleet owns the conversation id for an account-scoped `Start`: use the one
+    // the caller supplied (a restore/transfer resuming a known id) or mint a
+    // fresh one. `Resume` must carry its id; `Login` and plain shells have none.
+    let session_uuid = match (&account, init) {
+        (Some(_), Some(InitCommand::Start)) => Some(session_uuid.unwrap_or_else(|| Uuid::new_v4().to_string())),
+        (Some(_), Some(InitCommand::Resume)) => Some(session_uuid.ok_or("resuming a terminal needs a session id")?),
+        _ => None,
+    };
+
     // Resolve the command before spawning anything: a missing CLI should
     // surface as an error the user can act on, not as a terminal that opens
     // and greets them with `command not found`.
     let init_line = match (&account, init) {
-        (Some(account), Some(init)) => Some(format!("{}\n", terminal_script(&cwd, account, init, init_prompt.as_deref())?)),
+        (Some(account), Some(init)) => Some(format!("{}\n", terminal_script(&cwd, account, init, session_uuid.as_deref(), init_prompt.as_deref())?)),
         // A command only means something for an account — "start claude" as
         // nobody in particular isn't a thing Fleet offers.
         (None, Some(_)) => return Err("choose an account before picking a command to run".to_string()),
@@ -431,6 +467,7 @@ pub fn open_terminal<R: Runtime>(
         source_id: target.id.clone(),
         account_name,
         account_id: account_id.clone(),
+        session_uuid,
     };
 
     let scrollback = Arc::new(Mutex::new(VecDeque::new()));
@@ -619,23 +656,68 @@ fn account_terminals<R: Runtime>(app: &AppHandle<R>) -> Vec<(&'static str, Strin
 
 /// Reopens a terminal under a different account — what the "reopen in <other
 /// account>" button on the out-of-quota banner does. Closes the old shell and
-/// starts a fresh one on the same target (same project/worktree) under the new
-/// account, running its CLI. A new conversation, by necessity: the old
-/// account's transcript lives in its own config dir and can't be resumed here.
+/// starts one on the same target (same project/worktree) under the new account.
+///
+/// **Keeps the conversation** when it can: for a claude→claude switch of a
+/// terminal whose session id Fleet owns, it copies that transcript into the new
+/// account's config dir and resumes it (`handoff::transfer_claude_session` +
+/// `--resume`), so the agent picks up where it left off. Falls back to a fresh
+/// session when there's nothing to carry (a terminal that never conversed, a
+/// pre-session-id terminal, or a non-claude account).
 #[tauri::command]
 pub fn reopen_terminal_with_account<R: Runtime>(app: AppHandle<R>, id: String, account_id: String, cols: u16, rows: u16) -> Result<TerminalInfo, String> {
-    // An unauthenticated target account would strand the user; `start` vs.
-    // `login` is decided the same way the picker does, but here the caller
-    // already vetted the account, so `Start` is the expected path.
-    reopen_with_account_inner(app, id, account_id, Some(InitCommand::Start), cols, rows)
+    match plan_conversation_handoff(&app, &id, &account_id) {
+        Some(uuid) => reopen_with_account_inner(app, id, account_id, Some(InitCommand::Resume), Some(uuid), cols, rows),
+        // An unauthenticated target would strand the user; `Start` vs. `login`
+        // is the picker's call, but here the account is already vetted.
+        None => reopen_with_account_inner(app, id, account_id, Some(InitCommand::Start), None, cols, rows),
+    }
 }
 
-/// `reopen_terminal_with_account`'s body, with the init command as a parameter
-/// so the tests can exercise the swap — which terminal ends up in the registry,
-/// under which account, and what lands in `rotation_events` — without the
-/// suite launching a real interactive `claude`. The command above pins
-/// `Start`; nothing else calls this with anything different.
-fn reopen_with_account_inner<R: Runtime>(app: AppHandle<R>, id: String, account_id: String, init: Option<InitCommand>, cols: u16, rows: u16) -> Result<TerminalInfo, String> {
+/// Decides whether reopening `terminal_id` under `to_account_id` can keep the
+/// conversation, and if so does the transcript copy and returns the uuid to
+/// resume. `None` means fall back to a fresh session. The copy happens here,
+/// before the new terminal opens, so `claude --resume <uuid>` finds the file.
+///
+/// Copy-not-move (see `handoff`): even if the later open fails, the source
+/// account keeps its transcript. And because every account switch in Fleet
+/// goes through this transfer, the newest copy always wins — there's no path
+/// that resumes a stale copy directly, which is what the divergent-futures
+/// worry in the continuity doc was about.
+fn plan_conversation_handoff<R: Runtime>(app: &AppHandle<R>, terminal_id: &str, to_account_id: &str) -> Option<String> {
+    let (session_uuid, from_account_id) = {
+        let registry = app.try_state::<TerminalRegistry>()?;
+        let map = registry.0.lock().ok()?;
+        let handle = map.get(terminal_id)?;
+        (handle.info.session_uuid.clone()?, handle.info.account_id.clone()?)
+    };
+
+    let db = app.try_state::<DbConnection>()?;
+    let (from, to) = {
+        let conn = db.0.lock().ok()?;
+        (load_account(&conn, &from_account_id).ok()?, load_account(&conn, to_account_id).ok()?)
+    };
+    // Cross-provider isn't a file copy — that's the rendered-handoff path.
+    if from.provider != "claude" || to.provider != "claude" {
+        return None;
+    }
+
+    match crate::handoff::transfer_claude_session(&from.config_dir_path, &to.config_dir_path, &session_uuid) {
+        Ok(()) => Some(session_uuid),
+        Err(e) => {
+            // Nothing to carry (never conversed, or the transcript is gone) —
+            // a fresh session is the honest outcome, not an error.
+            log::info!("reopen: no conversation to carry for terminal {terminal_id}: {e}");
+            None
+        }
+    }
+}
+
+/// `reopen_terminal_with_account`'s body, with the init command and session id
+/// as parameters so the tests can exercise the swap — which terminal ends up in
+/// the registry, under which account, and what lands in `rotation_events` —
+/// without launching a real interactive `claude`.
+fn reopen_with_account_inner<R: Runtime>(app: AppHandle<R>, id: String, account_id: String, init: Option<InitCommand>, session_uuid: Option<String>, cols: u16, rows: u16) -> Result<TerminalInfo, String> {
     // Capture the old terminal's target and account before closing it — the
     // target is what the new one reopens against, and the old account is the
     // `from` side of the rotation event.
@@ -652,8 +734,9 @@ fn reopen_with_account_inner<R: Runtime>(app: AppHandle<R>, id: String, account_
     let source_id = target.id.clone();
 
     // Open before closing: if the new shell can't start, the user keeps the one
-    // they had rather than losing both.
-    let info = open_terminal(app.clone(), target, Some(account_id.clone()), init, None, cols, rows)?;
+    // they had rather than losing both. `session_uuid` carries the conversation
+    // when `plan_conversation_handoff` set up a resume.
+    let info = open_terminal(app.clone(), target, Some(account_id.clone()), init, session_uuid, None, cols, rows)?;
     close_terminal(app.clone(), id)?;
 
     // Best-effort ledger write — the user already has their new terminal, so a
@@ -1005,11 +1088,11 @@ mod tests {
     fn the_command_line_is_the_one_typed_by_hand() {
         // `claude` is installed on a dev machine but not on CI, so bail rather
         // than assert on the machine.
-        let Ok(start) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None) else { return };
+        let Ok(start) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None, None) else { return };
         assert_eq!(start, "CLAUDE_CONFIG_DIR=/Users/killua/.claude-David claude");
         assert!(!start.ends_with('\n'), "the newline is added when it's typed, so the same string can be displayed");
 
-        let login = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Login, None).unwrap();
+        let login = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Login, None, None).unwrap();
         assert_eq!(login, "CLAUDE_CONFIG_DIR=/Users/killua/.claude-David claude auth login --claudeai");
     }
 
@@ -1018,7 +1101,7 @@ mod tests {
     /// theirs. The login shell's own PATH is what resolves it.
     #[test]
     fn the_command_uses_the_bare_binary_name_not_an_absolute_path() {
-        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None) else { return };
+        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None, None) else { return };
         let binary = command.rsplit(' ').next().unwrap();
         assert_eq!(binary, "claude", "the binary token must be the bare name, not a resolved path: {command}");
     }
@@ -1027,7 +1110,7 @@ mod tests {
     /// individually re-runnable.
     #[test]
     fn the_script_changes_directory_before_running_the_command() {
-        let Ok(script) = terminal_script("/Users/killua/Proyects/WinRadar", &account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None) else {
+        let Ok(script) = terminal_script("/Users/killua/Proyects/WinRadar", &account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None, None) else {
             return;
         };
         assert_eq!(
@@ -1036,11 +1119,50 @@ mod tests {
         );
     }
 
+    /// Start with a Fleet-owned session id — this is what makes the transcript
+    /// addressable later (`projects/<slug>/<uuid>.jsonl`), for restore and for
+    /// copying the conversation to another account.
+    #[test]
+    fn start_with_a_session_uuid_pins_it_on_the_command() {
+        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, Some("11111111-2222-3333-4444-555555555555"), None) else {
+            return;
+        };
+        assert_eq!(command, "CLAUDE_CONFIG_DIR=/Users/killua/.claude-David claude --session-id 11111111-2222-3333-4444-555555555555");
+    }
+
+    /// Resume re-attaches the CLI to a known conversation id (verified against
+    /// the real CLI: `--resume <uuid>` reads and continues that transcript).
+    #[test]
+    fn resume_reattaches_to_a_known_session_id() {
+        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Resume, Some("11111111-2222-3333-4444-555555555555"), None) else {
+            return;
+        };
+        assert_eq!(command, "CLAUDE_CONFIG_DIR=/Users/killua/.claude-David claude --resume 11111111-2222-3333-4444-555555555555");
+    }
+
+    /// Resume with no id is a programming error, not a silent fresh start —
+    /// there's nothing to resume, and a plain `claude` would quietly lose the
+    /// conversation the caller meant to reopen.
+    #[test]
+    fn resume_without_a_session_id_is_an_error() {
+        assert!(account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Resume, None, None).is_err());
+    }
+
+    /// Start without a uuid stays the plain command — this is what the account
+    /// list shows as the example, where a per-terminal id would be noise.
+    #[test]
+    fn start_without_a_uuid_is_the_plain_command() {
+        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None, None) else {
+            return;
+        };
+        assert_eq!(command, "CLAUDE_CONFIG_DIR=/Users/killua/.claude-David claude");
+    }
+
     /// A worktree path with a space has to survive as one argument, or `cd`
     /// would take only the first word and the CLI would run in the wrong tree.
     #[test]
     fn a_working_directory_with_a_space_is_quoted_in_the_cd() {
-        let Ok(script) = terminal_script("/Users/me/My Projects/app", &account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None) else {
+        let Ok(script) = terminal_script("/Users/me/My Projects/app", &account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None, None) else {
             return;
         };
         assert!(script.starts_with("cd '/Users/me/My Projects/app'\n"), "got: {script}");
@@ -1051,7 +1173,7 @@ mod tests {
     /// working on it. The quoting must survive the spaces a real prompt has.
     #[test]
     fn a_start_prompt_becomes_a_quoted_argument_to_claude() {
-        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, Some("PR review feedback: fix the typo")) else {
+        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None, Some("PR review feedback: fix the typo")) else {
             return;
         };
         assert_eq!(command, "CLAUDE_CONFIG_DIR=/Users/killua/.claude-David claude 'PR review feedback: fix the typo'");
@@ -1061,7 +1183,7 @@ mod tests {
     /// review comments routinely have apostrophes.
     #[test]
     fn a_prompt_with_an_apostrophe_is_escaped() {
-        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, Some("don't break this")) else {
+        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None, Some("don't break this")) else {
             return;
         };
         assert!(command.ends_with(r#"claude 'don'\''t break this'"#), "got: {command}");
@@ -1071,7 +1193,7 @@ mod tests {
     /// not `claude ''`.
     #[test]
     fn a_blank_prompt_is_ignored() {
-        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, Some("   ")) else {
+        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None, Some("   ")) else {
             return;
         };
         assert_eq!(command, "CLAUDE_CONFIG_DIR=/Users/killua/.claude-David claude");
@@ -1080,7 +1202,7 @@ mod tests {
     /// A login command never takes a prompt — there's no session to seed yet.
     #[test]
     fn a_login_ignores_any_prompt() {
-        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Login, Some("ignored")) else {
+        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Login, None, Some("ignored")) else {
             return;
         };
         assert!(!command.contains("ignored"), "got: {command}");
@@ -1091,7 +1213,7 @@ mod tests {
     /// real key on disk in plaintext and leave it in the pane's scrollback.
     #[test]
     fn the_command_line_never_contains_an_api_key() {
-        let Ok(command) = account_command_line(&account("key", "/accounts/acc2"), InitCommand::Start, None) else { return };
+        let Ok(command) = account_command_line(&account("key", "/accounts/acc2"), InitCommand::Start, None, None) else { return };
         assert!(!command.contains("ANTHROPIC_API_KEY"), "the key stays ambient, never on a line the shell records: {command}");
     }
 
@@ -1110,7 +1232,7 @@ mod tests {
     /// read the tail as the command to run.
     #[test]
     fn a_config_dir_with_a_space_is_quoted_in_the_command() {
-        let Ok(command) = account_command_line(&account("sub", "/Users/me/My Configs/claude-work"), InitCommand::Start, None) else { return };
+        let Ok(command) = account_command_line(&account("sub", "/Users/me/My Configs/claude-work"), InitCommand::Start, None, None) else { return };
         assert!(command.starts_with("CLAUDE_CONFIG_DIR='/Users/me/My Configs/claude-work' "), "got: {command}");
     }
 
@@ -1125,7 +1247,7 @@ mod tests {
             config_dir_path: "/tmp/cx".to_string(),
             name: "Codex".to_string(),
         };
-        let err = account_command_line(&codex, InitCommand::Start, None).unwrap_err();
+        let err = account_command_line(&codex, InitCommand::Start, None, None).unwrap_err();
         assert!(err.contains("codex"), "got: {err}");
     }
 
@@ -1140,6 +1262,7 @@ mod tests {
             TerminalTarget { kind: TargetKind::Project, id: "proj1".into() },
             None,
             Some(InitCommand::Start),
+            None,
             None,
             80,
             24,
@@ -1157,7 +1280,7 @@ mod tests {
         // `seed` points proj1 at /repo/casablanca, which doesn't exist — the
         // real-world version of this is a worktree deleted off disk while its
         // session row still names it.
-        let result = open_terminal(app.handle().clone(), TerminalTarget { kind: TargetKind::Project, id: "proj1".into() }, None, None, None, 80, 24);
+        let result = open_terminal(app.handle().clone(), TerminalTarget { kind: TargetKind::Project, id: "proj1".into() }, None, None, None, None, 80, 24);
         assert!(result.is_err(), "a vanished working directory must be reported, not silently spawned somewhere else");
         assert!(result.unwrap_err().contains("no longer exists"));
     }
@@ -1187,7 +1310,7 @@ mod tests {
         app.manage(TerminalRegistry::new());
         let handle = app.handle().clone();
 
-        let info = open_terminal(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp".into() }, None, None, None, 80, 24)
+        let info = open_terminal(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp".into() }, None, None, None, None, 80, 24)
             .expect("opening a terminal in a real directory must succeed");
         assert_eq!(info.cwd, dir.to_string_lossy());
 
@@ -1262,7 +1385,7 @@ mod tests {
         app.manage(TerminalRegistry::new());
         let handle = app.handle().clone();
 
-        let info = open_terminal(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp2".into() }, Some("sub1".to_string()), None, None, 80, 24)
+        let info = open_terminal(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp2".into() }, Some("sub1".to_string()), None, None, None, 80, 24)
             .expect("opening against an account must succeed");
         assert_eq!(info.account_name.as_deref(), Some("Personal"), "the pane header has to show whose credentials this shell carries");
         assert_eq!(list_terminals(handle.clone()).unwrap().len(), 1);
@@ -1306,14 +1429,14 @@ mod tests {
         app.manage(TerminalRegistry::new());
         let handle = app.handle().clone();
 
-        let old = open_terminal(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp2".into() }, Some("sub1".to_string()), None, None, 80, 24).unwrap();
+        let old = open_terminal(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp2".into() }, Some("sub1".to_string()), None, None, None, 80, 24).unwrap();
         assert_eq!(
             account_terminals(&handle),
             vec![("project", "tmp2".to_string(), "sub1".to_string())],
             "the poller learns which accounts to check, and within which project, from here"
         );
 
-        let new = reopen_with_account_inner(handle.clone(), old.id.clone(), "sub2".to_string(), None, 80, 24).expect("reopening under an allowed account must succeed");
+        let new = reopen_with_account_inner(handle.clone(), old.id.clone(), "sub2".to_string(), None, None, 80, 24).expect("reopening under an allowed account must succeed");
 
         assert_ne!(new.id, old.id, "a reopen is a new shell, not the old one relabelled");
         assert_eq!(new.account_id.as_deref(), Some("sub2"));
@@ -1422,9 +1545,9 @@ mod tests {
         app.manage(TerminalRegistry::new());
         let handle = app.handle().clone();
 
-        let old = open_terminal(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp2".into() }, Some("sub1".to_string()), None, None, 80, 24).unwrap();
+        let old = open_terminal(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp2".into() }, Some("sub1".to_string()), None, None, None, 80, 24).unwrap();
 
-        let err = reopen_with_account_inner(handle.clone(), old.id.clone(), "cx1".to_string(), Some(InitCommand::Start), 80, 24).unwrap_err();
+        let err = reopen_with_account_inner(handle.clone(), old.id.clone(), "cx1".to_string(), Some(InitCommand::Start), None, 80, 24).unwrap_err();
         assert!(err.contains("codex"), "the failure has to say what couldn't run; got: {err}");
 
         let live = list_terminals(handle.clone()).unwrap();
