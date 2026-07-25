@@ -11,17 +11,43 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, Runtime};
 
-/// Tracks the PID of each in-flight one-shot `claude -p` turn, keyed by
-/// session id, so `stop_session` can actually kill a hung/running turn.
+/// Tracks each in-flight one-shot `claude -p` turn, keyed by session id, so
+/// `stop_session` can actually kill a hung/running turn.
 /// (`process_manager::ProcessRegistry` only tracks the interactive-PTY
 /// path — these headless turns never registered anywhere, so "Stop" had
 /// nothing to kill and a deadlocked turn was unrecoverable short of
 /// deleting the whole session.)
-pub struct TurnRegistry(pub Mutex<HashMap<String, u32>>);
+///
+/// The value is `None` between `try_begin_turn` (which reserves the slot
+/// synchronously, before the background thread even starts) and
+/// `register_turn` (which fills in the real pid once the child is spawned).
+/// That reservation window is what makes the "one turn per session" guard
+/// actually atomic: registering only after `Command::spawn` left a gap where
+/// two rapid `send_message` calls both saw an empty registry and both
+/// launched a `claude --resume <same id>` against the same on-disk
+/// transcript, with the first pid then silently overwritten and orphaned.
+pub struct TurnRegistry(pub Mutex<HashMap<String, Option<u32>>>);
 
 impl TurnRegistry {
     pub fn new() -> Self {
         TurnRegistry(Mutex::new(HashMap::new()))
+    }
+}
+
+/// Sessions whose in-flight turn the user explicitly aborted via
+/// `stop_session`, consumed once by that turn's own tail in `spawn_turn`.
+///
+/// Without this, pressing Stop undid itself: `stop_session` writes
+/// `status = 'done'`, the killed child's stdout hits EOF, and the turn thread
+/// runs its normal tail — `mark_session_status(..., "waiting")` — putting the
+/// session straight back to `waiting` and firing a "Session finished"
+/// notification for a turn the user had just cancelled. A cancelled turn now
+/// leaves both the status and the notification alone.
+pub struct CancelledTurns(pub Mutex<std::collections::HashSet<String>>);
+
+impl CancelledTurns {
+    pub fn new() -> Self {
+        CancelledTurns(Mutex::new(std::collections::HashSet::new()))
     }
 }
 
@@ -35,10 +61,30 @@ impl SpendCapNotified {
     }
 }
 
+/// Atomically reserves this session's single turn slot. Returns `false` if a
+/// turn is already in flight for it, which is the caller's cue to refuse
+/// rather than start a second concurrent `claude` against the same
+/// conversation. Reserving here — synchronously, before any work happens —
+/// rather than at `register_turn` time is what closes the double-spawn race
+/// described on `TurnRegistry`.
+fn try_begin_turn<R: Runtime>(app: &AppHandle<R>, session_id: &str) -> bool {
+    let Some(reg) = app.try_state::<TurnRegistry>() else {
+        // No registry managed (only reachable in tests that never set one up)
+        // — nothing to serialize against, so don't block the turn.
+        return true;
+    };
+    let Ok(mut map) = reg.0.lock() else { return false };
+    if map.contains_key(session_id) {
+        return false;
+    }
+    map.insert(session_id.to_string(), None);
+    true
+}
+
 fn register_turn<R: Runtime>(app: &AppHandle<R>, session_id: &str, pid: u32) {
     if let Some(reg) = app.try_state::<TurnRegistry>() {
         if let Ok(mut map) = reg.0.lock() {
-            map.insert(session_id.to_string(), pid);
+            map.insert(session_id.to_string(), Some(pid));
         }
     }
 }
@@ -51,19 +97,56 @@ fn unregister_turn<R: Runtime>(app: &AppHandle<R>, session_id: &str) {
     }
 }
 
+/// Consumes the "this turn was cancelled by the user" flag for a session.
+/// Consuming (rather than peeking) matters: the flag must never outlive the
+/// one turn it was set for, or the *next* turn on that session would wrongly
+/// suppress its own completion.
+fn take_cancelled<R: Runtime>(app: &AppHandle<R>, session_id: &str) -> bool {
+    let Some(state) = app.try_state::<CancelledTurns>() else { return false };
+    let Ok(mut set) = state.0.lock() else { return false };
+    set.remove(session_id)
+}
+
 /// Kills an in-flight turn's process by PID, if one is tracked for this
-/// session. Best-effort: used by `stop_session` to actually recover a
+/// session, and flags the turn as user-cancelled so its own tail leaves the
+/// session status alone (see `CancelledTurns`). Returns whether there was
+/// actually a turn to stop. Best-effort: used by `stop_session` to recover a
 /// stuck/hung session instead of just flipping its DB status.
-pub fn kill_turn<R: Runtime>(app: &AppHandle<R>, session_id: &str) {
-    let pid = match app.try_state::<TurnRegistry>() {
+pub fn kill_turn<R: Runtime>(app: &AppHandle<R>, session_id: &str) -> bool {
+    let entry = match app.try_state::<TurnRegistry>() {
         Some(reg) => match reg.0.lock() {
             Ok(mut map) => map.remove(session_id),
             Err(_) => None,
         },
         None => None,
     };
-    let Some(pid) = pid else { return };
-    kill_pid_with_grace(pid);
+    // `None` = no turn in flight at all. `Some(None)` = a turn slot was
+    // reserved but its child hasn't spawned yet — nothing to kill, but it
+    // still counts as cancelled so the turn about to start bails out.
+    let Some(pid) = entry else { return false };
+    if let Some(state) = app.try_state::<CancelledTurns>() {
+        if let Ok(mut set) = state.0.lock() {
+            set.insert(session_id.to_string());
+        }
+    }
+    if let Some(pid) = pid {
+        kill_pid_with_grace(pid);
+    }
+    true
+}
+
+/// Kills every in-flight turn, used on app exit so a quit doesn't leave
+/// orphaned `claude` processes running against the user's repos with nothing
+/// left to collect their output. Drains the registry as it goes.
+pub fn kill_all_turns<R: Runtime>(app: &AppHandle<R>) {
+    let Some(reg) = app.try_state::<TurnRegistry>() else { return };
+    let Ok(mut map) = reg.0.lock() else { return };
+    for (session_id, pid) in map.drain() {
+        if let Some(pid) = pid {
+            log::info!("killing in-flight turn for session {session_id} (pid {pid}) on exit");
+            kill_pid_with_grace(pid);
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -120,7 +203,14 @@ pub struct TurnRequest<R: Runtime = tauri::Wry> {
 /// session blocks (you/agent/think/edit/cmd/out) as it streams in. Multi-turn
 /// continuity comes from `resume`, Claude Code's own conversation id
 /// captured from the first turn's `system` message.
-pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) {
+pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) -> Result<(), String> {
+    // Reserve this session's turn slot before anything else — including
+    // before the "you" block is emitted, so a rejected second message never
+    // leaves a stray prompt in the transcript for a turn that never ran.
+    if !try_begin_turn(&req.app, &req.session_id) {
+        return Err("this session already has a turn running — wait for it to finish or press Stop".to_string());
+    }
+
     if req.provider != "claude" {
         emit_block(
             &req.app,
@@ -128,8 +218,9 @@ pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) {
             "agent",
             &format!("provider '{}' has no turn runner yet", req.provider),
         );
+        unregister_turn(&req.app, &req.session_id);
         mark_session_status(&req.app, &req.session_id, "waiting");
-        return;
+        return Ok(());
     }
 
     emit_block(&req.app, &req.session_id, "you", &req.prompt);
@@ -180,6 +271,12 @@ pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) {
             Ok(c) => c,
             Err(e) => {
                 emit_block(&req.app, &req.session_id, "agent", &format!("failed to start claude: {e}"));
+                // Release the slot reserved by `try_begin_turn` — without
+                // this, a session whose very first spawn failed would be
+                // permanently wedged, refusing every later message as
+                // "already running".
+                unregister_turn(&req.app, &req.session_id);
+                let _ = take_cancelled(&req.app, &req.session_id);
                 mark_session_status(&req.app, &req.session_id, "waiting");
                 return;
             }
@@ -296,6 +393,18 @@ pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) {
         unregister_turn(&req.app, &req.session_id);
         let stderr_text = stderr_handle.and_then(|h| h.join().ok()).unwrap_or_default();
 
+        // A turn the user aborted via `stop_session` must not run its normal
+        // tail: `stop_session` already wrote `status = 'done'`, and both the
+        // silence backstop ("claude produced no output (killed by signal)")
+        // and the `waiting` transition below would be actively wrong — the
+        // former reports the user's own Stop as a failure, the latter undoes
+        // it outright and fires a "Session finished" notification for a turn
+        // that never finished. See `CancelledTurns`.
+        if take_cancelled(&req.app, &req.session_id) {
+            log::info!("turn for session {} was cancelled by the user; leaving its status alone", req.session_id);
+            return;
+        }
+
         // Never let a turn finish in total silence — this is the backstop
         // for every failure mode that isn't a clean stream-json `result`
         // line: crash before printing anything, killed by a signal, exited
@@ -322,6 +431,8 @@ pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) {
 
         mark_session_status(&req.app, &req.session_id, "waiting");
     });
+
+    Ok(())
 }
 
 /// One session block produced by parsing a stream-json line, before it's
@@ -715,10 +826,10 @@ fn store_file_edit<R: Runtime>(app: &AppHandle<R>, session_id: &str, file_edit: 
                         chrono::Utc::now().to_rfc3339(),
                     ],
                 ) {
-                    eprintln!("store_file_edit: failed to persist edit for session {session_id}: {e}");
+                    log::error!("store_file_edit: failed to persist edit for session {session_id}: {e}");
                 }
             }
-            Err(e) => eprintln!("store_file_edit: DB mutex poisoned for session {session_id}: {e}"),
+            Err(e) => log::error!("store_file_edit: DB mutex poisoned for session {session_id}: {e}"),
         }
     }
 }
@@ -742,10 +853,10 @@ fn store_turn_usage<R: Runtime>(app: &AppHandle<R>, session_id: &str, usage: &Tu
                         chrono::Utc::now().to_rfc3339(),
                     ],
                 ) {
-                    eprintln!("store_turn_usage: failed to persist usage for session {session_id}: {e}");
+                    log::error!("store_turn_usage: failed to persist usage for session {session_id}: {e}");
                 }
             }
-            Err(e) => eprintln!("store_turn_usage: DB mutex poisoned for session {session_id}: {e}"),
+            Err(e) => log::error!("store_turn_usage: DB mutex poisoned for session {session_id}: {e}"),
         }
     }
     check_spend_cap(app, session_id);
@@ -826,10 +937,10 @@ fn store_provider_session_id<R: Runtime>(app: &AppHandle<R>, session_id: &str, p
                     "UPDATE sessions SET provider_session_id = ?2 WHERE id = ?1",
                     params![session_id, provider_session_id],
                 ) {
-                    eprintln!("store_provider_session_id: failed for session {session_id}: {e}");
+                    log::error!("store_provider_session_id: failed for session {session_id}: {e}");
                 }
             }
-            Err(e) => eprintln!("store_provider_session_id: DB mutex poisoned for session {session_id}: {e}"),
+            Err(e) => log::error!("store_provider_session_id: DB mutex poisoned for session {session_id}: {e}"),
         }
     }
 }
@@ -837,6 +948,78 @@ fn store_provider_session_id<R: Runtime>(app: &AppHandle<R>, session_id: &str, p
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn app_with_registries() -> tauri::App<tauri::test::MockRuntime> {
+        let app = tauri::test::mock_app();
+        app.manage(TurnRegistry::new());
+        app.manage(CancelledTurns::new());
+        app
+    }
+
+    /// The double-spawn guard: two `send_message` calls in quick succession
+    /// must not both start a `claude --resume <same id>` against the same
+    /// on-disk transcript (the second would also have overwritten the first's
+    /// pid in the registry, orphaning a process "Stop" could no longer kill).
+    #[test]
+    fn a_second_turn_on_the_same_session_is_refused_until_the_first_finishes() {
+        let app = app_with_registries();
+        let handle = app.handle();
+
+        assert!(try_begin_turn(handle, "sess1"), "the first turn must be allowed");
+        assert!(!try_begin_turn(handle, "sess1"), "a second concurrent turn on the same session must be refused");
+
+        // A different session is unaffected — the guard is per session, not global.
+        assert!(try_begin_turn(handle, "sess2"));
+
+        // Once the first turn finishes and releases its slot, the session is usable again.
+        unregister_turn(handle, "sess1");
+        assert!(try_begin_turn(handle, "sess1"), "the slot must be reusable after the turn releases it");
+    }
+
+    /// Regression for "pressing Stop undoes itself": `kill_turn` must record
+    /// the cancellation so the turn's own tail skips its `waiting` transition
+    /// and its "Session finished" notification, leaving `stop_session`'s
+    /// `done` write standing.
+    #[test]
+    fn stopping_a_turn_flags_it_cancelled_exactly_once() {
+        let app = app_with_registries();
+        let handle = app.handle();
+
+        assert!(try_begin_turn(handle, "sess1"));
+        assert!(kill_turn(handle, "sess1"), "stopping a live turn must report that there was one");
+        assert!(take_cancelled(handle, "sess1"), "the turn's tail must see the cancellation");
+        assert!(
+            !take_cancelled(handle, "sess1"),
+            "the flag must be consumed, not left behind to suppress the *next* turn's completion"
+        );
+    }
+
+    /// Stopping a session with nothing running must not leave a flag armed —
+    /// otherwise the next real turn on that session would finish silently,
+    /// never leaving `running` in the UI.
+    #[test]
+    fn stopping_an_idle_session_arms_nothing() {
+        let app = app_with_registries();
+        let handle = app.handle();
+
+        assert!(!kill_turn(handle, "sess1"), "there was no turn to stop");
+        assert!(!take_cancelled(handle, "sess1"));
+        assert!(try_begin_turn(handle, "sess1"), "a later turn must start normally");
+    }
+
+    /// Stop pressed in the window between reserving the slot and the child
+    /// actually spawning: there's no pid to signal, but it still counts as a
+    /// cancellation so the turn about to start bails out.
+    #[test]
+    fn a_turn_cancelled_before_its_process_spawned_still_counts_as_cancelled() {
+        let app = app_with_registries();
+        let handle = app.handle();
+
+        try_begin_turn(handle, "sess1");
+        // No `register_turn` call — the registry still holds `None` for this session.
+        assert!(kill_turn(handle, "sess1"));
+        assert!(take_cancelled(handle, "sess1"));
+    }
 
     #[test]
     fn is_over_weekly_spend_estimate_ignores_subscription_accounts() {
@@ -1086,7 +1269,12 @@ mod tests {
     /// dir (matching the real account's actual state at the time). If this
     /// ever goes back to producing zero blocks, this test catches it
     /// directly instead of relying on manual DB inspection again.
+    ///
+    /// `#[ignore]` because it spawns the real CLI: worth running locally
+    /// (`cargo test -- --ignored`), but on CI it would only ever assert that
+    /// the runner has no `claude` installed.
     #[test]
+    #[ignore = "spawns a real `claude` process; requires the CLI installed"]
     fn spawn_turn_writes_you_block_and_final_result_even_when_not_logged_in() {
         use rusqlite::Connection;
         use std::sync::Mutex as StdMutex;
@@ -1135,7 +1323,8 @@ mod tests {
             name: String::new(),
             resume: None,
             prompt: "say hello".to_string(),
-        });
+        })
+        .expect("the first turn on a fresh session must not be refused");
 
         // The "you" block is emitted synchronously before the background
         // thread is even spawned — if this isn't there almost immediately,

@@ -85,6 +85,11 @@ pub struct NewAccount {
     /// pending config dir (already holding valid credentials) should be
     /// adopted as this account's permanent config dir.
     pub login_id: Option<String>,
+    /// A config dir that already exists on disk and is already logged in
+    /// (e.g. `~/.claude-work`), adopted in place instead of running a fresh
+    /// login. Takes precedence over `login_id`. Nothing is moved — the OAuth
+    /// token in the keychain is keyed by this literal path.
+    pub config_dir_path: Option<String>,
     pub monthly_cap: Option<f64>,
 }
 
@@ -203,6 +208,17 @@ pub struct AppSettings {
     pub notify_session_waiting: bool,
     pub notify_account_exhausted: bool,
     pub notify_spend_cap: bool,
+    pub notify_pr_comments: bool,
+    /// Opt-in gate for the tree-canvas feature (hierarchical agent teams) —
+    /// off by default so the "Hierarchy trees" entry point in `AppTopBar`
+    /// doesn't even show until a user deliberately turns it on.
+    pub agent_trees_enabled: bool,
+    /// Off by default: `check_pr_comments_for` normally drops any PR comment
+    /// written by the logged-in `gh` user themselves, since the feature
+    /// exists to surface *other* reviewers' feedback — but that makes it
+    /// impossible to test solo without a second GitHub account. Turning
+    /// this on keeps self-authored comments too.
+    pub include_own_pr_comments: bool,
 }
 
 /// One row of the Rotation settings screen's checklist — an account plus
@@ -280,4 +296,212 @@ pub struct DiscoveredMemoryFile {
     pub project_id: String,
     pub project_name: String,
     pub relative_path: String,
+}
+
+/// One node in a tree-canvas hierarchy (`agent_nodes` table) — a role/prompt/
+/// model/account template, up to 3 levels deep (`depth`) via `parent_id`.
+/// Running the tree creates a real `Session` per node (linked back via
+/// `Session.node_id`); the node itself is just the reusable definition.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentNode {
+    pub id: String,
+    pub project_id: String,
+    pub parent_id: Option<String>,
+    pub role: String,
+    pub prompt: String,
+    pub model: String,
+    pub account_id: Option<String>,
+    pub depth: i64,
+    pub created_at: String,
+}
+
+/// A PR a session pushed/opened via `gh` — one row per `pull_requests`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestInfo {
+    pub id: String,
+    pub session_id: String,
+    pub repo_owner: String,
+    pub repo_name: String,
+    pub number: i64,
+    pub url: String,
+    pub state: String,
+    pub last_comment_seen_at: Option<String>,
+    /// The error from the most recent failed check for this PR, if any — see
+    /// `pull_requests.last_check_error` in schema.sql for why this exists.
+    pub last_check_error: Option<String>,
+    pub created_at: String,
+    /// GitHub's `updatedAt` as of the last successful check — an internal
+    /// freshness cache, not something the frontend needs.
+    #[serde(skip)]
+    pub last_seen_updated_at: Option<String>,
+    /// The PR's actual head branch — `None` until either Fleet created the
+    /// PR itself or `resolve_session_for_pr_branch` has backfilled it.
+    pub head_branch: Option<String>,
+}
+
+/// A read-only preview of what `create_pull_request` would produce for a
+/// session, computed without any of its mutations (no branch creation, no
+/// commit, no push) — see `preview_pull_request` in `pull_requests.rs` for
+/// how the diff is derived so this can't drift from what actually gets
+/// created.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestPreview {
+    pub suggested_title: String,
+    pub body: String,
+    pub added: Vec<String>,
+    pub modified: Vec<String>,
+    pub removed: Vec<String>,
+    pub lines_added: i64,
+    pub lines_removed: i64,
+}
+
+/// One comment fetched from a PR — either a general comment/review (from
+/// `gh pr view --json comments,reviews`) or an inline diff comment tied to a
+/// specific file/line (from `gh api .../pulls/{n}/comments`), collapsed into
+/// one shape so the frontend/prompt-builder doesn't need to special-case
+/// which kind it is; `path`/`line` are `None` for general comments. `id` is
+/// the real `pr_review_comments` row once persisted — every comment that
+/// reaches the frontend (banner, poller event, inbox screen) has one, so
+/// "send"/"dismiss" always act on a real row instead of trusting
+/// client-supplied text.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrComment {
+    pub id: String,
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+    pub path: Option<String>,
+    pub line: Option<i64>,
+}
+
+/// One open PR (with its still-pending review comments) inside a project's
+/// group in the PR review inbox screen.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrInboxEntry {
+    pub pull_request: PullRequestInfo,
+    pub session_id: String,
+    pub session_name: String,
+    pub comments: Vec<PrComment>,
+}
+
+/// One project's group in the PR review inbox — every open PR that project
+/// has, each with its pending (unresolved) comments.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectPrInbox {
+    pub project_id: String,
+    pub project_name: String,
+    pub entries: Vec<PrInboxEntry>,
+}
+
+/// One active worktree (a subsession branched off a project via a real `git
+/// worktree`, or a copied folder with its own fresh git init) shown in the
+/// git panel, with its live git status — computed on demand, not cached.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeGitStatus {
+    pub session_id: String,
+    pub session_name: String,
+    pub branch: Option<String>,
+    pub kind: String,
+    pub path: String,
+    pub ahead: i64,
+    pub behind: i64,
+    pub dirty: bool,
+    /// The open PR tracked against this exact worktree's branch, if any —
+    /// lets the git panel surface "Send to agent" review comments right
+    /// next to the worktree they belong to.
+    pub linked_pr: Option<PullRequestInfo>,
+}
+
+/// One project's repo status in the git panel: its own root checkout plus
+/// every active worktree branched off it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectGitOverview {
+    pub project_id: String,
+    pub project_name: String,
+    pub project_path: String,
+    /// `None` when the project's own directory isn't a git repo at all (a
+    /// "copy"-only project) — the root card still shows, just without
+    /// branch/ahead-behind info.
+    pub repo_owner: Option<String>,
+    pub repo_name: Option<String>,
+    pub default_branch: Option<String>,
+    pub current_branch: Option<String>,
+    pub ahead: i64,
+    pub behind: i64,
+    pub dirty: bool,
+    pub worktrees: Vec<WorktreeGitStatus>,
+}
+
+/// One local or remote-tracking branch, for the git panel's "History" view —
+/// `ahead`/`behind` come straight from `%(upstream:track)`, not a separate
+/// `rev-list` call per branch, so listing every branch stays a single `git`
+/// subprocess call even in a repo with many of them.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchInfo {
+    /// Short name without the `refs/heads/`/`refs/remotes/` prefix, e.g.
+    /// `main` or `origin/feature-x`.
+    pub name: String,
+    pub is_remote: bool,
+    pub is_current: bool,
+    pub upstream: Option<String>,
+    pub ahead: i64,
+    pub behind: i64,
+    pub last_commit_hash: String,
+    pub last_commit_subject: String,
+    pub last_commit_date: String,
+}
+
+/// One commit row for the git panel's commit graph — `parents` (full hashes)
+/// is what a lane-layout algorithm needs to draw the DAG; `refs` are the
+/// branch/tag names (if any) pointing directly at this commit, for the
+/// "pill" labels shown inline (mirrors what VS Code's Git Graph shows).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitInfo {
+    pub hash: String,
+    pub short_hash: String,
+    pub parents: Vec<String>,
+    pub author: String,
+    pub date: String,
+    pub subject: String,
+    pub refs: Vec<String>,
+}
+
+/// One page of `list_commits` — `has_more` is derived from requesting one
+/// extra row past the caller's limit, so the frontend knows whether to show
+/// a "load more" control without a separate count query.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitLogPage {
+    pub commits: Vec<CommitInfo>,
+    pub has_more: bool,
+}
+
+/// One file changed by a commit (diffed against its first parent) — reuses
+/// the same `FileStatus` enum/color convention the session file tree already
+/// uses, so the frontend's existing `FILE_STATUS_COLOR` map applies as-is.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitFileChange {
+    pub path: String,
+    pub status: FileStatus,
+}
+
+/// A single file's before/after content for one commit — fed straight into
+/// the frontend's existing pure `diffLines(oldText, newText)` differ, same
+/// as a session's live file edits.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitFileDiff {
+    pub old_text: String,
+    pub new_text: String,
 }

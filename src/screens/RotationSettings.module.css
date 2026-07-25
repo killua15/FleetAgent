@@ -156,6 +156,65 @@
   color: var(--dim);
 }
 
+.policyBox {
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  margin-bottom: 18px;
+}
+
+.policyLabel {
+  display: block;
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.16em;
+  color: var(--dim);
+  margin-bottom: 10px;
+}
+
+.policyOptions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.policyOption,
+.policyOptionActive {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.policyOption:hover {
+  background: var(--panel2);
+}
+
+.policyOptionActive {
+  border-color: var(--acc);
+  background: var(--accD);
+}
+
+.policyOptionText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.policyOptionLabel {
+  font: 500 12px var(--font-ui);
+  color: var(--txt);
+}
+
+.policyOptionHint {
+  font: 400 11px var(--font-ui);
+  color: var(--mut);
+}
+
 .mixWarning {
   display: flex;
   align-items: center;

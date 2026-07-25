@@ -39,6 +39,9 @@ pub(crate) fn read_app_settings(conn: &rusqlite::Connection) -> Result<AppSettin
         notify_session_waiting: false,
         notify_account_exhausted: false,
         notify_spend_cap: false,
+        notify_pr_comments: false,
+        agent_trees_enabled: false,
+        include_own_pr_comments: false,
     };
     for row in rows {
         let (key, value) = row.map_err(|e| e.to_string())?;
@@ -49,6 +52,9 @@ pub(crate) fn read_app_settings(conn: &rusqlite::Connection) -> Result<AppSettin
             "notify_session_waiting" => settings.notify_session_waiting = value == "1",
             "notify_account_exhausted" => settings.notify_account_exhausted = value == "1",
             "notify_spend_cap" => settings.notify_spend_cap = value == "1",
+            "notify_pr_comments" => settings.notify_pr_comments = value == "1",
+            "agent_trees_enabled" => settings.agent_trees_enabled = value == "1",
+            "include_own_pr_comments" => settings.include_own_pr_comments = value == "1",
             _ => {}
         }
     }
@@ -81,6 +87,9 @@ pub fn set_app_settings(db: State<DbConnection>, input: AppSettings) -> Result<A
     write_setting(&conn, "notify_session_waiting", bool_str(input.notify_session_waiting))?;
     write_setting(&conn, "notify_account_exhausted", bool_str(input.notify_account_exhausted))?;
     write_setting(&conn, "notify_spend_cap", bool_str(input.notify_spend_cap))?;
+    write_setting(&conn, "notify_pr_comments", bool_str(input.notify_pr_comments))?;
+    write_setting(&conn, "agent_trees_enabled", bool_str(input.agent_trees_enabled))?;
+    write_setting(&conn, "include_own_pr_comments", bool_str(input.include_own_pr_comments))?;
     Ok(input)
 }
 
@@ -436,7 +445,7 @@ pub fn trigger_review<R: Runtime>(app: AppHandle<R>, db: State<DbConnection>, se
         name,
         resume: None,
         prompt: review_prompt,
-    });
+    })?;
 
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     conn.query_row("SELECT * FROM sessions WHERE id = ?1", params![new_session_id], row_to_session).map_err(|e| e.to_string())

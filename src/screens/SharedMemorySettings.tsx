@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../lib/invoke';
 import { SettingsTabs } from '../components/SettingsTabs';
 import { ConfirmDeleteDialog } from '../components/ConfirmDeleteDialog';
 import { Button } from '../components/ui/button';

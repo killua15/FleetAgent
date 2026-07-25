@@ -18,6 +18,21 @@ export interface Account {
   updatedAt: string;
 }
 
+/** Login state for one account, from the batch `list_account_auth` command.
+ * `supported` is false for providers Fleet can't scope a process to yet
+ * (codex, gemini) — they can be added, but nothing can run as them. */
+export interface AccountAuth {
+  accountId: string;
+  loggedIn: boolean;
+  authMethod: string;
+  supported: boolean;
+  /** The exact command a terminal for this account will run, e.g.
+   * `CLAUDE_CONFIG_DIR=/Users/me/.claude-work claude`. Comes from the same
+   * backend function that executes it, so what the row shows can't drift from
+   * what happens. `null` when there's nothing runnable. */
+  command: string | null;
+}
+
 export interface NewAccount {
   provider: Provider;
   billing: Billing;
@@ -26,7 +41,21 @@ export interface NewAccount {
   planLabel: string;
   secret?: string;
   loginId?: string;
+  /** A config dir already on disk and already logged in (e.g.
+   * `~/.claude-work`), adopted in place instead of running a fresh login. */
+  configDirPath?: string;
   monthlyCap?: number;
+}
+
+/** A Claude Code config directory already logged in on this machine that no
+ * Fleet account is using yet — the ones a user drives by hand with
+ * `CLAUDE_CONFIG_DIR=~/.claude-work claude`. */
+export interface DiscoveredLogin {
+  path: string;
+  /** `~`-relative when under the home directory, which is where these live. */
+  displayPath: string;
+  email: string | null;
+  subscriptionType: string | null;
 }
 
 export const PROVIDER_META: Record<

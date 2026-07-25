@@ -1,0 +1,338 @@
+.screen {
+  width: 100%;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--txt);
+  font-family: var(--font-ui);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.header {
+  height: 52px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+}
+
+.backBtn {
+  font: 500 11.5px var(--font-ui);
+  padding: 6px 12px;
+  border-radius: 7px;
+}
+
+.badge {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--accD);
+  color: var(--acc);
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  flex: none;
+}
+
+.divider {
+  width: 1px;
+  height: 20px;
+  background: var(--line);
+  flex: none;
+}
+
+.templatesLabel {
+  font: 600 10px var(--font-mono);
+  letter-spacing: 0.12em;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.viewSwitcher {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  flex: none;
+}
+
+.viewSwitcherLink,
+.viewSwitcherActive {
+  font: 500 10.5px var(--font-mono);
+  padding: 5px 11px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.viewSwitcherLink {
+  color: var(--dim);
+}
+
+.viewSwitcherLink:hover {
+  color: var(--txt);
+}
+
+.viewSwitcherActive {
+  background: var(--accD);
+  color: var(--acc);
+  cursor: default;
+}
+
+.nodeCountLabel {
+  font: 500 11px var(--font-mono);
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.projectSelect {
+  min-width: 150px;
+  max-width: 220px;
+  flex: none;
+}
+
+.columnHeader {
+  flex: none;
+  display: grid;
+  grid-template-columns: 1fr 150px 150px 130px 90px;
+  gap: 12px;
+  padding: 10px 24px 8px;
+  border-bottom: 1px solid var(--line);
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.14em;
+  color: var(--dim);
+}
+
+.body {
+  flex: 1;
+  overflow: auto;
+  padding: 8px 24px 24px;
+}
+
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 60px 0;
+}
+
+.emptyStateText {
+  font: 400 12.5px var(--font-ui);
+  color: var(--dim);
+}
+
+.rowWrap {
+  border-radius: 8px;
+  margin-bottom: 3px;
+  border: 1px solid transparent;
+}
+
+.rowWrapSelected {
+  border-color: var(--acc);
+  background: var(--panel);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 1fr 150px 150px 130px 90px;
+  gap: 12px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+
+.row:hover {
+  background: var(--panel2);
+}
+
+.rowMain {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.indent {
+  flex: none;
+  align-self: stretch;
+}
+
+.indentLine {
+  border-right: 1px solid var(--line);
+  margin-right: 6px;
+}
+
+.connector {
+  font: 500 13px var(--font-mono);
+  color: var(--dim);
+  flex: none;
+}
+
+.provBadge {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  font: 700 9px var(--font-mono);
+  flex: none;
+}
+
+.role {
+  font: 600 12.5px var(--font-ui);
+  flex: none;
+}
+
+.promptPreview {
+  font: 400 11px var(--font-mono);
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model {
+  font: 500 10.5px var(--font-mono);
+  color: var(--acc);
+  align-self: center;
+}
+
+.account {
+  font: 500 10.5px var(--font-mono);
+  color: var(--teal);
+  align-self: center;
+}
+
+.reportsTo {
+  font: 400 10.5px var(--font-mono);
+  color: var(--dim);
+  align-self: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.actions {
+  display: flex;
+  gap: 5px;
+  justify-content: flex-end;
+  align-self: center;
+}
+
+.actionBtn {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--bg2);
+  color: var(--acc);
+  cursor: pointer;
+  font: 600 12px var(--font-mono);
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+
+.actionBtn:hover {
+  border-color: var(--acc);
+}
+
+.deleteBtn {
+  color: var(--dim);
+}
+
+.deleteBtn:hover {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.editRow {
+  padding: 4px 12px 14px;
+  border-top: 1px dashed var(--line);
+}
+
+.editFields {
+  display: flex;
+  gap: 12px;
+}
+
+.editCol {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 200px;
+  flex: none;
+}
+
+.editFieldLabel {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.12em;
+  color: var(--dim);
+}
+
+.editPromptWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.editError {
+  font: 400 11px var(--font-ui);
+  color: var(--red);
+  margin-top: 6px;
+}
+
+.editSessionLink {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font: 600 11.5px var(--font-mono);
+  color: var(--acc);
+  padding: 0;
+  margin-top: 6px;
+  display: block;
+}
+
+.footer {
+  flex: none;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 10px 24px;
+  border-top: 1px solid var(--line);
+  background: var(--bg2);
+  font: 400 11px var(--font-mono);
+  color: var(--dim);
+}
+
+.depthBadge {
+  font: 600 10.5px var(--font-mono);
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: var(--panel2);
+  color: var(--mut);
+}
+
+.depthBadgeMax {
+  background: var(--amberD);
+  color: var(--amber);
+}

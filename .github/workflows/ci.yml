@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch makes the first run's result irrelevant —
+# cancel it rather than queueing behind it on the (slow, expensive) macOS
+# runners.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # macOS is the platform Fleet actually targets — `open -a Terminal`, the
+    # `resolve_binary` search paths, and the worktree cleanup all assume it —
+    # so testing anywhere else would be testing a configuration nobody runs.
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Typecheck frontend
+        run: npx tsc --noEmit
+
+      # Must come before the Rust job: `tauri-build` resolves `frontendDist`
+      # (../dist) at compile time, so the Rust crate won't build against a
+      # tree that has never had the frontend built.
+      - name: Build frontend
+        run: npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Deliberately not gating on `cargo fmt --check` or `cargo clippy`: the
+      # existing code is not rustfmt-formatted (it uses much wider lines than
+      # the default 100), so both would fail across the whole tree on day one
+      # and teach everyone to ignore CI. Worth adding as a separate, scoped
+      # cleanup — not as a drive-by that makes this workflow useless.
+      - name: Test backend
+        working-directory: src-tauri
+        # Tests marked `#[ignore]` spawn the real `claude` CLI, which isn't
+        # installed here — see their doc comments. Run them locally with
+        # `cargo test -- --ignored`.
+        run: cargo test

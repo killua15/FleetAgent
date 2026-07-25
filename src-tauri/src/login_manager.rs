@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::process::Command;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use uuid::Uuid;
 
 /// A running interactive CLI login. Kept alive in the registry so we can
@@ -44,11 +44,18 @@ pub struct LoginSession {
     pub config_dir: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthStatus {
     pub logged_in: bool,
     pub auth_method: String,
+    /// Both come straight from `claude auth status --json`, which has always
+    /// returned them — they were simply discarded. They're what makes a list
+    /// of config directories readable: `~/.claude-work` means nothing on its
+    /// own, `dsalinas@technomar.com.br · team` identifies the account.
+    /// `None` when the CLI omits them (a team login without a bound email).
+    pub email: Option<String>,
+    pub subscription_type: Option<String>,
 }
 
 /// Path of the isolated, not-yet-adopted config dir for a login attempt.
@@ -60,6 +67,27 @@ pub fn pending_dir(app: &AppHandle, login_id: &str) -> Result<std::path::PathBuf
         .map_err(|e| e.to_string())?
         .join("pending-logins")
         .join(login_id))
+}
+
+/// The permanent home for a new login, named after the account rather than an
+/// opaque id: `<app data>/accounts/<slug>`. This *is* where `claude auth
+/// login` runs, so it's also the config dir forever after — the directory
+/// can't be renamed later without orphaning the keychain token (see
+/// `create_account`). That's the whole reason the name has to be known before
+/// the login starts, and why a new account no longer needs a manual "move it
+/// somewhere readable" step afterwards.
+///
+/// Disambiguates a colliding slug with a short suffix, same approach as
+/// `commands::sessions::unique_worktree_dir`.
+fn account_config_dir<R: Runtime>(app: &AppHandle<R>, name: &str) -> Result<std::path::PathBuf, String> {
+    let accounts = app.path().app_data_dir().map_err(|e| e.to_string())?.join("accounts");
+    let slug = crate::commands::sessions::slugify(name);
+    let candidate = accounts.join(&slug);
+    if !candidate.exists() {
+        return Ok(candidate);
+    }
+    let suffix = &Uuid::new_v4().to_string()[..6];
+    Ok(accounts.join(format!("{slug}-{suffix}")))
 }
 
 /// Full parent environment plus an isolated `CLAUDE_CONFIG_DIR` and a sane
@@ -77,7 +105,15 @@ pub(crate) fn login_env(config_dir: &str) -> Vec<(String, String)> {
     env
 }
 
-pub fn begin_login(app: AppHandle, provider: String) -> Result<LoginSession, String> {
+/// Starts an interactive `claude auth login` for a brand-new account.
+///
+/// `name` is the account name the user typed: the login runs directly in that
+/// account's permanent home (`accounts/<slug>`), so the account is correctly
+/// configured the moment it's created — no later "move the config dir
+/// somewhere readable" step. The name has to be known here, before the login,
+/// precisely because the directory can't be renamed afterwards without
+/// breaking the keychain token.
+pub fn begin_login(app: AppHandle, provider: String, name: String) -> Result<LoginSession, String> {
     if provider != "claude" {
         return Err(format!(
             "'{provider}' login isn't wired yet — its CLI isn't installed on this machine"
@@ -88,7 +124,7 @@ pub fn begin_login(app: AppHandle, provider: String) -> Result<LoginSession, Str
     }
 
     let login_id = Uuid::new_v4().to_string();
-    let config_dir = pending_dir(&app, &login_id)?;
+    let config_dir = account_config_dir(&app, &name)?;
     std::fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
     let config_dir = config_dir.to_string_lossy().to_string();
 
@@ -195,7 +231,7 @@ pub fn auth_status_for_dir(config_dir: &str) -> Result<AuthStatus, String> {
         cmd.env(k, v);
     }
 
-    let output = cmd.output().map_err(|e| e.to_string())?;
+    let output = crate::process_timeout::run_with_timeout(cmd, crate::process_timeout::DEFAULT_TIMEOUT)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let value: serde_json::Value = serde_json::from_str(stdout.trim())
         .map_err(|e| format!("could not parse auth status: {e} — got: {stdout}"))?;
@@ -207,6 +243,8 @@ pub fn auth_status_for_dir(config_dir: &str) -> Result<AuthStatus, String> {
             .and_then(|v| v.as_str())
             .unwrap_or("none")
             .to_string(),
+        email: value.get("email").and_then(|v| v.as_str()).map(str::to_string),
+        subscription_type: value.get("subscriptionType").and_then(|v| v.as_str()).map(str::to_string),
     })
 }
 
@@ -225,13 +263,28 @@ pub fn check_login_status(app: &AppHandle, login_id: &str) -> Result<AuthStatus,
 pub fn cancel_login(app: &AppHandle, login_id: &str) -> Result<(), String> {
     let state = app.state::<LoginRegistry>();
     let mut registry = state.0.lock().map_err(|e| e.to_string())?;
+    // The login's dir is now `accounts/<slug>` (see `begin_login`), not a
+    // reconstructable `pending-logins/<id>` — so take the real path off the
+    // registered proc before removing it, rather than guessing where it was.
     if let Some(mut proc) = registry.remove(login_id) {
         let _ = proc.child.kill();
-    }
-    if let Ok(dir) = pending_dir(app, login_id) {
-        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(&proc.config_dir);
     }
     Ok(())
+}
+
+/// Kills every in-flight interactive login, used on app exit. These are real
+/// `claude auth login` processes sitting in a PTY waiting on stdin — quitting
+/// Fleet with the AddAccount wizard open would otherwise strand one forever.
+/// Their pending config dirs are deliberately left on disk: an OAuth login
+/// that actually completed before the quit is still adoptable next launch.
+pub fn kill_all_logins<R: tauri::Runtime>(app: &AppHandle<R>) {
+    let Some(state) = app.try_state::<LoginRegistry>() else { return };
+    let Ok(mut registry) = state.0.lock() else { return };
+    for (login_id, mut proc) in registry.drain() {
+        log::info!("killing in-flight login {login_id} on exit");
+        let _ = proc.child.kill();
+    }
 }
 
 /// Removes a finished login from the registry (killing it if somehow still
@@ -244,6 +297,19 @@ pub fn take(app: &AppHandle, login_id: &str) {
             }
         }
     }
+}
+
+/// Like `take`, but returns the login's real config dir so the caller doesn't
+/// have to reconstruct it. Since `begin_login` now writes to `accounts/<slug>`
+/// rather than a path derivable from the login id, `create_account` must adopt
+/// whatever path was actually used, and only the registered proc knows it.
+/// `None` if the login id isn't registered (already adopted, or cancelled).
+pub fn adopt(app: &AppHandle, login_id: &str) -> Option<String> {
+    let state = app.try_state::<LoginRegistry>()?;
+    let mut registry = state.0.lock().ok()?;
+    let mut proc = registry.remove(login_id)?;
+    let _ = proc.child.kill();
+    Some(proc.config_dir)
 }
 
 #[cfg(test)]
@@ -259,12 +325,48 @@ mod tests {
         assert!(env.iter().any(|(k, _)| k == "TERM"));
     }
 
+    /// A new login lands in a readable, account-named directory under
+    /// `accounts/`, not the opaque `pending-logins/<uuid>` a user then had to
+    /// move by hand. The name is slugified, so the resulting path is
+    /// filesystem-safe regardless of what was typed.
+    #[test]
+    fn a_new_login_dir_is_named_after_the_account_under_accounts() {
+        let app = tauri::test::mock_app();
+        let dir = account_config_dir(app.handle(), "David Personal 1").unwrap();
+
+        let parent = dir.parent().unwrap().file_name().unwrap().to_string_lossy().to_string();
+        assert_eq!(parent, "accounts", "a new login must live under accounts/, not pending-logins/");
+        assert_eq!(dir.file_name().unwrap().to_string_lossy(), "david-personal-1", "the folder must be the slugified account name");
+        assert!(!dir.to_string_lossy().contains("pending-logins"));
+    }
+
+    /// Two accounts with the same name must not share one config dir — that
+    /// would point both at the same login. The second gets a suffix.
+    #[test]
+    fn a_colliding_account_name_gets_a_distinct_dir() {
+        let app = tauri::test::mock_app();
+        let first = account_config_dir(app.handle(), "Personal").unwrap();
+        std::fs::create_dir_all(&first).unwrap();
+
+        let second = account_config_dir(app.handle(), "Personal").unwrap();
+        assert_ne!(first, second, "a taken slug must be disambiguated, not reused");
+        assert!(second.file_name().unwrap().to_string_lossy().starts_with("personal-"));
+
+        let _ = std::fs::remove_dir_all(&first);
+    }
+
     /// Exercises the exact code path the app uses to check login state,
     /// against a real `claude` invocation (no mocking) and a scratch config
     /// dir that has never been logged into — this is the same command used
     /// by `check_account_auth`/AccountList, just without going through the
     /// Tauri IPC layer we can't drive headlessly.
+    ///
+    /// `#[ignore]` because it needs Claude Code actually installed: it's a
+    /// genuinely valuable integration test on a dev machine, but on CI it
+    /// would only ever assert that the runner has no `claude` binary. Run it
+    /// with `cargo test -- --ignored`.
     #[test]
+    #[ignore = "requires a real `claude` CLI installed on the machine"]
     fn auth_status_for_dir_reports_logged_out_for_a_fresh_dir() {
         let dir = std::env::temp_dir().join(format!("fleet-test-auth-status-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();

@@ -2,8 +2,8 @@ use crate::login_manager::{self, AuthStatus, LoginSession};
 use tauri::AppHandle;
 
 #[tauri::command]
-pub fn begin_login(app: AppHandle, provider: String) -> Result<LoginSession, String> {
-    login_manager::begin_login(app, provider)
+pub fn begin_login(app: AppHandle, provider: String, name: String) -> Result<LoginSession, String> {
+    login_manager::begin_login(app, provider, name)
 }
 
 #[tauri::command]

@@ -1,17 +1,24 @@
 import { useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../lib/invoke';
 import { SettingsTabs } from '../components/SettingsTabs';
 import { ConfirmDeleteDialog } from '../components/ConfirmDeleteDialog';
+import { Spinner } from '../components/Spinner';
 import { Checkbox } from '../components/ui/checkbox';
 import { Input } from '../components/ui/input';
 import type { Project } from '../types/session';
-import type { ProjectAccountRotation } from '../types/settings';
+import { ROTATION_POLICY_OPTIONS, type ProjectAccountRotation, type RotationPolicy } from '../types/settings';
 import styles from './RotationSettings.module.css';
+
+/** Rotation is per (project, provider), but only Claude has a turn runner
+ * today — until a second provider ships, the screen edits the Claude policy
+ * directly rather than showing a provider picker with one entry in it. */
+const POLICY_PROVIDER = 'claude';
 
 export function RotationSettings() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [rotation, setRotation] = useState<ProjectAccountRotation[]>([]);
+  const [policy, setPolicy] = useState<RotationPolicy>('manual');
   const [loading, setLoading] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -50,10 +57,22 @@ export function RotationSettings() {
   useEffect(() => {
     if (!selectedId) return;
     setLoading(true);
-    invoke<ProjectAccountRotation[]>('list_project_account_rotation', { projectId: selectedId })
-      .then(setRotation)
-      .finally(() => setLoading(false));
+    Promise.all([
+      invoke<ProjectAccountRotation[]>('list_project_account_rotation', { projectId: selectedId }).then(setRotation),
+      invoke<RotationPolicy>('get_rotation_policy', { projectId: selectedId, provider: POLICY_PROVIDER }).then(setPolicy),
+    ]).finally(() => setLoading(false));
   }, [selectedId]);
+
+  const changePolicy = async (next: RotationPolicy) => {
+    if (!selectedId) return;
+    const previous = policy;
+    setPolicy(next);
+    try {
+      await invoke('set_rotation_policy', { projectId: selectedId, provider: POLICY_PROVIDER, policy: next });
+    } catch {
+      setPolicy(previous);
+    }
+  };
 
   const toggle = async (accountId: string, allowed: boolean) => {
     if (!selectedId) return;
@@ -129,7 +148,10 @@ export function RotationSettings() {
             );
           })}
           <div className={styles.spacer} />
-          <p className={styles.footnote}>Rotation picks the least-loaded allowed account when a session starts.</p>
+          <p className={styles.footnote}>
+            Rotation is failover, not scheduling: the account you pick for a session is kept as long as it works, and Fleet only
+            switches once it hits its rate limit.
+          </p>
         </div>
 
         <div className={styles.checklist}>
@@ -138,10 +160,37 @@ export function RotationSettings() {
               <div className={styles.checklistHeader}>
                 <span className={styles.checklistTitle}>{selected.name}</span>
                 <span className={styles.dimText}>
-                  {loading ? 'loading…' : `${allowedCount} of ${rotation.length} accounts allowed`}
+                  {loading ? <Spinner label="loading…" /> : `${allowedCount} of ${rotation.length} accounts allowed`}
                 </span>
               </div>
+              <div className={styles.policyBox}>
+                <span className={styles.policyLabel}>WHEN AN ACCOUNT HITS ITS LIMIT</span>
+                <div className={styles.policyOptions}>
+                  {ROTATION_POLICY_OPTIONS.map((opt) => (
+                    <label key={opt.value} className={opt.value === policy ? styles.policyOptionActive : styles.policyOption}>
+                      <input
+                        type="radio"
+                        name="rotation-policy"
+                        checked={opt.value === policy}
+                        onChange={() => changePolicy(opt.value)}
+                      />
+                      <span className={styles.policyOptionText}>
+                        <span className={styles.policyOptionLabel}>{opt.label}</span>
+                        <span className={styles.policyOptionHint}>{opt.hint}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
               <p className={styles.checklistHint}>Check the accounts this project is allowed to rotate across.</p>
+
+              {allowedCount === 0 && policy !== 'manual' && (
+                <div className={styles.mixWarning}>
+                  <span>⚠</span>
+                  <span>No accounts are checked, so there is nothing to switch to — sessions will still stop when their account runs out.</span>
+                </div>
+              )}
 
               {isMixed && (
                 <div className={styles.mixWarning}>

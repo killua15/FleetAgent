@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../lib/invoke';
 import { listen } from '@tauri-apps/api/event';
 import { AppTopBar } from '../components/AppTopBar';
 import { ConfirmDeleteDialog } from '../components/ConfirmDeleteDialog';
@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Textarea } from '../components/ui/textarea';
 import { UsageBar } from '../components/UsageBar';
 import { severityOfLastBlock } from '../lib/blockSeverity';
+import { autoGridColumns } from '../lib/gridLayout';
 import { buildSessionTree, countSessionSubtree } from '../lib/sessionTree';
 import { contextSeverity, contextSeverityColor, formatTokenCount, formatUsd } from '../lib/tokenBudget';
 import { useClickOutside } from '../lib/useClickOutside';
@@ -48,15 +49,6 @@ interface OutputEventPayload {
   sessionId: string;
   kind: string;
   text: string;
-}
-
-/** 1-2 panels fit in a single row; from 3 on up, always split into exactly 2
- * rows as evenly as possible (4 → 2+2, 6 → 3+3, 5 → 3+2, ...) rather than
- * growing into a single ever-wider row or an unbounded number of rows. */
-function autoGridColumns(panelCount: number): number {
-  if (panelCount <= 0) return 1;
-  const rows = panelCount <= 2 ? 1 : 2;
-  return Math.ceil(panelCount / rows);
 }
 
 
@@ -440,6 +432,12 @@ export function MainView() {
                     await loadAll();
                     navigate('agent-panel', { sessionId: created.id });
                   }}
+                  onOpenTerminal={() =>
+                    // Carries the session's account too, so the shell lands in
+                    // the agent's worktree *and* authenticated as it — enough
+                    // to reproduce by hand whatever the agent just did.
+                    navigate('terminals', { openFor: { kind: 'session', id: s.id }, accountId: s.accountId })
+                  }
                 />
               ))}
             </div>
@@ -469,6 +467,7 @@ function SessionPanelCard({
   parentName,
   descendantCount,
   onSubsessionCreated,
+  onOpenTerminal,
 }: {
   session: SessionView;
   blocks: SessionBlock[];
@@ -488,6 +487,7 @@ function SessionPanelCard({
   parentName?: string;
   descendantCount: number;
   onSubsessionCreated: (session: Session) => void;
+  onOpenTerminal: () => void;
 }) {
   const meta = PROVIDER_META[session.provider];
   const lastBlocks = blocks.slice(-4);
@@ -587,6 +587,17 @@ function SessionPanelCard({
             accounts={accounts}
             onCreated={onSubsessionCreated}
           />
+        )}
+        {!selectMode && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title="Open a terminal in this session's working directory"
+            style={{ color: 'var(--dim)' }}
+            onClick={onOpenTerminal}
+          >
+            ⌗
+          </Button>
         )}
         <Button variant="outline" size="icon-sm" className={styles.collapseBtn} title="Collapse to rail — keeps running" onClick={onCollapse}>
           ▁

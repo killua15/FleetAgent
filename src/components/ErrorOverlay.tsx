@@ -12,42 +12,74 @@ import { Button } from './ui/button';
  * `window.onerror`).
  */
 
-interface CaughtError {
+type ToastKind = 'error' | 'success';
+
+interface ToastEntry {
   id: number;
   message: string;
+  kind: ToastKind;
 }
 
 let nextId = 1;
+type Listener = (entry: ToastEntry) => void;
+/** Any screen can push into the same floating toast stack that catches
+ * unhandled JS errors — a plain module-level pub/sub rather than a Context,
+ * since there's exactly one consumer (`ToastStack`, always mounted once at
+ * the app root) and no need to thread a provider through every screen. */
+const listeners = new Set<Listener>();
 
-function useGlobalErrorCapture() {
-  const [errors, setErrors] = useState<CaughtError[]>([]);
+/** Call from any screen's `catch` block instead of a local error-banner
+ * state — every failure then looks and behaves the same way (dismissible,
+ * stacked bottom-left), instead of each screen reinventing its own inline
+ * banner. */
+export function toastError(message: string) {
+  const entry: ToastEntry = { id: nextId++, message, kind: 'error' };
+  listeners.forEach((l) => l(entry));
+}
+
+/** Same stack, styled for a quick confirmation (e.g. "Fetched") — auto-
+ * dismisses after a few seconds, unlike an error toast which stays until
+ * the user closes it. */
+export function toastSuccess(message: string) {
+  const entry: ToastEntry = { id: nextId++, message, kind: 'success' };
+  listeners.forEach((l) => l(entry));
+}
+
+function useToastStack() {
+  const [entries, setEntries] = useState<ToastEntry[]>([]);
 
   useEffect(() => {
-    const push = (message: string) => {
-      setErrors((prev) => [...prev.slice(-4), { id: nextId++, message }]);
+    const push = (entry: ToastEntry) => {
+      setEntries((prev) => [...prev.slice(-4), entry]);
+      if (entry.kind === 'success') {
+        setTimeout(() => setEntries((prev) => prev.filter((e) => e.id !== entry.id)), 3000);
+      }
     };
+    listeners.add(push);
+
     const onError = (event: ErrorEvent) => {
-      push(`${event.message}${event.filename ? ` (${event.filename}:${event.lineno})` : ''}`);
+      push({ id: nextId++, kind: 'error', message: `${event.message}${event.filename ? ` (${event.filename}:${event.lineno})` : ''}` });
     };
     const onRejection = (event: PromiseRejectionEvent) => {
       const reason = event.reason instanceof Error ? event.reason.message : String(event.reason);
-      push(`Unhandled promise rejection: ${reason}`);
+      push({ id: nextId++, kind: 'error', message: `Unhandled promise rejection: ${reason}` });
     };
     window.addEventListener('error', onError);
     window.addEventListener('unhandledrejection', onRejection);
     return () => {
+      listeners.delete(push);
       window.removeEventListener('error', onError);
       window.removeEventListener('unhandledrejection', onRejection);
     };
   }, []);
 
-  const dismiss = (id: number) => setErrors((prev) => prev.filter((e) => e.id !== id));
-  return { errors, dismiss };
+  const dismiss = (id: number) => setEntries((prev) => prev.filter((e) => e.id !== id));
+  return { entries, dismiss };
 }
 
-function ErrorBanner() {
-  const { errors, dismiss } = useGlobalErrorCapture();
-  if (errors.length === 0) return null;
+function ToastStack() {
+  const { entries, dismiss } = useToastStack();
+  if (entries.length === 0) return null;
 
   return (
     <div
@@ -63,15 +95,19 @@ function ErrorBanner() {
         pointerEvents: 'none',
       }}
     >
-      {errors.map((e) => (
+      {entries.map((e) => (
         <Alert
           key={e.id}
-          variant="destructive"
+          variant={e.kind === 'error' ? 'destructive' : 'default'}
           className="flex items-start gap-2.5 shadow-lg"
-          style={{ pointerEvents: 'auto', font: "500 11px 'JetBrains Mono', monospace" }}
+          style={{
+            pointerEvents: 'auto',
+            font: "500 11px 'JetBrains Mono', monospace",
+            ...(e.kind === 'success' ? { borderColor: 'var(--grn)', color: 'var(--grn)' } : {}),
+          }}
         >
           <AlertDescription className="flex-1 text-inherit" style={{ wordBreak: 'break-word' }}>
-            ⚠ {e.message}
+            {e.kind === 'error' ? '⚠' : '✓'} {e.message}
           </AlertDescription>
           <Button variant="ghost" size="icon-sm" onClick={() => dismiss(e.id)}>
             ✕
@@ -155,7 +191,7 @@ export function AppErrorOverlay({ children }: { children: ReactNode }) {
   return (
     <RenderErrorBoundary>
       {children}
-      <ErrorBanner />
+      <ToastStack />
     </RenderErrorBoundary>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../lib/invoke';
 import type { Account } from '../types/account';
 import {
   EFFORT_OPTIONS,

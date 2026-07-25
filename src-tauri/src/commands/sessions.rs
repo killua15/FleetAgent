@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 const SESSION_VIEW_COLUMNS: &str = "s.id, s.name, s.project_id, p.name, s.parent_session_id, s.worktree_branch, s.worktree_kind, s.account_id, a.name, a.provider, a.scope, s.model, s.effort, s.mode, s.status, s.started_at";
@@ -115,7 +115,7 @@ const ENV_FILE_CANDIDATES: &[&str] = &[".env", ".env.local", ".env.development",
 /// Lowercase, ASCII-alphanumeric-only, dash-separated — used for both the
 /// worktree's folder name and its branch name so both stay filesystem- and
 /// git-ref-safe regardless of what the user typed as the subsession name.
-fn slugify(input: &str) -> String {
+pub(crate) fn slugify(input: &str) -> String {
     let mut slug: String = input
         .trim()
         .to_lowercase()
@@ -136,7 +136,7 @@ fn slugify(input: &str) -> String {
 /// Picks `.fleet/worktrees/<slug>`, disambiguating with a short suffix if a
 /// worktree with that name already exists (e.g. two subsessions both named
 /// "fix-bug").
-fn unique_worktree_dir(project_path: &str, slug: &str) -> PathBuf {
+pub(crate) fn unique_worktree_dir(project_path: &str, slug: &str) -> PathBuf {
     let base = Path::new(project_path).join(".fleet").join("worktrees");
     let candidate = base.join(slug);
     if !candidate.exists() {
@@ -227,7 +227,9 @@ fn copy_env_files(project_path: &str, worktree_dir: &Path) {
 /// Appends `.fleet/` to the *project's* `.gitignore` (creating the file if
 /// missing) so worktree folders don't show up as untracked clutter in the
 /// user's own `git status` — best-effort, never blocks subsession creation.
-fn ensure_fleet_dir_ignored(project_path: &str) {
+/// `pub(crate)` so `resolve_session_for_pr_branch` (its own worktree lands
+/// at the same `.fleet/worktrees/...` location) can call it too.
+pub(crate) fn ensure_fleet_dir_ignored(project_path: &str) {
     let gitignore_path = Path::new(project_path).join(".gitignore");
     let existing = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
     if existing.lines().any(|l| l.trim() == ".fleet/" || l.trim() == ".fleet") {
@@ -263,102 +265,107 @@ fn run_setup_command(worktree_dir: &Path, command: &str) -> Result<String, Strin
 /// prefers `worktree_path` over the project's own path as the turn's cwd
 /// once this session has one set.
 #[tauri::command]
-pub fn create_subsession<R: tauri::Runtime>(app: AppHandle<R>, db: State<DbConnection>, input: NewSubsession) -> Result<Session, String> {
-    let (project_id, project_path, default_setup_command): (String, String, Option<String>) = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        conn.query_row(
-            "SELECT id FROM accounts WHERE id = ?1",
-            params![input.account_id],
-            |row| row.get::<_, String>(0),
-        )
-        .map_err(|e| format!("account lookup failed: {e}"))?;
-        let project_id: String = conn
-            .query_row(
-                "SELECT project_id FROM sessions WHERE id = ?1",
-                params![input.parent_session_id],
-                |row| row.get(0),
+pub async fn create_subsession<R: tauri::Runtime>(app: AppHandle<R>, input: NewSubsession) -> Result<Session, String> {
+    crate::blocking::run_blocking(move || {
+        let db = app.state::<DbConnection>();
+        let (project_id, project_path, default_setup_command): (String, String, Option<String>) = {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            conn.query_row(
+                "SELECT id FROM accounts WHERE id = ?1",
+                params![input.account_id],
+                |row| row.get::<_, String>(0),
             )
-            .map_err(|e| format!("parent session lookup failed: {e}"))?;
-        let (project_path, default_setup_command): (String, Option<String>) = conn
-            .query_row(
-                "SELECT path, default_setup_command FROM projects WHERE id = ?1",
-                params![project_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+            .map_err(|e| format!("account lookup failed: {e}"))?;
+            let project_id: String = conn
+                .query_row(
+                    "SELECT project_id FROM sessions WHERE id = ?1",
+                    params![input.parent_session_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("parent session lookup failed: {e}"))?;
+            let (project_path, default_setup_command): (String, Option<String>) = conn
+                .query_row(
+                    "SELECT path, default_setup_command FROM projects WHERE id = ?1",
+                    params![project_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|e| format!("project lookup failed: {e}"))?;
+            (project_id, project_path, default_setup_command)
+        };
+
+        let slug = slugify(&input.name);
+        let worktree_dir = unique_worktree_dir(&project_path, &slug);
+        let is_git = project_is_git_repo(&project_path);
+        let branch = format!("subsession/{slug}");
+
+        let worktree_kind = if is_git {
+            create_linked_worktree(&project_path, &worktree_dir, &branch)?;
+            "linked"
+        } else {
+            copy_project_dir(Path::new(&project_path), &worktree_dir)?;
+            init_fresh_git_repo(&worktree_dir);
+            "copy"
+        };
+        let worktree_branch: Option<String> = if is_git { Some(branch) } else { None };
+
+        copy_env_files(&project_path, &worktree_dir);
+        ensure_fleet_dir_ignored(&project_path);
+
+        let effective_setup_command = input.setup_command.clone().or(default_setup_command);
+
+        let session_id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let name = if input.name.trim().is_empty() { "untitled subsession".to_string() } else { input.name.trim().to_string() };
+        {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO sessions (id, name, project_id, node_id, parent_session_id, worktree_path, worktree_branch, worktree_kind, account_id, model, effort, mode, status, pid, provider_session_id, started_at, ended_at)
+                 VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'waiting', NULL, NULL, ?12, NULL)",
+                params![
+                    session_id,
+                    name,
+                    project_id,
+                    input.parent_session_id,
+                    worktree_dir.to_string_lossy().to_string(),
+                    worktree_branch,
+                    worktree_kind,
+                    input.account_id,
+                    input.model,
+                    input.effort,
+                    input.mode,
+                    now,
+                ],
             )
-            .map_err(|e| format!("project lookup failed: {e}"))?;
-        (project_id, project_path, default_setup_command)
-    };
-
-    let slug = slugify(&input.name);
-    let worktree_dir = unique_worktree_dir(&project_path, &slug);
-    let is_git = project_is_git_repo(&project_path);
-    let branch = format!("subsession/{slug}");
-
-    let worktree_kind = if is_git {
-        create_linked_worktree(&project_path, &worktree_dir, &branch)?;
-        "linked"
-    } else {
-        copy_project_dir(Path::new(&project_path), &worktree_dir)?;
-        init_fresh_git_repo(&worktree_dir);
-        "copy"
-    };
-    let worktree_branch: Option<String> = if is_git { Some(branch) } else { None };
-
-    copy_env_files(&project_path, &worktree_dir);
-    ensure_fleet_dir_ignored(&project_path);
-
-    let effective_setup_command = input.setup_command.clone().or(default_setup_command);
-
-    let session_id = Uuid::new_v4().to_string();
-    let now = Utc::now().to_rfc3339();
-    let name = if input.name.trim().is_empty() { "untitled subsession".to_string() } else { input.name.trim().to_string() };
-    {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        conn.execute(
-            "INSERT INTO sessions (id, name, project_id, node_id, parent_session_id, worktree_path, worktree_branch, worktree_kind, account_id, model, effort, mode, status, pid, provider_session_id, started_at, ended_at)
-             VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'waiting', NULL, NULL, ?12, NULL)",
-            params![
-                session_id,
-                name,
-                project_id,
-                input.parent_session_id,
-                worktree_dir.to_string_lossy().to_string(),
-                worktree_branch,
-                worktree_kind,
-                input.account_id,
-                input.model,
-                input.effort,
-                input.mode,
-                now,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-        if let Some(cmd) = &input.setup_command {
-            let _ = conn.execute(
-                "UPDATE projects SET default_setup_command = ?2 WHERE id = ?1",
-                params![project_id, cmd],
-            );
-        }
-    }
-
-    let kind_label = if is_git { format!("linked worktree on branch `{}`", worktree_branch.as_deref().unwrap_or("")) } else { "copied folder with a fresh git init".to_string() };
-    process_manager::emit_block(&app, &session_id, "agent", &format!("↳ subsession created — {kind_label} at {}", worktree_dir.display()));
-
-    if let Some(cmd) = &effective_setup_command {
-        match run_setup_command(&worktree_dir, cmd) {
-            Ok(out) => {
-                let text = if out.is_empty() { format!("setup command `{cmd}` finished") } else { format!("setup command `{cmd}`:\n{out}") };
-                process_manager::emit_block(&app, &session_id, "agent", &text);
-            }
-            Err(e) => {
-                process_manager::emit_block(&app, &session_id, "agent", &format!("setup command `{cmd}` failed: {e}"));
+            .map_err(|e| e.to_string())?;
+            if let Some(cmd) = &input.setup_command {
+                let _ = conn.execute(
+                    "UPDATE projects SET default_setup_command = ?2 WHERE id = ?1",
+                    params![project_id, cmd],
+                );
             }
         }
-    }
 
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    conn.query_row("SELECT * FROM sessions WHERE id = ?1", params![session_id], row_to_session)
-        .map_err(|e| e.to_string())
+        let kind_label = if is_git { format!("linked worktree on branch `{}`", worktree_branch.as_deref().unwrap_or("")) } else { "copied folder with a fresh git init".to_string() };
+        process_manager::emit_block(&app, &session_id, "agent", &format!("↳ subsession created — {kind_label} at {}", worktree_dir.display()));
+
+        if let Some(cmd) = &effective_setup_command {
+            process_manager::emit_block(&app, &session_id, "agent", &format!("⋯ running setup command `{cmd}`…"));
+            match run_setup_command(&worktree_dir, cmd) {
+                Ok(out) => {
+                    let text = if out.is_empty() { format!("setup command `{cmd}` finished") } else { format!("setup command `{cmd}`:\n{out}") };
+                    process_manager::emit_block(&app, &session_id, "agent", &text);
+                }
+                Err(e) => {
+                    process_manager::emit_block(&app, &session_id, "agent", &format!("setup command `{cmd}` failed: {e}"));
+                }
+            }
+        }
+
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT * FROM sessions WHERE id = ?1", params![session_id], row_to_session)
+            .map_err(|e| e.to_string())
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -431,6 +438,18 @@ pub fn list_workspace_sessions(db: State<DbConnection>) -> Result<Vec<SessionVie
 /// provider's turn runner (only Claude Code is wired so far).
 #[tauri::command]
 pub fn send_message(app: AppHandle, db: State<DbConnection>, session_id: String, text: String) -> Result<(), String> {
+    // Failover before anything else reads the session row: if this session's
+    // account is rate-limited and the project allows rotating, this repoints
+    // it at a usable account (and clears the now-meaningless `--resume` id)
+    // so everything below picks up the new account naturally.
+    let switch = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        crate::rotation::rotate_session_if_needed(&conn, &session_id)?
+    };
+    if let Some(switch) = &switch {
+        process_manager::emit_block(&app, &session_id, "agent", &crate::rotation::switch_notice(switch));
+    }
+
     let (provider, billing, config_dir_path, account_id, cwd, name, model, effort, mode_str, resume) = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let (account_id, project_id, name, model, effort, mode_str, resume, worktree_path): (
@@ -496,15 +515,17 @@ pub fn send_message(app: AppHandle, db: State<DbConnection>, session_id: String,
         name,
         resume,
         prompt: text,
-    });
-
-    Ok(())
+    })
 }
 
+/// Aborts whatever this session is currently doing and parks it as `done`.
+/// `kill_turn` also flags the turn as user-cancelled, so the turn's own
+/// background thread skips its normal tail instead of racing this write back
+/// to `waiting` a moment later (see `turn_runner::CancelledTurns`).
 #[tauri::command]
 pub fn stop_session(app: AppHandle, db: State<DbConnection>, session_id: String) -> Result<(), String> {
     let _ = process_manager::kill(&app, &session_id);
-    turn_runner::kill_turn(&app, &session_id);
+    let _ = turn_runner::kill_turn(&app, &session_id);
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE sessions SET status = 'done', ended_at = ?2 WHERE id = ?1",
@@ -535,15 +556,15 @@ pub(crate) fn cleanup_worktree_rows(rows: &[WorktreeCleanupRow]) {
         if row.worktree_kind == "linked" {
             let project_dir = Path::new(&row.project_path);
             if let Err(e) = run_git(project_dir, &["worktree", "remove", "--force", &row.worktree_path]) {
-                eprintln!("cleanup_worktree_rows: git worktree remove failed for {}: {e}", row.worktree_path);
+                log::error!("cleanup_worktree_rows: git worktree remove failed for {}: {e}", row.worktree_path);
             }
             if let Some(branch) = &row.worktree_branch {
                 if let Err(e) = run_git(project_dir, &["branch", "-D", branch]) {
-                    eprintln!("cleanup_worktree_rows: git branch -D failed for {branch}: {e}");
+                    log::error!("cleanup_worktree_rows: git branch -D failed for {branch}: {e}");
                 }
             }
         } else if let Err(e) = std::fs::remove_dir_all(path) {
-            eprintln!("cleanup_worktree_rows: remove_dir_all failed for {}: {e}", row.worktree_path);
+            log::error!("cleanup_worktree_rows: remove_dir_all failed for {}: {e}", row.worktree_path);
         }
     }
 }
@@ -562,7 +583,7 @@ fn worktree_cleanup_rows_for_session_subtree(conn: &rusqlite::Connection, sessio
     ) {
         Ok(stmt) => stmt,
         Err(e) => {
-            eprintln!("worktree_cleanup_rows_for_session_subtree: query failed: {e}");
+            log::error!("worktree_cleanup_rows_for_session_subtree: query failed: {e}");
             return Vec::new();
         }
     };
@@ -577,7 +598,7 @@ fn worktree_cleanup_rows_for_session_subtree(conn: &rusqlite::Connection, sessio
     match rows {
         Ok(rows) => rows.filter_map(Result::ok).collect(),
         Err(e) => {
-            eprintln!("worktree_cleanup_rows_for_session_subtree: query_map failed: {e}");
+            log::error!("worktree_cleanup_rows_for_session_subtree: query_map failed: {e}");
             Vec::new()
         }
     }
@@ -589,15 +610,19 @@ fn worktree_cleanup_rows_for_session_subtree(conn: &rusqlite::Connection, sessio
 /// up every worktree/copy in the subtree before the DB row cascade removes
 /// the rows that reference them.
 #[tauri::command]
-pub fn delete_session<R: tauri::Runtime>(app: AppHandle<R>, db: State<DbConnection>, session_id: String) -> Result<(), String> {
-    let _ = process_manager::kill(&app, &session_id);
-    turn_runner::kill_turn(&app, &session_id);
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let cleanup_rows = worktree_cleanup_rows_for_session_subtree(&conn, &session_id);
-    cleanup_worktree_rows(&cleanup_rows);
-    conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id])
-        .map_err(|e| e.to_string())?;
-    Ok(())
+pub async fn delete_session<R: tauri::Runtime>(app: AppHandle<R>, session_id: String) -> Result<(), String> {
+    crate::blocking::run_blocking(move || {
+        let db = app.state::<DbConnection>();
+        let _ = process_manager::kill(&app, &session_id);
+        let _ = turn_runner::kill_turn(&app, &session_id);
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let cleanup_rows = worktree_cleanup_rows_for_session_subtree(&conn, &session_id);
+        cleanup_worktree_rows(&cleanup_rows);
+        conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -1199,9 +1224,8 @@ mod subsession_tests {
         let (app, account_id, _project_id) = setup_test_app_with_account_and_project(project_dir.to_str().unwrap());
         let db = app.state::<DbConnection>();
 
-        let subsession = create_subsession(
+        let subsession = tauri::async_runtime::block_on(create_subsession(
             app.handle().clone(),
-            db.clone(),
             NewSubsession {
                 parent_session_id: "parent1".to_string(),
                 name: "Try Alt Approach".to_string(),
@@ -1211,7 +1235,7 @@ mod subsession_tests {
                 mode: "ask_edits".to_string(),
                 setup_command: None,
             },
-        )
+        ))
         .expect("create_subsession should succeed for a real git project");
 
         assert_eq!(subsession.worktree_kind.as_deref(), Some("linked"));
@@ -1230,8 +1254,7 @@ mod subsession_tests {
             "git worktree list in the real project must show the new worktree"
         );
 
-        delete_session(app.handle().clone(), db.clone(), subsession.id.clone())
-            .expect("delete_session should succeed");
+        tauri::async_runtime::block_on(delete_session(app.handle().clone(), subsession.id.clone())).expect("delete_session should succeed");
 
         assert!(!worktree_dir.exists(), "deleting the subsession must remove its worktree directory");
         let remaining: i64 = db.0.lock().unwrap().query_row("SELECT COUNT(*) FROM sessions WHERE id = ?1", params![subsession.id], |r| r.get(0)).unwrap();
@@ -1250,11 +1273,9 @@ mod subsession_tests {
         std::fs::write(project_dir.join("app.txt"), "some file").unwrap();
 
         let (app, account_id, _project_id) = setup_test_app_with_account_and_project(project_dir.to_str().unwrap());
-        let db = app.state::<DbConnection>();
 
-        let subsession = create_subsession(
+        let subsession = tauri::async_runtime::block_on(create_subsession(
             app.handle().clone(),
-            db.clone(),
             NewSubsession {
                 parent_session_id: "parent1".to_string(),
                 name: "no git here".to_string(),
@@ -1264,7 +1285,7 @@ mod subsession_tests {
                 mode: "ask_edits".to_string(),
                 setup_command: None,
             },
-        )
+        ))
         .expect("create_subsession should succeed even without a git repo");
 
         assert_eq!(subsession.worktree_kind.as_deref(), Some("copy"));
@@ -1299,9 +1320,8 @@ mod subsession_tests {
 
         let mut worktree_dirs = Vec::new();
         for name in ["sub-a", "sub-b"] {
-            let subsession = create_subsession(
+            let subsession = tauri::async_runtime::block_on(create_subsession(
                 app.handle().clone(),
-                db.clone(),
                 NewSubsession {
                     parent_session_id: "parent1".to_string(),
                     name: name.to_string(),
@@ -1311,13 +1331,13 @@ mod subsession_tests {
                     mode: "ask_edits".to_string(),
                     setup_command: None,
                 },
-            )
+            ))
             .expect("each subsession should be created successfully");
             worktree_dirs.push(std::path::PathBuf::from(subsession.worktree_path.unwrap()));
         }
         assert!(worktree_dirs.iter().all(|d| d.exists()), "both worktrees should exist before delete");
 
-        delete_session(app.handle().clone(), db.clone(), "parent1".to_string())
+        tauri::async_runtime::block_on(delete_session(app.handle().clone(), "parent1".to_string()))
             .expect("deleting the parent should succeed and cascade");
 
         assert!(worktree_dirs.iter().all(|d| !d.exists()), "deleting the parent must remove every subsession's worktree");

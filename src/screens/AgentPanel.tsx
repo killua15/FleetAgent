@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../lib/invoke';
 import { listen } from '@tauri-apps/api/event';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { Highlight, themes } from 'prism-react-renderer';
 import { useNavigation } from '../nav/NavigationProvider';
 import { useTheme } from '../theme/ThemeProvider';
 import type { Account } from '../types/account';
+import type { PrComment, PullRequestInfo, PullRequestPreview } from '../types/pullRequest';
 import {
   EFFORT_OPTIONS,
   MODE_LABEL,
@@ -25,11 +27,14 @@ import {
 } from '../types/session';
 import type { AppSettings } from '../types/settings';
 import { Button } from '../components/ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog';
+import { Input } from '../components/ui/input';
+import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
 import { ConfirmDeleteDialog } from '../components/ConfirmDeleteDialog';
 import { CreateSubsessionDialog } from '../components/CreateSubsessionDialog';
+import { Spinner } from '../components/Spinner';
 import { UsageBar } from '../components/UsageBar';
 import { severityOfBlock, type Severity } from '../lib/blockSeverity';
 import { diffLines, diffStats, type DiffLine } from '../lib/diffLines';
@@ -111,6 +116,13 @@ function formatTime(iso: string): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+function formatWorkingDuration(totalSeconds: number): string {
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}m ${s}s`;
+}
+
 /** Short, human-readable summary of a tool_input for the permission banner —
  * the field that actually matters differs per tool (a shell command for
  * Bash, a file path for Edit/Write/MultiEdit), so this isn't just a raw
@@ -179,9 +191,30 @@ export function AgentPanelBody({
   const [resumeOpen, setResumeOpen] = useState(false);
   const [resumeOptions, setResumeOptions] = useState<ResumableConversation[]>([]);
   const [loadingResume, setLoadingResume] = useState(false);
-  const [appSettings, setAppSettings] = useState<AppSettings>({ reviewerEnabled: false, reviewerAccountId: null, notifyNeedsApproval: false, notifySessionWaiting: false, notifyAccountExhausted: false, notifySpendCap: false });
+  const [resumingId, setResumingId] = useState<string | null>(null);
+  const [appSettings, setAppSettings] = useState<AppSettings>({
+    reviewerEnabled: false,
+    reviewerAccountId: null,
+    notifyNeedsApproval: false,
+    notifySessionWaiting: false,
+    notifyAccountExhausted: false,
+    notifySpendCap: false,
+    notifyPrComments: false,
+    agentTreesEnabled: false,
+    includeOwnPrComments: false,
+  });
   const [reviewing, setReviewing] = useState(false);
   const [pendingApproval, setPendingApproval] = useState<PermissionRequest | null>(null);
+  const [pullRequest, setPullRequest] = useState<PullRequestInfo | null>(null);
+  const [creatingPr, setCreatingPr] = useState(false);
+  const [prDialogOpen, setPrDialogOpen] = useState(false);
+  const [prError, setPrError] = useState<string | null>(null);
+  const [prPreview, setPrPreview] = useState<PullRequestPreview | null>(null);
+  const [loadingPrPreview, setLoadingPrPreview] = useState(false);
+  const [prTitle, setPrTitle] = useState('');
+  const [newPrComments, setNewPrComments] = useState<PrComment[]>([]);
+  const [checkingPrComments, setCheckingPrComments] = useState(false);
+  const [sendingPrComments, setSendingPrComments] = useState(false);
   const [respondingApproval, setRespondingApproval] = useState(false);
   const pendingApprovalRef = useRef<PermissionRequest | null>(null);
   const [filesOpen, setFilesOpen] = useState(false);
@@ -232,6 +265,96 @@ export function AgentPanelBody({
     invoke<SessionView[]>('list_workspace_sessions').then(setAllSessions).catch(() => setAllSessions([]));
     invoke<AppSettings>('get_app_settings').then(setAppSettings).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    invoke<PullRequestInfo | null>('get_pull_request', { sessionId }).then(setPullRequest).catch(() => setPullRequest(null));
+  }, [sessionId]);
+
+  useEffect(() => {
+    const unlisten = listen<{ sessionId: string; comments: PrComment[] }>('pr-comments-found', (event) => {
+      if (event.payload.sessionId !== sessionId) return;
+      setNewPrComments((prev) => [...prev, ...event.payload.comments]);
+    });
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, [sessionId]);
+
+  const handleOpenPrDialog = () => {
+    setPrDialogOpen(true);
+    setPrError(null);
+    setPrPreview(null);
+    setPrTitle('');
+    if (!session) return;
+    setLoadingPrPreview(true);
+    invoke<PullRequestPreview>('preview_pull_request', { sessionId: session.id })
+      .then((preview) => {
+        setPrPreview(preview);
+        setPrTitle(preview.suggestedTitle);
+      })
+      .catch((e) => setPrError(String(e)))
+      .finally(() => setLoadingPrPreview(false));
+  };
+
+  const handleCreatePr = async () => {
+    if (!session || creatingPr) return;
+    setCreatingPr(true);
+    setPrError(null);
+    try {
+      const pr = await invoke<PullRequestInfo>('create_pull_request', { sessionId: session.id, title: prTitle.trim() || undefined });
+      setPullRequest(pr);
+      setPrDialogOpen(false);
+    } catch (e) {
+      setPrError(String(e));
+    } finally {
+      setCreatingPr(false);
+    }
+  };
+
+  const handleCheckPrComments = async () => {
+    if (!session || checkingPrComments) return;
+    setCheckingPrComments(true);
+    setPrError(null);
+    try {
+      const comments = await invoke<PrComment[]>('check_pr_comments', { sessionId: session.id });
+      if (comments.length > 0) setNewPrComments((prev) => [...prev, ...comments]);
+    } catch (e) {
+      setPrError(String(e));
+    } finally {
+      setCheckingPrComments(false);
+    }
+  };
+
+  const handleSendPrCommentsToAgent = async () => {
+    if (!session || newPrComments.length === 0 || sendingPrComments) return;
+    setSendingPrComments(true);
+    try {
+      // The backend resolves the session actually checked out on this PR's
+      // real branch — for a PR this session itself opened that's just this
+      // session, but it may land somewhere else (a dedicated subsession),
+      // so follow it there rather than assuming it stayed here.
+      const targetSessionId = await invoke<string>('send_pr_comments_to_session', { commentIds: newPrComments.map((c) => c.id) });
+      setNewPrComments([]);
+      if (targetSessionId !== session.id) {
+        navigate('agent-panel', { sessionId: targetSessionId });
+      }
+    } catch (e) {
+      setPrError(String(e));
+    } finally {
+      setSendingPrComments(false);
+    }
+  };
+
+  const handleDismissPrComments = async () => {
+    if (newPrComments.length === 0) return;
+    const ids = newPrComments.map((c) => c.id);
+    setNewPrComments([]);
+    try {
+      await invoke('dismiss_pr_comments', { commentIds: ids });
+    } catch (e) {
+      setPrError(String(e));
+    }
+  };
 
   const handleReviewNow = async () => {
     if (!session || reviewing) return;
@@ -421,6 +544,22 @@ export function AgentPanelBody({
   const turns = useMemo(() => groupBlocksIntoTurns(visibleBlocks), [visibleBlocks]);
   const lastBlockId = visibleBlocks[visibleBlocks.length - 1]?.id;
   const isRunning = session?.status === 'running';
+
+  // Claude Code's stream-json output is message-level, not token-level — it
+  // prints nothing while a step (a long "thinking" pass, a big tool call) is
+  // still being generated, so a silent gap of even several minutes at high
+  // effort is normal, not proof of a hang. This elapsed-since-last-block
+  // clock is the only signal a user has to tell "still normal" from
+  // "actually stuck" during that gap, since there's no incremental progress
+  // to show instead.
+  const [workingClockNow, setWorkingClockNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isRunning) return;
+    const id = setInterval(() => setWorkingClockNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [isRunning]);
+  const lastBlockAt = blocks[blocks.length - 1]?.createdAt;
+  const workingSeconds = isRunning && lastBlockAt ? Math.max(0, Math.floor((workingClockNow - new Date(lastBlockAt).getTime()) / 1000)) : 0;
   const account = accounts.find((a) => a.id === session?.accountId);
   const isSubscriptionAccount = account?.billing === 'sub';
   const realUsage = useRealUsage(isSubscriptionAccount ? account?.id : undefined, isSubscriptionAccount);
@@ -520,12 +659,15 @@ export function AgentPanelBody({
   };
 
   const handleResumeSelect = async (providerSessionId: string) => {
-    if (!session) return;
+    if (!session || resumingId) return;
+    setResumingId(providerSessionId);
     try {
       await invoke('set_session_resume_target', { sessionId: session.id, providerSessionId });
       setResumeOpen(false);
     } catch (e) {
       setError(String(e));
+    } finally {
+      setResumingId(null);
     }
   };
 
@@ -797,6 +939,31 @@ export function AgentPanelBody({
         >
           {reviewing ? '…' : '◎ review now'}
         </Button>
+        {pullRequest ? (
+          <>
+            <Button
+              variant="outline"
+              className={styles.thinkingBtn}
+              onClick={() => openUrl(pullRequest.url)}
+              title={`Open PR #${pullRequest.number} on GitHub`}
+            >
+              PR #{pullRequest.number} ↗
+            </Button>
+            <Button
+              variant="outline"
+              className={styles.thinkingBtn}
+              disabled={checkingPrComments}
+              onClick={handleCheckPrComments}
+              title="Check this PR for new review comments now"
+            >
+              {checkingPrComments ? '…' : '↻ check comments'}
+            </Button>
+          </>
+        ) : (
+          <Button variant="outline" className={styles.thinkingBtn} onClick={handleOpenPrDialog} title="Push this branch and open a pull request">
+            ⇡ create PR
+          </Button>
+        )}
         {isRunning && (
           <Button
             variant="destructive"
@@ -905,6 +1072,89 @@ export function AgentPanelBody({
         );
       })()}
 
+      <Dialog open={prDialogOpen} onOpenChange={setPrDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Create pull request</DialogTitle>
+            <DialogDescription>
+              Pushes this session's branch (creating one first if it's still sitting on the repo's base
+              branch) and opens a PR via <code>gh</code>. Any uncommitted changes are committed as one
+              commit — there's no staging UI yet, everything goes in.
+            </DialogDescription>
+          </DialogHeader>
+
+          {loadingPrPreview && <Spinner label="previewing changes…" />}
+
+          {prPreview && !loadingPrPreview && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <Label style={{ font: '600 9.5px var(--font-mono)', letterSpacing: '0.13em', color: 'var(--dim)' }}>TITLE</Label>
+                <Input value={prTitle} onChange={(e) => setPrTitle(e.target.value)} />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <Label style={{ font: '600 9.5px var(--font-mono)', letterSpacing: '0.13em', color: 'var(--dim)' }}>
+                  BODY <span style={{ color: 'var(--acc)' }}>· grouped by change type</span>
+                </Label>
+                <div
+                  style={{
+                    font: '400 11px var(--font-mono)',
+                    lineHeight: 1.7,
+                    padding: '11px 13px',
+                    borderRadius: 7,
+                    border: '1px solid var(--line)',
+                    background: 'var(--bg2)',
+                    color: 'var(--mut)',
+                    maxHeight: 220,
+                    overflow: 'auto',
+                  }}
+                >
+                  {prPreview.added.length === 0 && prPreview.modified.length === 0 && prPreview.removed.length === 0 && (
+                    <span>No changes detected against the base branch.</span>
+                  )}
+                  {prPreview.added.length > 0 && (
+                    <div>
+                      <span style={{ color: 'var(--grn)' }}>### Added</span>
+                      {prPreview.added.map((p) => (
+                        <div key={p}>- {p}</div>
+                      ))}
+                    </div>
+                  )}
+                  {prPreview.modified.length > 0 && (
+                    <div>
+                      <span style={{ color: 'var(--amber)' }}>### Modified</span>
+                      {prPreview.modified.map((p) => (
+                        <div key={p}>- {p}</div>
+                      ))}
+                    </div>
+                  )}
+                  {prPreview.removed.length > 0 && (
+                    <div>
+                      <span style={{ color: 'var(--red)' }}>### Removed</span>
+                      {prPreview.removed.map((p) => (
+                        <div key={p}>- {p}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <span style={{ font: '400 10.5px var(--font-mono)', color: 'var(--dim)' }}>
+                {prPreview.added.length + prPreview.modified.length + prPreview.removed.length} file
+                {prPreview.added.length + prPreview.modified.length + prPreview.removed.length === 1 ? '' : 's'} ·{' '}
+                <span style={{ color: 'var(--grn)' }}>+{prPreview.linesAdded}</span>{' '}
+                <span style={{ color: 'var(--red)' }}>−{prPreview.linesRemoved}</span>
+              </span>
+            </div>
+          )}
+
+          {prError && <span style={{ color: 'var(--red)', font: '500 11px var(--font-mono)' }}>{prError}</span>}
+          <DialogFooter>
+            <Button disabled={creatingPr || loadingPrPreview || !prTitle.trim()} onClick={handleCreatePr}>
+              {creatingPr ? 'Creating…' : '⇡ Create PR'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={resumeOpen} onOpenChange={setResumeOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -915,35 +1165,46 @@ export function AgentPanelBody({
             </DialogDescription>
           </DialogHeader>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 320, overflow: 'auto' }}>
-            {loadingResume && <span style={{ color: 'var(--dim)', font: '400 12px var(--font-mono)' }}>loading…</span>}
+            {loadingResume && <Spinner label="loading…" />}
             {!loadingResume && resumeOptions.length === 0 && (
               <span style={{ color: 'var(--dim)', font: '400 12px var(--font-mono)' }}>
                 no other conversations found for this project
               </span>
             )}
-            {resumeOptions.map((c) => (
-              <button
-                key={c.providerSessionId}
-                type="button"
-                onClick={() => handleResumeSelect(c.providerSessionId)}
-                style={{
-                  textAlign: 'left',
-                  padding: '8px 10px',
-                  borderRadius: 7,
-                  border: '1px solid var(--line)',
-                  background: 'var(--panel2)',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 3,
-                }}
-              >
-                <span style={{ font: '400 11.5px var(--font-mono)', color: 'var(--txt)' }}>{c.preview}</span>
-                <span style={{ font: '400 10px var(--font-mono)', color: 'var(--dim)' }}>
-                  {formatTime(c.lastActiveAt)}
-                </span>
-              </button>
-            ))}
+            {resumeOptions.map((c) => {
+              const isResuming = resumingId === c.providerSessionId;
+              return (
+                <button
+                  key={c.providerSessionId}
+                  type="button"
+                  disabled={resumingId !== null}
+                  onClick={() => handleResumeSelect(c.providerSessionId)}
+                  style={{
+                    textAlign: 'left',
+                    padding: '8px 10px',
+                    borderRadius: 7,
+                    border: '1px solid var(--line)',
+                    background: 'var(--panel2)',
+                    cursor: resumingId !== null ? 'default' : 'pointer',
+                    opacity: resumingId !== null && !isResuming ? 0.5 : 1,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 3,
+                  }}
+                >
+                  {isResuming ? (
+                    <Spinner label="resuming…" />
+                  ) : (
+                    <>
+                      <span style={{ font: '400 11.5px var(--font-mono)', color: 'var(--txt)' }}>{c.preview}</span>
+                      <span style={{ font: '400 10px var(--font-mono)', color: 'var(--dim)' }}>
+                        {formatTime(c.lastActiveAt)}
+                      </span>
+                    </>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </DialogContent>
       </Dialog>
@@ -995,11 +1256,30 @@ export function AgentPanelBody({
         </div>
       )}
 
+      {newPrComments.length > 0 && (
+        <div className={styles.permissionBanner}>
+          <span className={styles.permissionText}>
+            {newPrComments.length} new PR comment{newPrComments.length === 1 ? '' : 's'} —{' '}
+            {newPrComments
+              .slice(0, 2)
+              .map((c) => c.author)
+              .join(', ')}
+            {newPrComments.length > 2 ? ', …' : ''}
+          </span>
+          <Button size="sm" disabled={sendingPrComments} onClick={handleSendPrCommentsToAgent}>
+            {sendingPrComments ? 'Sending…' : 'Send to agent'}
+          </Button>
+          <Button size="sm" variant="outline" onClick={handleDismissPrComments}>
+            Dismiss
+          </Button>
+        </div>
+      )}
+
       <div className={styles.composer}>
         {isRunning && (
-          <div className={styles.workingHint}>
+          <div className={styles.workingHint} title="Claude Code streams whole steps, not partial progress — a silent gap of several minutes on a high-effort/thinking turn is normal">
             <span className={styles.workingDot} />
-            agent is working — composer unlocks when it's idle
+            agent is working — {formatWorkingDuration(workingSeconds)} since last update — composer unlocks when it's idle
           </div>
         )}
         {error && <div className={styles.workingHint} style={{ color: 'var(--red)' }}>{error}</div>}
@@ -1179,7 +1459,7 @@ function FileTreePanel({
   );
 }
 
-function DiffLinesView({ lines }: { lines: DiffLine[] }) {
+export function DiffLinesView({ lines }: { lines: DiffLine[] }) {
   return (
     <div className={styles.diffLines}>
       {lines.map((line, i) => {
