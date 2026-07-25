@@ -1,0 +1,383 @@
+@keyframes flPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.screen {
+  width: 100%;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--txt);
+  font-family: var(--font-ui);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.header {
+  height: 52px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+}
+
+.badge {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--accD);
+  color: var(--acc);
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  flex: none;
+}
+
+.breadcrumb {
+  font: 600 12.5px var(--font-mono);
+  white-space: nowrap;
+}
+
+.breadcrumbDim {
+  color: var(--dim);
+}
+
+.divider {
+  width: 1px;
+  height: 20px;
+  background: var(--line);
+  flex: none;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.warnBanner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: 7px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  font: 500 11.5px var(--font-ui);
+  color: var(--mut);
+  white-space: nowrap;
+}
+
+.warnBannerHigh {
+  background: var(--amberD);
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.warnDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+  animation: flPulse 1.6s infinite;
+}
+
+.editBtn {
+  font: 500 11px var(--font-mono);
+}
+
+.stopBtn {
+  font: 600 12px var(--font-ui);
+  padding: 7px 14px;
+  border-radius: 7px;
+  border: 1px solid var(--red);
+  background: transparent;
+  color: var(--red);
+  cursor: pointer;
+}
+
+.stopBtn:hover:not(:disabled) {
+  background: rgba(229, 106, 123, 0.1);
+}
+
+.stopBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.rail {
+  width: 190px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  background: var(--bg2);
+  padding: 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+}
+
+.railLabel {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.16em;
+  color: var(--dim);
+  padding: 0 4px;
+}
+
+.pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 99px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  cursor: pointer;
+  text-align: left;
+}
+
+.pill:hover {
+  border-color: var(--acc);
+}
+
+.pillDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.pillDotLive {
+  background: var(--teal);
+  animation: flPulse 1.6s infinite;
+}
+
+.pillDotDone {
+  background: var(--grn);
+}
+
+.pillName {
+  font: 600 11px var(--font-ui);
+  color: var(--txt);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pillRestore {
+  font: 500 12px var(--font-mono);
+  color: var(--dim);
+}
+
+.railHint {
+  font: 400 10.5px var(--font-ui);
+  color: var(--dim);
+  line-height: 1.5;
+  padding: 0 4px;
+  margin-top: auto;
+}
+
+.grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-auto-rows: minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.cardReviewing {
+  border-color: var(--acc);
+}
+
+.cardHeader {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel2);
+  border-radius: 10px 10px 0 0;
+}
+
+.provBadge {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  font: 700 9px var(--font-mono);
+  flex: none;
+}
+
+.roleName {
+  font: 600 12.5px var(--font-ui);
+  white-space: nowrap;
+}
+
+.reportsTo {
+  font: 400 10.5px var(--font-mono);
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.badgeSmall {
+  font: 500 10px var(--font-mono);
+  padding: 2px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.statusPill {
+  font: 600 10px var(--font-mono);
+  padding: 2px 8px;
+  border-radius: 99px;
+  white-space: nowrap;
+}
+
+.collapseBtn {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  font: 600 11px var(--font-mono);
+  line-height: 1;
+  flex: none;
+}
+
+.collapseBtn:hover {
+  color: var(--txt);
+  border-color: var(--line2);
+}
+
+.cardBody {
+  flex: 1;
+  overflow: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.notStarted {
+  font: 400 11.5px var(--font-ui);
+  color: var(--dim);
+  font-style: italic;
+}
+
+.blockRow {
+  padding: 2px 10px 6px;
+  border-radius: 7px;
+  border-left: 2px solid var(--line2);
+}
+
+.blockRowTagged {
+  padding: 8px 10px;
+  background: var(--bg2);
+}
+
+.blockRowSum {
+  border-left-color: var(--teal);
+}
+
+.blockRowRev {
+  border-left-color: var(--acc);
+}
+
+.blockHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+
+.blockTag {
+  font: 700 8.5px var(--font-mono);
+  letter-spacing: 0.1em;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.blockTime {
+  font: 400 9.5px var(--font-mono);
+  color: var(--dim);
+}
+
+.blockText {
+  font: 400 11px var(--font-mono);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.cardFooter {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.activityDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.activityDotLive {
+  animation: flPulse 1.4s infinite;
+}
+
+.activity {
+  font: 400 10.5px var(--font-mono);
+  color: var(--dim);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.modelMeta {
+  font: 400 10px var(--font-mono);
+  color: var(--dim);
+}
+
+.emptyState {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dim);
+  font: 400 12.5px var(--font-ui);
+}

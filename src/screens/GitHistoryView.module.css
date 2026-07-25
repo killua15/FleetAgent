@@ -1,0 +1,295 @@
+.screen {
+  width: 100%;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--txt);
+  font-family: var(--font-ui);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+}
+
+.backBtn {
+  font: 500 11.5px var(--font-ui);
+  padding: 7px 14px;
+  border-radius: 7px;
+}
+
+.title {
+  font: 600 14px var(--font-ui);
+}
+
+.subtitle {
+  font: 400 11px var(--font-mono);
+  color: var(--dim);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.sectionLabel {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.16em;
+  color: var(--dim);
+  padding: 10px 8px 6px;
+}
+
+.dimText {
+  font: 400 11.5px var(--font-ui);
+  color: var(--dim);
+  padding: 10px;
+}
+
+/* ---- left column: branches ---- */
+
+.branchList {
+  width: 240px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  background: var(--bg2);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+}
+
+.branchRow,
+.branchRowActive {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+}
+
+.branchRow:hover {
+  background: var(--panel2);
+}
+
+.branchRowActive {
+  border-color: var(--acc);
+  background: var(--panel);
+}
+
+.branchRowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.branchName {
+  font: 500 11.5px var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.currentDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--teal);
+  flex: none;
+}
+
+.aheadBehind {
+  display: flex;
+  gap: 4px;
+  font: 600 9.5px var(--font-mono);
+  flex: none;
+}
+
+.ahead {
+  color: var(--teal);
+}
+
+.behind {
+  color: var(--amber);
+}
+
+/* ---- center column: commit graph ---- */
+
+.graphList {
+  width: 460px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.commitRow,
+.commitRowActive {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+
+.commitRow:hover {
+  background: var(--panel2);
+}
+
+.commitRowActive {
+  background: var(--panel);
+}
+
+.graphSvg {
+  flex: none;
+}
+
+.commitHash {
+  font: 500 10.5px var(--font-mono);
+  color: var(--dim);
+  flex: none;
+}
+
+.commitSubject {
+  font: 500 11.5px var(--font-ui);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.refPill {
+  font: 500 9.5px var(--font-mono);
+  color: var(--teal);
+  background: var(--tealD);
+  padding: 1px 6px;
+  border-radius: 4px;
+  flex: none;
+}
+
+.commitAuthor {
+  font: 400 10px var(--font-mono);
+  color: var(--dim);
+  flex: none;
+}
+
+.commitDate {
+  font: 400 10px var(--font-mono);
+  color: var(--dim);
+  flex: none;
+}
+
+.loadMoreRow {
+  display: flex;
+  justify-content: center;
+  padding: 12px;
+}
+
+/* ---- right column: commit detail ---- */
+
+.detail {
+  flex: 1;
+  padding: 18px 22px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.commitDetailHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.commitSubjectFull {
+  font: 600 13px var(--font-ui);
+  white-space: pre-wrap;
+}
+
+.commitMetaLine {
+  font: 400 11px var(--font-mono);
+  color: var(--dim);
+}
+
+.commitHashFull {
+  font: 400 10.5px var(--font-mono);
+  color: var(--dim);
+}
+
+.fileList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fileRow,
+.fileRowActive {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.fileRow:hover {
+  background: var(--panel2);
+}
+
+.fileRowActive {
+  border-color: var(--acc);
+  background: var(--panel);
+}
+
+.fileStatusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.filePath {
+  font: 400 11.5px var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diffPanel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: auto;
+  padding: 8px 0;
+}

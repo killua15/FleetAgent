@@ -1,0 +1,26 @@
+@keyframes flSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  vertical-align: middle;
+}
+
+.ring {
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  opacity: 0.85;
+  animation: flSpin 0.7s linear infinite;
+}
+
+.label {
+  font: 400 11px var(--font-mono);
+  color: inherit;
+}

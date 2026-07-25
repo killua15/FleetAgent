@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../lib/invoke';
 import { SettingsTabs } from '../components/SettingsTabs';
 import { UsageBar } from '../components/UsageBar';
+import { PickConfigDirDialog } from '../components/PickConfigDirDialog';
+import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Checkbox } from '../components/ui/checkbox';
@@ -15,20 +17,47 @@ import styles from './GeneralSettings.module.css';
 
 const THEME_OPTS: Theme[] = ['dark', 'light', 'glass', 'system'];
 
+/** `/Users/killua/.claude-work` → `~/.claude-work`. macOS-only, like the rest
+ * of Fleet — the home prefix is the same on every row, so it's noise. */
+function abbreviateHome(path: string): string {
+  return path.replace(/^\/Users\/[^/]+/, '~');
+}
+
+/** Fleet's own login wizard parks a login in `pending-logins/<uuid>` and keeps
+ * that as the account's home. It's the signature of an account not using one
+ * of the user's own `~/.claude-*` directories — the reason its terminal
+ * command shows an unrecognizable path. */
+function isWizardConfigDir(path: string): boolean {
+  return path.includes('/pending-logins/');
+}
+
 export function GeneralSettings() {
   const { theme, setTheme } = useTheme();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [usage, setUsage] = useState<Record<string, AccountUsageSummary>>({});
   const [caps, setCaps] = useState<Record<string, string>>({});
   const [savingCap, setSavingCap] = useState<string | null>(null);
-  const [appSettings, setAppSettingsState] = useState<AppSettings>({ reviewerEnabled: false, reviewerAccountId: null, notifyNeedsApproval: false, notifySessionWaiting: false, notifyAccountExhausted: false, notifySpendCap: false });
+  const [appSettings, setAppSettingsState] = useState<AppSettings>({
+    reviewerEnabled: false,
+    reviewerAccountId: null,
+    notifyNeedsApproval: false,
+    notifySessionWaiting: false,
+    notifyAccountExhausted: false,
+    notifySpendCap: false,
+    notifyPrComments: false,
+    agentTreesEnabled: false,
+    includeOwnPrComments: false,
+  });
   const [savingReviewer, setSavingReviewer] = useState(false);
 
-  useEffect(() => {
+  const loadAccounts = () =>
     invoke<Account[]>('list_accounts').then((accs) => {
       setAccounts(accs);
       setCaps(Object.fromEntries(accs.map((a) => [a.id, a.monthlyCap != null ? String(a.monthlyCap) : ''])));
     });
+
+  useEffect(() => {
+    loadAccounts();
     invoke<AppSettings>('get_app_settings').then(setAppSettingsState);
   }, []);
 
@@ -94,6 +123,53 @@ export function GeneralSettings() {
                 {t}
               </button>
             ))}
+          </div>
+        </section>
+
+        <section className={styles.section}>
+          <span className={styles.sectionLabel}>ACCOUNT LOGIN — CONFIG DIRECTORY</span>
+          <span className={styles.hint}>
+            Each subscription account runs the CLI against an isolated <code>CLAUDE_CONFIG_DIR</code>. Point it at a login you
+            already have (e.g. <code>~/.claude-work</code>) instead of the one Fleet created — nothing is moved, and the
+            account keeps its sessions and history.
+          </span>
+          <div className={styles.capList}>
+            {accounts
+              .filter((acc) => acc.provider === 'claude' && acc.billing === 'sub')
+              .map((acc) => (
+                <div className={styles.capRow} key={acc.id}>
+                  <ProviderBadge account={acc} />
+                  <span className={styles.capName}>{acc.name}</span>
+                  <code
+                    className={styles.dimText}
+                    title={acc.configDirPath}
+                    style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)' }}
+                  >
+                    {abbreviateHome(acc.configDirPath)}
+                  </code>
+                  <PickConfigDirDialog
+                    trigger={
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        style={isWizardConfigDir(acc.configDirPath) ? { color: 'var(--amber)', borderColor: 'var(--amber)' } : undefined}
+                        title="Point this account at a login you already have"
+                      >
+                        change…
+                      </Button>
+                    }
+                    title={`Config directory for ${acc.name}`}
+                    description="Pick a login already on this machine. Fleet adopts it in place — nothing is moved or copied, and the account's sessions and history stay intact."
+                    onPick={async (login) => {
+                      await invoke('set_account_config_dir', { id: acc.id, configDirPath: login.path });
+                      await loadAccounts();
+                    }}
+                  />
+                </div>
+              ))}
+            {accounts.filter((acc) => acc.provider === 'claude' && acc.billing === 'sub').length === 0 && (
+              <span className={styles.empty}>No subscription accounts yet.</span>
+            )}
           </div>
         </section>
 
@@ -181,6 +257,30 @@ export function GeneralSettings() {
               checked={appSettings.notifySpendCap}
               saving={savingNotif === 'notifySpendCap'}
               onChange={(v) => toggleNotification('notifySpendCap', v)}
+            />
+            <NotificationRow
+              label="New PR comments"
+              description="A pull request Fleet opened got new review comments — checked every 5 minutes while Fleet is open."
+              checked={appSettings.notifyPrComments}
+              saving={savingNotif === 'notifyPrComments'}
+              onChange={(v) => toggleNotification('notifyPrComments', v)}
+            />
+          </div>
+        </section>
+
+        <section className={styles.section}>
+          <span className={styles.sectionLabel}>EXPERIMENTAL</span>
+          <div className={styles.notifList}>
+            {/* "Hierarchy trees" is hidden for now — the agent-tree feature is
+              * parked pending a rethink. The setting itself still exists; only
+              * its toggle is removed, so nothing that reads agentTreesEnabled
+              * breaks, and restoring this row brings it back. */}
+            <NotificationRow
+              label="Include my own PR comments"
+              description="PR review comments normally hide anything you wrote yourself, since the feature is meant to surface other reviewers' feedback. Turn this on to test the review flow solo, by commenting on your own PRs."
+              checked={appSettings.includeOwnPrComments}
+              saving={savingNotif === 'includeOwnPrComments'}
+              onChange={(v) => toggleNotification('includeOwnPrComments', v)}
             />
           </div>
         </section>

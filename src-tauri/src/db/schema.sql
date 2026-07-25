@@ -12,7 +12,14 @@ CREATE TABLE IF NOT EXISTS accounts (
   monthly_cap      REAL,
   status           TEXT NOT NULL DEFAULT 'healthy' CHECK (status IN ('healthy','cooling_down','exhausted')),
   created_at       TEXT NOT NULL,
-  updated_at       TEXT NOT NULL
+  updated_at       TEXT NOT NULL,
+  -- When `status` became 'exhausted', and nothing else. `updated_at` cannot
+  -- serve this: any unrelated write (repointing a config dir, editing a cap)
+  -- refreshes it, which silently pushed the cooldown-based recovery back by
+  -- however long ago that edit was. NULL whenever the account isn't benched —
+  -- and also on a flag inherited from before this column existed, whose age is
+  -- unknowable and which recovery therefore treats as expired.
+  exhausted_at     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -141,6 +148,70 @@ CREATE TABLE IF NOT EXISTS git_checkpoints (
   created_at  TEXT NOT NULL
 );
 
+-- One row per PR a session pushed/opened via `gh` (or discovered later —
+-- see `discover_open_prs_for_project`). `last_comment_seen_at` is just "the
+-- last time this PR was successfully checked" — a display/debug timestamp,
+-- not a dedup key. Which comments are "new" is decided by
+-- `pr_review_comments.external_id` instead (see its own comment for why).
+-- Lifecycle: a row lives here until either GitHub reports it merged (at
+-- which point `check_pr_comments_for` deletes it outright — merged is
+-- terminal, nothing left to review) or it's closed without merging, in
+-- which case the row (and its comments) stick around with `state='closed'`
+-- since a closed PR can still be reopened.
+CREATE TABLE IF NOT EXISTS pull_requests (
+  id                    TEXT PRIMARY KEY,
+  session_id            TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  repo_owner            TEXT NOT NULL,
+  repo_name             TEXT NOT NULL,
+  number                INTEGER NOT NULL,
+  url                   TEXT NOT NULL,
+  state                 TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','closed','merged')),
+  last_comment_seen_at  TEXT,
+  -- The error from the most recent failed `check_pr_comments_impl` run for
+  -- this PR (a `gh` call failing — permissions, SSO, rate limit, whatever) —
+  -- NULL once a check succeeds. Without this, a PR whose check is silently
+  -- failing every time looks identical to one with genuinely nothing new.
+  last_check_error      TEXT,
+  -- GitHub's own `updatedAt` as of the last successful check — a cheap
+  -- freshness signal. A real check first asks `gh` for just state+updatedAt;
+  -- if updatedAt hasn't moved since this value, the expensive comment fetch
+  -- (a second `gh` call, plus a REST call for inline comments) is skipped
+  -- entirely, so a "check now" over PRs with nothing new stays fast instead
+  -- of re-downloading everything every time.
+  last_seen_updated_at  TEXT,
+  -- The PR's actual head branch (`headRefName`) — known immediately for a
+  -- PR Fleet itself opened, backfilled lazily (one `gh pr view` call) for a
+  -- discovered one the first time "Send to agent" needs it. This is what
+  -- lets `resolve_session_for_pr_branch` check out the PR's real branch
+  -- instead of trusting whatever session happens to be tied to the row.
+  head_branch           TEXT,
+  created_at            TEXT NOT NULL
+);
+
+-- Every PR comment/review Fleet has ever fetched from someone other than the
+-- logged-in `gh` user, persisted so the PR review inbox screen survives
+-- restarts and doesn't depend on a panel being open when the poller finds
+-- one. `resolved_at` is NULL for anything still pending in the inbox.
+-- `path`/`line` are set only for inline diff comments (from
+-- `gh api .../pulls/{n}/comments`) — NULL for general PR/review comments
+-- (from `gh pr view --json comments,reviews`), which have no file context.
+-- `external_id` is GitHub's own id for the comment/review — the real "have
+-- we already surfaced this one" key (see `RawPrComment`'s doc comment in
+-- commands/pull_requests.rs for why this replaced a timestamp watermark).
+CREATE TABLE IF NOT EXISTS pr_review_comments (
+  id                  TEXT PRIMARY KEY,
+  pull_request_id     TEXT NOT NULL REFERENCES pull_requests(id) ON DELETE CASCADE,
+  author              TEXT NOT NULL,
+  body                TEXT NOT NULL,
+  comment_created_at  TEXT NOT NULL,
+  path                TEXT,
+  line                INTEGER,
+  external_id         TEXT,
+  resolution          TEXT CHECK (resolution IN ('sent','dismissed')),
+  resolved_at         TEXT,
+  created_at          TEXT NOT NULL
+);
+
 -- Captures the real before/after content of an Edit/Write/MultiEdit tool call
 -- (turn_runner's parsed session_blocks only keep a human-readable "Edit path"
 -- summary, deliberately dropping the raw diff) so a later diff view has
@@ -180,3 +251,5 @@ CREATE INDEX IF NOT EXISTS idx_agent_nodes_project ON agent_nodes(project_id);
 CREATE INDEX IF NOT EXISTS idx_agent_nodes_parent ON agent_nodes(parent_id);
 CREATE INDEX IF NOT EXISTS idx_file_edits_session ON file_edits(session_id);
 CREATE INDEX IF NOT EXISTS idx_turn_usage_session ON turn_usage(session_id);
+CREATE INDEX IF NOT EXISTS idx_pull_requests_session ON pull_requests(session_id);
+CREATE INDEX IF NOT EXISTS idx_pr_review_comments_pr ON pr_review_comments(pull_request_id);

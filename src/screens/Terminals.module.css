@@ -1,0 +1,524 @@
+.screen {
+  width: 100%;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--txt);
+  font-family: var(--font-ui);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+
+.gridArea {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.grid {
+  flex: 1;
+  display: grid;
+  grid-auto-rows: minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.cardHeader {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+  min-width: 0;
+}
+
+.kindBadge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  font: 600 10px var(--font-mono);
+}
+
+.cardTitle {
+  flex: none;
+  font: 500 12px var(--font-ui);
+  color: var(--txt);
+  white-space: nowrap;
+}
+
+.cardPath {
+  flex: 1;
+  min-width: 0;
+  font: 400 10.5px var(--font-mono);
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* The tail of a path (the worktree slug) identifies it; the leading home
+     directory is the same for every row and worth losing first. */
+  direction: rtl;
+  text-align: left;
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* xterm sizes itself to this box, so it must have a real height for
+   FitAddon to compute rows against. */
+.term {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  padding: 6px 8px;
+  overflow: hidden;
+}
+
+.empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--dim);
+  font: 400 12.5px var(--font-ui);
+}
+
+.warnBanner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 10px 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--amberD);
+  border: 1px solid var(--amber);
+  color: var(--amber);
+  font: 500 11.5px var(--font-ui);
+}
+
+.warnDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--amber);
+}
+
+.colControl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 400 11px var(--font-ui);
+  color: var(--mut);
+}
+
+.colControl select {
+  background: var(--panel);
+  color: var(--txt);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 6px;
+  font: 400 11px var(--font-ui);
+}
+
+.rail {
+  width: 190px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  background: var(--bg2);
+  padding: 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow: auto;
+}
+
+.railLabel {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.16em;
+  color: var(--dim);
+  padding: 0 6px 6px;
+}
+
+.pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--mut);
+  font: 400 11.5px var(--font-ui);
+  cursor: pointer;
+  text-align: left;
+}
+
+.pill:hover {
+  border-color: var(--acc);
+  color: var(--txt);
+}
+
+.pillName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pillRestore {
+  flex: none;
+  color: var(--dim);
+}
+
+.picker {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 10px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  max-height: 40vh;
+  overflow: auto;
+}
+
+.pickerLabel {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.16em;
+  color: var(--dim);
+}
+
+.pickerGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pickerGroupTitle {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.14em;
+  color: var(--mut);
+  padding: 6px 0 4px;
+}
+
+.pickerRow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+
+.pickerRow:hover {
+  background: var(--panel2);
+  border-color: var(--line2);
+}
+
+.pickerName {
+  flex: none;
+  font: 500 12px var(--font-ui);
+  color: var(--txt);
+}
+
+.pickerPath {
+  flex: 1;
+  min-width: 0;
+  font: 400 10.5px var(--font-mono);
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pickerEmpty {
+  padding: 6px 8px;
+  font: 400 11.5px var(--font-ui);
+  color: var(--dim);
+}
+
+.quotaBanner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--amber);
+  background: var(--amberD);
+  color: var(--amber);
+  font: 500 11px var(--font-ui);
+}
+
+.quotaDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--amber);
+}
+
+.quotaText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exploreRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  margin-top: 2px;
+  border-radius: 6px;
+  border: 1px dashed var(--line2);
+  background: transparent;
+  color: var(--acc);
+  font: 500 11.5px var(--font-ui);
+  cursor: pointer;
+  text-align: left;
+}
+
+.exploreRow:hover {
+  background: var(--accD);
+  border-color: var(--acc);
+}
+
+.multiRows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.multiRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.multiSelect {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel2);
+  color: var(--txt);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: 400 11.5px var(--font-ui);
+}
+
+.multiArrow {
+  flex: none;
+  color: var(--dim);
+  font: 400 12px var(--font-mono);
+}
+
+.multiRemove {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.multiRemove:hover:not(:disabled) {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.multiRemove:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.multiActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.addRowLink {
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  color: var(--acc);
+  font: 500 11.5px var(--font-ui);
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.addRowLink:hover {
+  text-decoration: underline;
+}
+
+.envRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.accountRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+
+.accountRow:hover:not(:disabled) {
+  background: var(--panel2);
+  border-color: var(--acc);
+}
+
+.accountRow:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.provBadge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  font: 600 10.5px var(--font-mono);
+}
+
+.accountMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.accountTop {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* The command is the point of the row, so it gets monospace and its own line
+   rather than being squeezed in as metadata. Scrolls instead of wrapping: a
+   wrapped command line reads as two commands. */
+.accountCommand {
+  display: block;
+  min-width: 0;
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  color: var(--teal);
+  font: 400 10.5px var(--font-mono);
+  /* `pre` on purpose: the script is two lines (`cd …` then the command) and
+     each must stay on its own. A wrapped command line reads as two commands. */
+  white-space: pre;
+  overflow-x: auto;
+  text-align: left;
+}
+
+.statusReady {
+  flex: none;
+  font: 500 10.5px var(--font-ui);
+  color: var(--grn);
+}
+
+.statusNeedsLogin {
+  flex: none;
+  font: 500 10.5px var(--font-ui);
+  color: var(--amber);
+}
+
+.statusChecking {
+  flex: none;
+  font: 400 10.5px var(--font-ui);
+  color: var(--dim);
+}
+
+.pickerChecking {
+  font: 400 9.5px var(--font-mono);
+  color: var(--dim);
+  letter-spacing: 0;
+}
+
+.backLink {
+  flex: none;
+  background: transparent;
+  border: none;
+  color: var(--acc);
+  font: 500 11.5px var(--font-ui);
+  cursor: pointer;
+  padding: 0 6px 0 0;
+}
+
+.backLink:hover {
+  text-decoration: underline;
+}
+
+.envWarn {
+  font: 500 11px var(--font-ui);
+  color: var(--amber);
+}
+
+.accountBadge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: var(--accD);
+  color: var(--acc);
+  font: 500 10.5px var(--font-ui);
+  white-space: nowrap;
+}

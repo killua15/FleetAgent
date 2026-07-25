@@ -54,12 +54,12 @@ pub(crate) fn emit_block<R: Runtime>(app: &AppHandle<R>, session_id: &str, kind:
                     "INSERT INTO session_blocks (id, session_id, kind, text, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
                     params![block_id, session_id, kind, text, chrono::Utc::now().to_rfc3339()],
                 ) {
-                    eprintln!("emit_block: failed to persist block for session {session_id}: {e}");
+                    log::error!("emit_block: failed to persist block for session {session_id}: {e}");
                 }
             }
-            Err(e) => eprintln!("emit_block: DB mutex poisoned, block for session {session_id} lost: {e}"),
+            Err(e) => log::error!("emit_block: DB mutex poisoned, block for session {session_id} lost: {e}"),
         },
-        None => eprintln!("emit_block: DbConnection not managed yet, block for session {session_id} lost"),
+        None => log::error!("emit_block: DbConnection not managed yet, block for session {session_id} lost"),
     }
     block_id
 }
@@ -78,11 +78,11 @@ pub(crate) fn mark_session_status<R: Runtime>(app: &AppHandle<R>, session_id: &s
                     conn.execute("UPDATE sessions SET status = ?2 WHERE id = ?1", params![session_id, status])
                 };
                 if let Err(e) = result {
-                    eprintln!("mark_session_status: failed to set session {session_id} to {status}: {e}");
+                    log::error!("mark_session_status: failed to set session {session_id} to {status}: {e}");
                 }
                 session_name = conn.query_row("SELECT name FROM sessions WHERE id = ?1", params![session_id], |row| row.get::<_, String>(0)).ok();
             }
-            Err(e) => eprintln!("mark_session_status: DB mutex poisoned for session {session_id}: {e}"),
+            Err(e) => log::error!("mark_session_status: DB mutex poisoned for session {session_id}: {e}"),
         }
     }
     let _ = app.emit("session-status", (session_id.to_string(), status.to_string()));
@@ -101,14 +101,16 @@ pub(crate) fn mark_account_exhausted<R: Runtime>(app: &AppHandle<R>, account_id:
     if let Some(db) = app.try_state::<DbConnection>() {
         match db.0.lock() {
             Ok(conn) => {
+                // `exhausted_at` is what recovery reads, so a flag written
+                // without it would never come off cooldown.
                 if let Err(e) = conn.execute(
-                    "UPDATE accounts SET status = 'exhausted', updated_at = ?2 WHERE id = ?1",
+                    "UPDATE accounts SET status = 'exhausted', exhausted_at = ?2, updated_at = ?2 WHERE id = ?1",
                     params![account_id, chrono::Utc::now().to_rfc3339()],
                 ) {
-                    eprintln!("mark_account_exhausted: failed to update account {account_id}: {e}");
+                    log::error!("mark_account_exhausted: failed to update account {account_id}: {e}");
                 }
             }
-            Err(e) => eprintln!("mark_account_exhausted: DB mutex poisoned for account {account_id}: {e}"),
+            Err(e) => log::error!("mark_account_exhausted: DB mutex poisoned for account {account_id}: {e}"),
         }
     }
 }
@@ -225,4 +227,17 @@ pub fn kill<R: Runtime>(app: &AppHandle<R>, session_id: &str) -> Result<(), Stri
         child.kill().map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Kills every registered PTY child, used on app exit. A PTY-backed process
+/// outlives its parent perfectly happily, so without this a quit leaves the
+/// interactive children (today: the CLI login in the AddAccount wizard)
+/// running with nobody reading their output.
+pub fn kill_all<R: Runtime>(app: &AppHandle<R>) {
+    let Some(state) = app.try_state::<ProcessRegistry>() else { return };
+    let Ok(mut registry) = state.0.lock() else { return };
+    for (session_id, mut child) in registry.drain() {
+        log::info!("killing PTY process for session {session_id} on exit");
+        let _ = child.kill();
+    }
 }

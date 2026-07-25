@@ -97,6 +97,98 @@
   color: var(--mut);
 }
 
+.importRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 12px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.importedBox {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 9px;
+  border: 1px solid var(--grn);
+  background: var(--grnD);
+}
+
+.importedPath {
+  font: 400 11.5px var(--font-mono);
+  color: var(--txt);
+  word-break: break-all;
+}
+
+.loginList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.loginRow {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  min-width: 0;
+}
+
+.loginRow:hover {
+  border-color: var(--acc);
+  background: var(--panel2);
+}
+
+.loginPath {
+  font: 500 12px var(--font-mono);
+  color: var(--txt);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.loginMeta {
+  font: 400 11px var(--font-ui);
+  color: var(--mut);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.newLoginLink {
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  color: var(--acc);
+  font: 500 11.5px var(--font-ui);
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.newLoginLink:hover {
+  text-decoration: underline;
+}
+
+.newLoginForm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .providerGrid {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;

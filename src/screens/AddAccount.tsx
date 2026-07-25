@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../lib/invoke';
 import { listen } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useNavigation } from '../nav/NavigationProvider';
 import { extractUrl, stripAnsi } from '../lib/ansi';
-import { PROVIDER_META, type Billing, type NewAccount, type Provider, type Scope } from '../types/account';
+import { PROVIDER_META, type Billing, type DiscoveredLogin, type NewAccount, type Provider, type Scope } from '../types/account';
 import type { ApiKeyCheck, AuthStatus, LoginOutputEvent, LoginSession, ProviderAvailability } from '../types/login';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { Spinner } from '../components/Spinner';
 import { Label } from '../components/ui/label';
 import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
@@ -38,6 +39,17 @@ export function AddAccount() {
   const [loggedIn, setLoggedIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [startingLogin, setStartingLogin] = useState(false);
+  const [submittingCode, setSubmittingCode] = useState(false);
+  // Set when the user adopts a config dir they already logged into by hand
+  // instead of running a fresh login here. Takes the place of `loginId`.
+  const [importedConfigDir, setImportedConfigDir] = useState<string | null>(null);
+  // Existing logins on this machine, shown first on step 3 (sub). `null` while
+  // still loading. Importing one is the one-click happy path.
+  const [discovered, setDiscovered] = useState<DiscoveredLogin[] | null>(null);
+  // The user chose "log in a new account" over importing; the embedded login
+  // form (name → browser login) takes over.
+  const [wantsNewLogin, setWantsNewLogin] = useState(false);
+  const [newLoginName, setNewLoginName] = useState('');
   const loginStartedRef = useRef(false);
   const pollRef = useRef<number | null>(null);
   const terminalRef = useRef<HTMLDivElement>(null);
@@ -69,14 +81,20 @@ export function AddAccount() {
     if (loginId) invoke('cancel_login', { loginId }).catch(() => {});
   };
 
-  // Kick off the real embedded CLI login once we land on step 3 for a
-  // subscription account.
-  useEffect(() => {
-    if (step !== 3 || billing !== 'sub' || loginStartedRef.current) return;
+  // Starts the real embedded CLI login. No longer auto-fired on entering
+  // step 3: importing an existing login is the default there, and a genuinely
+  // new login now runs in `accounts/<name>` — so its directory is named after
+  // the account, which means the name has to be known *before* the login
+  // starts (the directory can't be renamed afterwards without breaking the
+  // keychain token).
+  const startNewLogin = (accountName: string) => {
+    if (loginStartedRef.current) return;
     loginStartedRef.current = true;
     setStartingLogin(true);
     setLoginError(null);
-    invoke<LoginSession>('begin_login', { provider })
+    // Carry the chosen name into step 4, and into the account created there.
+    setName(accountName);
+    invoke<LoginSession>('begin_login', { provider, name: accountName })
       .then((session) => {
         setLoginSession(session);
         pollRef.current = window.setInterval(async () => {
@@ -94,13 +112,7 @@ export function AddAccount() {
       })
       .catch((e) => setLoginError(String(e)))
       .finally(() => setStartingLogin(false));
-
-    return () => {
-      // Only fires when this effect's deps change while step===3 stays
-      // true would not re-run since loginStartedRef guards it; the real
-      // cleanup path is handled explicitly in back()/close() below.
-    };
-  }, [step, billing, provider]);
+  };
 
   useEffect(() => {
     if (!loginSession) return;
@@ -119,6 +131,16 @@ export function AddAccount() {
 
   useEffect(() => stopPolling, []);
 
+  // Discover existing logins when the subscription login step opens. Each
+  // candidate costs a real `claude auth status`, so it waits until the step
+  // is actually reached rather than running on mount.
+  useEffect(() => {
+    if (step !== 3 || billing !== 'sub' || discovered !== null) return;
+    invoke<DiscoveredLogin[]>('list_discoverable_logins')
+      .then(setDiscovered)
+      .catch(() => setDiscovered([]));
+  }, [step, billing, discovered]);
+
   const resetLoginState = () => {
     loginStartedRef.current = false;
     setLoginSession(null);
@@ -126,6 +148,9 @@ export function AddAccount() {
     setPasteCode('');
     setLoggedIn(false);
     setLoginError(null);
+    setWantsNewLogin(false);
+    setNewLoginName('');
+    setImportedConfigDir(null);
   };
 
   const handleClose = () => {
@@ -142,9 +167,14 @@ export function AddAccount() {
   };
 
   const handleSubmitCode = async () => {
-    if (!loginSession || !pasteCode.trim()) return;
-    await invoke('send_login_input', { loginId: loginSession.loginId, data: pasteCode.trim() });
-    setPasteCode('');
+    if (!loginSession || !pasteCode.trim() || submittingCode) return;
+    setSubmittingCode(true);
+    try {
+      await invoke('send_login_input', { loginId: loginSession.loginId, data: pasteCode.trim() });
+      setPasteCode('');
+    } finally {
+      setSubmittingCode(false);
+    }
   };
 
   const handleVerifyKey = async () => {
@@ -167,7 +197,7 @@ export function AddAccount() {
       : step === 2
         ? true
         : step === 3
-          ? (billing === 'sub' ? loggedIn : keyValid)
+          ? (billing === 'sub' ? loggedIn || importedConfigDir !== null : keyValid)
           : true;
 
   const handleNext = async () => {
@@ -185,7 +215,10 @@ export function AddAccount() {
       scope,
       planLabel: `${prov.name} · ${billing === 'sub' ? 'Subscription' : 'API key'}`,
       secret: billing === 'key' ? apiKey.trim() : undefined,
-      loginId: billing === 'sub' ? loginSession?.loginId : undefined,
+      // An imported directory wins: when it's set, the embedded login was
+      // abandoned in favour of one the user already had.
+      configDirPath: importedConfigDir ?? undefined,
+      loginId: billing === 'sub' && importedConfigDir === null ? loginSession?.loginId : undefined,
       monthlyCap: monthlyCap ? Number(monthlyCap.replace(/[^0-9.]/g, '')) : undefined,
     };
     try {
@@ -302,7 +335,87 @@ export function AddAccount() {
             </>
           )}
 
-          {step === 3 && billing === 'sub' && (
+          {/* Chosen an existing login — nothing else to do on this step. */}
+          {step === 3 && billing === 'sub' && importedConfigDir !== null && (
+            <div className={styles.importedBox}>
+              <span className={styles.hint}>
+                Using a login you already have — nothing was moved, and no new login was run.
+              </span>
+              <code className={styles.importedPath}>{importedConfigDir}</code>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setImportedConfigDir(null)}
+                style={{ alignSelf: 'flex-start' }}
+              >
+                choose a different account
+              </Button>
+            </div>
+          )}
+
+          {/* Default state: pick one of the logins already on this machine.
+            * One click and the account is correctly configured — no browser
+            * round-trip, no config dir to move afterwards. */}
+          {step === 3 && billing === 'sub' && importedConfigDir === null && !wantsNewLogin && (
+            <>
+              <span className={styles.hint}>Which login should this account use?</span>
+              {discovered === null && <Spinner label="finding your Claude logins…" />}
+              <div className={styles.loginList}>
+                {discovered?.map((login) => (
+                  <button
+                    key={login.path}
+                    className={styles.loginRow}
+                    onClick={() => {
+                      setImportedConfigDir(login.path);
+                      // Precharge step 4's name with something identifiable.
+                      if (!name.trim()) setName(login.email ?? login.displayPath.replace(/^~\/\.claude-?/, '') ?? '');
+                    }}
+                  >
+                    <span className={styles.loginPath}>{login.displayPath}</span>
+                    <span className={styles.loginMeta}>
+                      {login.email ?? 'no email on this login'}
+                      {login.subscriptionType ? ` · ${login.subscriptionType}` : ''}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              {discovered?.length === 0 && (
+                <span className={styles.hint}>No existing Claude logins found on this machine.</span>
+              )}
+              <button className={styles.newLoginLink} onClick={() => setWantsNewLogin(true)}>
+                + Log in a new account instead
+              </button>
+            </>
+          )}
+
+          {/* A genuinely new login. The name is asked first because it decides
+            * the config directory (`accounts/<name>`), which can't be renamed
+            * once `claude auth login` has written the token there. */}
+          {step === 3 && billing === 'sub' && importedConfigDir === null && wantsNewLogin && !loginSession && !startingLogin && (
+            <div className={styles.newLoginForm}>
+              <span className={styles.hint}>Name this account — it also names its config folder:</span>
+              <Input
+                className={styles.input}
+                autoFocus
+                value={newLoginName}
+                onChange={(e) => setNewLoginName(e.target.value)}
+                placeholder="e.g. Work, Personal…"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && newLoginName.trim()) startNewLogin(newLoginName.trim());
+                }}
+              />
+              <div className={styles.importRow}>
+                <Button variant="outline" size="sm" disabled={!newLoginName.trim()} onClick={() => startNewLogin(newLoginName.trim())}>
+                  Start login →
+                </Button>
+                <button className={styles.newLoginLink} onClick={() => setWantsNewLogin(false)}>
+                  ← back to existing logins
+                </button>
+              </div>
+            </div>
+          )}
+
+          {step === 3 && billing === 'sub' && importedConfigDir === null && wantsNewLogin && (loginSession || startingLogin) && (
             <>
               <span className={styles.hint}>Complete the CLI login — Fleet runs it in an embedded terminal:</span>
               <div className={styles.terminal} ref={terminalRef} style={{ maxHeight: 220, overflow: 'auto' }}>
@@ -334,8 +447,8 @@ export function AddAccount() {
                       if (e.key === 'Enter') handleSubmitCode();
                     }}
                   />
-                  <Button variant="outline" className={styles.simulateBtn} onClick={handleSubmitCode}>
-                    Submit code
+                  <Button variant="outline" className={styles.simulateBtn} disabled={submittingCode || !pasteCode.trim()} onClick={handleSubmitCode}>
+                    {submittingCode ? <Spinner label="submitting…" /> : 'Submit code'}
                   </Button>
                 </div>
               )}

@@ -16,7 +16,7 @@ export function Landing() {
   const handleEnter = () => {
     if (entering) return;
     setEntering(true);
-    window.setTimeout(() => navigate('main-view'), 450);
+    window.setTimeout(() => navigate('terminals'), 450);
   };
 
   return (
@@ -32,8 +32,8 @@ export function Landing() {
         <div className={styles.heading}>
           <span className={styles.wordmark}>fleet</span>
           <span className={styles.tagline}>
-            Orchestrate parallel coding agents across all your accounts — without ever mixing
-            personal and work.
+            Open a real Claude Code terminal in any project, under any account — one at a time or a
+            whole grid at once, without ever mixing personal and work.
           </span>
         </div>
 
@@ -49,9 +49,9 @@ export function Landing() {
           type="button"
           className={`${styles.enterBtn} ${entering ? styles.entering : ''}`}
           onClick={handleEnter}
-          title="Go to main view"
+          title="Open Fleet"
         >
-          {entering ? 'Opening workspace…' : 'Enter Fleet →'}
+          {entering ? 'Opening terminals…' : 'Enter Fleet →'}
         </Button>
         <span className={styles.footNote}>local-first · your keys stay in the keychain</span>
       </div>

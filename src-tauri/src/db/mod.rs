@@ -18,15 +18,148 @@ pub fn init(app: &AppHandle) -> Connection {
     conn.execute_batch("PRAGMA foreign_keys = ON;")
         .expect("enable foreign keys");
     conn.execute_batch(SCHEMA).expect("apply schema");
-    run_migrations(&conn);
+    // A half-applied migration is not something to limp along with — every
+    // command past this point assumes the schema it was written against.
+    // Fail loudly, with the log line already written, rather than starting up
+    // into a shape nothing else expects.
+    run_migrations(&conn).expect("apply database migrations");
     conn
 }
 
-/// Small idempotent ALTER TABLE migrations for columns added after a table
-/// already existed on disk — CREATE TABLE IF NOT EXISTS above won't add
-/// them to a pre-existing dev database. Errors are ignored (column already
-/// present is the expected steady state).
-fn run_migrations(conn: &Connection) {
+/// One numbered, recorded schema change. `version` is what gets written to
+/// `PRAGMA user_version` once it succeeds, so each migration runs exactly
+/// once per database, ever.
+struct Migration {
+    version: i64,
+    name: &'static str,
+    run: fn(&Connection) -> Result<(), String>,
+    /// Whether the runner should wrap `run` in its own transaction. False
+    /// only for `legacy_baseline`, which manages its own transactions and
+    /// toggles `PRAGMA foreign_keys` (a no-op inside a transaction, so it
+    /// has to stay outside one).
+    transactional: bool,
+}
+
+/// Every schema change, in order. **Append only** — never renumber, never
+/// edit a migration that has shipped: a database that already recorded
+/// version N will never re-run it, so an edited migration silently applies to
+/// new installs and not existing ones, which is exactly the class of drift
+/// this table exists to prevent. To change something, add a new entry.
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "legacy_baseline",
+        run: legacy_baseline,
+        transactional: false,
+    },
+    Migration {
+        version: 2,
+        name: "accounts_exhausted_at",
+        run: accounts_exhausted_at,
+        transactional: true,
+    },
+];
+
+/// Whether `table` already has a column named `column`.
+///
+/// Needed because `schema.sql` declares the current shape for a fresh database
+/// *and* every migration still runs against it, so an `ALTER TABLE ADD COLUMN`
+/// for a column `schema.sql` already created would fail with *duplicate column
+/// name* and take startup down with it. Checking beats `legacy_baseline`'s
+/// blanket error-swallowing: only the one expected collision is tolerated, and
+/// a genuine failure still reports.
+fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|e| format!("could not inspect {table}: {e}"))?;
+    let mut names = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| format!("could not read {table} columns: {e}"))?;
+    Ok(names.any(|name| name.as_deref() == Ok(column)))
+}
+
+/// Gives account exhaustion its own timestamp, separate from `updated_at`.
+///
+/// Existing `exhausted` rows are deliberately left with `exhausted_at` NULL
+/// rather than backfilled from `updated_at`. Those flags come from the headless
+/// rate-limit path and may be days old, with `updated_at` since overwritten by
+/// unrelated edits — so their real age is not recoverable. Recovery reads NULL
+/// as expired, which clears them on the next pass and lets a real `/usage`
+/// check re-establish the truth, instead of preserving a benching nobody can
+/// date or justify.
+fn accounts_exhausted_at(conn: &Connection) -> Result<(), String> {
+    if has_column(conn, "accounts", "exhausted_at")? {
+        return Ok(());
+    }
+    conn.execute_batch("ALTER TABLE accounts ADD COLUMN exhausted_at TEXT;")
+        .map_err(|e| format!("could not add accounts.exhausted_at: {e}"))
+}
+
+/// Applies every migration newer than the database's recorded
+/// `user_version`, then records the new version — all inside one transaction
+/// per migration, so a failure leaves the database exactly where it was
+/// rather than half-migrated with a version that lies about it.
+///
+/// Replaces an ad-hoc "run every ALTER TABLE on every startup and ignore all
+/// errors" loop. That worked only because *duplicate column name* happened to
+/// be the expected steady-state error, which meant a genuinely broken
+/// migration was indistinguishable from an already-applied one — and it gave
+/// no way to add a migration that isn't naturally idempotent.
+fn run_migrations(conn: &Connection) -> Result<(), String> {
+    apply(conn, MIGRATIONS)
+}
+
+/// The runner itself, taking the migration list as a parameter so tests can
+/// drive it with deliberately broken migrations without touching the real
+/// `MIGRATIONS` table.
+fn apply(conn: &Connection, migrations: &[Migration]) -> Result<(), String> {
+    let current: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|e| format!("could not read schema version: {e}"))?;
+
+    for migration in migrations {
+        if migration.version <= current {
+            continue;
+        }
+        log::info!("applying migration {} ({})", migration.version, migration.name);
+
+        if migration.transactional {
+            conn.execute_batch("BEGIN TRANSACTION;").map_err(|e| e.to_string())?;
+        }
+        let result = (migration.run)(conn).and_then(|()| {
+            // `user_version` lives in the database header and participates in
+            // the surrounding transaction, so version and schema commit or
+            // roll back together — they can never disagree.
+            conn.execute_batch(&format!("PRAGMA user_version = {};", migration.version))
+                .map_err(|e| format!("could not record schema version: {e}"))
+        });
+
+        match result {
+            Ok(()) => {
+                if migration.transactional {
+                    conn.execute_batch("COMMIT;").map_err(|e| e.to_string())?;
+                }
+            }
+            Err(e) => {
+                if migration.transactional {
+                    let _ = conn.execute_batch("ROLLBACK;");
+                }
+                log::error!("migration {} ({}) failed: {e}", migration.version, migration.name);
+                return Err(format!("migration {} ({}) failed: {e}", migration.version, migration.name));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Everything that shipped before schema versioning existed, collapsed into
+/// migration 1. Deliberately keeps the old "ignore every error" behaviour:
+/// these statements ran unconditionally on every startup for the whole life
+/// of the project, so a database out there may be in any state between "none
+/// of this applied" and "all of it applied", and *duplicate column name* is a
+/// legitimate outcome rather than a failure. Every migration added from here
+/// on runs exactly once and reports its errors for real.
+fn legacy_baseline(conn: &Connection) -> Result<(), String> {
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN provider_session_id TEXT;");
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT '';");
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN effort TEXT NOT NULL DEFAULT 'high';");
@@ -36,8 +169,15 @@ fn run_migrations(conn: &Connection) {
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN worktree_kind TEXT;");
     let _ = conn.execute_batch("ALTER TABLE projects ADD COLUMN default_setup_command TEXT;");
     let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);");
+    let _ = conn.execute_batch("ALTER TABLE pr_review_comments ADD COLUMN path TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE pr_review_comments ADD COLUMN line INTEGER;");
+    let _ = conn.execute_batch("ALTER TABLE pr_review_comments ADD COLUMN external_id TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE pull_requests ADD COLUMN last_check_error TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE pull_requests ADD COLUMN last_seen_updated_at TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE pull_requests ADD COLUMN head_branch TEXT;");
     migrate_sessions_account_fk_to_cascade(conn);
     repair_dangling_sessions_fk(conn);
+    Ok(())
 }
 
 /// SQLite silently rewrites *other* tables' foreign-key definitions to
@@ -89,7 +229,7 @@ fn repair_dangling_sessions_fk(conn: &Connection) {
              COMMIT;",
         );
         if let Err(e) = result {
-            eprintln!("repair_dangling_sessions_fk: session_blocks repair failed, rolling back: {e}");
+            log::error!("repair_dangling_sessions_fk: session_blocks repair failed, rolling back: {e}");
             let _ = conn.execute_batch("ROLLBACK;");
         }
     }
@@ -110,7 +250,7 @@ fn repair_dangling_sessions_fk(conn: &Connection) {
              COMMIT;",
         );
         if let Err(e) = result {
-            eprintln!("repair_dangling_sessions_fk: git_checkpoints repair failed, rolling back: {e}");
+            log::error!("repair_dangling_sessions_fk: git_checkpoints repair failed, rolling back: {e}");
             let _ = conn.execute_batch("ROLLBACK;");
         }
     }
@@ -174,7 +314,7 @@ fn migrate_sessions_account_fk_to_cascade(conn: &Connection) {
          COMMIT;",
     );
     if let Err(e) = result {
-        eprintln!("sessions FK migration failed, rolling back: {e}");
+        log::error!("sessions FK migration failed, rolling back: {e}");
         let _ = conn.execute_batch("ROLLBACK;");
     }
     let _ = conn.execute_batch("PRAGMA foreign_keys=ON;");
@@ -183,6 +323,103 @@ fn migrate_sessions_account_fk_to_cascade(conn: &Connection) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn schema_version(conn: &Connection) -> i64 {
+        conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap()
+    }
+
+    fn fresh_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn
+    }
+
+    #[test]
+    fn migrations_record_the_latest_version_and_are_idempotent() {
+        let conn = fresh_db();
+        assert_eq!(schema_version(&conn), 0, "a brand new database starts unversioned");
+
+        run_migrations(&conn).unwrap();
+        let latest = MIGRATIONS.last().unwrap().version;
+        assert_eq!(schema_version(&conn), latest);
+
+        // The whole point of the version stamp: a second run does nothing.
+        run_migrations(&conn).unwrap();
+        assert_eq!(schema_version(&conn), latest);
+    }
+
+    /// The append-only rule in `MIGRATIONS`' doc comment is only enforceable
+    /// if versions are actually strictly increasing and start at 1 — a
+    /// duplicate or out-of-order entry would silently skip a migration on
+    /// every database that had already passed that number.
+    #[test]
+    fn migration_versions_are_strictly_increasing_from_one() {
+        let mut expected = 1;
+        for migration in MIGRATIONS {
+            assert_eq!(migration.version, expected, "migration '{}' is out of order", migration.name);
+            expected += 1;
+        }
+    }
+
+    /// Both upgrade paths for `accounts.exhausted_at`: a database created before
+    /// the column existed has to gain it, and a fresh one — where `schema.sql`
+    /// already declared it — has to survive the same migration running anyway,
+    /// which is what every install does on its first launch.
+    #[test]
+    fn the_exhausted_at_migration_adds_the_column_and_tolerates_it_already_existing() {
+        let legacy = Connection::open_in_memory().unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE accounts (
+                   id TEXT PRIMARY KEY, provider TEXT NOT NULL, billing TEXT NOT NULL, name TEXT NOT NULL,
+                   scope TEXT NOT NULL, plan_label TEXT NOT NULL DEFAULT '', config_dir_path TEXT NOT NULL,
+                   credential_ref TEXT NOT NULL, monthly_cap REAL, status TEXT NOT NULL DEFAULT 'healthy',
+                   created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                 );",
+            )
+            .unwrap();
+        assert!(!has_column(&legacy, "accounts", "exhausted_at").unwrap(), "the fixture has to start without the column for this to prove anything");
+
+        accounts_exhausted_at(&legacy).unwrap();
+        assert!(has_column(&legacy, "accounts", "exhausted_at").unwrap(), "an existing database must gain the column");
+
+        let fresh = fresh_db();
+        assert!(has_column(&fresh, "accounts", "exhausted_at").unwrap(), "schema.sql must declare it for new databases");
+        accounts_exhausted_at(&fresh).expect("re-running where schema.sql already added it must be a no-op, not a startup failure");
+    }
+
+    /// A failing migration must leave both the schema *and* the recorded
+    /// version untouched, so the next launch retries it from a known state
+    /// instead of skipping it forever against a half-changed database.
+    #[test]
+    fn a_failing_transactional_migration_rolls_back_and_does_not_bump_the_version() {
+        fn good(conn: &Connection) -> Result<(), String> {
+            conn.execute_batch("CREATE TABLE applied_first (id TEXT);").map_err(|e| e.to_string())
+        }
+        fn bad(conn: &Connection) -> Result<(), String> {
+            conn.execute_batch("CREATE TABLE half_applied (id TEXT);").map_err(|e| e.to_string())?;
+            conn.execute_batch("THIS IS NOT SQL;").map_err(|e| e.to_string())
+        }
+        let migrations = [
+            Migration { version: 1, name: "good", run: good, transactional: true },
+            Migration { version: 2, name: "bad", run: bad, transactional: true },
+        ];
+
+        let conn = fresh_db();
+        let result = apply(&conn, &migrations);
+
+        assert!(result.is_err(), "a broken migration must surface as an error, not be swallowed");
+        assert_eq!(schema_version(&conn), 1, "version must stay at the last migration that fully succeeded");
+        assert!(
+            conn.query_row("SELECT 1 FROM sqlite_master WHERE name='applied_first'", [], |r| r.get::<_, i64>(0)).is_ok(),
+            "the migration that succeeded must stay applied"
+        );
+        assert!(
+            conn.query_row("SELECT 1 FROM sqlite_master WHERE name='half_applied'", [], |r| r.get::<_, i64>(0)).is_err(),
+            "the failed migration's partial work must be rolled back"
+        );
+    }
 
     /// Reproduces a real production crash: an existing database created
     /// before the subsession/worktree columns existed. `CREATE TABLE IF NOT
@@ -223,7 +460,7 @@ mod tests {
 
         // This must NOT panic — this is the exact call `db::init` makes.
         conn.execute_batch(SCHEMA).expect("schema batch must succeed against a pre-existing old-shape database");
-        run_migrations(&conn);
+        run_migrations(&conn).expect("migrations must succeed against a pre-existing old-shape database");
 
         let sessions_sql: String = conn
             .query_row("SELECT sql FROM sqlite_master WHERE name='sessions'", [], |r| r.get(0))

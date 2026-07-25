@@ -203,12 +203,45 @@ fn fetch_usage_text(config_dir: &str) -> Result<String, String> {
     Ok(strip_ansi(&String::from_utf8_lossy(&collected)))
 }
 
-#[tauri::command]
-pub fn fetch_real_usage(app: AppHandle, db: State<DbConnection>, account_id: String, force: bool) -> Result<RealUsageStats, String> {
+/// At or above this on the 5-hour session window or the weekly window, the
+/// account is treated as out of quota. The 5h limit is usually what trips
+/// first, so either crossing it is enough.
+const EXHAUSTION_PCT: f64 = 95.0;
+
+/// Whether `/usage` says an account has run out of room. `None` percentages
+/// (a parse miss) count as *not* exhausted — better to leave an account usable
+/// on a scrape we couldn't read than to bench it on a guess.
+pub fn is_exhausted(stats: &RealUsageStats) -> bool {
+    stats.session_pct.is_some_and(|p| p >= EXHAUSTION_PCT) || stats.weekly_pct.is_some_and(|p| p >= EXHAUSTION_PCT)
+}
+
+/// Runs `/usage` against one config dir and parses it — the shared core of the
+/// `fetch_real_usage` command and the terminal-rotation poller, so both read
+/// the same numbers the same way.
+pub fn fetch_usage_stats(config_dir: &str) -> Result<RealUsageStats, String> {
+    let raw_text = fetch_usage_text(config_dir)?;
+    let (session_pct, weekly_pct, context_pct) = parse_usage_text(&raw_text);
+    Ok(RealUsageStats {
+        session_pct,
+        weekly_pct,
+        context_pct,
+        raw_text,
+        fetched_at: chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+/// `fetch_usage_stats` behind the shared `UsageCache`.
+///
+/// Every caller goes through this rather than scraping directly: a check costs
+/// a hidden interactive `claude` for up to 6 seconds, and the Accounts screen,
+/// the 5-minute terminal poller, and the check fired when a terminal opens can
+/// easily all want the same account within a few seconds of each other. One
+/// reading inside the TTL serves all of them.
+pub fn cached_usage_stats<R: tauri::Runtime>(app: &AppHandle<R>, account_id: &str, config_dir: &str, force: bool) -> Result<RealUsageStats, String> {
     if !force {
         if let Some(cache) = app.try_state::<UsageCache>() {
             if let Ok(map) = cache.0.lock() {
-                if let Some((fetched, stats)) = map.get(&account_id) {
+                if let Some((fetched, stats)) = map.get(account_id) {
                     if fetched.elapsed() < CACHE_TTL {
                         return Ok(stats.clone());
                     }
@@ -217,6 +250,19 @@ pub fn fetch_real_usage(app: AppHandle, db: State<DbConnection>, account_id: Str
         }
     }
 
+    let stats = fetch_usage_stats(config_dir)?;
+
+    if let Some(cache) = app.try_state::<UsageCache>() {
+        if let Ok(mut map) = cache.0.lock() {
+            map.insert(account_id.to_string(), (Instant::now(), stats.clone()));
+        }
+    }
+
+    Ok(stats)
+}
+
+#[tauri::command]
+pub fn fetch_real_usage(app: AppHandle, db: State<DbConnection>, account_id: String, force: bool) -> Result<RealUsageStats, String> {
     let (provider, config_dir) = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         resolve_account_config(&conn, &account_id)?
@@ -225,23 +271,7 @@ pub fn fetch_real_usage(app: AppHandle, db: State<DbConnection>, account_id: Str
         return Err(format!("usage scraping isn't supported for '{provider}' accounts"));
     }
 
-    let raw_text = fetch_usage_text(&config_dir)?;
-    let (session_pct, weekly_pct, context_pct) = parse_usage_text(&raw_text);
-    let stats = RealUsageStats {
-        session_pct,
-        weekly_pct,
-        context_pct,
-        raw_text,
-        fetched_at: chrono::Utc::now().to_rfc3339(),
-    };
-
-    if let Some(cache) = app.try_state::<UsageCache>() {
-        if let Ok(mut map) = cache.0.lock() {
-            map.insert(account_id, (Instant::now(), stats.clone()));
-        }
-    }
-
-    Ok(stats)
+    cached_usage_stats(&app, &account_id, &config_dir, force)
 }
 
 #[cfg(test)]
@@ -281,6 +311,18 @@ mod tests {
         assert_eq!(session, None);
         assert_eq!(weekly, None);
         assert_eq!(context, None);
+    }
+
+    fn stats(session: Option<f64>, weekly: Option<f64>) -> RealUsageStats {
+        RealUsageStats { session_pct: session, weekly_pct: weekly, context_pct: None, raw_text: String::new(), fetched_at: String::new() }
+    }
+
+    #[test]
+    fn is_exhausted_trips_on_either_window_at_the_threshold() {
+        assert!(!is_exhausted(&stats(Some(94.9), Some(10.0))), "just under must not trip");
+        assert!(is_exhausted(&stats(Some(95.0), None)), "exactly at the threshold on the 5h window counts");
+        assert!(is_exhausted(&stats(Some(10.0), Some(99.0))), "the weekly window alone can trip it");
+        assert!(!is_exhausted(&stats(None, None)), "an unreadable scrape must not bench an account");
     }
 
     #[test]

@@ -16,11 +16,14 @@ export type ScreenName =
   | 'rotation-settings'
   | 'shared-memory'
   | 'git-panel'
+  | 'git-history'
   | 'pr-modal'
+  | 'pr-reviews'
   | 'general-settings'
   | 'tree-canvas'
   | 'tree-columns'
   | 'tree-outline'
+  | 'terminals'
   | 'command-palette';
 
 export interface NavEntry {

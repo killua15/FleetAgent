@@ -16,6 +16,10 @@ export interface LoginSession {
 export interface AuthStatus {
   loggedIn: boolean;
   authMethod: string;
+  /** Both come from `claude auth status --json`. `null` when the CLI omits
+   * them, e.g. a team login with no bound email. */
+  email: string | null;
+  subscriptionType: string | null;
 }
 
 export interface LoginOutputEvent {

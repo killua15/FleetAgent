@@ -69,6 +69,44 @@ pub fn create_project(db: State<DbConnection>, project: NewProject) -> Result<Pr
         .map_err(|e| e.to_string())
 }
 
+/// Get-or-create a project straight from a directory path — what "Explore a
+/// folder…" in the terminal picker calls after the macOS folder dialog hands
+/// back a path. Derives the name from the folder's basename so the user never
+/// has to name a project just to open a terminal in it; an already-tracked
+/// path reuses its row (same anti-duplication rule as `create_project`).
+#[tauri::command]
+pub fn ensure_project_for_path(db: State<DbConnection>, path: String) -> Result<Project, String> {
+    let trimmed = path.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err("no folder chosen".to_string());
+    }
+    if !std::path::Path::new(trimmed).is_dir() {
+        return Err(format!("{trimmed} isn't a directory"));
+    }
+
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    if let Ok(existing) = conn.query_row("SELECT * FROM projects WHERE path = ?1", params![trimmed], row_to_project) {
+        return Ok(existing);
+    }
+
+    let name = std::path::Path::new(trimmed)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| !n.is_empty())
+        .unwrap_or(trimmed)
+        .to_string();
+
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO projects (id, name, path, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![id, name, trimmed, now],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.query_row("SELECT * FROM projects WHERE id = ?1", params![id], row_to_project)
+        .map_err(|e| e.to_string())
+}
+
 /// The only project field worth editing after creation — changing `path`
 /// isn't offered: existing worktrees under `.fleet/worktrees` inside the old
 /// path would silently orphan themselves.
@@ -146,6 +184,39 @@ mod tests {
 
         let all = list_projects(db).unwrap();
         assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn ensure_project_for_path_derives_the_name_and_never_duplicates() {
+        let app = setup_test_app();
+        let db = app.state::<DbConnection>();
+
+        // A real directory on the machine — the command validates it exists.
+        let dir = std::env::temp_dir().join(format!("fleet-test-project-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.to_string_lossy().to_string();
+
+        let created = ensure_project_for_path(db.clone(), path.clone()).unwrap();
+        assert_eq!(
+            created.name,
+            dir.file_name().unwrap().to_string_lossy(),
+            "the name must come from the folder's basename, so exploring a folder never asks the user to name it"
+        );
+
+        // A trailing slash is the same directory, and must reuse the row.
+        let again = ensure_project_for_path(db.clone(), format!("{path}/")).unwrap();
+        assert_eq!(again.id, created.id, "the same path (even with a trailing slash) must not create a second project");
+        assert_eq!(list_projects(db).unwrap().len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_project_for_path_rejects_a_path_that_isnt_a_directory() {
+        let app = setup_test_app();
+        let db = app.state::<DbConnection>();
+        assert!(ensure_project_for_path(db.clone(), "/definitely/not/here".to_string()).is_err());
+        assert!(ensure_project_for_path(db, "   ".to_string()).is_err());
     }
 
     #[test]

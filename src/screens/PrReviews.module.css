@@ -1,0 +1,257 @@
+.screen {
+  width: 100%;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--txt);
+  font-family: var(--font-ui);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+}
+
+.backBtn {
+  font: 500 11.5px var(--font-ui);
+  padding: 7px 14px;
+  border-radius: 7px;
+}
+
+.title {
+  font: 600 14px var(--font-ui);
+}
+
+.subtitle {
+  font: 400 11px var(--font-ui);
+  color: var(--dim);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.countdown {
+  font: 400 10.5px var(--font-mono);
+  color: var(--dim);
+}
+
+.body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.projectList {
+  width: 280px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  background: var(--bg2);
+  padding: 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow: auto;
+}
+
+.sectionLabel {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.16em;
+  color: var(--dim);
+  padding: 0 8px 8px;
+}
+
+.projectRow,
+.projectRowActive {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.projectRow:hover {
+  background: var(--panel2);
+}
+
+.projectRowActive {
+  border-color: var(--acc);
+  background: var(--panel);
+}
+
+.projectName {
+  font: 600 12.5px var(--font-mono);
+}
+
+.prCountDim {
+  font: 400 10px var(--font-mono);
+  color: var(--dim);
+}
+
+.countBadge {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--amberD);
+  color: var(--amber);
+  font: 700 10.5px var(--font-mono);
+  display: grid;
+  place-items: center;
+}
+
+.dimText {
+  font: 400 11.5px var(--font-ui);
+  color: var(--dim);
+  padding: 10px;
+}
+
+.detail {
+  flex: 1;
+  padding: 22px 26px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.prCard {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+  /* Without this, a flex child in a column flex container defaults to
+     flex-shrink: 1 — combined with overflow: hidden above, the browser
+     squeezes each card down to fit the visible viewport instead of letting
+     it keep its natural content height, clipping everything that doesn't
+     fit. This is what was actually cutting content off, not .commentList. */
+  flex-shrink: 0;
+}
+
+.prCardHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel2);
+}
+
+.collapseToggle {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--dim);
+  font-size: 11px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+}
+
+.collapseToggle:hover {
+  background: var(--panel);
+  color: var(--txt);
+}
+
+.prLink,
+.sessionLink {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font: 600 12px var(--font-mono);
+  color: var(--acc);
+  padding: 0;
+}
+
+.sessionLink {
+  color: var(--mut);
+  font-weight: 500;
+}
+
+.noComments {
+  padding: 10px 14px;
+  font: 400 11px var(--font-ui);
+  color: var(--dim);
+}
+
+.checkError {
+  padding: 10px 14px;
+  font: 400 11px var(--font-mono);
+  color: var(--red);
+  background: var(--redD);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commentList {
+  display: flex;
+  flex-direction: column;
+  /* No height cap here on purpose — an expanded card shows its full content
+     and pushes the next PR further down, same as a normal page. The only
+     scroll is the outer .detail panel's; collapsing a card via its accordion
+     toggle is the tool for "I don't want to see this one right now", not a
+     second nested scrollbar competing with the page's own. */
+}
+
+.commentRow {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.commentRow:last-child {
+  border-bottom: none;
+}
+
+.commentMeta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.commentAuthor {
+  font: 700 11.5px var(--font-mono);
+  color: var(--txt);
+}
+
+.commentDate {
+  font: 400 10px var(--font-mono);
+  color: var(--dim);
+}
+
+.commentLocation {
+  font: 500 10.5px var(--font-mono);
+  color: var(--teal);
+  background: var(--tealD);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.commentBody {
+  font: 400 12px var(--font-ui);
+  color: var(--mut);
+  line-height: 1.5;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.commentActions {
+  display: flex;
+  gap: 8px;
+}

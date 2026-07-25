@@ -1,11 +1,29 @@
 import { useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../lib/invoke';
 import { useNavigation } from '../nav/NavigationProvider';
 import { PROVIDER_META, type Account } from '../types/account';
 import type { AuthStatus } from '../types/login';
 import { Button } from '../components/ui/button';
 import { ConfirmDeleteDialog } from '../components/ConfirmDeleteDialog';
+import { PickConfigDirDialog } from '../components/PickConfigDirDialog';
+import { Spinner } from '../components/Spinner';
 import styles from './AccountList.module.css';
+
+/** Fleet's own login wizard parks each login in
+ * `<app data>/pending-logins/<uuid>` and keeps it as the account's permanent
+ * home, so this path is the signature of an account that isn't using one of
+ * the user's own `~/.claude-*` directories — the reason its terminal command
+ * shows something unrecognizable. */
+function isWizardConfigDir(path: string): boolean {
+  return path.includes('/pending-logins/');
+}
+
+/** `/Users/killua/.claude-work` → `~/.claude-work`. The home prefix is the
+ * same on every row, so it's pure noise in a list; the full path stays in the
+ * row's tooltip. macOS-only, like the rest of Fleet. */
+function abbreviateHome(path: string): string {
+  return path.replace(/^\/Users\/[^/]+/, '~');
+}
 
 const STATUS_COLOR: Record<Account['status'], string> = {
   healthy: 'var(--grn)',
@@ -70,6 +88,11 @@ export function AccountList() {
             {error}
           </div>
         )}
+        {loading && (
+          <div className={styles.empty}>
+            <Spinner label="loading accounts…" />
+          </div>
+        )}
         {!loading && accounts.length === 0 && (
           <div className={styles.empty}>No accounts yet — add your first Claude, Codex or Gemini account.</div>
         )}
@@ -82,8 +105,33 @@ export function AccountList() {
               </span>
               <div className={styles.info}>
                 <span className={styles.name}>{acc.name}</span>
-                <span className={styles.meta}>{acc.planLabel}</span>
+                <span className={styles.meta} title={acc.configDirPath}>
+                  {acc.planLabel}
+                  {acc.planLabel && ' · '}
+                  <code className={styles.configDir}>{abbreviateHome(acc.configDirPath)}</code>
+                </span>
               </div>
+              <PickConfigDirDialog
+                trigger={
+                  <Button
+                    variant="outline"
+                    className={styles.deleteBtn}
+                    // The wizard's opaque uuid folder is the case worth
+                    // nudging about; an account already on a recognizable
+                    // directory doesn't need a call to action.
+                    style={isWizardConfigDir(acc.configDirPath) ? { color: 'var(--amber)', borderColor: 'var(--amber)' } : undefined}
+                    title="Point this account at a config directory you already use"
+                  >
+                    config dir…
+                  </Button>
+                }
+                title={`Config directory for ${acc.name}`}
+                description="Pick a login you already have on this machine. Nothing is moved or copied — the account just starts using that directory, and its sessions and history stay intact."
+                onPick={async (login) => {
+                  await invoke('set_account_config_dir', { id: acc.id, configDirPath: login.path });
+                  await load();
+                }}
+              />
               <span className={styles.scopePill}>{acc.scope}</span>
               {authByAccount[acc.id] && (
                 <span
