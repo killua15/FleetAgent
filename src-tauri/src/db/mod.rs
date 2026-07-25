@@ -58,6 +58,12 @@ const MIGRATIONS: &[Migration] = &[
         run: accounts_exhausted_at,
         transactional: true,
     },
+    Migration {
+        version: 3,
+        name: "open_terminals",
+        run: open_terminals_table,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -93,6 +99,23 @@ fn accounts_exhausted_at(conn: &Connection) -> Result<(), String> {
     }
     conn.execute_batch("ALTER TABLE accounts ADD COLUMN exhausted_at TEXT;")
         .map_err(|e| format!("could not add accounts.exhausted_at: {e}"))
+}
+
+/// Remembers which terminals were open so they can be reopened next launch.
+/// Same shape `schema.sql` declares for a fresh database; `CREATE TABLE IF NOT
+/// EXISTS` makes it a no-op there and creates it on an existing database.
+fn open_terminals_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS open_terminals (
+           id           TEXT PRIMARY KEY,
+           target_kind  TEXT NOT NULL CHECK (target_kind IN ('project','session')),
+           source_id    TEXT NOT NULL,
+           account_id   TEXT,
+           session_uuid TEXT,
+           created_at   TEXT NOT NULL
+         );",
+    )
+    .map_err(|e| format!("could not create open_terminals: {e}"))
 }
 
 /// Applies every migration newer than the database's recorded

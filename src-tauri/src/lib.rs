@@ -21,7 +21,7 @@ use permission_bridge::PendingApprovals;
 use process_manager::ProcessRegistry;
 use std::sync::Mutex;
 use tauri::Manager;
-use terminals::TerminalRegistry;
+use terminals::{RestoreGuard, TerminalRegistry};
 use turn_runner::{CancelledTurns, SpendCapNotified, TurnRegistry};
 use usage_scraper::UsageCache;
 
@@ -68,6 +68,7 @@ pub fn run() {
             app.manage(UsageCache::new());
             app.manage(PendingApprovals::new());
             app.manage(TerminalRegistry::new());
+            app.manage(RestoreGuard::new());
 
             // Background PR-comment poller — Fleet has no public endpoint
             // for a real GitHub webhook, so this is the same shape a
@@ -191,6 +192,7 @@ pub fn run() {
             terminals::resize_terminal,
             terminals::close_terminal,
             terminals::list_terminals,
+            terminals::restore_terminals,
             terminals::resolve_terminal_target,
             terminals::reopen_terminal_with_account,
             rotation::suggest_terminal_account,

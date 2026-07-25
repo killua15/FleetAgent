@@ -28,6 +28,7 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::ipc::Channel;
@@ -150,6 +151,17 @@ pub struct TerminalRegistry(pub Mutex<HashMap<String, TerminalHandle>>);
 impl TerminalRegistry {
     pub fn new() -> Self {
         TerminalRegistry(Mutex::new(HashMap::new()))
+    }
+}
+
+/// Ensures the persisted terminals are restored exactly once per app run. The
+/// frontend calls `restore_terminals` on every mount of the terminals view;
+/// only the first does the restore, later mounts just get the live list.
+pub struct RestoreGuard(pub AtomicBool);
+
+impl RestoreGuard {
+    pub fn new() -> Self {
+        RestoreGuard(AtomicBool::new(false))
     }
 }
 
@@ -545,6 +557,10 @@ pub fn open_terminal<R: Runtime>(
         .map_err(|e| e.to_string())?
         .insert(id.clone(), TerminalHandle { master: pair.master, writer, child, scrollback, sink, info: info.clone() });
 
+    // Mirror the terminal to disk so it can be reopened next launch. Only a
+    // registered terminal is persisted, so this can't outlive the shell.
+    persist_terminal(&app, &info);
+
     log::info!("terminal {id} opened in {cwd}");
 
     // The pane is about to decide whether to show an out-of-quota banner off
@@ -555,6 +571,33 @@ pub fn open_terminal<R: Runtime>(
     }
 
     Ok(info)
+}
+
+/// Records an open terminal in `open_terminals` so a restart can reopen it.
+/// Best-effort: a persistence miss costs a terminal that won't come back next
+/// launch, never a broken open.
+fn persist_terminal<R: Runtime>(app: &AppHandle<R>, info: &TerminalInfo) {
+    let Some(db) = app.try_state::<DbConnection>() else { return };
+    let Ok(conn) = db.0.lock() else { return };
+    let kind = match info.kind {
+        TargetKind::Project => "project",
+        TargetKind::Session => "session",
+    };
+    if let Err(e) = conn.execute(
+        "INSERT OR REPLACE INTO open_terminals (id, target_kind, source_id, account_id, session_uuid, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![info.id, kind, info.source_id, info.account_id, info.session_uuid, chrono::Utc::now().to_rfc3339()],
+    ) {
+        log::warn!("persist_terminal: {e}");
+    }
+}
+
+/// Drops a terminal's persisted row — the user closed it, so it must not come
+/// back on the next launch. Called by `close_terminal`, never by `kill_all`.
+fn forget_terminal<R: Runtime>(app: &AppHandle<R>, id: &str) {
+    let Some(db) = app.try_state::<DbConnection>() else { return };
+    let Ok(conn) = db.0.lock() else { return };
+    let _ = conn.execute("DELETE FROM open_terminals WHERE id = ?1", rusqlite::params![id]);
 }
 
 /// Points a terminal's output at `channel` and returns everything it has
@@ -618,12 +661,18 @@ pub fn resize_terminal<R: Runtime>(app: AppHandle<R>, id: String, cols: u16, row
 
 #[tauri::command]
 pub fn close_terminal<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
-    let registry = app.state::<TerminalRegistry>();
-    let mut map = registry.0.lock().map_err(|e| e.to_string())?;
-    if let Some(mut handle) = map.remove(&id) {
-        log::info!("terminal {id} closed");
-        let _ = handle.child.kill();
+    {
+        let registry = app.state::<TerminalRegistry>();
+        let mut map = registry.0.lock().map_err(|e| e.to_string())?;
+        if let Some(mut handle) = map.remove(&id) {
+            log::info!("terminal {id} closed");
+            let _ = handle.child.kill();
+        }
     }
+    // The user closed this one on purpose — drop its persisted row so it does
+    // NOT come back next launch. (`kill_all` on app exit deliberately skips
+    // this, which is exactly what distinguishes "forget" from "remember".)
+    forget_terminal(&app, &id);
     Ok(())
 }
 
@@ -634,6 +683,90 @@ pub fn list_terminals<R: Runtime>(app: AppHandle<R>) -> Result<Vec<TerminalInfo>
     let registry = app.state::<TerminalRegistry>();
     let map = registry.0.lock().map_err(|e| e.to_string())?;
     Ok(map.values().map(|h| h.info.clone()).collect())
+}
+
+struct PersistedTerminal {
+    target_kind: String,
+    source_id: String,
+    account_id: Option<String>,
+    session_uuid: Option<String>,
+}
+
+/// Reopens the terminals that were open when Fleet last closed — the first
+/// thing the terminals view calls on mount. Runs exactly once per app run
+/// (see `RestoreGuard`); later mounts get the live list instead.
+///
+/// Each row reopens on the same target under the same account, and **resumes
+/// its conversation** when the transcript is still on disk (`--resume`),
+/// starting fresh otherwise. A row that can't be restored — its project/session
+/// gone, its account deleted, its worktree removed — is dropped without
+/// aborting the rest. Reopening re-persists a fresh row (via `open_terminal`),
+/// so the set survives the *next* restart too.
+#[tauri::command]
+pub fn restore_terminals<R: Runtime>(app: AppHandle<R>, cols: u16, rows: u16) -> Result<Vec<TerminalInfo>, String> {
+    if let Some(guard) = app.try_state::<RestoreGuard>() {
+        if guard.0.swap(true, Ordering::SeqCst) {
+            return list_terminals(app);
+        }
+    }
+
+    // Read the persisted set and clear it — `open_terminal` writes fresh rows
+    // for whatever actually reopens, so a row that fails to restore simply
+    // doesn't come back rather than lingering forever.
+    let persisted: Vec<PersistedTerminal> = {
+        let db = app.state::<DbConnection>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT target_kind, source_id, account_id, session_uuid FROM open_terminals ORDER BY created_at ASC")
+            .map_err(|e| e.to_string())?;
+        let collected: Vec<PersistedTerminal> = stmt
+            .query_map([], |r| {
+                Ok(PersistedTerminal { target_kind: r.get(0)?, source_id: r.get(1)?, account_id: r.get(2)?, session_uuid: r.get(3)? })
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+        conn.execute("DELETE FROM open_terminals", []).map_err(|e| e.to_string())?;
+        collected
+    };
+
+    let mut restored = Vec::new();
+    for row in persisted {
+        let kind = match row.target_kind.as_str() {
+            "project" => TargetKind::Project,
+            "session" => TargetKind::Session,
+            _ => continue,
+        };
+        let (init, session_uuid) = decide_restore_init(&app, &row);
+        let target = TerminalTarget { kind, id: row.source_id.clone() };
+        match open_terminal(app.clone(), target, row.account_id.clone(), init, session_uuid, None, cols, rows) {
+            Ok(info) => restored.push(info),
+            Err(e) => log::info!("restore: skipping terminal for {} ({}): {e}", row.target_kind, row.source_id),
+        }
+    }
+    Ok(restored)
+}
+
+/// How to reopen a persisted terminal: resume its conversation when the
+/// transcript is still there, otherwise a fresh session, otherwise (no account)
+/// a plain shell.
+fn decide_restore_init<R: Runtime>(app: &AppHandle<R>, row: &PersistedTerminal) -> (Option<InitCommand>, Option<String>) {
+    let Some(account_id) = &row.account_id else {
+        return (None, None); // plain shell
+    };
+    if let Some(uuid) = &row.session_uuid {
+        let config_dir = app
+            .try_state::<DbConnection>()
+            .and_then(|db| db.0.lock().ok().and_then(|conn| load_account(&conn, account_id).ok()))
+            .map(|a| a.config_dir_path);
+        if let Some(config_dir) = config_dir {
+            if crate::handoff::transcript_exists(&config_dir, uuid) {
+                return (Some(InitCommand::Resume), Some(uuid.clone()));
+            }
+        }
+    }
+    // Account known but nothing to resume — start a fresh session under it.
+    (Some(InitCommand::Start), None)
 }
 
 /// Every open terminal that carries an account, as `(target kind, target id,
@@ -1563,5 +1696,102 @@ mod tests {
 
         close_terminal(handle, old.id).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- persistence (Layer 1) ----------------------------------------------
+
+    fn info_for(id: &str, kind: TargetKind, source_id: &str, account_id: Option<&str>, session_uuid: Option<&str>) -> TerminalInfo {
+        TerminalInfo {
+            id: id.to_string(),
+            title: "t".to_string(),
+            cwd: "/repo".to_string(),
+            kind,
+            source_id: source_id.to_string(),
+            account_name: None,
+            account_id: account_id.map(str::to_string),
+            session_uuid: session_uuid.map(str::to_string),
+        }
+    }
+
+    fn persisted_ids(app: &tauri::App<tauri::test::MockRuntime>) -> Vec<String> {
+        let db = app.state::<crate::db::DbConnection>();
+        let conn = db.0.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id FROM open_terminals ORDER BY created_at").unwrap();
+        stmt.query_map([], |r| r.get(0)).unwrap().filter_map(Result::ok).collect()
+    }
+
+    #[test]
+    fn persist_then_forget_round_trips() {
+        let app = tauri::test::mock_app();
+        app.manage(crate::db::DbConnection(Mutex::new(seed())));
+        let handle = app.handle();
+
+        persist_terminal(handle, &info_for("t1", TargetKind::Project, "proj1", Some("acc1"), Some("uuid-1")));
+        assert_eq!(persisted_ids(&app), vec!["t1".to_string()], "an opened terminal must be remembered");
+
+        forget_terminal(handle, "t1");
+        assert!(persisted_ids(&app).is_empty(), "a user-closed terminal must be forgotten");
+    }
+
+    /// The distinction the whole feature hinges on: closing a terminal forgets
+    /// it, but the app shutting down (`kill_all`) must NOT — otherwise a restart
+    /// would come back empty, which is the bug this fixes.
+    #[test]
+    fn kill_all_keeps_the_persisted_rows_but_close_drops_them() {
+        let app = tauri::test::mock_app();
+        app.manage(crate::db::DbConnection(Mutex::new(seed())));
+        app.manage(TerminalRegistry::new());
+        let handle = app.handle();
+
+        persist_terminal(handle, &info_for("t1", TargetKind::Project, "proj1", Some("acc1"), None));
+        persist_terminal(handle, &info_for("t2", TargetKind::Session, "sub", Some("acc1"), None));
+
+        kill_all(handle);
+        assert_eq!(persisted_ids(&app).len(), 2, "app shutdown must remember every open terminal");
+
+        // A user closing one drops just that row (the registry is empty here,
+        // so this exercises the persistence side).
+        close_terminal(handle.clone(), "t1".to_string()).unwrap();
+        assert_eq!(persisted_ids(&app), vec!["t2".to_string()], "closing one must forget only it");
+    }
+
+    // -- restore init decision (Layer 3) ------------------------------------
+
+    #[test]
+    fn restore_starts_a_plain_shell_when_there_was_no_account() {
+        let app = tauri::test::mock_app();
+        app.manage(crate::db::DbConnection(Mutex::new(seed())));
+        let row = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: None, session_uuid: None };
+        assert_eq!(decide_restore_init(app.handle(), &row), (None, None));
+    }
+
+    #[test]
+    fn restore_resumes_when_the_transcript_is_still_on_disk_else_starts_fresh() {
+        // A real config dir with a planted transcript for the session.
+        let cfg = std::env::temp_dir().join(format!("fleet-restore-cfg-{}", Uuid::new_v4()));
+        let uuid = "abcd1234-0000-0000-0000-000000000000";
+        std::fs::create_dir_all(cfg.join("projects").join("-repo")).unwrap();
+        std::fs::write(cfg.join("projects").join("-repo").join(format!("{uuid}.jsonl")), "convo\n").unwrap();
+
+        let conn = seed();
+        conn.execute(
+            "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, status, created_at, updated_at)
+             VALUES ('accR','claude','sub','R','work','',?1,'accR','healthy','now','now')",
+            rusqlite::params![cfg.to_string_lossy().to_string()],
+        )
+        .unwrap();
+        let app = tauri::test::mock_app();
+        app.manage(crate::db::DbConnection(Mutex::new(conn)));
+        let handle = app.handle();
+
+        // Transcript present → resume that exact session.
+        let with = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: Some("accR".into()), session_uuid: Some(uuid.into()) };
+        assert_eq!(decide_restore_init(handle, &with), (Some(InitCommand::Resume), Some(uuid.to_string())));
+
+        // Same account, a session id with no transcript on disk → fresh start.
+        let without = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: Some("accR".into()), session_uuid: Some("no-such-uuid".into()) };
+        assert_eq!(decide_restore_init(handle, &without), (Some(InitCommand::Start), None));
+
+        let _ = std::fs::remove_dir_all(&cfg);
     }
 }

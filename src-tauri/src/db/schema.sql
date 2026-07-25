@@ -239,6 +239,23 @@ CREATE TABLE IF NOT EXISTS turn_usage (
   created_at            TEXT NOT NULL
 );
 
+-- Which terminals were open when Fleet last closed, so they can be reopened
+-- on the next launch (and, when they carry a Claude session id, resumed).
+-- A mirror of the in-memory `TerminalRegistry`: `open_terminal` inserts,
+-- `close_terminal` (the user closing one) deletes, but `kill_all` (Fleet
+-- shutting down) deliberately does NOT — that's what tells "forget this" apart
+-- from "remember this across a restart". `source_id` is a project or session
+-- id per `target_kind`, so it has no single FK; restore validates the target
+-- (and account, and transcript) and drops dead rows instead.
+CREATE TABLE IF NOT EXISTS open_terminals (
+  id           TEXT PRIMARY KEY,
+  target_kind  TEXT NOT NULL CHECK (target_kind IN ('project','session')),
+  source_id    TEXT NOT NULL,
+  account_id   TEXT,
+  session_uuid TEXT,
+  created_at   TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id);
 -- idx_sessions_parent is created in db::run_migrations instead of here: on an
 -- existing database, CREATE TABLE IF NOT EXISTS above is a no-op that does

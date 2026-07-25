@@ -216,7 +216,7 @@ pub fn render_handoff(session: &NeutralSession, budget_chars: usize) -> String {
 /// named `Fleet-Agent` both flatten the same way. But the uuid is unique, so a
 /// scan of `projects/*/<uuid>.jsonl` finds the one file and, with it, the real
 /// slug directory to reuse for the destination.
-fn find_transcript(config_dir: &str, session_uuid: &str) -> Option<PathBuf> {
+pub(crate) fn find_transcript(config_dir: &str, session_uuid: &str) -> Option<PathBuf> {
     let projects = Path::new(config_dir).join("projects");
     for slug_dir in std::fs::read_dir(&projects).ok()?.flatten() {
         let candidate = slug_dir.path().join(format!("{session_uuid}.jsonl"));
@@ -225,6 +225,13 @@ fn find_transcript(config_dir: &str, session_uuid: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Whether a resumable transcript exists for this session in this config dir —
+/// what restore checks to decide `--resume` (the conversation is there) vs a
+/// fresh `--session-id` start (nothing to resume).
+pub(crate) fn transcript_exists(config_dir: &str, session_uuid: &str) -> bool {
+    find_transcript(config_dir, session_uuid).is_some()
 }
 
 fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {

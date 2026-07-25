@@ -47,7 +47,12 @@ export function Terminals() {
   // this screen later with the same param still in the history entry.
   const handledOpenForRef = useRef(false);
 
-  const loadTerminals = () => invoke<TerminalInfo[]>('list_terminals').then(setTerminals);
+  // `restore_terminals` reopens whatever was open when Fleet last closed on the
+  // first mount of this run (and resumes each conversation), and just returns
+  // the live list on later mounts — so navigating away and back never
+  // re-restores. 80x24 is the shell's initial size; each pane's first fit()
+  // corrects it.
+  const loadTerminals = () => invoke<TerminalInfo[]>('restore_terminals', { cols: 80, rows: 24 }).then(setTerminals);
 
   const loadProjects = () => invoke<Project[]>('list_projects').then(setProjects);
 
