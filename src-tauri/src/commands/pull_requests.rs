@@ -961,6 +961,7 @@ pub async fn send_pr_comments_to_terminal(app: AppHandle, comment_ids: Vec<Strin
             crate::terminals::TerminalTarget { kind: crate::terminals::TargetKind::Session, id: target_session_id },
             Some(account_id),
             Some(crate::terminals::InitCommand::Start),
+            None, // let Fleet mint the session id
             Some(prompt),
             cols,
             rows,

@@ -47,7 +47,12 @@ export function Terminals() {
   // this screen later with the same param still in the history entry.
   const handledOpenForRef = useRef(false);
 
-  const loadTerminals = () => invoke<TerminalInfo[]>('list_terminals').then(setTerminals);
+  // `restore_terminals` reopens whatever was open when Fleet last closed on the
+  // first mount of this run (and resumes each conversation), and just returns
+  // the live list on later mounts — so navigating away and back never
+  // re-restores. 80x24 is the shell's initial size; each pane's first fit()
+  // corrects it.
+  const loadTerminals = () => invoke<TerminalInfo[]>('restore_terminals', { cols: 80, rows: 24 }).then(setTerminals);
 
   const loadProjects = () => invoke<Project[]>('list_projects').then(setProjects);
 
@@ -102,6 +107,8 @@ export function Terminals() {
         target,
         accountId: accountId ?? null,
         init: initCommand ?? null,
+        // Fleet mints the session id itself for a normal open.
+        sessionUuid: null,
         cols: 80,
         rows: 24,
       });
@@ -417,9 +424,10 @@ export function Terminals() {
 }
 
 /** Shown on a panel whose account has run out of quota. Asks the backend which
- * allowed account to offer, and reopens the terminal there on click. Says
- * plainly that reopening starts a fresh conversation — the old account's
- * transcript can't be carried across config dirs. */
+ * allowed account to offer, and reopens the terminal there on click. For a
+ * claude→claude switch the conversation is carried over (Fleet copies the
+ * transcript into the new account and resumes it), so it keeps going rather
+ * than starting fresh. */
 function OutOfQuotaBanner({ terminal, busy, onReopen }: { terminal: TerminalInfo; busy: boolean; onReopen: (accountId: string) => void }) {
   const [suggestion, setSuggestion] = useState<SuggestedAccount | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -435,12 +443,21 @@ function OutOfQuotaBanner({ terminal, busy, onReopen }: { terminal: TerminalInfo
       .finally(() => setLoaded(true));
   }, [terminal.kind, terminal.sourceId, terminal.accountId]);
 
+  // Only a terminal Fleet started with a session id can carry its conversation.
+  const canKeepConversation = terminal.sessionUuid != null;
+
   return (
     <div className={styles.quotaBanner}>
       <span className={styles.quotaDot} />
       <span className={styles.quotaText}>
         {terminal.accountName ?? 'This account'} is out of quota.
-        {suggestion ? ' Reopening starts a fresh conversation.' : loaded ? ' No other allowed account to switch to.' : ''}
+        {suggestion
+          ? canKeepConversation
+            ? ' Reopening keeps the conversation.'
+            : ' Reopening starts a fresh conversation.'
+          : loaded
+            ? ' No other allowed account to switch to.'
+            : ''}
       </span>
       <span className={styles.spacer} />
       {suggestion && (

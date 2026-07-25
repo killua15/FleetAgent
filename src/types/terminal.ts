@@ -24,6 +24,10 @@ export interface TerminalInfo {
   /** The account id behind `accountName` — lets the view tell when this
    * terminal's account has run out of quota (to show the reopen banner). */
   accountId: string | null;
+  /** The Claude Code session id Fleet started this terminal on, when it's an
+   * account-scoped claude terminal — what makes the conversation resumable or
+   * transferable later. `null` for a plain shell / login / non-claude. */
+  sessionUuid: string | null;
 }
 
 /** The account the out-of-quota banner offers to reopen a terminal under. */
