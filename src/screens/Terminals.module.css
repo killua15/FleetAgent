@@ -878,3 +878,23 @@
 .sidebarGlyphOff {
   color: var(--dim);
 }
+
+/* What a row's name turns into. The field says "attempt-1"; without this
+   nothing on screen says that's about to become a branch, off the base picked
+   at the top — which is exactly the question the layout was raising. */
+.fanBranchPreview {
+  flex: none;
+  font: 400 10px var(--font-ui);
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.fanBranchPreview code {
+  font: 500 10px var(--font-mono);
+  color: var(--teal);
+}
+
+.fanBranchInputBad {
+  composes: fanBranchInput;
+  border-color: var(--amber);
+}

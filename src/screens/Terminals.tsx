@@ -885,6 +885,11 @@ interface FanRow {
 
 const newFanRow = (n: number): FanRow => ({ id: crypto.randomUUID(), name: `attempt-${n}`, accountId: '' });
 
+/** The branch a row will actually create. Mirrors `slugify` on the Rust side —
+ * shown rather than left implicit, because "attempt-1" doesn't look like
+ * something that creates a branch, and that's the whole confusion. */
+const branchFor = (name: string) => name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
 /** The fan-out: one prompt, N worktrees, **N accounts**.
  *
  * The account column is the whole point. Fanning a prompt to five agents on one
@@ -919,6 +924,14 @@ function FanOutPicker({
   const update = (id: string, patch: Partial<FanRow>) => setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   const ready = rows.filter((r) => r.name.trim() && r.accountId);
   const reusedAccount = new Set(ready.map((r) => r.accountId)).size < ready.length;
+  // Two rows with the same name mean the same branch, and `git worktree add -b`
+  // refuses the second. Caught here rather than after launch, when four of five
+  // worktrees already exist.
+  const duplicates = new Set(
+    rows
+      .map((r) => branchFor(r.name))
+      .filter((b, i, all) => b && all.indexOf(b) !== i),
+  );
 
   // Pre-flight. A fan-out is the most expensive thing this app can do, and
   // until now it launched blind — you found out what it cost when an account
@@ -964,7 +977,22 @@ function FanOutPicker({
           return (
             <div key={row.id} className={styles.multiRow}>
               <span className={styles.fanBranchIcon}>⑃</span>
-              <input className={styles.fanBranchInput} placeholder="branch name" value={row.name} onChange={(e) => update(row.id, { name: e.target.value })} />
+              <input
+                className={duplicates.has(branchFor(row.name)) ? styles.fanBranchInputBad : styles.fanBranchInput}
+                placeholder="name for this attempt"
+                value={row.name}
+                onChange={(e) => update(row.id, { name: e.target.value })}
+              />
+              {/* What the name turns into, and where it comes from. Two
+                  attempts can't share a branch — git refuses the same branch in
+                  two worktrees — so this is a new branch every time, and saying
+                  so beats letting the second one fail after the click. */}
+              {branchFor(row.name) && (
+                <span className={styles.fanBranchPreview}>
+                  creates <code>hangar/{branchFor(row.name)}</code>
+                  {baseBranch.selected && <> off <code>{baseBranch.selected}</code></>}
+                </span>
+              )}
               <span className={styles.multiArrow}>→</span>
               <select className={styles.multiSelect} value={row.accountId} onChange={(e) => update(row.id, { accountId: e.target.value })}>
                 <option value="">account…</option>
@@ -991,6 +1019,12 @@ function FanOutPicker({
           );
         })}
       </div>
+      {duplicates.size > 0 && (
+        <span className={styles.envWarn}>
+          ⚠ two attempts would create the same branch — each needs its own name, since a branch can only be checked out in one
+          worktree
+        </span>
+      )}
       {reusedAccount && (
         <span className={styles.envWarn}>
           ⚠ two branches share an account — they'll spend the same quota in parallel, which is exactly what fanning out across accounts avoids
@@ -1018,7 +1052,7 @@ function FanOutPicker({
         </Button>
         <Button
           size="sm"
-          disabled={!projectId || !prompt.trim() || ready.length === 0 || busy || !baseBranch.selected}
+          disabled={!projectId || !prompt.trim() || ready.length === 0 || busy || !baseBranch.selected || duplicates.size > 0}
           onClick={() => onLaunch(projectId, ready.map(({ name, accountId }) => ({ name, accountId })), prompt, baseBranch.selected)}
         >
           {busy ? 'launching…' : `Fan out ${ready.length || ''}`}
