@@ -513,6 +513,127 @@
   color: var(--amber);
 }
 
+/* A project row plus its "new worktree" affordance: one click opens the
+   terminal in the project itself, the other cuts it a branch first. */
+.projectRowWrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.projectRowWrap .pickerRow {
+  flex: 1;
+  min-width: 0;
+}
+
+.worktreeLink {
+  flex: none;
+  padding: 4px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--teal);
+  font: 500 11px var(--font-ui);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.worktreeLink:hover {
+  border-color: var(--teal);
+  background: var(--tealD);
+}
+
+.worktreeForm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 2px;
+}
+
+.worktreeInput {
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--txt);
+  font: 400 12px var(--font-ui);
+}
+
+.worktreeInput:focus {
+  outline: none;
+  border-color: var(--acc);
+}
+
+.worktreeHint {
+  font: 400 11px var(--font-ui);
+  color: var(--mut);
+  line-height: 1.5;
+}
+
+.worktreeHint code {
+  font: 500 10.5px var(--font-mono);
+  color: var(--teal);
+}
+
+.worktreeActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Fan-out: the prompt on top, one row per branch below. */
+.fanTop {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.fanPrompt {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--txt);
+  font: 400 12px var(--font-ui);
+  line-height: 1.5;
+}
+
+.fanPrompt:focus {
+  outline: none;
+  border-color: var(--acc);
+}
+
+.fanBranchIcon {
+  flex: none;
+  color: var(--teal);
+  font-size: 12px;
+}
+
+.fanBranchInput {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--txt);
+  font: 400 11.5px var(--font-ui);
+}
+
+.fanBranchInput:focus {
+  outline: none;
+  border-color: var(--acc);
+}
+
+.fanNote {
+  font: 400 10.5px var(--font-ui);
+  color: var(--dim);
+  margin-right: 4px;
+}
+
 .accountBadge {
   flex: none;
   padding: 1px 7px;

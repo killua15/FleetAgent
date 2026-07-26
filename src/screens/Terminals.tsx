@@ -10,8 +10,8 @@ import { Button } from '../components/ui/button';
 import { useNavigation } from '../nav/NavigationProvider';
 import { autoGridColumns } from '../lib/gridLayout';
 import { PROVIDER_META, type Account, type AccountAuth } from '../types/account';
-import type { Project } from '../types/session';
-import type { InitCommand, SuggestedAccount, TerminalInfo, TerminalTarget } from '../types/terminal';
+import type { Project, Session } from '../types/session';
+import type { FanOutBranch, InitCommand, SuggestedAccount, TerminalInfo, TerminalTarget } from '../types/terminal';
 import styles from './Terminals.module.css';
 
 /** Terminals opened past this point stop being supervisable at a glance —
@@ -42,7 +42,12 @@ export function Terminals() {
   const [gridColumns, setGridColumns] = useState<number | 'auto'>('auto');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [multiOpen, setMultiOpen] = useState(false);
+  const [fanOpen, setFanOpen] = useState(false);
   const [opening, setOpening] = useState(false);
+  // The project a "⑃ new worktree…" is being named for — `null` when that
+  // sub-step isn't open. Two steps rather than one because the name matters:
+  // it becomes a real branch.
+  const [worktreeFor, setWorktreeFor] = useState<Project | null>(null);
   // Which panel is mid-account-switch. Per terminal rather than the global
   // `opening`: the swap takes a few seconds (a transcript copy and a new CLI
   // coming up) and the feedback belongs on the panel it's happening to.
@@ -138,15 +143,61 @@ export function Terminals() {
 
   const openPicker = () => {
     setMultiOpen(false);
+    setFanOpen(false);
     setPickerOpen((wasOpen) => !wasOpen);
     setPickedAccountId(null);
+    setWorktreeFor(null);
     if (!pickerOpen) ensureAuthLoaded();
   };
 
   const openMultiPicker = () => {
     setPickerOpen(false);
+    setFanOpen(false);
     setMultiOpen((wasOpen) => !wasOpen);
     if (!multiOpen) ensureAuthLoaded();
+  };
+
+  const openFanPicker = () => {
+    setPickerOpen(false);
+    setMultiOpen(false);
+    setFanOpen((wasOpen) => !wasOpen);
+    if (!fanOpen) ensureAuthLoaded();
+  };
+
+  /** Creates a real git worktree for `project` (its own branch, `.env` copied,
+   * setup command run) and opens the terminal inside it. The worktree outlives
+   * the terminal on purpose — closing a panel must never take uncommitted work
+   * with it; removing it lives in the Git panel. */
+  const openWorktreeTerminal = async (project: Project, name: string, setupCommand: string) => {
+    if (pickedAccountId === null || pickedAccountId === PLAIN_SHELL) return;
+    setOpening(true);
+    try {
+      const session = await invoke<Session>('create_worktree_for_project', {
+        projectId: project.id,
+        name,
+        accountId: pickedAccountId,
+        setupCommand: setupCommand.trim() || null,
+      });
+      await openTerminal({ kind: 'session', id: session.id }, pickedAccountId, initFor(pickedAccountId));
+      setWorktreeFor(null);
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setOpening(false);
+    }
+  };
+
+  const runFanOut = async (projectId: string, branches: FanOutBranch[], prompt: string) => {
+    setOpening(true);
+    try {
+      const infos = await invoke<TerminalInfo[]>('fan_out_prompt', { projectId, branches, prompt, cols: 80, rows: 24 });
+      setTerminals((prev) => [...prev, ...infos]);
+      setFanOpen(false);
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setOpening(false);
+    }
   };
 
   /** The init command an account needs: its CLI when authenticated, its login
@@ -210,6 +261,9 @@ export function Terminals() {
       <AppTopBar
         primaryAction={
           <div style={{ display: 'flex', gap: 8 }}>
+            <Button size="sm" variant="outline" onClick={openFanPicker} disabled={opening}>
+              ⑃ Fan out
+            </Button>
             <Button size="sm" variant="outline" onClick={openMultiPicker} disabled={opening}>
               + Multi terminal
             </Button>
@@ -296,20 +350,44 @@ export function Terminals() {
               <span className={styles.envWarn}>⚠ this account's API key will be visible in the shell's environment</span>
             )}
           </div>
-          <div className={styles.pickerGroup}>
-            <span className={styles.pickerGroupTitle}>RECENT PROJECTS</span>
-            {projects.map((p) => (
-              <button key={p.id} className={styles.pickerRow} onClick={() => openForTarget({ kind: 'project', id: p.id })}>
-                <span className={styles.pickerName}>{p.name}</span>
-                <span className={styles.pickerPath}>{p.path}</span>
+          {worktreeFor ? (
+            <NewWorktreeForm
+              project={worktreeFor}
+              busy={opening}
+              onCancel={() => setWorktreeFor(null)}
+              onCreate={(name, setupCommand) => openWorktreeTerminal(worktreeFor, name, setupCommand)}
+            />
+          ) : (
+            <div className={styles.pickerGroup}>
+              <span className={styles.pickerGroupTitle}>RECENT PROJECTS</span>
+              {projects.map((p) => (
+                <div key={p.id} className={styles.projectRowWrap}>
+                  <button className={styles.pickerRow} onClick={() => openForTarget({ kind: 'project', id: p.id })}>
+                    <span className={styles.pickerName}>{p.name}</span>
+                    <span className={styles.pickerPath}>{p.path}</span>
+                  </button>
+                  {/* A worktree needs an account to run under, so it isn't
+                      offered for the plain shell. */}
+                  {pickedAccountId !== PLAIN_SHELL && (
+                    <button
+                      className={styles.worktreeLink}
+                      title="Open this terminal in its own git worktree — a separate branch and working directory, so it can't collide with your main checkout"
+                      onClick={() => setWorktreeFor(p)}
+                    >
+                      ⑃ new worktree…
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button className={styles.exploreRow} onClick={exploreAndOpen}>
+                <span>📁 Explore another folder…</span>
               </button>
-            ))}
-            <button className={styles.exploreRow} onClick={exploreAndOpen}>
-              <span>📁 Explore another folder…</span>
-            </button>
-          </div>
+            </div>
+          )}
         </div>
       )}
+
+      {fanOpen && <FanOutPicker projects={projects} accounts={accounts} auth={auth} busy={opening} onClose={() => setFanOpen(false)} onLaunch={runFanOut} />}
 
       {multiOpen && (
         <MultiTerminalPicker
@@ -483,6 +561,179 @@ function OutOfQuotaBanner({ terminal, busy, onReopen }: { terminal: TerminalInfo
           {busy ? '…' : `Reopen in ${suggestion.accountName}`}
         </Button>
       )}
+    </div>
+  );
+}
+
+/** Names the branch for a terminal that gets its own worktree. Two fields, both
+ * consequential: the name becomes a real git branch (`hangar/<slug>`), and the
+ * setup command is what makes the worktree usable — a fresh checkout has no
+ * `node_modules`. */
+function NewWorktreeForm({
+  project,
+  busy,
+  onCancel,
+  onCreate,
+}: {
+  project: Project;
+  busy: boolean;
+  onCancel: () => void;
+  onCreate: (name: string, setupCommand: string) => void;
+}) {
+  const [name, setName] = useState('');
+  const [setupCommand, setSetupCommand] = useState('');
+  const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+  return (
+    <div className={styles.pickerGroup}>
+      <span className={styles.pickerGroupTitle}>NEW WORKTREE IN {project.name.toUpperCase()}</span>
+      <div className={styles.worktreeForm}>
+        <input
+          autoFocus
+          className={styles.worktreeInput}
+          placeholder="what are you working on — e.g. fix billing rounding"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && slug && !busy && onCreate(name, setupCommand)}
+        />
+        <input
+          className={styles.worktreeInput}
+          placeholder="setup command, optional — e.g. npm install"
+          value={setupCommand}
+          onChange={(e) => setSetupCommand(e.target.value)}
+        />
+        <span className={styles.worktreeHint}>
+          {slug ? (
+            <>
+              branch <code>hangar/{slug}</code> · own working directory in <code>.hangar/worktrees/{slug}</code> · your main checkout is untouched
+            </>
+          ) : (
+            'a real git worktree: its own branch and directory, with your .env files copied in'
+          )}
+        </span>
+        <div className={styles.worktreeActions}>
+          <Button size="sm" variant="outline" onClick={onCancel}>
+            cancel
+          </Button>
+          <Button size="sm" disabled={!slug || busy} onClick={() => onCreate(name, setupCommand)}>
+            {busy ? 'creating…' : 'Create & open'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface FanRow {
+  id: string;
+  name: string;
+  accountId: string;
+}
+
+const newFanRow = (n: number): FanRow => ({ id: crypto.randomUUID(), name: `attempt-${n}`, accountId: '' });
+
+/** The fan-out: one prompt, N worktrees, **N accounts**.
+ *
+ * The account column is the whole point. Fanning a prompt to five agents on one
+ * account spends that account's quota five times as fast — the reason people get
+ * caught out by this gesture elsewhere. One account per branch means one quota
+ * per branch, which is only possible because each account here has its own
+ * config dir.
+ */
+function FanOutPicker({
+  projects,
+  accounts,
+  auth,
+  busy,
+  onClose,
+  onLaunch,
+}: {
+  projects: Project[];
+  accounts: Account[];
+  auth: Record<string, AccountAuth>;
+  busy: boolean;
+  onClose: () => void;
+  onLaunch: (projectId: string, branches: FanOutBranch[], prompt: string) => void;
+}) {
+  const [projectId, setProjectId] = useState('');
+  const [prompt, setPrompt] = useState('');
+  const [rows, setRows] = useState<FanRow[]>([newFanRow(1), newFanRow(2)]);
+
+  const update = (id: string, patch: Partial<FanRow>) => setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const ready = rows.filter((r) => r.name.trim() && r.accountId);
+  const reusedAccount = new Set(ready.map((r) => r.accountId)).size < ready.length;
+
+  return (
+    <div className={styles.picker}>
+      <span className={styles.pickerLabel}>FAN ONE PROMPT ACROSS SEVERAL ACCOUNTS</span>
+      <div className={styles.fanTop}>
+        <select className={styles.multiSelect} value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+          <option value="">project…</option>
+          {projects.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+        <textarea
+          className={styles.fanPrompt}
+          rows={2}
+          placeholder="the prompt every branch gets — e.g. fix the billing rounding and add tests"
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+        />
+      </div>
+      <div className={styles.multiRows}>
+        {rows.map((row) => {
+          const status = row.accountId ? auth[row.accountId] : undefined;
+          return (
+            <div key={row.id} className={styles.multiRow}>
+              <span className={styles.fanBranchIcon}>⑃</span>
+              <input className={styles.fanBranchInput} placeholder="branch name" value={row.name} onChange={(e) => update(row.id, { name: e.target.value })} />
+              <span className={styles.multiArrow}>→</span>
+              <select className={styles.multiSelect} value={row.accountId} onChange={(e) => update(row.id, { accountId: e.target.value })}>
+                <option value="">account…</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name} · {PROVIDER_META[a.provider].name}
+                  </option>
+                ))}
+              </select>
+              {status && !status.loggedIn && (
+                <span className={styles.statusNeedsLogin} title="will run its login">
+                  ✗
+                </span>
+              )}
+              <button
+                className={styles.multiRemove}
+                title="remove branch"
+                disabled={rows.length === 1}
+                onClick={() => setRows((prev) => (prev.length > 1 ? prev.filter((r) => r.id !== row.id) : prev))}
+              >
+                ×
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      {reusedAccount && (
+        <span className={styles.envWarn}>
+          ⚠ two branches share an account — they'll spend the same quota in parallel, which is exactly what fanning out across accounts avoids
+        </span>
+      )}
+      <div className={styles.multiActions}>
+        <button className={styles.addRowLink} onClick={() => setRows((prev) => [...prev, newFanRow(prev.length + 1)])}>
+          + add branch
+        </button>
+        <span className={styles.spacer} />
+        <span className={styles.fanNote}>each branch gets its own worktree; comparing and merging happens in the Git panel</span>
+        <Button size="sm" variant="outline" onClick={onClose}>
+          cancel
+        </Button>
+        <Button size="sm" disabled={!projectId || !prompt.trim() || ready.length === 0 || busy} onClick={() => onLaunch(projectId, ready.map(({ name, accountId }) => ({ name, accountId })), prompt)}>
+          {busy ? 'launching…' : `Fan out ${ready.length || ''}`}
+        </Button>
+      </div>
     </div>
   );
 }

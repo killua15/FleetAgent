@@ -54,6 +54,15 @@ export interface RotatableAccount {
   suggested: boolean;
 }
 
+/** One branch of a fan-out: the worktree's name and the account that works in
+ * it. N branches means N accounts, which is what makes fanning a prompt out to
+ * several agents sustainable — a fan-out on one account just burns that one
+ * quota N times as fast. */
+export interface FanOutBranch {
+  name: string;
+  accountId: string;
+}
+
 /** What to type into the shell as soon as it comes up. Only meaningful with
  * an account — "start claude" as nobody in particular isn't a thing Hangar
  * offers, and the backend rejects it. */

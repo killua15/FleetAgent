@@ -372,6 +372,14 @@ pub(crate) fn terminal_script(cwd: &str, account: &AccountForTerminal, init: Ini
 /// Resolves a target to the directory its terminal should start in, plus the
 /// title to show. A session with a worktree resolves to the worktree — that
 /// is the case this whole feature exists for.
+/// `resolve_target` for callers outside this module — the Files screen resolves
+/// a project or a session to a working directory by exactly the same rules a
+/// terminal does, and two implementations of "where does this target live" would
+/// drift apart the first time a worktree moved.
+pub(crate) fn resolve_target_for_files(conn: &rusqlite::Connection, target: &TerminalTarget) -> Result<(String, String), String> {
+    resolve_target(conn, target)
+}
+
 fn resolve_target(conn: &rusqlite::Connection, target: &TerminalTarget) -> Result<(String, String), String> {
     match target.kind {
         TargetKind::Project => conn
@@ -886,6 +894,81 @@ fn reopen_with_account_inner<R: Runtime>(app: AppHandle<R>, id: String, account_
     }
 
     Ok(info)
+}
+
+/// One branch of a fan-out: a worktree name and the account that works in it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FanOutBranch {
+    pub name: String,
+    pub account_id: String,
+}
+
+/// Sends **one prompt to N agents, each in its own worktree under its own
+/// account**, and returns the terminals.
+///
+/// This is the gesture other ADEs made popular, with the part that makes it
+/// sustainable: N branches means N accounts, so a fan-out of five spends five
+/// quotas instead of burning one five times as fast. Hangar can do that because
+/// each account already has its own config dir; a tool with one globally-active
+/// account cannot, no matter how many worktrees it cuts.
+///
+/// Serial, not parallel, for the same two reasons the multi-terminal picker is:
+/// accounts sharing a config dir must not race, and N CLIs spawning at once
+/// stampedes the machine. A branch that fails is reported and the rest continue —
+/// losing four worktrees because the fifth name collided would be absurd.
+#[tauri::command]
+pub async fn fan_out_prompt<R: Runtime>(
+    app: AppHandle<R>,
+    project_id: String,
+    branches: Vec<FanOutBranch>,
+    prompt: String,
+    cols: u16,
+    rows: u16,
+) -> Result<Vec<TerminalInfo>, String> {
+    if branches.is_empty() {
+        return Err("a fan-out needs at least one branch".to_string());
+    }
+    if prompt.trim().is_empty() {
+        return Err("a fan-out needs a prompt — that's the whole point of sending it to several agents".to_string());
+    }
+
+    let mut opened = Vec::new();
+    let mut failures = Vec::new();
+    for branch in branches {
+        let session = crate::commands::sessions::create_worktree_for_project(app.clone(), project_id.clone(), branch.name.clone(), branch.account_id.clone(), None).await;
+        let session = match session {
+            Ok(session) => session,
+            Err(e) => {
+                failures.push(format!("{}: {e}", branch.name));
+                continue;
+            }
+        };
+        let target = TerminalTarget { kind: TargetKind::Session, id: session.id };
+        match open_terminal(
+            app.clone(),
+            target,
+            Some(branch.account_id),
+            Some(InitCommand::Start),
+            None, // Hangar mints the session id
+            Some(prompt.clone()),
+            cols,
+            rows,
+        ) {
+            Ok(info) => opened.push(info),
+            Err(e) => failures.push(format!("{}: {e}", branch.name)),
+        }
+    }
+
+    if opened.is_empty() {
+        return Err(format!("no branch of the fan-out could start — {}", failures.join("; ")));
+    }
+    if !failures.is_empty() {
+        // Partial success is the honest outcome: the user has working terminals
+        // and deserves to know which branches didn't make it.
+        log::warn!("fan_out_prompt: {} of the branches failed — {}", failures.len(), failures.join("; "));
+    }
+    Ok(opened)
 }
 
 /// Kills every shell on app exit — a PTY child outlives its parent happily,
@@ -1525,6 +1608,26 @@ mod tests {
 
         close_terminal(handle, info.id).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A fan-out with nothing to fan is a mistake, not an empty success: it
+    /// would cut zero worktrees and report victory.
+    #[test]
+    fn a_fan_out_needs_at_least_one_branch() {
+        let app = tauri::test::mock_app();
+        let err = tauri::async_runtime::block_on(fan_out_prompt(app.handle().clone(), "proj1".to_string(), vec![], "do the thing".to_string(), 80, 24)).unwrap_err();
+        assert!(err.contains("at least one branch"), "got: {err}");
+    }
+
+    /// And a fan-out with no prompt is the same mistake from the other side —
+    /// N worktrees with nothing to work on. Checked before anything is created,
+    /// so a blank prompt can't leave real branches behind.
+    #[test]
+    fn a_fan_out_needs_a_prompt() {
+        let app = tauri::test::mock_app();
+        let branches = vec![FanOutBranch { name: "one".to_string(), account_id: "sub1".to_string() }];
+        let err = tauri::async_runtime::block_on(fan_out_prompt(app.handle().clone(), "proj1".to_string(), branches, "   ".to_string(), 80, 24)).unwrap_err();
+        assert!(err.contains("needs a prompt"), "got: {err}");
     }
 
     /// A directory, a project pointing at it, and two accounts — the setup the

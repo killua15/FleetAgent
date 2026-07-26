@@ -1,4 +1,5 @@
 mod app_data;
+mod auth;
 mod blocking;
 mod commands;
 mod credential_vault;
@@ -204,6 +205,14 @@ pub fn run() {
             rotation::suggest_terminal_account,
             rotation::list_terminal_rotation_accounts,
             commands::pull_requests::open_pr_review_terminal,
+            commands::sessions::create_worktree_for_project,
+            commands::sessions::list_files,
+            commands::sessions::read_file,
+            terminals::fan_out_prompt,
+            auth::start_oauth_callback,
+            auth::store_refresh_token,
+            auth::load_refresh_token,
+            auth::clear_refresh_token,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
