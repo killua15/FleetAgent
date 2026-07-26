@@ -16,6 +16,7 @@ export type ScreenName =
   | 'rotation-settings'
   | 'shared-memory'
   | 'git-panel'
+  | 'files'
   | 'git-history'
   | 'pr-modal'
   | 'pr-reviews'
