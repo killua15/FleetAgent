@@ -7,6 +7,7 @@ import { AccountSwitcher } from '../components/AccountSwitcher';
 import { TerminalPane } from '../components/TerminalPane';
 import { toastError } from '../components/ErrorOverlay';
 import { Button } from '../components/ui/button';
+import { IconTooltip } from '../components/ui/tooltip';
 import { useNavigation } from '../nav/NavigationProvider';
 import { autoGridColumns } from '../lib/gridLayout';
 import { formatHoursLeft, PROVIDER_META, type Account, type AccountAuth, type FanOutProjection } from '../types/account';
@@ -329,6 +330,24 @@ export function Terminals() {
   return (
     <div className={styles.screen}>
       <AppTopBar
+        leading={
+          terminals.length > 0 ? (
+            <IconTooltip label={sidebarOpen ? 'Hide the fleet sidebar  ⌘B' : 'Show the fleet sidebar  ⌘B'}>
+              <Button
+                variant="outline"
+                className={styles.sidebarToggle}
+                aria-pressed={sidebarOpen}
+                onClick={() => setSidebarOpen((wasOpen) => !wasOpen)}
+              >
+                {/* The icon is the state, not the action: a filled left column
+                    means the sidebar is there. An icon showing what would
+                    happen instead flips meaning every click, which is the
+                    thing that makes these toggles unreadable. */}
+                <span className={sidebarOpen ? styles.sidebarGlyphOn : styles.sidebarGlyphOff} />
+              </Button>
+            </IconTooltip>
+          ) : undefined
+        }
         primaryAction={
           <div style={{ display: 'flex', gap: 8 }}>
             <Button size="sm" variant="outline" onClick={openFanPicker} disabled={opening}>
@@ -487,7 +506,6 @@ export function Terminals() {
       <div className={styles.body}>
         {terminals.length > 0 && sidebarOpen && (
           <FleetSidebar
-            onCollapse={() => setSidebarOpen(false)}
             terminals={terminals}
             projects={projects}
             activity={activity}
@@ -498,12 +516,6 @@ export function Terminals() {
             onRename={renameTerminal}
             onClose={closeTerminal}
           />
-        )}
-
-        {terminals.length > 0 && !sidebarOpen && (
-          <button className={styles.sidebarReopen} title="Show the fleet sidebar (⌘B)" onClick={() => setSidebarOpen(true)}>
-            ›
-          </button>
         )}
 
         <div className={styles.gridArea}>
@@ -665,7 +677,6 @@ function FleetSidebar({
   onToggleVisible,
   onRename,
   onClose,
-  onCollapse,
 }: {
   terminals: TerminalInfo[];
   projects: Project[];
@@ -676,7 +687,6 @@ function FleetSidebar({
   onToggleVisible: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onClose: (id: string) => void;
-  onCollapse: () => void;
 }) {
   const [filter, setFilter] = useState('');
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -770,10 +780,6 @@ function FleetSidebar({
       <div className={styles.sideHeader}>
         <span className={styles.railLabel}>FLEET</span>
         {waiting > 0 && <span className={styles.sideWaiting}>{waiting} waiting</span>}
-        <span className={styles.spacer} />
-        <button className={styles.sideIconBtn} title="Hide the sidebar (⌘B)" onClick={onCollapse}>
-          ‹
-        </button>
       </div>
       <input className={styles.sideFilter} placeholder="filter…" value={filter} onChange={(e) => setFilter(e.target.value)} />
       {groups.map((g) => (

@@ -845,21 +845,36 @@
   border-color: var(--acc);
 }
 
-/* The way back when the sidebar is hidden. Thin and against the edge: hiding a
-   panel must not be a one-way door, and a hidden sidebar with no visible way to
-   return is how people conclude a feature is broken. */
-.sidebarReopen {
+/* One control for the sidebar, in one place, that never moves.
+   The previous design had two — a chevron inside the sidebar to close it and a
+   strip at the window edge to reopen it — so the control you needed depended on
+   the state you were in and neither stayed put long enough to learn. */
+.sidebarToggle {
   flex: none;
-  width: 16px;
-  border: none;
-  border-right: 1px solid var(--line);
-  background: var(--bg2);
-  color: var(--dim);
-  cursor: pointer;
-  font-size: 11px;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.sidebarReopen:hover {
-  color: var(--txt);
-  background: var(--panel2);
+/* A pane with its left column filled or empty: the icon reports the current
+   state rather than the action, so its meaning doesn't invert on every click. */
+.sidebarGlyphOn,
+.sidebarGlyphOff {
+  display: block;
+  width: 14px;
+  height: 11px;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+}
+
+.sidebarGlyphOn {
+  border-left-width: 5px;
+  color: var(--acc);
+}
+
+.sidebarGlyphOff {
+  color: var(--dim);
 }

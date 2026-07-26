@@ -62,7 +62,7 @@ function AccountButton() {
   );
 }
 
-export function AppTopBar({ primaryAction }: { primaryAction?: ReactNode }) {
+export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; primaryAction?: ReactNode }) {
   const { navigate, current } = useNavigation();
   const [pendingPrComments, setPendingPrComments] = useState(0);
   const inFlight = useInFlightCount();
@@ -82,6 +82,10 @@ export function AppTopBar({ primaryAction }: { primaryAction?: ReactNode }) {
 
   return (
     <div className={styles.bar}>
+      {/* A screen's own layout controls belong at the far left, ahead of the
+       * wordmark — the place every editor puts them, and more importantly a
+       * place that doesn't move when the thing they control disappears. */}
+      {leading}
       <span className={styles.wordmark}>⌥ hangar</span>
       <span className={styles.version}>v0.1</span>
       {showBusy && (
