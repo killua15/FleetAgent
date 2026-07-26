@@ -7,6 +7,7 @@ import type { ProjectPrInbox } from '../types/pullRequest';
 import { Button } from './ui/button';
 import { IconTooltip } from './ui/tooltip';
 import { Spinner } from './Spinner';
+import { useAuth } from '../auth/AuthProvider';
 import styles from './AppTopBar.module.css';
 
 function countPendingPrComments(inbox: ProjectPrInbox[]): number {
@@ -32,6 +33,33 @@ function useDelayedBusy(count: number, delayMs: number): boolean {
     return () => window.clearTimeout(id);
   }, [count, delayMs]);
   return busy;
+}
+
+/** Hangar's own account, at the far end of the bar.
+ *
+ * Signed out it's an invitation, not a wall — everything in the app works
+ * without it. Signed in it's how you reach backup and the team plan. */
+function AccountButton() {
+  const { email, entitlement, signingIn, error, signIn, signOut } = useAuth();
+
+  if (!email) {
+    return (
+      <IconTooltip label={error ? `Sign-in failed: ${error}` : 'Sign in to back up your setup across machines — everything else works signed out'}>
+        <Button variant="outline" size="sm" disabled={signingIn} onClick={signIn} style={error ? { color: 'var(--amber)' } : undefined}>
+          {signingIn ? <Spinner label="signing in…" /> : 'Sign in'}
+        </Button>
+      </IconTooltip>
+    );
+  }
+
+  return (
+    <IconTooltip label={`Signed in as ${email}${entitlement ? ` · ${entitlement.plan}` : ''} — click to sign out`}>
+      <Button variant="outline" size="sm" onClick={signOut}>
+        {email.split('@')[0]}
+        {entitlement && entitlement.plan !== 'free' && <span style={{ marginLeft: 6, color: 'var(--grn)' }}>{entitlement.plan}</span>}
+      </Button>
+    </IconTooltip>
+  );
 }
 
 export function AppTopBar({ primaryAction }: { primaryAction?: ReactNode }) {
@@ -88,6 +116,11 @@ export function AppTopBar({ primaryAction }: { primaryAction?: ReactNode }) {
             ⌗
           </Button>
         </IconTooltip>
+        <IconTooltip label="Files — browse and read any project's files">
+          <Button variant="outline" className={styles.iconBtn} style={{ color: 'var(--gemini)' }} onClick={() => navigate('files')}>
+            ⌸
+          </Button>
+        </IconTooltip>
         <IconTooltip label="Git — repos and worktrees overview">
           <Button variant="outline" className={styles.iconBtn} style={{ color: 'var(--teal)' }} onClick={() => navigate('git-panel')}>
             ⎇
@@ -116,6 +149,7 @@ export function AppTopBar({ primaryAction }: { primaryAction?: ReactNode }) {
       >
         search sessions… <span className={styles.kbd}>⌘K</span>
       </Button>
+      <AccountButton />
       {primaryAction}
     </div>
   );

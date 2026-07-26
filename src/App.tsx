@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { ThemeProvider, useTheme } from './theme/ThemeProvider';
 import { NavigationProvider, useNavigation } from './nav/NavigationProvider';
+import { AuthProvider } from './auth/AuthProvider';
 import { Landing } from './screens/Landing';
 import { MainView } from './screens/MainView';
 import { AddAccount } from './screens/AddAccount';
@@ -12,6 +13,7 @@ import { RotationSettings } from './screens/RotationSettings';
 import { SharedMemorySettings } from './screens/SharedMemorySettings';
 import { PrReviews } from './screens/PrReviews';
 import { GitPanel } from './screens/GitPanel';
+import { Files } from './screens/Files';
 import { GitHistoryView } from './screens/GitHistoryView';
 import { TreeCanvas } from './screens/TreeCanvas';
 import { TreeColumns } from './screens/TreeColumns';
@@ -70,6 +72,8 @@ function Screens() {
       return <PrReviews />;
     case 'git-panel':
       return <GitPanel />;
+    case 'files':
+      return <Files />;
     case 'git-history':
       return <GitHistoryView />;
     case 'tree-canvas':
@@ -94,10 +98,12 @@ export default function App() {
     <AppErrorOverlay>
       <ThemeProvider>
         <TooltipProvider>
-          <NavigationProvider>
-            <GlobalShortcuts />
-            <Screens />
-          </NavigationProvider>
+          <AuthProvider>
+            <NavigationProvider>
+              <GlobalShortcuts />
+              <Screens />
+            </NavigationProvider>
+          </AuthProvider>
         </TooltipProvider>
       </ThemeProvider>
     </AppErrorOverlay>
