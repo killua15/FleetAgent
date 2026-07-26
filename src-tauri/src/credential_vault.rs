@@ -1,6 +1,11 @@
 use keyring::Entry;
 
-const SERVICE: &str = "com.killua.fleet";
+/// Keychain service name. Renamed with the product; no migration from the
+/// pre-rename `com.killua.fleet` service is needed or included — that service
+/// was verified to hold no entries at rename time (both existing accounts are
+/// subscription-billed, and only API-key accounts ever store a secret here).
+/// An API key that predated the rename would need re-entering, nothing worse.
+const SERVICE: &str = "com.killua.hangar";
 
 /// Credentials never touch the SQLite database or the frontend — only a
 /// `credential_ref` (the account id) is stored there. The actual secret

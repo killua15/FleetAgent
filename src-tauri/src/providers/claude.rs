@@ -25,7 +25,7 @@ pub fn logout_args() -> Vec<String> {
     vec!["auth".to_string(), "logout".to_string()]
 }
 
-/// Maps Fleet's session mode to Claude Code CLI's `--permission-mode` values.
+/// Maps Hangar's session mode to Claude Code CLI's `--permission-mode` values.
 /// TODO: re-verify these exact flag names/values against the installed CLI
 /// version — this is the "flags investigated during phase 2" item from the plan.
 fn permission_mode_str(mode: Mode) -> &'static str {
@@ -58,7 +58,7 @@ pub struct TurnArgs<'a> {
     /// `--effort` value: one of low/medium/high/xhigh/max.
     pub effort: &'a str,
     /// `--name` — shows up in the CLI's own `/resume` picker and terminal
-    /// title, separate from (but usually equal to) Fleet's own session name.
+    /// title, separate from (but usually equal to) Hangar's own session name.
     pub name: &'a str,
     /// Set only for `Mode::AskEdits`/`Mode::AutoEdit` (the only modes that
     /// can still block on live approval in headless `-p` mode). When true,

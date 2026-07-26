@@ -2,7 +2,7 @@
 
 Análisis de dos preguntas relacionadas, con lo verificado separado de lo propuesto:
 
-1. Si cierro Fleet con terminales abiertas, ¿pueden volver — y con la conversación que tenían?
+1. Si cierro Hangar con terminales abiertas, ¿pueden volver — y con la conversación que tenían?
 2. ¿Se puede rotar de cuenta/CLI manteniendo la misma conversación de la terminal?
 
 Estado: **análisis, nada implementado**. Fecha: 2026-07-25. Verificado contra Claude Code
@@ -12,7 +12,7 @@ v2.1.219 y el config dir real `~/.claude-work` (47 transcripts) en esta máquina
 
 ## 0. Qué pasa hoy
 
-Al cerrar Fleet:
+Al cerrar Hangar:
 
 - **Los procesos no sobreviven, y es deliberado.** `shutdown_children` (`src-tauri/src/lib.rs:32`)
   llama `terminals::kill_all` (`terminals.rs:678`), que mata cada shell; al vaciar el registry se
@@ -40,15 +40,15 @@ Tabla `open_terminals`: target (`kind` + `source_id`), cuenta, posición en el g
 - **Tabla y no JSON en settings**, por las FKs: con `ON DELETE CASCADE`, borrar un proyecto o una
   cuenta se lleva la fila y nunca intentas restaurar algo que ya no existe.
 - **El punto que se rompe si se hace a lo bruto**: `kill_all` vacía el registry al cerrar la app.
-  Si comparte camino con `close_terminal`, cerrar Fleet borra exactamente lo que querías recordar.
-  Hay que distinguir *"el usuario cerró esta terminal"* (olvidar) de *"se está cerrando Fleet"*
+  Si comparte camino con `close_terminal`, cerrar Hangar borra exactamente lo que querías recordar.
+  Hay que distinguir *"el usuario cerró esta terminal"* (olvidar) de *"se está cerrando Hangar"*
   (recordar).
 - **Restaurar desde el frontend, no desde `setup()`**: en `setup()` todavía no hay panel que adopte
   los PTYs, y abrirlos sin nadie leyéndolos llena scrollbacks a ciegas y alarga el arranque.
 
 ### Capa 2 — que el texto que veías vuelva
 
-Fleet ya guarda 256 KB de scrollback por terminal (`SCROLLBACK_LIMIT_BYTES`, `terminals.rs:41`) y
+Hangar ya guarda 256 KB de scrollback por terminal (`SCROLLBACK_LIMIT_BYTES`, `terminals.rs:41`) y
 `attach_terminal` (`terminals.rs:531`) ya lo reproduce en el xterm al navegar fuera y volver.
 Persistir ese anillo al cerrar y precargarlo al restaurar es reusar maquinaria que existe.
 
@@ -71,7 +71,7 @@ Persistir ese anillo al cerrar y precargarlo al restaurar es reusar maquinaria q
 
 Diseño:
 
-1. Al abrir una terminal, Fleet genera un UUID y arranca
+1. Al abrir una terminal, Hangar genera un UUID y arranca
    `CLAUDE_CONFIG_DIR=<dir> claude --session-id <uuid>`, guardando el uuid en la fila.
 2. Al restaurar, `claude --resume <uuid>` en el mismo cwd y bajo la misma cuenta.
 
@@ -86,7 +86,7 @@ imposible, y no hay que adivinar nada.
 <config_dir>/projects/<slug>/<uuid>.jsonl
 ```
 
-donde `<slug>` es la ruta con las barras convertidas en guiones. Como el uuid lo asigna Fleet, la
+donde `<slug>` es la ruta con las barras convertidas en guiones. Como el uuid lo asigna Hangar, la
 comprobación es "existe este fichero concreto", no "coge el más nuevo del directorio" — lo cual
 importa porque **el slug es lossy**: `/private/tmp/claude-501/-Users-killua-…` se aplana a
 `-private-tmp-claude-501--Users-killua-…`, así que una carpeta con guiones y una ruta con barras
@@ -102,7 +102,7 @@ que solo abriste vuelve limpia.
 ### Capa 4 — que el proceso siga vivo (descartada)
 
 Es la única que da "exactamente como lo dejé": scrollback real, un `npm run build` a medias, lo
-escrito sin enviar. Requiere un multiplexor que sobreviva a Fleet.
+escrito sin enviar. Requiere un multiplexor que sobreviva a Hangar.
 
 - **tmux no está instalado** en esta máquina; `screen` sí, pero es el de Apple (viejo, mal
   candidato). `claude` tiene una flag `--tmux` para worktrees.
@@ -118,7 +118,7 @@ escrito sin enviar. Requiere un multiplexor que sobreviva a Fleet.
 **El hallazgo que lo sostiene: una conversación no está atada a una cuenta.** Barridos los 47
 transcripts del config dir (64 claves distintas), **no hay ninguna clave de identidad de cuenta**
 — ni `account*`, ni `organization`, ni `email`, ni `userId`, ni credenciales. Las únicas ataduras
-son `sessionId`, `cwd`, `version` y `gitBranch`, y las dos primeras las controla Fleet.
+son `sessionId`, `cwd`, `version` y `gitBranch`, y las dos primeras las controla Hangar.
 
 Lo que hace que la conversación *parezca* intransferible es solo dónde vive el fichero: un problema
 de sistema de archivos, no de identidad.
@@ -138,7 +138,7 @@ PID (`3774.json`) y `shell-snapshots/` va por timestamp.
 arbitrario — solo `--session-id`, `--resume` y `--fork-session`. La transferencia consiste en poner
 los ficheros donde el CLI los espera.
 
-**Depende de la capa 3.** Sin `--session-id`, Fleet no sabe *qué* copiar: solo podría adivinar "el
+**Depende de la capa 3.** Sin `--session-id`, Hangar no sabe *qué* copiar: solo podría adivinar "el
 transcript más nuevo de esa carpeta", justo la heurística que la capa 3 elimina.
 
 **Reglas no opcionales:**
@@ -148,10 +148,10 @@ transcript más nuevo de esa carpeta", justo la heurística que la capa 3 elimin
 - **Copiar, no mover.** Si el resume falla, no se ha perdido la conversación. Encaja con la
   disciplina que ya tiene `reopen_with_account_inner` (`terminals.rs:638`): abrir la nueva antes de
   cerrar la vieja.
-- **Fleet debe registrar en qué config dir vive la copia autoritativa.** Al copiar, el mismo id
+- **Hangar debe registrar en qué config dir vive la copia autoritativa.** Al copiar, el mismo id
   existe en dos cuentas con futuros divergentes; sin ese registro, rotar de vuelta más tarde
   resucitaría la copia vieja y perdería lo hecho en la otra cuenta. Es una columna en la fila de la
-  terminal, y Fleet lo sabe porque es quien rota.
+  terminal, y Hangar lo sabe porque es quien rota.
 - **Verificar que el resume levantó** antes de cerrar la terminal vieja; si no, caer al
   comportamiento de hoy (conversación nueva) diciéndolo en el banner.
 
@@ -165,7 +165,7 @@ transcript más nuevo de esa carpeta", justo la heurística que la capa 3 elimin
    confianza se recuerda por config dir, así que la primera rotación a esa cuenta aterriza en
    `Is this a project you created or one you trust?`. Ninguna flag lo evita (ver E3).
 3. **Formato interno no documentado.** Es cirugía sobre el estado privado de otro producto: una
-   actualización de Claude Code puede cambiar el layout y Fleet se rompería en silencio. Decisión de
+   actualización de Claude Code puede cambiar el layout y Hangar se rompería en silencio. Decisión de
    producto, no técnica.
 
 **El pago**: convierte el banner de *"reabrir empieza una conversación nueva"* en rotación de
@@ -175,13 +175,13 @@ verdad — lo que se quería desde el principio.
 
 - Los transcripts no comparten esquema; copiar no significa nada entre CLIs.
 - Lo único honesto es **llevar el contexto, no la sesión**: renderizar el `.jsonl` a texto y pasarlo
-  como prompt inicial. Fleet ya tiene el mecanismo — `open_terminal` acepta un `init_prompt`, que es
+  como prompt inicial. Hangar ya tiene el mecanismo — `open_terminal` acepta un `init_prompt`, que es
   como "enviar comentarios de PR a una terminal" mete la review en el agente.
 - Se pierde el historial de herramientas y el estado de ediciones, y hay un problema de tamaño:
   18 MB no caben en un prompt, así que habría que resumir (cuesta un turno) o truncar a los últimos
   N mensajes.
 - **Y hoy está bloqueado antes**: `account_command_line` (`terminals.rs:297`) rechaza cualquier
-  provider que no sea claude — *"Fleet can't run a 'codex' CLI as a specific account yet"* — porque
+  provider que no sea claude — *"Hangar can't run a 'codex' CLI as a specific account yet"* — porque
   no existe el equivalente de `env_for_account` para ellos. Rotar de CLI no es alcanzable por una
   razón que no tiene nada que ver con conversaciones.
 
@@ -221,7 +221,7 @@ otra cuenta — decisión del usuario.
 
 ## 5. Decisiones pendientes
 
-1. ¿La restauración es automática al abrir Fleet, o pregunta?
+1. ¿La restauración es automática al abrir Hangar, o pregunta?
 2. ¿Los paneles restaurados arrancan el CLI solos, o vuelven en frío con un botón de arrancar?
 3. ¿Se asume el acoplamiento al formato interno de Claude Code para el caso A (con verificación y
    fallback), o se deja la rotación como está hoy?

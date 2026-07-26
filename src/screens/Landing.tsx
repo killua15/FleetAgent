@@ -30,10 +30,11 @@ export function Landing() {
       <div className={styles.content}>
         <div className={styles.mark}>⌥</div>
         <div className={styles.heading}>
-          <span className={styles.wordmark}>fleet</span>
+          <span className={styles.wordmark}>hangar</span>
           <span className={styles.tagline}>
-            Open a real Claude Code terminal in any project, under any account — one at a time or a
-            whole grid at once, without ever mixing personal and work.
+            Mission control for your coding agents. Open a real Claude Code terminal in any project,
+            under any account — one at a time or a whole grid at once, without ever mixing personal
+            and work.
           </span>
         </div>
 
@@ -49,14 +50,14 @@ export function Landing() {
           type="button"
           className={`${styles.enterBtn} ${entering ? styles.entering : ''}`}
           onClick={handleEnter}
-          title="Open Fleet"
+          title="Open Hangar"
         >
-          {entering ? 'Opening terminals…' : 'Enter Fleet →'}
+          {entering ? 'Opening terminals…' : 'Enter Hangar →'}
         </Button>
         <span className={styles.footNote}>local-first · your keys stay in the keychain</span>
       </div>
 
-      <div className={styles.version}>fleet v0.1 — {navigator.platform.includes('Mac') ? 'macOS' : 'desktop'} · Tauri</div>
+      <div className={styles.version}>hangar v0.1 — {navigator.platform.includes('Mac') ? 'macOS' : 'desktop'} · Tauri</div>
     </div>
   );
 }

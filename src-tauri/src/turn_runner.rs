@@ -233,7 +233,7 @@ pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) -> Result<(), String> {
     // build script under acceptEdits hits the same "requires approval" dead
     // end as default mode). Claude Code's own stdio control protocol
     // (`--permission-prompt-tool stdio`, wired up by `build_turn_args` below)
-    // is the real approval channel for both — Fleet answers `control_request`
+    // is the real approval channel for both — Hangar answers `control_request`
     // lines directly over this same child's stdin/stdout further down. Plan
     // never reaches this (the model explores read-only instead of invoking
     // risky commands) and Yolo (`bypassPermissions`) never blocks in the
@@ -241,7 +241,7 @@ pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) -> Result<(), String> {
     let use_permission_prompt = matches!(req.mode, Mode::AskEdits | Mode::AutoEdit);
     // AutoEdit still needs the control protocol wired up (acceptEdits alone
     // doesn't cover Bash), but the user explicitly wants "auto" to mean
-    // auto — Fleet answers every control_request itself with "allow" and
+    // auto — Hangar answers every control_request itself with "allow" and
     // never shows the banner, matching the name instead of Claude Code's
     // own stricter default for acceptEdits. Only AskEdits still asks a human.
     let auto_approve = req.mode == Mode::AutoEdit;
@@ -357,7 +357,7 @@ pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) -> Result<(), String> {
                 // `use_permission_prompt`) keeps the CLI alive waiting for
                 // more turns even after stdin closes — verified empirically:
                 // it stayed running well past its final `result` line with
-                // nothing left to say. Fleet's model is one process per
+                // nothing left to say. Hangar's model is one process per
                 // turn, so the terminal `result` line IS the end of this
                 // turn; kill the process here instead of waiting on an exit
                 // that will never come on its own.
@@ -863,7 +863,7 @@ fn store_turn_usage<R: Runtime>(app: &AppHandle<R>, session_id: &str, usage: &Tu
 }
 
 /// Fires a one-time-per-app-run notification when an account's trailing
-/// 7-day recorded spend (`turn_usage.cost_usd`, Fleet's own numbers — not a
+/// 7-day recorded spend (`turn_usage.cost_usd`, Hangar's own numbers — not a
 /// live provider quota) crosses its `monthly_cap / 4.345` weekly estimate.
 /// Only meaningful for `billing = 'key'` accounts (subscription accounts
 /// have no $ cap — see `commands::settings::set_account_monthly_cap`'s
@@ -1061,6 +1061,10 @@ mod tests {
 
         let all_blocks: Vec<_> = outcomes.iter().flat_map(|o| o.blocks.iter()).collect();
         // The final `result` message's text must come through as an agent block.
+        // "Fleet Agent" is what the recorded fixture literally says — it was
+        // captured from a real turn back when the project had that name. The
+        // fixture is evidence, not prose: it stays verbatim, so this assertion
+        // must keep matching it rather than being renamed along with the app.
         assert!(all_blocks.iter().any(|b| b.kind == "agent" && b.text.contains("Fleet Agent project directory")));
         assert!(!outcomes.iter().any(|o| o.exhausted));
     }
@@ -1285,7 +1289,7 @@ mod tests {
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         conn.execute_batch(crate::db::SCHEMA).unwrap();
 
-        let isolated_config_dir = std::env::temp_dir().join(format!("fleet-test-turn-{}", uuid::Uuid::new_v4()));
+        let isolated_config_dir = std::env::temp_dir().join(format!("hangar-test-turn-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&isolated_config_dir).unwrap();
 
         conn.execute(

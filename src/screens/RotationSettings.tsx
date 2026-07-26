@@ -149,7 +149,7 @@ export function RotationSettings() {
           })}
           <div className={styles.spacer} />
           <p className={styles.footnote}>
-            Rotation is failover, not scheduling: the account you pick for a session is kept as long as it works, and Fleet only
+            Rotation is failover, not scheduling: the account you pick for a session is kept as long as it works, and Hangar only
             switches once it hits its rate limit.
           </p>
         </div>
@@ -197,7 +197,7 @@ export function RotationSettings() {
                   <span>⚠</span>
                   <span>
                     This project mixes personal and work accounts. That's allowed only because you opted in here —
-                    Fleet never does it on its own.
+                    Hangar never does it on its own.
                   </span>
                 </div>
               )}

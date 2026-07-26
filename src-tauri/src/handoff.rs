@@ -212,8 +212,8 @@ pub fn render_handoff(session: &NeutralSession, budget_chars: usize) -> String {
 /// computing the slug.
 ///
 /// The slug is the cwd with `/` turned into `-`, which is lossy and
-/// irreversible — `/Users/me/Proyects/Fleet-Agent` and a folder literally
-/// named `Fleet-Agent` both flatten the same way. But the uuid is unique, so a
+/// irreversible — `/Users/me/Proyects/Hangar-Agent` and a folder literally
+/// named `Hangar-Agent` both flatten the same way. But the uuid is unique, so a
 /// scan of `projects/*/<uuid>.jsonl` finds the one file and, with it, the real
 /// slug directory to reuse for the destination.
 pub(crate) fn find_transcript(config_dir: &str, session_uuid: &str) -> Option<PathBuf> {
@@ -293,7 +293,7 @@ mod tests {
     }
 
     fn temp_dir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("fleet-handoff-{label}-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("hangar-handoff-{label}-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -324,7 +324,7 @@ mod tests {
     fn transfer_reuses_the_source_slug_even_with_hyphens_in_the_folder_name() {
         let from = temp_dir("from");
         let to = temp_dir("to");
-        let slug = "-Users-me-Proyects-Fleet-Agent"; // "Fleet-Agent" has a real hyphen
+        let slug = "-Users-me-Proyects-Hangar-Agent"; // "Hangar-Agent" has a real hyphen
         let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
         plant_transcript(&from, slug, uuid, "convo\n");
 

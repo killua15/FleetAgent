@@ -19,7 +19,7 @@ export interface Account {
 }
 
 /** Login state for one account, from the batch `list_account_auth` command.
- * `supported` is false for providers Fleet can't scope a process to yet
+ * `supported` is false for providers Hangar can't scope a process to yet
  * (codex, gemini) — they can be added, but nothing can run as them. */
 export interface AccountAuth {
   accountId: string;
@@ -48,7 +48,7 @@ export interface NewAccount {
 }
 
 /** A Claude Code config directory already logged in on this machine that no
- * Fleet account is using yet — the ones a user drives by hand with
+ * Hangar account is using yet — the ones a user drives by hand with
  * `CLAUDE_CONFIG_DIR=~/.claude-work claude`. */
 export interface DiscoveredLogin {
   path: string;

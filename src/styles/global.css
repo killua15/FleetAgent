@@ -86,7 +86,7 @@ button {
 }
 
 /*
- * shadcn's semantic variables aliased onto Fleet's own tokens (tokens.css)
+ * shadcn's semantic variables aliased onto Hangar's own tokens (tokens.css)
  * instead of shadcn's default palette — tokens.css already switches values
  * per `data-theme` (see ThemeProvider), so these aliases get dark/light for
  * free without a separate `.dark` class block.

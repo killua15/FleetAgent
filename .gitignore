@@ -29,7 +29,9 @@ src-tauri/target
 # Local Claude Code runtime state (machine-specific permissions, task locks)
 .claude/
 
-# Fleet subsession worktrees
+# Hangar subsession worktrees (`.fleet/` is the pre-rename name — worktrees
+# created before the rename still live there and are still honored)
+.hangar/
 .fleet/
 
 # TypeScript incremental build cache

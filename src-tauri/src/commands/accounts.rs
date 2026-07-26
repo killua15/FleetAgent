@@ -275,7 +275,7 @@ pub fn check_account_auth(db: State<DbConnection>, id: String) -> Result<login_m
 }
 
 /// A Claude Code config directory already on disk with a working login, that
-/// no Fleet account is using yet.
+/// no Hangar account is using yet.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveredLogin {
@@ -289,7 +289,7 @@ pub struct DiscoveredLogin {
 
 /// Claude Code config directories already logged in on this machine.
 ///
-/// Fleet's own wizard parks each login in `pending-logins/<uuid>` and adopts
+/// Hangar's own wizard parks each login in `pending-logins/<uuid>` and adopts
 /// that as the account's permanent home (see `create_account`), which is fine
 /// in isolation but ignores the directories a user already drives by hand —
 /// `CLAUDE_CONFIG_DIR=~/.claude-work claude` and friends. Those are the ones
@@ -393,7 +393,7 @@ pub struct AccountAuth {
     pub account_id: String,
     pub logged_in: bool,
     pub auth_method: String,
-    /// Whether Fleet can actually scope a process to this account. False for
+    /// Whether Hangar can actually scope a process to this account. False for
     /// providers with no `env_for_account` equivalent (codex, gemini), which
     /// can be created but can't yet be handed to a terminal or a turn.
     pub supported: bool,
@@ -569,7 +569,7 @@ mod tests {
     #[test]
     fn repointing_at_a_missing_directory_is_refused_and_changes_nothing() {
         let app = app_with_account("/original/config");
-        let missing = std::env::temp_dir().join(format!("fleet-does-not-exist-{}", Uuid::new_v4()));
+        let missing = std::env::temp_dir().join(format!("hangar-does-not-exist-{}", Uuid::new_v4()));
 
         let result = tauri::async_runtime::block_on(set_account_config_dir(
             app.handle().clone(),
@@ -586,7 +586,7 @@ mod tests {
     /// confirmed with the CLI.
     #[test]
     fn repointing_at_a_logged_out_directory_is_refused_and_changes_nothing() {
-        let empty = std::env::temp_dir().join(format!("fleet-empty-config-{}", Uuid::new_v4()));
+        let empty = std::env::temp_dir().join(format!("hangar-empty-config-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&empty).unwrap();
         let app = app_with_account("/original/config");
 

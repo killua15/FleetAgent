@@ -1,4 +1,4 @@
-//! Real PR creation + review-comment polling via the `gh` CLI — Fleet has no
+//! Real PR creation + review-comment polling via the `gh` CLI — Hangar has no
 //! GitHub App/webhook (it's a desktop app with no public endpoint), so this
 //! is the same shape Conductor uses: poll while the app is open, plus a
 //! manual "check now" escape hatch. Never auto-sends new comments to an
@@ -6,7 +6,7 @@
 //! them; `send_pr_comments_to_session` is a separate, explicit action the
 //! user triggers from the UI.
 
-use crate::commands::sessions::{ensure_fleet_dir_ignored, slugify, unique_worktree_dir};
+use crate::commands::sessions::{ensure_worktree_dir_ignored, slugify, unique_worktree_dir};
 use crate::db::DbConnection;
 use crate::models::{PrComment, PullRequestInfo, PullRequestPreview};
 use crate::providers;
@@ -147,7 +147,7 @@ fn render_pr_body(added: &[String], modified: &[String], removed: &[String]) -> 
     section("Added", added);
     section("Modified", modified);
     section("Removed", removed);
-    body.push_str("_Opened by Fleet._");
+    body.push_str("_Opened by Hangar._");
     body
 }
 
@@ -157,37 +157,50 @@ fn generate_pr_title_and_body(cwd: &Path, base: &str, branch: &str, session_name
     Ok((session_name.to_string(), render_pr_body(&added, &modified, &removed)))
 }
 
-fn row_to_pull_request(row: &rusqlite::Row) -> rusqlite::Result<PullRequestInfo> {
+/// The columns `row_to_pull_request` reads, in its exact order. One constant
+/// rather than the same list spelled out at five call sites, where adding a
+/// column meant finding every one of them or getting a silent off-by-one.
+pub(crate) const PR_COLUMNS: &str =
+    "id, project_id, session_id, repo_owner, repo_name, number, url, state, last_comment_seen_at, created_at, last_check_error, last_seen_updated_at, head_branch, base_branch, title, author_login, relation";
+
+/// `PR_COLUMNS` qualified with a table alias, for the queries that join.
+pub(crate) fn pr_columns_from(alias: &str) -> String {
+    PR_COLUMNS.split(", ").map(|c| format!("{alias}.{c}")).collect::<Vec<_>>().join(", ")
+}
+
+pub(crate) fn row_to_pull_request(row: &rusqlite::Row) -> rusqlite::Result<PullRequestInfo> {
     Ok(PullRequestInfo {
         id: row.get(0)?,
-        session_id: row.get(1)?,
-        repo_owner: row.get(2)?,
-        repo_name: row.get(3)?,
-        number: row.get(4)?,
-        url: row.get(5)?,
-        state: row.get(6)?,
-        last_comment_seen_at: row.get(7)?,
-        created_at: row.get(8)?,
-        last_check_error: row.get(9)?,
-        last_seen_updated_at: row.get(10)?,
-        head_branch: row.get(11)?,
+        project_id: row.get(1)?,
+        session_id: row.get(2)?,
+        repo_owner: row.get(3)?,
+        repo_name: row.get(4)?,
+        number: row.get(5)?,
+        url: row.get(6)?,
+        state: row.get(7)?,
+        last_comment_seen_at: row.get(8)?,
+        created_at: row.get(9)?,
+        last_check_error: row.get(10)?,
+        last_seen_updated_at: row.get(11)?,
+        head_branch: row.get(12)?,
+        base_branch: row.get(13)?,
+        title: row.get(14)?,
+        author_login: row.get(15)?,
+        relation: row.get(16)?,
     })
 }
 
 /// The most recent PR for a session — correct only when a session has at
-/// most one PR, which was true back when the only way to get a PR was
-/// Fleet's own "Create PR" button. `discover_open_prs_for_project` broke
-/// that assumption: every PR discovery anchors to "the project's most
-/// recent session" purely as an FK target, so a project with several open
-/// PRs and one session ends up with several `pull_requests` rows sharing
-/// that same `session_id`. Anything keyed by session_id here (rather than
-/// the PR's own id) would silently see only the newest of them, forever —
-/// use `fetch_pull_request_by_id` for anything that must reach every PR.
+/// most one PR, which is true of every PR Hangar's own "Create PR" button
+/// makes, but not a rule the schema enforces. Discovered PRs are no longer
+/// hung off an arbitrary session (they carry their project instead), so this
+/// no longer risks collapsing a project's whole PR list into one row — but
+/// anything that must reach a *specific* PR should still key on the PR's own
+/// id via `fetch_pull_request_by_id`.
 fn fetch_pull_request(db: &DbConnection, session_id: &str) -> Result<Option<PullRequestInfo>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     conn.query_row(
-        "SELECT id, session_id, repo_owner, repo_name, number, url, state, last_comment_seen_at, created_at, last_check_error, last_seen_updated_at, head_branch
-         FROM pull_requests WHERE session_id = ?1 ORDER BY created_at DESC LIMIT 1",
+        &format!("SELECT {PR_COLUMNS} FROM pull_requests WHERE session_id = ?1 ORDER BY created_at DESC LIMIT 1"),
         params![session_id],
         row_to_pull_request,
     )
@@ -197,21 +210,16 @@ fn fetch_pull_request(db: &DbConnection, session_id: &str) -> Result<Option<Pull
 
 fn fetch_pull_request_by_id(db: &DbConnection, pr_id: &str) -> Result<Option<PullRequestInfo>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    conn.query_row(
-        "SELECT id, session_id, repo_owner, repo_name, number, url, state, last_comment_seen_at, created_at, last_check_error, last_seen_updated_at, head_branch
-         FROM pull_requests WHERE id = ?1",
-        params![pr_id],
-        row_to_pull_request,
-    )
-    .optional()
-    .map_err(|e| e.to_string())
+    conn.query_row(&format!("SELECT {PR_COLUMNS} FROM pull_requests WHERE id = ?1"), params![pr_id], row_to_pull_request)
+        .optional()
+        .map_err(|e| e.to_string())
 }
 
 /// Ensures `cwd` is on a pushed, PR-ready branch: if it's currently sitting
 /// on the base branch (or not on any real branch at all — a detached HEAD,
 /// which `git rev-parse --abbrev-ref HEAD` reports as the literal string
 /// `"HEAD"` and which `git push` can't publish under that name), creates
-/// and checks out a new one (`fleet/<slug>`); commits anything uncommitted
+/// and checks out a new one (`hangar/<slug>`); commits anything uncommitted
 /// (no stage/commit UI exists yet, so this is a single blanket commit);
 /// pushes to `origin`. Returns `(branch, base)`. Pure git, no `gh` calls, so
 /// it's testable against a real local remote without touching GitHub.
@@ -219,7 +227,7 @@ fn prepare_branch_for_pr(cwd: &Path, session_name: &str) -> Result<(String, Stri
     let base = detect_default_branch(cwd);
     let current_branch = git_capture(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     let branch = if current_branch == base || current_branch == "HEAD" {
-        let new_branch = format!("fleet/{}", slugify(session_name));
+        let new_branch = format!("hangar/{}", slugify(session_name));
         git_capture(cwd, &["checkout", "-b", &new_branch])?;
         new_branch
     } else {
@@ -229,7 +237,7 @@ fn prepare_branch_for_pr(cwd: &Path, session_name: &str) -> Result<(String, Stri
     let status = git_capture(cwd, &["status", "--porcelain"])?;
     if !status.trim().is_empty() {
         git_capture(cwd, &["add", "-A"])?;
-        git_capture(cwd, &["commit", "-m", &format!("Changes from Fleet session: {session_name}")])?;
+        git_capture(cwd, &["commit", "-m", &format!("Changes from Hangar session: {session_name}")])?;
     }
 
     git_capture(cwd, &["push", "-u", "origin", &branch])?;
@@ -339,18 +347,23 @@ pub async fn create_pull_request<R: Runtime>(app: AppHandle<R>, session_id: Stri
 
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        {
+        let project_id: String = {
             let conn = db.0.lock().map_err(|e| e.to_string())?;
+            let project_id: String = conn
+                .query_row("SELECT project_id FROM sessions WHERE id = ?1", params![session_id], |row| row.get(0))
+                .map_err(|e| format!("session lookup failed: {e}"))?;
             conn.execute(
-                "INSERT INTO pull_requests (id, session_id, repo_owner, repo_name, number, url, state, last_comment_seen_at, created_at, head_branch)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'open', NULL, ?7, ?8)",
-                params![id, session_id, owner, repo, number, url, now, branch],
+                "INSERT INTO pull_requests (id, project_id, session_id, repo_owner, repo_name, number, url, state, last_comment_seen_at, created_at, head_branch, base_branch, title, relation)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open', NULL, ?8, ?9, ?10, ?11, 'mine')",
+                params![id, project_id, session_id, owner, repo, number, url, now, branch, base, title],
             )
             .map_err(|e| e.to_string())?;
-        }
+            project_id
+        };
         Ok(PullRequestInfo {
             id,
-            session_id,
+            project_id,
+            session_id: Some(session_id),
             repo_owner: owner,
             repo_name: repo,
             number,
@@ -361,6 +374,12 @@ pub async fn create_pull_request<R: Runtime>(app: AppHandle<R>, session_id: Stri
             created_at: now,
             last_seen_updated_at: None,
             head_branch: Some(branch),
+            base_branch: Some(base),
+            title: Some(title),
+            // Hangar just opened it as the `gh`-authenticated user, so there's
+            // nothing to discover: it's mine by construction.
+            author_login: None,
+            relation: "mine".to_string(),
         })
     })
     .await?
@@ -377,13 +396,13 @@ pub fn get_pull_request(db: State<DbConnection>, session_id: String) -> Result<O
 /// GitHub's own id for the comment/review (a GraphQL node id for
 /// `comments`/`reviews`, a plain REST id for inline diff comments) — the
 /// actual "have we already seen this one" key. Not a timestamp: a PR's
-/// history can grow a source of comments Fleet couldn't previously fetch
+/// history can grow a source of comments Hangar couldn't previously fetch
 /// (inline diff comments were invisible before this was added) — if
 /// "already surfaced" were tracked as "newer than the latest timestamp seen
 /// so far", any such backfilled source would stay permanently invisible the
 /// moment a single newer comment from any other source had already advanced
 /// that watermark. Identity-based dedup has no such blind spot: a comment
-/// is new exactly when Fleet has never persisted its id before.
+/// is new exactly when Hangar has never persisted its id before.
 #[derive(Debug, Clone, PartialEq)]
 struct RawPrComment {
     external_id: String,
@@ -472,7 +491,7 @@ fn fetch_inline_review_comments(repo: &str, pr_number: i64) -> Result<Vec<RawPrC
 }
 
 /// The `gh`-authenticated user's own login, so their own follow-up comments
-/// on a PR Fleet opened never show up as "review feedback to act on" — best
+/// on a PR Hangar opened never show up as "review feedback to act on" — best
 /// effort, `None` (no filtering) if `gh api user` fails for any reason.
 fn fetch_gh_login() -> Option<String> {
     let output = gh_output(None, &["api", "user", "--jq", ".login"]).ok()?;
@@ -730,9 +749,10 @@ fn mark_comments_resolved(db: &DbConnection, ids: &[String], resolution: &str) -
 fn fetch_pull_request_for_comment(db: &DbConnection, comment_id: &str) -> Result<Option<PullRequestInfo>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     conn.query_row(
-        "SELECT pr.id, pr.session_id, pr.repo_owner, pr.repo_name, pr.number, pr.url, pr.state, pr.last_comment_seen_at, pr.created_at, pr.last_check_error, pr.last_seen_updated_at, pr.head_branch
-         FROM pull_requests pr JOIN pr_review_comments c ON c.pull_request_id = pr.id
-         WHERE c.id = ?1",
+        &format!(
+            "SELECT {} FROM pull_requests pr JOIN pr_review_comments c ON c.pull_request_id = pr.id WHERE c.id = ?1",
+            pr_columns_from("pr")
+        ),
         params![comment_id],
         row_to_pull_request,
     )
@@ -740,23 +760,32 @@ fn fetch_pull_request_for_comment(db: &DbConnection, comment_id: &str) -> Result
     .map_err(|e| e.to_string())
 }
 
-/// Finds (or creates) the session that should actually receive a PR's
-/// review feedback — one genuinely checked out on that PR's real branch,
-/// not just whatever session happens to be tied to the row (a project with
-/// several *discovered* PRs shares one arbitrary anchor session — see
-/// `fetch_pull_request`'s doc comment). Same shape Devin/Cursor/Copilot's
-/// coding agents use: a dedicated worktree on the PR's own branch, so the
-/// agent has the real diff and can push straight back to update it.
+/// What a worktree session gets when the PR has no session of its own to
+/// inherit from — a PR somebody else opened, or one discovered on a project
+/// that has never run a session here.
+const DEFAULT_PR_SESSION_EFFORT: &str = "high";
+const DEFAULT_PR_SESSION_MODE: &str = "ask_edits";
+
+/// Finds (or creates) the session whose worktree is genuinely checked out on
+/// this PR's branch — what both "send the comments to a terminal" and "review
+/// this PR" need. Same shape Devin/Cursor/Copilot's coding agents use: a
+/// dedicated worktree on the PR's own branch, so the agent has the real diff
+/// and can push straight back to update it.
 ///
-/// 1. If the anchor session is already on this exact branch (true for any
-///    PR Fleet itself opened — it created that branch), reuse it, free.
+/// 1. If the PR's own session is already on this exact branch (true for any
+///    PR Hangar itself opened — it created that branch), reuse it, free.
 /// 2. Else, if some other session in the project is already on this branch
-///    (e.g. a previous "Send to agent" for this same PR already made one),
-///    reuse that.
+///    (e.g. a previous review of this same PR already made one), reuse that.
 /// 3. Else, create a real subsession: fetch the branch for real and add a
 ///    worktree on it, exactly like `create_subsession` does for a brand new
 ///    branch — just checking out one that already exists instead.
-fn resolve_session_for_pr_branch<R: Runtime>(app: &AppHandle<R>, db: &DbConnection, pr: &PullRequestInfo) -> Result<String, String> {
+///
+/// The project comes from the PR itself, not from a session: a PR opened by
+/// someone else has no session at all, which is exactly the case steps 2 and 3
+/// exist to serve. `account_id` is the account the new worktree session is
+/// recorded against — the one the user picked, since for a stranger's PR there
+/// is no previous choice to inherit.
+fn resolve_session_for_pr_branch<R: Runtime>(app: &AppHandle<R>, db: &DbConnection, pr: &PullRequestInfo, account_id: &str) -> Result<String, String> {
     let head_branch = match &pr.head_branch {
         Some(b) if !b.is_empty() => b.clone(),
         _ => {
@@ -777,51 +806,72 @@ fn resolve_session_for_pr_branch<R: Runtime>(app: &AppHandle<R>, db: &DbConnecti
         }
     };
 
-    let (project_id, project_path, anchor_account_id, anchor_model, anchor_effort, anchor_mode, anchor_worktree_branch): (
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        Option<String>,
-    ) = {
+    let project_id = pr.project_id.clone();
+    let project_path: String = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
-        conn.query_row(
-            "SELECT p.id, p.path, s.account_id, s.model, s.effort, s.mode, s.worktree_branch
-             FROM sessions s JOIN projects p ON p.id = s.project_id
-             WHERE s.id = ?1",
-            params![pr.session_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
-        )
-        .map_err(|e| format!("anchor session lookup failed: {e}"))?
+        conn.query_row("SELECT path FROM projects WHERE id = ?1", params![project_id], |row| row.get(0))
+            .map_err(|e| format!("the PR's project lookup failed: {e}"))?
+    };
+
+    // The PR's own session, when it has one. Gives two things: the branch it's
+    // already on (step 1), and the model/effort/mode a worktree cut for this PR
+    // should inherit. Absent for anything discovered, which is where the
+    // defaults come in — a session row needs values for columns the terminal
+    // itself never reads, since the CLI owns model and mode once it's running.
+    let anchor: Option<(String, String, String, Option<String>)> = match &pr.session_id {
+        Some(session_id) => {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            conn.query_row(
+                "SELECT model, effort, mode, worktree_branch FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+        }
+        None => None,
+    };
+    let anchor_worktree_branch = anchor.as_ref().and_then(|(_, _, _, branch)| branch.clone());
+    let (session_model, session_effort, session_mode) = match &anchor {
+        Some((model, effort, mode, _)) => (model.clone(), effort.clone(), mode.clone()),
+        None => (String::new(), DEFAULT_PR_SESSION_EFFORT.to_string(), DEFAULT_PR_SESSION_MODE.to_string()),
     };
 
     // A local branch by the same name as `head_branch` might already be
     // checked out *anywhere* touching this repo — the user's own primary
     // clone (very plausibly the exact case if they're actively working on
-    // this PR outside Fleet), another Fleet worktree, anything. Git refuses
+    // this PR outside Hangar), another Hangar worktree, anything. Git refuses
     // to check out the same local branch name in two places at once, so
-    // this Fleet-owned fallback name (deterministic from the PR number, so
+    // this Hangar-owned fallback name (deterministic from the PR number, so
     // it's the same every time and safely re-discoverable in step 2) only
     // gets used when the real name turns out to be unsafe — see the
     // `local_branch_exists` check below, right before the worktree is
     // actually created.
-    let local_review_branch = format!("fleet/pr-{}-review", pr.number);
+    let local_review_branch = format!("hangar/pr-{}-review", pr.number);
+    // What the pre-rename build would have called the same branch. Only ever
+    // matched, never created: a review worktree set up before the rename must
+    // still be found and reused instead of a second one being cut for the
+    // same PR (which then fights it over the branch).
+    let legacy_review_branch = format!("fleet/pr-{}-review", pr.number);
 
-    if anchor_worktree_branch.as_deref() == Some(head_branch.as_str()) || anchor_worktree_branch.as_deref() == Some(local_review_branch.as_str()) {
-        return Ok(pr.session_id.clone());
+    if let Some(session_id) = &pr.session_id {
+        if anchor_worktree_branch.as_deref() == Some(head_branch.as_str())
+            || anchor_worktree_branch.as_deref() == Some(local_review_branch.as_str())
+            || anchor_worktree_branch.as_deref() == Some(legacy_review_branch.as_str())
+        {
+            return Ok(session_id.clone());
+        }
     }
 
     {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         // A previous "Send to agent" for this same PR could have landed on
-        // either name, depending on whether there was a conflict at the
-        // time — check both.
+        // any of the names, depending on whether there was a conflict at the
+        // time and whether it ran before or after the rename — check all.
         if let Some(existing) = conn
             .query_row(
-                "SELECT id FROM sessions WHERE project_id = ?1 AND worktree_branch IN (?2, ?3) ORDER BY started_at DESC LIMIT 1",
-                params![project_id, head_branch, local_review_branch],
+                "SELECT id FROM sessions WHERE project_id = ?1 AND worktree_branch IN (?2, ?3, ?4) ORDER BY started_at DESC LIMIT 1",
+                params![project_id, head_branch, local_review_branch, legacy_review_branch],
                 |row| row.get::<_, String>(0),
             )
             .optional()
@@ -833,17 +883,17 @@ fn resolve_session_for_pr_branch<R: Runtime>(app: &AppHandle<R>, db: &DbConnecti
 
     let worktree_dir = unique_worktree_dir(&project_path, &format!("pr-{}", pr.number));
     let project_dir = Path::new(&project_path);
-    // Same `.fleet/worktrees/...` location `create_subsession` uses — needs
+    // Same `.hangar/worktrees/...` location `create_subsession` uses — needs
     // the same gitignore safeguard so it doesn't show up as untracked
     // clutter (or worse, get accidentally staged) in the project's own
     // `git status` the first time this runs.
-    ensure_fleet_dir_ignored(&project_path);
+    ensure_worktree_dir_ignored(&project_path);
 
     // Fetching into a *remote-tracking* ref (no local branch name involved)
     // is never blocked by anything being checked out — only creating/moving
     // a local branch ref is. Prefer checking the worktree out on the PR's
     // own branch name when nothing local already claims that name anywhere
-    // in the repo; only fall back to the Fleet-owned name when there'd be
+    // in the repo; only fall back to the Hangar-owned name when there'd be
     // an actual conflict, so the common case shows the PR's real branch
     // instead of always inventing one.
     git_capture(project_dir, &["fetch", "origin", &head_branch])?;
@@ -874,10 +924,10 @@ fn resolve_session_for_pr_branch<R: Runtime>(app: &AppHandle<R>, db: &DbConnecti
                 pr.session_id,
                 worktree_dir.to_string_lossy().to_string(),
                 chosen_branch,
-                anchor_account_id,
-                anchor_model,
-                anchor_effort,
-                anchor_mode,
+                account_id,
+                session_model,
+                session_effort,
+                session_mode,
                 now,
             ],
         )
@@ -891,6 +941,37 @@ fn resolve_session_for_pr_branch<R: Runtime>(app: &AppHandle<R>, db: &DbConnecti
     );
 
     Ok(new_session_id)
+}
+
+/// The account a PR's work should run under: the one the user picked, else the
+/// one its own session already uses, else the project's most recent session's.
+///
+/// The chain matters because the two ends are different situations. On your own
+/// PR there is always something to inherit and asking would be noise; on a PR
+/// somebody else opened there is nothing at all, so the choice has to come from
+/// the caller — which is why the review button carries an account picker.
+fn account_for_pr(db: &DbConnection, pr: &PullRequestInfo, chosen: Option<String>) -> Result<String, String> {
+    if let Some(account_id) = chosen {
+        return Ok(account_id);
+    }
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    if let Some(session_id) = &pr.session_id {
+        if let Some(account_id) = conn
+            .query_row("SELECT account_id FROM sessions WHERE id = ?1", params![session_id], |row| row.get::<_, String>(0))
+            .optional()
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(account_id);
+        }
+    }
+    conn.query_row(
+        "SELECT account_id FROM sessions WHERE project_id = ?1 ORDER BY started_at DESC LIMIT 1",
+        params![pr.project_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "no account to run this PR's worktree under — pick one, or start a session in this project first".to_string())
 }
 
 /// The one place new comments actually reach an agent — always an explicit
@@ -911,7 +992,8 @@ pub async fn send_pr_comments_to_session(app: AppHandle, comment_ids: Vec<String
             return Err("no matching comments to send".to_string());
         }
         let pr = fetch_pull_request_for_comment(&db, &comment_ids[0])?.ok_or_else(|| "comment has no linked PR".to_string())?;
-        let target_session_id = resolve_session_for_pr_branch(&app, &db, &pr)?;
+        let account_id = account_for_pr(&db, &pr, None)?;
+        let target_session_id = resolve_session_for_pr_branch(&app, &db, &pr, &account_id)?;
 
         let prompt = format_pr_comments_prompt(&comments);
         crate::commands::sessions::send_message(app.clone(), db.clone(), target_session_id.clone(), prompt)?;
@@ -931,12 +1013,19 @@ fn to_single_line(prompt: &str) -> String {
 
 /// Same as `send_pr_comments_to_session`, but the review feedback lands in a
 /// real **interactive** terminal instead of a headless turn: a worktree on the
-/// PR's own branch (via `resolve_session_for_pr_branch`, unchanged) under the
-/// project's account, running `claude '<the comments>'` so Claude Code opens
-/// already working on them. This is the terminal-first replacement for
-/// "Send to agent". Returns the opened terminal.
+/// PR's own branch (via `resolve_session_for_pr_branch`, unchanged) running
+/// `claude '<the comments>'` so Claude Code opens already working on them. This
+/// is the terminal-first replacement for "Send to agent". Returns the opened
+/// terminal. `account_id` is the account the user picked; `None` keeps the old
+/// behavior of inheriting whatever the PR's own session runs under.
 #[tauri::command]
-pub async fn send_pr_comments_to_terminal(app: AppHandle, comment_ids: Vec<String>, cols: u16, rows: u16) -> Result<crate::terminals::TerminalInfo, String> {
+pub async fn send_pr_comments_to_terminal(
+    app: AppHandle,
+    comment_ids: Vec<String>,
+    account_id: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> Result<crate::terminals::TerminalInfo, String> {
     crate::blocking::run_blocking(move || {
         let db = app.state::<DbConnection>();
         let comments = fetch_comments_by_ids(&db, &comment_ids)?;
@@ -946,14 +1035,10 @@ pub async fn send_pr_comments_to_terminal(app: AppHandle, comment_ids: Vec<Strin
         let pr = fetch_pull_request_for_comment(&db, &comment_ids[0])?.ok_or_else(|| "comment has no linked PR".to_string())?;
 
         // Reuses the exact worktree-on-the-PR-branch resolution the session
-        // path uses — the container session carries the worktree path and the
-        // project's account, which the terminal then runs under.
-        let target_session_id = resolve_session_for_pr_branch(&app, &db, &pr)?;
-        let account_id: String = {
-            let conn = db.0.lock().map_err(|e| e.to_string())?;
-            conn.query_row("SELECT account_id FROM sessions WHERE id = ?1", params![target_session_id], |row| row.get(0))
-                .map_err(|e| format!("could not read the PR worktree's account: {e}"))?
-        };
+        // path uses — the container session carries the worktree path, and the
+        // terminal then runs under the chosen account.
+        let account_id = account_for_pr(&db, &pr, account_id)?;
+        let target_session_id = resolve_session_for_pr_branch(&app, &db, &pr, &account_id)?;
 
         let prompt = to_single_line(&format_pr_comments_prompt(&comments));
         let info = crate::terminals::open_terminal(
@@ -961,13 +1046,62 @@ pub async fn send_pr_comments_to_terminal(app: AppHandle, comment_ids: Vec<Strin
             crate::terminals::TerminalTarget { kind: crate::terminals::TargetKind::Session, id: target_session_id },
             Some(account_id),
             Some(crate::terminals::InitCommand::Start),
-            None, // let Fleet mint the session id
+            None, // let Hangar mint the session id
             Some(prompt),
             cols,
             rows,
         )?;
         mark_comments_resolved(&db, &comment_ids, "sent")?;
         Ok(info)
+    })
+    .await?
+}
+
+/// The prompt Claude Code opens on when you send a PR to be reviewed.
+///
+/// Pure so the wording is testable, and deliberately explicit about **not
+/// publishing**: the worktree has a real remote and `gh` is authenticated, so
+/// an agent that decides to be helpful could comment on a stranger's PR in your
+/// name. Posting a review is a message to another person — it's the user's to
+/// send, from the terminal, once they've read what the agent found.
+fn format_pr_review_prompt(pr: &PullRequestInfo) -> String {
+    let title = pr.title.clone().unwrap_or_else(|| format!("PR #{}", pr.number));
+    let author = pr.author_login.clone().unwrap_or_else(|| "someone else".to_string());
+    let base = pr.base_branch.clone().unwrap_or_else(|| "the base branch".to_string());
+    format!(
+        "Review pull request #{} of {}/{} — \"{title}\", opened by {author}. \
+         This worktree is checked out on the PR's branch; read the diff against `origin/{base}` and review it: \
+         correctness bugs first, then anything risky or unclear. \
+         Do not push, comment, or post a review — just tell me what you find.",
+        pr.number, pr.repo_owner, pr.repo_name
+    )
+}
+
+/// Opens an interactive terminal to review a PR — the point of showing other
+/// people's PRs at all. Cuts (or reuses) a worktree on the PR's branch exactly
+/// like the comments path, under the account the user picked, with Claude Code
+/// already reading the diff.
+///
+/// Takes a PR id rather than a session id: a PR someone else opened has no
+/// session, which is precisely the case this exists for.
+#[tauri::command]
+pub async fn open_pr_review_terminal(app: AppHandle, pr_id: String, account_id: String, cols: u16, rows: u16) -> Result<crate::terminals::TerminalInfo, String> {
+    crate::blocking::run_blocking(move || {
+        let db = app.state::<DbConnection>();
+        let pr = fetch_pull_request_by_id(&db, &pr_id)?.ok_or_else(|| format!("no tracked PR with id {pr_id}"))?;
+        let account_id = account_for_pr(&db, &pr, Some(account_id))?;
+        let target_session_id = resolve_session_for_pr_branch(&app, &db, &pr, &account_id)?;
+
+        crate::terminals::open_terminal(
+            app.clone(),
+            crate::terminals::TerminalTarget { kind: crate::terminals::TargetKind::Session, id: target_session_id },
+            Some(account_id),
+            Some(crate::terminals::InitCommand::Start),
+            None, // let Hangar mint the session id
+            Some(to_single_line(&format_pr_review_prompt(&pr))),
+            cols,
+            rows,
+        )
     })
     .await?
 }
@@ -979,7 +1113,7 @@ pub fn dismiss_pr_comments(db: State<DbConnection>, comment_ids: Vec<String>) ->
     mark_comments_resolved(&db, &comment_ids, "dismissed")
 }
 
-/// Every open PR Fleet is tracking, grouped by project, each with its still-
+/// Every open PR Hangar is tracking, grouped by project, each with its still-
 /// unresolved review comments (if any) — the PR review inbox screen's one
 /// data source. Reads straight from the local database; it does NOT itself
 /// discover new PRs or re-check GitHub (`check_all_open_prs_now`/the
@@ -996,55 +1130,75 @@ fn list_pr_review_inbox_impl(db: &DbConnection) -> Result<Vec<crate::models::Pro
     use crate::models::{PrInboxEntry, ProjectPrInbox};
 
     let conn = db.0.lock().map_err(|e| e.to_string())?;
+    // The project comes from the PR's own `project_id`, and the session is a
+    // LEFT JOIN: a PR opened by someone else has no session, and joining
+    // through one is what used to make it unshowable.
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT p.id, p.name, s.id, s.name,
-                    pr.id, pr.session_id, pr.repo_owner, pr.repo_name, pr.number, pr.url, pr.state, pr.last_comment_seen_at, pr.created_at, pr.last_check_error, pr.head_branch,
+                    {},
                     c.id, c.author, c.body, c.comment_created_at, c.path, c.line
              FROM pull_requests pr
-             JOIN sessions s ON s.id = pr.session_id
-             JOIN projects p ON p.id = s.project_id
+             JOIN projects p ON p.id = pr.project_id
+             LEFT JOIN sessions s ON s.id = pr.session_id
              LEFT JOIN pr_review_comments c ON c.pull_request_id = pr.id AND c.resolved_at IS NULL
              WHERE pr.state = 'open'
-             ORDER BY p.name, pr.created_at, c.comment_created_at",
-        )
+             ORDER BY p.name, pr.relation, pr.created_at, c.comment_created_at",
+            pr_columns_from("pr")
+        ))
         .map_err(|e| e.to_string())?;
 
     struct Row {
         project_id: String,
         project_name: String,
-        session_id: String,
-        session_name: String,
+        session_id: Option<String>,
+        session_name: Option<String>,
         pull_request: PullRequestInfo,
         comment: Option<PrComment>,
     }
+    // `PR_COLUMNS` starts at index 4 here (project id/name and session id/name
+    // come first), and the comment columns follow it.
+    const PR_AT: usize = 4;
+    let comment_at = PR_AT + PR_COLUMNS.split(", ").count();
     let rows: Vec<Row> = stmt
         .query_map([], |row| {
-            let comment_id: Option<String> = row.get(15)?;
+            let comment_id: Option<String> = row.get(comment_at)?;
             Ok(Row {
                 project_id: row.get(0)?,
                 project_name: row.get(1)?,
                 session_id: row.get(2)?,
                 session_name: row.get(3)?,
                 pull_request: PullRequestInfo {
-                    id: row.get(4)?,
-                    session_id: row.get(5)?,
-                    repo_owner: row.get(6)?,
-                    repo_name: row.get(7)?,
-                    number: row.get(8)?,
-                    url: row.get(9)?,
-                    state: row.get(10)?,
-                    last_comment_seen_at: row.get(11)?,
-                    created_at: row.get(12)?,
-                    last_check_error: row.get(13)?,
+                    id: row.get(PR_AT)?,
+                    project_id: row.get(PR_AT + 1)?,
+                    session_id: row.get(PR_AT + 2)?,
+                    repo_owner: row.get(PR_AT + 3)?,
+                    repo_name: row.get(PR_AT + 4)?,
+                    number: row.get(PR_AT + 5)?,
+                    url: row.get(PR_AT + 6)?,
+                    state: row.get(PR_AT + 7)?,
+                    last_comment_seen_at: row.get(PR_AT + 8)?,
+                    created_at: row.get(PR_AT + 9)?,
+                    last_check_error: row.get(PR_AT + 10)?,
                     // Purely an internal freshness cache for check_pr_comments_for's
                     // fast-path decision — not needed for display, and skipped
                     // from serialization anyway.
                     last_seen_updated_at: None,
-                    head_branch: row.get(14)?,
+                    head_branch: row.get(PR_AT + 12)?,
+                    base_branch: row.get(PR_AT + 13)?,
+                    title: row.get(PR_AT + 14)?,
+                    author_login: row.get(PR_AT + 15)?,
+                    relation: row.get(PR_AT + 16)?,
                 },
                 comment: match comment_id {
-                    Some(id) => Some(PrComment { id, author: row.get(16)?, body: row.get(17)?, created_at: row.get(18)?, path: row.get(19)?, line: row.get(20)? }),
+                    Some(id) => Some(PrComment {
+                        id,
+                        author: row.get(comment_at + 1)?,
+                        body: row.get(comment_at + 2)?,
+                        created_at: row.get(comment_at + 3)?,
+                        path: row.get(comment_at + 4)?,
+                        line: row.get(comment_at + 5)?,
+                    }),
                     None => None,
                 },
             })
@@ -1084,7 +1238,7 @@ fn list_pr_review_inbox_impl(db: &DbConnection) -> Result<Vec<crate::models::Pro
 
 /// Manual "check now" for the PR review inbox screen — runs the same real
 /// `gh` discovery + comment check the background poller does, immediately:
-/// finds any open PR of yours on a known project's repo that Fleet isn't
+/// finds any open PR of yours on a known project's repo that Hangar isn't
 /// tracking yet, then checks every tracked open PR for new comments (not
 /// just the one session `check_pr_comments` targets). The caller re-fetches
 /// `list_pr_review_inbox` afterward to see the result.
@@ -1097,20 +1251,24 @@ pub async fn check_all_open_prs_now(app: AppHandle) -> Result<(), String> {
 }
 
 /// Finds open PRs authored by the logged-in `gh` user on one project's repo
-/// that Fleet doesn't know about yet (created outside Fleet's own "Create
+/// that Hangar doesn't know about yet (created outside Hangar's own "Create
 /// PR" button — by hand, or by an agent running `gh` directly inside a
 /// turn) and starts tracking them, so the review inbox isn't limited to PRs
-/// Fleet itself opened. Anchored to the project's most recently started
+/// Hangar itself opened. Anchored to the project's most recently started
 /// session purely as an FK/"open session" target — not necessarily the
 /// session that actually produced the PR's branch. Silently no-ops for a
 /// project with no git remote or no session yet; errors are the caller's to
 /// log, not surface, since this runs opportunistically alongside a real
 /// check, not as a user-facing action of its own.
-fn discover_open_prs_for_project(db: &DbConnection, project_id: &str, project_path: &str) -> Result<(), String> {
+fn discover_open_prs_for_project(db: &DbConnection, project_id: &str, project_path: &str, self_login: Option<&str>) -> Result<(), String> {
     let cwd = Path::new(project_path);
     let (owner, repo) = detect_repo_owner_and_name(cwd)?;
     let repo_full = format!("{owner}/{repo}");
-    let output = gh_output(None, &["pr", "list", "--repo", &repo_full, "--state", "open", "--author", "@me", "--json", "number,url,createdAt,headRefName"])?;
+    let limit = DISCOVERY_PR_LIMIT.to_string();
+    let output = gh_output(
+        None,
+        &["pr", "list", "--repo", &repo_full, "--state", "open", "--limit", &limit, "--json", "number,url,createdAt,headRefName,baseRefName,title,author,assignees"],
+    )?;
     if !output.status.success() {
         return Err(format!("gh pr list failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
     }
@@ -1119,39 +1277,116 @@ fn discover_open_prs_for_project(db: &DbConnection, project_id: &str, project_pa
     if prs.is_empty() {
         return Ok(());
     }
+    let review_requested = fetch_review_requested_numbers(&repo_full)?;
+    let still_open: Vec<i64> = prs.iter().filter_map(|pr| pr.get("number").and_then(|v| v.as_i64())).collect();
 
     let conn = db.0.lock().map_err(|e| e.to_string())?;
+    prune_closed_foreign_prs(&conn, &owner, &repo, &still_open)?;
     for pr in prs {
         let Some(number) = pr.get("number").and_then(|v| v.as_i64()) else { continue };
-        let already_tracked = conn
-            .query_row("SELECT 1 FROM pull_requests WHERE repo_owner = ?1 AND repo_name = ?2 AND number = ?3", params![owner, repo, number], |_| Ok(()))
-            .optional()
-            .map_err(|e| e.to_string())?
-            .is_some();
-        if already_tracked {
+        let author = pr.get("author").and_then(|a| a.get("login")).and_then(|v| v.as_str()).map(|s| s.to_string());
+        let relation = classify_pr(author.as_deref(), self_login, review_requested.contains(&number), assignee_logins(&pr).iter().any(|a| Some(a.as_str()) == self_login));
+        let title = pr.get("title").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let head_branch = pr.get("headRefName").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let base_branch = pr.get("baseRefName").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+        // Everything except `relation` is written once at discovery, but the
+        // relation is re-evaluated every pass: being asked to review a PR that
+        // was nothing to you yesterday is the normal course of a week. Title
+        // and branches refresh too — a PR gets retitled and retargeted.
+        let updated = conn
+            .execute(
+                "UPDATE pull_requests SET relation = ?4, author_login = ?5, title = ?6, head_branch = COALESCE(?7, head_branch), base_branch = COALESCE(?8, base_branch)
+                 WHERE repo_owner = ?1 AND repo_name = ?2 AND number = ?3",
+                params![owner, repo, number, relation, author, title, head_branch, base_branch],
+            )
+            .map_err(|e| e.to_string())?;
+        if updated > 0 {
             continue;
         }
-        let Some(session_id) = conn
-            .query_row("SELECT id FROM sessions WHERE project_id = ?1 ORDER BY started_at DESC LIMIT 1", params![project_id], |row| row.get::<_, String>(0))
-            .optional()
-            .map_err(|e| e.to_string())?
-        else {
-            continue;
-        };
 
         let url = pr.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let created_at = pr.get("createdAt").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let head_branch = pr.get("headRefName").and_then(|v| v.as_str()).map(|s| s.to_string());
+        // No session: a discovered PR belongs to the project, and only a PR
+        // Hangar opened itself carries the session that produced it.
         conn.execute(
-            "INSERT INTO pull_requests (id, session_id, repo_owner, repo_name, number, url, state, created_at, head_branch) VALUES (?1,?2,?3,?4,?5,?6,'open',?7,?8)",
-            params![Uuid::new_v4().to_string(), session_id, owner, repo, number, url, created_at, head_branch],
+            "INSERT INTO pull_requests (id, project_id, session_id, repo_owner, repo_name, number, url, state, created_at, head_branch, base_branch, title, author_login, relation)
+             VALUES (?1,?2,NULL,?3,?4,?5,?6,'open',?7,?8,?9,?10,?11,?12)",
+            params![Uuid::new_v4().to_string(), project_id, owner, repo, number, url, created_at, head_branch, base_branch, title, author, relation],
         )
         .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
-/// Runs discovery for every project Fleet knows about — best-effort, a
+/// Drops tracked PRs that aren't yours and are no longer open on GitHub.
+///
+/// Your own PRs are checked every pass and cleaned up when they merge, but
+/// nothing polls the other two tabs (see `open_prs_to_check`) — without this a
+/// stranger's PR would sit in the list forever after being merged. Discovery's
+/// own answer is the authority: `gh pr list --state open` *is* the set of open
+/// PRs, so anything else tracked for this repo is closed. No extra `gh` call.
+///
+/// Skipped when the list came back full: at the limit there may be open PRs
+/// that simply didn't fit, and deleting those would churn them in and out on
+/// every pass.
+fn prune_closed_foreign_prs(conn: &rusqlite::Connection, owner: &str, repo: &str, still_open: &[i64]) -> Result<(), String> {
+    if still_open.len() >= DISCOVERY_PR_LIMIT {
+        return Ok(());
+    }
+    let placeholders = std::iter::repeat_n("?", still_open.len()).collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "DELETE FROM pull_requests WHERE repo_owner = ?1 AND repo_name = ?2 AND relation != 'mine' AND number NOT IN ({placeholders})"
+    );
+    let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(owner.to_string()), Box::new(repo.to_string())];
+    args.extend(still_open.iter().map(|n| Box::new(*n) as Box<dyn rusqlite::ToSql>));
+    conn.execute(&sql, rusqlite::params_from_iter(args.iter().map(|a| a.as_ref()))).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// How many open PRs a single repo contributes. A busy repo's full list isn't
+/// a work queue, and every extra row is one more card on a screen whose point
+/// is deciding what to look at next. `gh`'s own default is 30.
+const DISCOVERY_PR_LIMIT: usize = 50;
+
+/// The PR numbers on this repo where my review is requested — asked as a
+/// *search* rather than read off each PR's `reviewRequests`, because GitHub
+/// resolves team-based requests there and Hangar has no cheap way to know which
+/// teams the user belongs to.
+fn fetch_review_requested_numbers(repo_full: &str) -> Result<HashSet<i64>, String> {
+    let output = gh_output(None, &["pr", "list", "--repo", repo_full, "--state", "open", "--search", "review-requested:@me", "--json", "number"])?;
+    if !output.status.success() {
+        return Err(format!("gh pr list --search review-requested failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    let json: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+    Ok(json.as_array().map(|rows| rows.iter().filter_map(|r| r.get("number").and_then(|v| v.as_i64())).collect()).unwrap_or_default())
+}
+
+fn assignee_logins(pr: &Value) -> Vec<String> {
+    pr.get("assignees")
+        .and_then(|v| v.as_array())
+        .map(|list| list.iter().filter_map(|a| a.get("login").and_then(|v| v.as_str()).map(|s| s.to_string())).collect())
+        .unwrap_or_default()
+}
+
+/// What an open PR is to the logged-in user. Pure, because this is the rule the
+/// whole three-tab split rests on and it should be readable without a `gh` call.
+///
+/// With no known login (a `gh api user` that failed), everything falls to
+/// `other` except what GitHub itself flagged as review-requested: guessing
+/// "mine" without knowing who I am would put strangers' PRs in the tab whose
+/// comments get polled and badged.
+fn classify_pr(author: Option<&str>, self_login: Option<&str>, review_requested: bool, assigned_to_me: bool) -> &'static str {
+    if self_login.is_some() && author.is_some() && author == self_login {
+        "mine"
+    } else if review_requested || assigned_to_me {
+        "review"
+    } else {
+        "other"
+    }
+}
+
+/// Runs discovery for every project Hangar knows about — best-effort, a
 /// project with no git remote or a `gh` error just gets skipped and logged.
 fn discover_open_prs_for_all_projects(db: &DbConnection) {
     let projects: Vec<(String, String)> = {
@@ -1160,8 +1395,10 @@ fn discover_open_prs_for_all_projects(db: &DbConnection) {
         let Ok(rows) = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))) else { return };
         rows.filter_map(Result::ok).collect()
     };
+    // Once per pass, not once per project: it's the same answer for all of them.
+    let self_login = fetch_gh_login();
     for (project_id, project_path) in projects {
-        if let Err(e) = discover_open_prs_for_project(db, &project_id, &project_path) {
+        if let Err(e) = discover_open_prs_for_project(db, &project_id, &project_path, self_login.as_deref()) {
             log::error!("discover_open_prs_for_project({project_id}): {e}");
         }
     }
@@ -1171,18 +1408,32 @@ fn discover_open_prs_for_all_projects(db: &DbConnection) {
 /// and for any with new comments, emits an event the UI can toast/badge on
 /// and fires the opt-in macOS notification. Never sends anything to an
 /// agent by itself.
+/// The PRs one poll pass actually checks for new comments.
+///
+/// By PR id, not session_id — a session can have several open PRs, and keying
+/// this by session_id would silently check only one of them, forever.
+///
+/// **Only `mine`**, and that's the line that keeps this affordable. On someone
+/// else's PR the comments are other people reviewing *their* code, not a queue
+/// of yours; and now that discovery brings in every open PR of every project's
+/// repo, checking them all would be a `gh` call per PR per pass — dozens, every
+/// five minutes, to badge things nobody asked to be notified about.
+fn open_prs_to_check(conn: &rusqlite::Connection) -> Vec<(String, Option<String>)> {
+    let Ok(mut stmt) = conn.prepare("SELECT id, session_id FROM pull_requests WHERE state = 'open' AND relation = 'mine' ORDER BY created_at") else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
+}
+
 pub fn poll_all_open_prs<R: Runtime>(app: &AppHandle<R>) {
     let Some(db) = app.try_state::<DbConnection>() else { return };
     discover_open_prs_for_all_projects(&db);
-    // By PR id, not session_id — a project can have several open PRs
-    // anchored to the very same session (see `fetch_pull_request`'s doc
-    // comment), and keying this loop by session_id would silently check
-    // only one of them, forever.
-    let prs: Vec<(String, String)> = {
+    let prs = {
         let Ok(conn) = db.0.lock() else { return };
-        let Ok(mut stmt) = conn.prepare("SELECT id, session_id FROM pull_requests WHERE state = 'open'") else { return };
-        let Ok(rows) = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))) else { return };
-        rows.filter_map(Result::ok).collect()
+        open_prs_to_check(&conn)
     };
     for (pr_id, session_id) in prs {
         match check_pr_comments_for_pr_id(&db, &pr_id) {
@@ -1192,7 +1443,7 @@ pub fn poll_all_open_prs<R: Runtime>(app: &AppHandle<R>) {
                     app,
                     |s| s.notify_pr_comments,
                     "New PR comments",
-                    &format!("{} new comment(s) on a PR Fleet opened", comments.len()),
+                    &format!("{} new comment(s) on a PR Hangar opened", comments.len()),
                 );
             }
             Ok(_) => {}
@@ -1208,14 +1459,14 @@ mod tests {
 
     #[test]
     fn parse_owner_repo_from_url_handles_https_and_ssh_forms() {
-        assert_eq!(parse_owner_repo_from_url("https://github.com/killua15/FleetAgent.git"), Some(("killua15".to_string(), "FleetAgent".to_string())));
-        assert_eq!(parse_owner_repo_from_url("https://github.com/killua15/FleetAgent"), Some(("killua15".to_string(), "FleetAgent".to_string())));
-        assert_eq!(parse_owner_repo_from_url("git@github.com:killua15/FleetAgent.git"), Some(("killua15".to_string(), "FleetAgent".to_string())));
+        assert_eq!(parse_owner_repo_from_url("https://github.com/killua15/Hangar.git"), Some(("killua15".to_string(), "Hangar".to_string())));
+        assert_eq!(parse_owner_repo_from_url("https://github.com/killua15/Hangar"), Some(("killua15".to_string(), "Hangar".to_string())));
+        assert_eq!(parse_owner_repo_from_url("git@github.com:killua15/Hangar.git"), Some(("killua15".to_string(), "Hangar".to_string())));
     }
 
     #[test]
     fn parse_owner_repo_from_url_rejects_non_github_urls() {
-        assert_eq!(parse_owner_repo_from_url("https://gitlab.com/killua15/FleetAgent.git"), None);
+        assert_eq!(parse_owner_repo_from_url("https://gitlab.com/killua15/Hangar.git"), None);
         assert_eq!(parse_owner_repo_from_url("not a url"), None);
     }
 
@@ -1233,7 +1484,7 @@ mod tests {
         assert!(body.contains("### Added"));
         assert!(!body.contains("### Modified"));
         assert!(!body.contains("### Removed"));
-        assert!(body.contains("_Opened by Fleet._"));
+        assert!(body.contains("_Opened by Hangar._"));
     }
 
     #[test]
@@ -1348,7 +1599,7 @@ mod tests {
         // persisted before — the exact bug this dedup strategy fixes: a
         // comment source that used to be invisible (e.g. inline comments,
         // before that support existed) must still surface once it's finally
-        // fetched, even though its timestamp predates comments Fleet has
+        // fetched, even though its timestamp predates comments Hangar has
         // already seen and marked tracked.
         let all = vec![raw("old", "alice", "old one, never tracked before", "2026-01-01T00:00:00Z"), raw("new", "bob", "new one, already tracked", "2026-01-02T00:00:00Z")];
         let already_tracked = HashSet::from(["new".to_string()]);
@@ -1417,9 +1668,9 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO pull_requests (id, session_id, repo_owner, repo_name, number, url, state, created_at)
-             VALUES (?1,?2,'killua15','FleetAgent',1,'https://github.com/killua15/FleetAgent/pull/1','open','now')",
-            params![pr_id, session_id],
+            "INSERT INTO pull_requests (id, project_id, session_id, repo_owner, repo_name, number, url, state, relation, created_at)
+             VALUES (?1,?2,?3,'killua15','Hangar',1,'https://github.com/killua15/Hangar/pull/1','open','mine','now')",
+            params![pr_id, project_id, session_id],
         )
         .unwrap();
 
@@ -1438,29 +1689,40 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO pull_requests (id, session_id, repo_owner, repo_name, number, url, state, created_at)
-             VALUES (?1,?2,'killua15','FleetAgent',2,'https://github.com/killua15/FleetAgent/pull/2','open','now')",
-            params![pr_id, session_id],
+            "INSERT INTO pull_requests (id, project_id, session_id, repo_owner, repo_name, number, url, state, relation, created_at)
+             VALUES (?1,?2,?3,'killua15','Hangar',2,'https://github.com/killua15/Hangar/pull/2','open','mine','now')",
+            params![pr_id, project_id, session_id],
         )
         .unwrap();
     }
 
-    /// Adds a second open PR that reuses an *existing* session's id — the
-    /// exact shape `discover_open_prs_for_project` produces when a project
-    /// has several open PRs but only one session (every discovered PR
-    /// anchors to "the project's most recent session" as its FK target).
+    /// Adds another open PR sharing an existing session — the shape a project
+    /// gets when its one session opens several PRs.
     fn insert_open_pr_sharing_session(db: &DbConnection, session_id: &str, pr_id: &str, number: i64, created_at: &str) {
         let conn = db.0.lock().unwrap();
+        let project_id: String = conn.query_row("SELECT project_id FROM sessions WHERE id = ?1", params![session_id], |r| r.get(0)).unwrap();
         conn.execute(
-            "INSERT INTO pull_requests (id, session_id, repo_owner, repo_name, number, url, state, created_at)
-             VALUES (?1,?2,'killua15','FleetAgent',?3,?4,'open',?5)",
-            params![pr_id, session_id, number, format!("https://github.com/killua15/FleetAgent/pull/{number}"), created_at],
+            "INSERT INTO pull_requests (id, project_id, session_id, repo_owner, repo_name, number, url, state, relation, created_at)
+             VALUES (?1,?2,?3,'killua15','Hangar',?4,?5,'open','mine',?6)",
+            params![pr_id, project_id, session_id, number, format!("https://github.com/killua15/Hangar/pull/{number}"), created_at],
+        )
+        .unwrap();
+    }
+
+    /// A PR nobody here opened: no session, an author who isn't the user, and
+    /// a relation that puts it in one of the two new tabs.
+    fn insert_someone_elses_pr(db: &DbConnection, project_id: &str, pr_id: &str, number: i64, author: &str, relation: &str) {
+        let conn = db.0.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pull_requests (id, project_id, session_id, repo_owner, repo_name, number, url, state, title, author_login, relation, head_branch, base_branch, created_at)
+             VALUES (?1,?2,NULL,'killua15','Hangar',?3,?4,'open','Their change',?5,?6,'feat/theirs','main','now')",
+            params![pr_id, project_id, number, format!("https://github.com/killua15/Hangar/pull/{number}"), author, relation],
         )
         .unwrap();
     }
 
     /// The exact bug reported live: a project with three open PRs
-    /// discovered outside Fleet, all sharing the project's one session_id.
+    /// discovered outside Hangar, all sharing the project's one session_id.
     /// `fetch_pull_request` (session-keyed, `ORDER BY created_at DESC LIMIT
     /// 1`) can only ever reach the newest of them — `fetch_pull_request_by_id`
     /// (used by the poller/inbox "check now" path) must reach every one.
@@ -1601,6 +1863,175 @@ mod tests {
         assert_eq!(fetched[0].author, "alice");
     }
 
+    // -- other people's PRs -------------------------------------------------
+
+    #[test]
+    fn a_pr_is_mine_only_when_its_author_is_the_logged_in_user() {
+        assert_eq!(classify_pr(Some("killua15"), Some("killua15"), false, false), "mine");
+        assert_eq!(classify_pr(Some("alice"), Some("killua15"), false, false), "other");
+    }
+
+    #[test]
+    fn a_pr_asking_for_my_review_or_assigned_to_me_lands_in_the_review_tab() {
+        assert_eq!(classify_pr(Some("alice"), Some("killua15"), true, false), "review");
+        assert_eq!(classify_pr(Some("alice"), Some("killua15"), false, true), "review");
+    }
+
+    /// Being *asked* to review your own PR is a real GitHub state (a
+    /// co-author's request), but it's still your PR — the tab that polls for
+    /// comments is where it belongs.
+    #[test]
+    fn my_own_pr_stays_mine_even_when_a_review_is_requested_from_me() {
+        assert_eq!(classify_pr(Some("killua15"), Some("killua15"), true, true), "mine");
+    }
+
+    /// With `gh api user` failing there's no way to know which PRs are yours.
+    /// Guessing would put strangers' PRs in the tab that gets polled and
+    /// badged, so nothing is claimed as `mine`.
+    #[test]
+    fn without_a_known_login_nothing_is_claimed_as_mine() {
+        assert_eq!(classify_pr(Some("alice"), None, false, false), "other");
+        assert_eq!(classify_pr(Some("killua15"), None, false, false), "other");
+        assert_eq!(classify_pr(Some("alice"), None, true, false), "review", "GitHub's own review-requested answer still counts");
+    }
+
+    /// The whole point: a PR with no session behind it reaches the screen,
+    /// carrying who opened it and which tab it belongs to.
+    #[test]
+    fn the_inbox_lists_a_pr_nobody_here_opened() {
+        let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
+        insert_someone_elses_pr(&db, "proj1", "pr2", 2, "alice", "review");
+
+        let inbox = list_pr_review_inbox_impl(&db).unwrap();
+        assert_eq!(inbox.len(), 1, "both PRs belong to the same project");
+        let theirs = inbox[0].entries.iter().find(|e| e.pull_request.id == "pr2").expect("a session-less PR must still be listed");
+        assert_eq!(theirs.pull_request.author_login.as_deref(), Some("alice"));
+        assert_eq!(theirs.pull_request.relation, "review");
+        assert_eq!(theirs.session_id, None, "there is no session behind someone else's PR, and the entry must say so");
+        assert_eq!(theirs.session_name, None);
+    }
+
+    /// The cost guard. Discovery now brings in every open PR of the repo;
+    /// polling them all for comments would be dozens of `gh` calls every five
+    /// minutes for PRs whose comments aren't the user's to answer.
+    #[test]
+    fn only_my_own_prs_are_polled_for_comments() {
+        let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
+        insert_someone_elses_pr(&db, "proj1", "pr2", 2, "alice", "review");
+        insert_someone_elses_pr(&db, "proj1", "pr3", 3, "bob", "other");
+
+        let conn = db.0.lock().unwrap();
+        let checked: Vec<String> = open_prs_to_check(&conn).into_iter().map(|(id, _)| id).collect();
+        assert_eq!(checked, vec!["pr1".to_string()]);
+    }
+
+    /// Nothing polls other people's PRs, so discovery's own list is what
+    /// retires them: a merged PR of someone else's must stop being listed.
+    #[test]
+    fn a_foreign_pr_that_is_no_longer_open_is_dropped_on_the_next_discovery() {
+        let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
+        insert_someone_elses_pr(&db, "proj1", "pr2", 2, "alice", "review");
+        insert_someone_elses_pr(&db, "proj1", "pr3", 3, "bob", "other");
+
+        let conn = db.0.lock().unwrap();
+        // GitHub still lists #3; #2 has been merged since the last pass.
+        prune_closed_foreign_prs(&conn, "killua15", "Hangar", &[3]).unwrap();
+
+        let left: Vec<String> = conn
+            .prepare("SELECT id FROM pull_requests ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(left, vec!["pr1".to_string(), "pr3".to_string()], "only the merged foreign PR goes");
+    }
+
+    /// Your own PRs have their own lifecycle (checked every pass, deleted on
+    /// merge). Discovery must not delete one just because it fell outside the
+    /// repo's open list for a moment.
+    #[test]
+    fn pruning_never_touches_your_own_prs() {
+        let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
+        let conn = db.0.lock().unwrap();
+        prune_closed_foreign_prs(&conn, "killua15", "Hangar", &[]).unwrap();
+
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM pull_requests WHERE id = 'pr1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 1);
+    }
+
+    /// At the limit the list is a page, not the whole truth — pruning against
+    /// it would churn perfectly open PRs in and out on every pass.
+    #[test]
+    fn a_full_page_of_results_prunes_nothing() {
+        let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
+        insert_someone_elses_pr(&db, "proj1", "pr2", 2, "alice", "review");
+
+        let conn = db.0.lock().unwrap();
+        let full_page: Vec<i64> = (100..100 + DISCOVERY_PR_LIMIT as i64).collect();
+        prune_closed_foreign_prs(&conn, "killua15", "Hangar", &full_page).unwrap();
+
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM pull_requests WHERE id = 'pr2'", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 1, "a truncated list is not evidence that anything closed");
+    }
+
+    #[test]
+    fn the_review_prompt_names_the_pr_and_refuses_to_publish_anything() {
+        let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
+        insert_someone_elses_pr(&db, "proj1", "pr2", 2, "alice", "review");
+        let pr = fetch_pull_request_by_id(&db, "pr2").unwrap().unwrap();
+
+        let prompt = format_pr_review_prompt(&pr);
+        assert!(prompt.contains("#2"), "the agent must know which PR it's looking at");
+        assert!(prompt.contains("alice"));
+        assert!(prompt.contains("origin/main"), "a review is a diff against the base branch");
+        assert!(prompt.contains("Do not push, comment, or post a review"), "posting on someone's PR is the user's to send, not the agent's");
+    }
+
+    /// The account chain, end to end: what the user picked wins; with nothing
+    /// picked, the PR's own session decides; with no session, the project's
+    /// most recent one.
+    #[test]
+    fn the_account_for_a_pr_prefers_the_users_choice_then_the_session_then_the_project() {
+        let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
+        {
+            let conn = db.0.lock().unwrap();
+            conn.execute(
+                "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, status, created_at, updated_at)
+                 VALUES ('acc2','claude','sub','Other','work','','','acc2','healthy','now','now')",
+                [],
+            )
+            .unwrap();
+        }
+        let mine = fetch_pull_request_by_id(&db, "pr1").unwrap().unwrap();
+        assert_eq!(account_for_pr(&db, &mine, Some("acc2".to_string())).unwrap(), "acc2");
+        assert_eq!(account_for_pr(&db, &mine, None).unwrap(), "acc1", "my own PR's session already answers this");
+
+        insert_someone_elses_pr(&db, "proj1", "pr2", 2, "alice", "review");
+        let theirs = fetch_pull_request_by_id(&db, "pr2").unwrap().unwrap();
+        assert_eq!(account_for_pr(&db, &theirs, None).unwrap(), "acc1", "no session of its own — fall back to the project's most recent");
+        assert_eq!(account_for_pr(&db, &theirs, Some("acc2".to_string())).unwrap(), "acc2");
+    }
+
+    /// A project that has never run a session here has no account to inherit,
+    /// and a worktree session can't be created without one — so this must say
+    /// so rather than fail somewhere deeper with a foreign-key error.
+    #[test]
+    fn a_pr_on_a_project_with_no_sessions_asks_for_an_account_instead_of_guessing() {
+        let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
+        insert_someone_elses_pr(&db, "proj1", "pr2", 2, "alice", "other");
+        {
+            let conn = db.0.lock().unwrap();
+            conn.execute("DELETE FROM pull_requests WHERE id = 'pr1'", []).unwrap();
+            conn.execute("DELETE FROM sessions", []).unwrap();
+        }
+        let theirs = fetch_pull_request_by_id(&db, "pr2").unwrap().unwrap();
+
+        let err = account_for_pr(&db, &theirs, None).unwrap_err();
+        assert!(err.contains("pick one"), "the message has to point at the fix: {err}");
+        assert_eq!(account_for_pr(&db, &theirs, Some("acc1".to_string())).unwrap(), "acc1");
+    }
+
     #[test]
     fn resolve_session_for_pr_branch_reuses_anchor_session_when_branch_matches() {
         let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
@@ -1612,7 +2043,7 @@ mod tests {
         let pr = fetch_pull_request_by_id(&db, "pr1").unwrap().unwrap();
 
         let app = tauri::test::mock_app();
-        let session_id = resolve_session_for_pr_branch(app.handle(), &db, &pr).expect("should resolve without any gh/git calls");
+        let session_id = resolve_session_for_pr_branch(app.handle(), &db, &pr, "acc1").expect("should resolve without any gh/git calls");
         assert_eq!(session_id, "session-pr1", "the anchor session is already on the right branch — no need to create anything");
     }
 
@@ -1621,7 +2052,10 @@ mod tests {
         // `setup_db_with_open_pr` gives pr1 number=1, so the deterministic
         // local review branch a previous "Send to agent" would have created
         // *if the PR's real branch name was already taken at the time* is
-        // "fleet/pr-1-review" — the reuse lookup must find a session on
+        // "fleet/pr-1-review" — deliberately the *pre-rename* name, so this
+        // also covers the legacy branch still being reused after the rename
+        // instead of a second worktree being cut for the same PR. The reuse
+        // lookup must find a session on
         // this fallback name too, not just the PR's real `head_branch`.
         let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
         {
@@ -1637,7 +2071,7 @@ mod tests {
         let pr = fetch_pull_request_by_id(&db, "pr1").unwrap().unwrap();
 
         let app = tauri::test::mock_app();
-        let session_id = resolve_session_for_pr_branch(app.handle(), &db, &pr).expect("should resolve without any gh/git calls");
+        let session_id = resolve_session_for_pr_branch(app.handle(), &db, &pr, "acc1").expect("should resolve without any gh/git calls");
         assert_eq!(session_id, "other-session", "an existing session already on the PR's branch must be reused, not recreated");
     }
 
@@ -1673,7 +2107,7 @@ mod tests {
         app.manage(db);
         let db_state = app.state::<DbConnection>();
         let new_session_id =
-            resolve_session_for_pr_branch(app.handle(), &db_state, &pr).expect("should fetch the branch for real and create a linked worktree");
+            resolve_session_for_pr_branch(app.handle(), &db_state, &pr, "acc1").expect("should fetch the branch for real and create a linked worktree");
         assert_ne!(new_session_id, "session-pr1", "the anchor session isn't on this branch, so a new one must be created");
 
         let (worktree_path, worktree_branch, worktree_kind, parent_session_id): (String, String, String, Option<String>) = {
@@ -1690,7 +2124,7 @@ mod tests {
         assert_eq!(parent_session_id.as_deref(), Some("session-pr1"));
         assert!(Path::new(&worktree_path).join("pr_file.txt").is_file(), "the new worktree must actually be checked out on the PR's real branch content");
         let gitignore = std::fs::read_to_string(work_dir.join(".gitignore")).unwrap_or_default();
-        assert!(gitignore.contains(".fleet/"), "the project's .gitignore must cover the worktree folder so it's not untracked clutter");
+        assert!(gitignore.contains(".hangar/"), "the project's .gitignore must cover the worktree folder so it's not untracked clutter");
 
         let _ = std::fs::remove_dir_all(&remote_dir);
         let _ = std::fs::remove_dir_all(&work_dir);
@@ -1732,7 +2166,7 @@ mod tests {
         let app = tauri::test::mock_app();
         app.manage(db);
         let db_state = app.state::<DbConnection>();
-        let new_session_id = resolve_session_for_pr_branch(app.handle(), &db_state, &pr)
+        let new_session_id = resolve_session_for_pr_branch(app.handle(), &db_state, &pr, "acc1")
             .expect("must succeed even though feat/pr-branch is checked out in another worktree");
         assert_ne!(new_session_id, "session-pr1");
 
@@ -1740,9 +2174,9 @@ mod tests {
             let conn = db_state.0.lock().unwrap();
             conn.query_row("SELECT worktree_branch FROM sessions WHERE id = ?1", params![new_session_id], |row| row.get(0)).unwrap()
         };
-        assert_eq!(worktree_branch, "fleet/pr-1-review", "the real branch name is taken (exists locally), so it must fall back to Fleet's own name");
+        assert_eq!(worktree_branch, "hangar/pr-1-review", "the real branch name is taken (exists locally), so it must fall back to Hangar's own name");
         let gitignore = std::fs::read_to_string(work_dir.join(".gitignore")).unwrap_or_default();
-        assert!(gitignore.contains(".fleet/"), "the project's .gitignore must cover the worktree folder so it's not untracked clutter");
+        assert!(gitignore.contains(".hangar/"), "the project's .gitignore must cover the worktree folder so it's not untracked clutter");
 
         let _ = std::fs::remove_dir_all(&remote_dir);
         let _ = std::fs::remove_dir_all(&other_checkout);
@@ -1750,7 +2184,7 @@ mod tests {
     }
 
     fn make_temp_dir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("fleet-test-pr-{label}-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("hangar-test-pr-{label}-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -1765,8 +2199,8 @@ mod tests {
         let work_dir = make_temp_dir(&format!("{label}-work"));
         git_capture(&work_dir, &["init"]).unwrap();
         git_capture(&work_dir, &["checkout", "-b", "main"]).unwrap();
-        git_capture(&work_dir, &["config", "user.email", "fleet-test@example.com"]).unwrap();
-        git_capture(&work_dir, &["config", "user.name", "Fleet Test"]).unwrap();
+        git_capture(&work_dir, &["config", "user.email", "hangar-test@example.com"]).unwrap();
+        git_capture(&work_dir, &["config", "user.name", "Hangar Test"]).unwrap();
         std::fs::write(work_dir.join("README.md"), "hello").unwrap();
         git_capture(&work_dir, &["add", "-A"]).unwrap();
         git_capture(&work_dir, &["commit", "-m", "init"]).unwrap();
@@ -1792,13 +2226,13 @@ mod tests {
 
         let (branch, base) = prepare_branch_for_pr(&work_dir, "My Cool Session").expect("prepare_branch_for_pr should succeed");
         assert_eq!(base, "main");
-        assert_eq!(branch, "fleet/my-cool-session");
+        assert_eq!(branch, "hangar/my-cool-session");
 
         let current = git_capture(&work_dir, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap();
-        assert_eq!(current, "fleet/my-cool-session", "the working dir must actually be on the new branch");
+        assert_eq!(current, "hangar/my-cool-session", "the working dir must actually be on the new branch");
 
-        let remote_branches = git_capture(&remote_dir, &["branch", "--list", "fleet/my-cool-session"]).unwrap();
-        assert!(remote_branches.contains("fleet/my-cool-session"), "the branch must be pushed to origin");
+        let remote_branches = git_capture(&remote_dir, &["branch", "--list", "hangar/my-cool-session"]).unwrap();
+        assert!(remote_branches.contains("hangar/my-cool-session"), "the branch must be pushed to origin");
 
         let _ = std::fs::remove_dir_all(&remote_dir);
         let _ = std::fs::remove_dir_all(&work_dir);
@@ -1820,10 +2254,10 @@ mod tests {
 
         let (branch, base) = prepare_branch_for_pr(&work_dir, "Detached Session").expect("prepare_branch_for_pr must handle a detached HEAD, not try to push it literally");
         assert_eq!(base, "main");
-        assert_eq!(branch, "fleet/detached-session");
+        assert_eq!(branch, "hangar/detached-session");
 
-        let remote_branches = git_capture(&remote_dir, &["branch", "--list", "fleet/detached-session"]).unwrap();
-        assert!(remote_branches.contains("fleet/detached-session"), "the new branch must be pushed to origin");
+        let remote_branches = git_capture(&remote_dir, &["branch", "--list", "hangar/detached-session"]).unwrap();
+        assert!(remote_branches.contains("hangar/detached-session"), "the new branch must be pushed to origin");
 
         let _ = std::fs::remove_dir_all(&remote_dir);
         let _ = std::fs::remove_dir_all(&work_dir);

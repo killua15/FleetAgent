@@ -11,7 +11,7 @@
 //! inherently fragile — it depends on the exact rendered TUI text, which can
 //! change between CLI versions — so every field is `Option<f64>` and a
 //! parsing miss degrades to `None`, never a wrong number or a crash. Callers
-//! are expected to fall back to Fleet's own token-based estimate for any
+//! are expected to fall back to Hangar's own token-based estimate for any
 //! field that comes back `None`.
 
 use crate::db::DbConnection;

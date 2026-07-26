@@ -54,7 +54,7 @@ export function AppTopBar({ primaryAction }: { primaryAction?: ReactNode }) {
 
   return (
     <div className={styles.bar}>
-      <span className={styles.wordmark}>⌥ fleet</span>
+      <span className={styles.wordmark}>⌥ hangar</span>
       <span className={styles.version}>v0.1</span>
       {showBusy && (
         <span className={styles.busyIndicator} title="A background request is in progress">

@@ -1,3 +1,4 @@
+mod app_data;
 mod blocking;
 mod commands;
 mod credential_vault;
@@ -25,7 +26,7 @@ use terminals::{RestoreGuard, TerminalRegistry};
 use turn_runner::{CancelledTurns, SpendCapNotified, TurnRegistry};
 use usage_scraper::UsageCache;
 
-/// Kills everything Fleet spawned before the process goes away. None of these
+/// Kills everything Hangar spawned before the process goes away. None of these
 /// children die with their parent on their own — a headless turn, a PTY
 /// login, and a PTY session all outlive it happily — so without this a quit
 /// leaves `claude` processes running against the user's repos, writing to
@@ -53,11 +54,16 @@ pub fn run() {
                 .level(log::LevelFilter::Info)
                 .targets([
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
-                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: Some("fleet".to_string()) }),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: Some("hangar".to_string()) }),
                 ])
                 .build(),
         )
         .setup(|app| {
+            // Before anything touches the app data dir: bring it over from
+            // the pre-rename identifier if this machine ran the old build.
+            // `db::init` creates the directory, so a later call would find a
+            // fresh empty one and skip the migration.
+            app_data::migrate(&app.handle());
             let conn = db::init(&app.handle());
             app.manage(DbConnection(Mutex::new(conn)));
             app.manage(ProcessRegistry::new());
@@ -70,7 +76,7 @@ pub fn run() {
             app.manage(TerminalRegistry::new());
             app.manage(RestoreGuard::new());
 
-            // Background PR-comment poller — Fleet has no public endpoint
+            // Background PR-comment poller — Hangar has no public endpoint
             // for a real GitHub webhook, so this is the same shape a
             // desktop app like Conductor uses: poll while the app is open,
             // plus the "check now" command for an immediate refresh.
@@ -196,6 +202,8 @@ pub fn run() {
             terminals::resolve_terminal_target,
             terminals::reopen_terminal_with_account,
             rotation::suggest_terminal_account,
+            rotation::list_terminal_rotation_accounts,
+            commands::pull_requests::open_pr_review_terminal,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

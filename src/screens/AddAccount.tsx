@@ -321,14 +321,14 @@ export function AddAccount() {
                   <RadioGroupItem value="sub" className="sr-only" />
                   <span className={styles.billingName}>Subscription</span>
                   <span className={styles.billingDesc}>
-                    Login via browser/CLI. Fleet tracks the 5h session + weekly windows.
+                    Login via browser/CLI. Hangar tracks the 5h session + weekly windows.
                   </span>
                 </Label>
                 <Label className={`${styles.card2} ${billing === 'key' ? styles.selected : ''}`}>
                   <RadioGroupItem value="key" className="sr-only" />
                   <span className={styles.billingName}>API key</span>
                   <span className={styles.billingDesc}>
-                    Pay per token. Fleet tracks accumulated spend and enforces your cap.
+                    Pay per token. Hangar tracks accumulated spend and enforces your cap.
                   </span>
                 </Label>
               </RadioGroup>
@@ -417,7 +417,7 @@ export function AddAccount() {
 
           {step === 3 && billing === 'sub' && importedConfigDir === null && wantsNewLogin && (loginSession || startingLogin) && (
             <>
-              <span className={styles.hint}>Complete the CLI login — Fleet runs it in an embedded terminal:</span>
+              <span className={styles.hint}>Complete the CLI login — Hangar runs it in an embedded terminal:</span>
               <div className={styles.terminal} ref={terminalRef} style={{ maxHeight: 220, overflow: 'auto' }}>
                 {startingLogin && !terminalText && <span style={{ color: 'var(--dim)' }}>starting {prov.loginCmd}…</span>}
                 {loginError && <span style={{ color: 'var(--red)' }}>{loginError}</span>}

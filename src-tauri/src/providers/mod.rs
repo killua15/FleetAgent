@@ -2,7 +2,7 @@ pub mod claude;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Read-only — proposes changes but never edits or executes. Fleet's
+    /// Read-only — proposes changes but never edits or executes. Hangar's
     /// addition beyond the mockup's ask-edits/auto-edit/yolo enum, covering
     /// the "plan mode, solo análisis" requirement from the original ask.
     Plan,
@@ -63,7 +63,7 @@ pub fn resolve_binary(name: &str) -> String {
     name.to_string()
 }
 
-/// The CLI a provider is driven through, or `None` for a provider Fleet
+/// The CLI a provider is driven through, or `None` for a provider Hangar
 /// doesn't know. Single source of truth so "is it installed?" and "what do I
 /// run?" can never disagree about which binary a provider means.
 pub fn provider_binary(provider: &str) -> Option<&'static str> {
@@ -101,15 +101,15 @@ mod tests {
     /// and not-found cases instead of two racing ones.
     #[test]
     fn resolves_a_binary_on_path_to_its_absolute_location() {
-        let dir = std::env::temp_dir().join(format!("fleet-test-path-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("hangar-test-path-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let fake_cli = dir.join("fleet-fake-cli");
+        let fake_cli = dir.join("hangar-fake-cli");
         std::fs::write(&fake_cli, "#!/bin/sh\nexit 0\n").unwrap();
 
         let original_path = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", format!("{}:{original_path}", dir.display()));
 
-        let resolved = resolve_binary("fleet-fake-cli");
+        let resolved = resolve_binary("hangar-fake-cli");
         let unresolvable = resolve_binary("definitely-not-a-real-cli-xyz");
 
         std::env::set_var("PATH", original_path);

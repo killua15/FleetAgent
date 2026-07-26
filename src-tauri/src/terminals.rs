@@ -1,6 +1,6 @@
-//! Real interactive shells running inside Fleet, one PTY per terminal.
+//! Real interactive shells running inside Hangar, one PTY per terminal.
 //!
-//! Fleet's agents work in isolated worktrees (`.fleet/worktrees/<slug>`), and
+//! Hangar's agents work in isolated worktrees (`.hangar/worktrees/<slug>`), and
 //! until now the only way to look inside one was `open_path_in_terminal`
 //! (commands/git_panel.rs), which hands off to Terminal.app and leaves the
 //! app entirely. These terminals open *in* the worktree, next to the agent
@@ -11,7 +11,7 @@
 //! 1. **Output goes over a `tauri::ipc::Channel`, not the event system.**
 //!    Tauri's own docs say the event system "is not designed for low latency
 //!    or high throughput situations", and that with async listeners "events
-//!    may be processed out of order". Everywhere else in Fleet that's fine —
+//!    may be processed out of order". Everywhere else in Hangar that's fine —
 //!    the traffic is discrete session blocks. For a byte stream driving a
 //!    terminal emulator, out-of-order delivery isn't degradation, it's a
 //!    corrupted screen.
@@ -78,15 +78,15 @@ pub struct TerminalTarget {
 #[serde(rename_all = "lowercase")]
 pub enum InitCommand {
     /// Launch the provider's CLI interactively, on a fresh conversation whose
-    /// id Fleet owns (`claude --session-id <uuid>`). Owning the id is what
-    /// lets Fleet later find and move that exact transcript — see the
+    /// id Hangar owns (`claude --session-id <uuid>`). Owning the id is what
+    /// lets Hangar later find and move that exact transcript — see the
     /// conversation-continuity plan.
     Start,
-    /// Re-attach the CLI to a conversation Fleet already knows the id of
+    /// Re-attach the CLI to a conversation Hangar already knows the id of
     /// (`claude --resume <uuid>`). Requires a `session_uuid`.
     Resume,
     /// Re-authenticate the account (`claude auth login --claudeai`). This is
-    /// the only path in Fleet that can recover an account whose OAuth token
+    /// the only path in Hangar that can recover an account whose OAuth token
     /// expired — everything else assumes an account stays logged in for life,
     /// so the alternative is deleting it and adding it again.
     Login,
@@ -112,7 +112,7 @@ pub struct TerminalInfo {
     /// its account (for the "this account is out of quota" banner) by this,
     /// and the rotation poller learns which accounts are in use from it.
     pub account_id: Option<String>,
-    /// The Claude Code session id Fleet started this terminal on
+    /// The Claude Code session id Hangar started this terminal on
     /// (`claude --session-id <uuid>`), when it's an account-scoped claude
     /// terminal. This is what makes the conversation addressable — the
     /// transcript lives at `<config_dir>/projects/<slug>/<session_uuid>.jsonl`
@@ -191,7 +191,7 @@ fn user_shell() -> String {
 }
 
 /// Environment variables that decide *which account* a provider CLI acts as.
-/// Inherited from Fleet's own process (a developer running
+/// Inherited from Hangar's own process (a developer running
 /// `ANTHROPIC_API_KEY=… npm run tauri dev`, or a `CLAUDE_CONFIG_DIR` exported
 /// in a shell profile) any of these would silently override the account the
 /// user picked, so an account-scoped terminal starts without them.
@@ -324,7 +324,7 @@ pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitComma
         // No `env_for_account` equivalent exists for these, so nothing would
         // actually scope the CLI to this account. Refusing beats opening a
         // shell that looks isolated and isn't.
-        return Err(format!("Fleet can't run a '{}' CLI as a specific account yet", account.provider));
+        return Err(format!("Hangar can't run a '{}' CLI as a specific account yet", account.provider));
     }
     let binary = crate::providers::provider_binary(&account.provider).ok_or_else(|| format!("unknown provider '{}'", account.provider))?;
     if !crate::providers::is_provider_available(&account.provider) {
@@ -338,7 +338,7 @@ pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitComma
         None => String::new(),
     };
     let args = match init {
-        // Fleet owns the id so it can locate this exact transcript later. A
+        // Hangar owns the id so it can locate this exact transcript later. A
         // caller with no uuid still gets a plain `claude` (backwards-safe), but
         // the real flows always supply one.
         InitCommand::Start => match session_uuid {
@@ -425,7 +425,7 @@ pub fn open_terminal<R: Runtime>(
         return Err(format!("{cwd} no longer exists on disk — the worktree may have been removed"));
     }
 
-    // Fleet owns the conversation id for an account-scoped `Start`: use the one
+    // Hangar owns the conversation id for an account-scoped `Start`: use the one
     // the caller supplied (a restore/transfer resuming a known id) or mint a
     // fresh one. `Resume` must carry its id; `Login` and plain shells have none.
     let session_uuid = match (&account, init) {
@@ -440,7 +440,7 @@ pub fn open_terminal<R: Runtime>(
     let init_line = match (&account, init) {
         (Some(account), Some(init)) => Some(format!("{}\n", terminal_script(&cwd, account, init, session_uuid.as_deref(), init_prompt.as_deref())?)),
         // A command only means something for an account — "start claude" as
-        // nobody in particular isn't a thing Fleet offers.
+        // nobody in particular isn't a thing Hangar offers.
         (None, Some(_)) => return Err("choose an account before picking a command to run".to_string()),
         _ => None,
     };
@@ -692,7 +692,7 @@ struct PersistedTerminal {
     session_uuid: Option<String>,
 }
 
-/// Reopens the terminals that were open when Fleet last closed — the first
+/// Reopens the terminals that were open when Hangar last closed — the first
 /// thing the terminals view calls on mount. Runs exactly once per app run
 /// (see `RestoreGuard`); later mounts get the live list instead.
 ///
@@ -792,7 +792,7 @@ fn account_terminals<R: Runtime>(app: &AppHandle<R>) -> Vec<(&'static str, Strin
 /// starts one on the same target (same project/worktree) under the new account.
 ///
 /// **Keeps the conversation** when it can: for a claude→claude switch of a
-/// terminal whose session id Fleet owns, it copies that transcript into the new
+/// terminal whose session id Hangar owns, it copies that transcript into the new
 /// account's config dir and resumes it (`handoff::transfer_claude_session` +
 /// `--resume`), so the agent picks up where it left off. Falls back to a fresh
 /// session when there's nothing to carry (a terminal that never conversed, a
@@ -813,7 +813,7 @@ pub fn reopen_terminal_with_account<R: Runtime>(app: AppHandle<R>, id: String, a
 /// before the new terminal opens, so `claude --resume <uuid>` finds the file.
 ///
 /// Copy-not-move (see `handoff`): even if the later open fails, the source
-/// account keeps its transcript. And because every account switch in Fleet
+/// account keeps its transcript. And because every account switch in Hangar
 /// goes through this transfer, the newest copy always wins — there's no path
 /// that resumes a stale copy directly, which is what the divergent-futures
 /// worry in the continuity doc was about.
@@ -889,7 +889,7 @@ fn reopen_with_account_inner<R: Runtime>(app: AppHandle<R>, id: String, account_
 }
 
 /// Kills every shell on app exit — a PTY child outlives its parent happily,
-/// so without this quitting Fleet leaves a login shell per terminal running
+/// so without this quitting Hangar leaves a login shell per terminal running
 /// forever. Called from `lib.rs`'s `shutdown_children`.
 pub fn kill_all<R: Runtime>(app: &AppHandle<R>) {
     let Some(registry) = app.try_state::<TerminalRegistry>() else { return };
@@ -1118,7 +1118,7 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT INTO sessions (id, name, project_id, account_id, model, effort, mode, status, worktree_path, worktree_kind, started_at)
-             VALUES ('sub','fix-billing','proj1','acc1','opus','high','ask_edits','waiting','/repo/casablanca/.fleet/worktrees/fix-billing','linked','now')",
+             VALUES ('sub','fix-billing','proj1','acc1','opus','high','ask_edits','waiting','/repo/casablanca/.hangar/worktrees/fix-billing','linked','now')",
             [],
         )
         .unwrap();
@@ -1139,7 +1139,7 @@ mod tests {
     fn a_subsession_target_resolves_to_its_worktree() {
         let conn = seed();
         let (cwd, title) = resolve_target(&conn, &TerminalTarget { kind: TargetKind::Session, id: "sub".into() }).unwrap();
-        assert_eq!(cwd, "/repo/casablanca/.fleet/worktrees/fix-billing");
+        assert_eq!(cwd, "/repo/casablanca/.hangar/worktrees/fix-billing");
         assert_eq!(title, "fix-billing");
     }
 
@@ -1161,7 +1161,7 @@ mod tests {
         vec![
             ("PATH".to_string(), "/usr/bin".to_string()),
             ("TERM".to_string(), "xterm-256color".to_string()),
-            // Fleet's own process could well have these set — a developer
+            // Hangar's own process could well have these set — a developer
             // running `ANTHROPIC_API_KEY=... npm run tauri dev` is the
             // ordinary case, not a contrived one.
             ("CLAUDE_CONFIG_DIR".to_string(), "/inherited/config".to_string()),
@@ -1252,7 +1252,7 @@ mod tests {
         );
     }
 
-    /// Start with a Fleet-owned session id — this is what makes the transcript
+    /// Start with a Hangar-owned session id — this is what makes the transcript
     /// addressable later (`projects/<slug>/<uuid>.jsonl`), for restore and for
     /// copying the conversation to another account.
     #[test]
@@ -1400,7 +1400,7 @@ mod tests {
             80,
             24,
         );
-        assert!(result.is_err(), "'start the CLI' as nobody in particular isn't something Fleet can do");
+        assert!(result.is_err(), "'start the CLI' as nobody in particular isn't something Hangar can do");
     }
 
     #[test]
@@ -1428,7 +1428,7 @@ mod tests {
     fn a_real_shell_runs_a_command_and_its_output_reaches_the_scrollback() {
         use std::time::{Duration, Instant};
 
-        let dir = std::env::temp_dir().join(format!("fleet-test-terminal-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("hangar-test-terminal-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let conn = seed();
@@ -1447,7 +1447,7 @@ mod tests {
             .expect("opening a terminal in a real directory must succeed");
         assert_eq!(info.cwd, dir.to_string_lossy());
 
-        write_terminal(handle.clone(), info.id.clone(), "echo fleet-terminal-ok\n".to_string()).unwrap();
+        write_terminal(handle.clone(), info.id.clone(), "echo hangar-terminal-ok\n".to_string()).unwrap();
 
         // A login shell sources the user's profile before it gets to our
         // command, so poll rather than assuming a fixed delay.
@@ -1462,7 +1462,7 @@ mod tests {
             drop(map);
             // The echoed command line contains the marker too, so require the
             // shell's own output: the marker on a line of its own.
-            if text.matches("fleet-terminal-ok").count() >= 2 {
+            if text.matches("hangar-terminal-ok").count() >= 2 {
                 seen = true;
                 break;
             }
@@ -1497,7 +1497,7 @@ mod tests {
     /// proves text written to the PTY reaches and runs in the shell.
     #[test]
     fn opening_against_an_account_records_whose_credentials_it_carries() {
-        let dir = std::env::temp_dir().join(format!("fleet-test-account-terminal-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("hangar-test-account-terminal-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let conn = seed();
@@ -1554,7 +1554,7 @@ mod tests {
     /// the command text the real command sends.
     #[test]
     fn reopening_under_another_account_replaces_the_shell_and_records_the_rotation() {
-        let dir = std::env::temp_dir().join(format!("fleet-test-reopen-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("hangar-test-reopen-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let app = tauri::test::mock_app();
@@ -1657,12 +1657,12 @@ mod tests {
 
     /// A reopen that can't start must leave the user with the terminal they
     /// had. The command is resolved before anything is spawned, so a target
-    /// account Fleet can't run as (here a non-`claude` provider) fails there —
+    /// account Hangar can't run as (here a non-`claude` provider) fails there —
     /// and must fail without having closed the original or logged a rotation
     /// that never happened.
     #[test]
     fn a_reopen_that_cannot_start_leaves_the_original_terminal_alive() {
-        let dir = std::env::temp_dir().join(format!("fleet-test-reopen-fail-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("hangar-test-reopen-fail-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let conn = seed_two_accounts(&dir);
@@ -1768,7 +1768,7 @@ mod tests {
     #[test]
     fn restore_resumes_when_the_transcript_is_still_on_disk_else_starts_fresh() {
         // A real config dir with a planted transcript for the session.
-        let cfg = std::env::temp_dir().join(format!("fleet-restore-cfg-{}", Uuid::new_v4()));
+        let cfg = std::env::temp_dir().join(format!("hangar-restore-cfg-{}", Uuid::new_v4()));
         let uuid = "abcd1234-0000-0000-0000-000000000000";
         std::fs::create_dir_all(cfg.join("projects").join("-repo")).unwrap();
         std::fs::write(cfg.join("projects").join("-repo").join(format!("{uuid}.jsonl")), "convo\n").unwrap();

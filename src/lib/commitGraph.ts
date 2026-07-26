@@ -79,7 +79,7 @@ export function layoutCommitGraph(commits: GraphCommit[]): GraphRow[] {
   return rows;
 }
 
-/** Cycles through Fleet's existing palette tokens rather than introducing
+/** Cycles through Hangar's existing palette tokens rather than introducing
  * new colors — same set already used for ahead/behind/status badges
  * elsewhere in the git panel. */
 export const LANE_COLORS = ['var(--acc)', 'var(--teal)', 'var(--amber)', 'var(--grn)', 'var(--red)', 'var(--mut)'];

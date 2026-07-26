@@ -1,11 +1,11 @@
 //! Bridges Claude Code's own stdio control protocol (used internally by its
-//! Agent SDK's `canUseTool` and the VS Code extension) to Fleet's UI.
+//! Agent SDK's `canUseTool` and the VS Code extension) to Hangar's UI.
 //!
 //! Claude Code can't prompt for permission interactively in headless (`-p`)
 //! mode — there's no TTY — but `--permission-prompt-tool stdio` (combined
 //! with `--input-format stream-json`) makes it emit a `control_request` JSON
 //! line on its own stdout and then block reading its own stdin for a
-//! matching `control_response` line. Since Fleet already owns that child
+//! matching `control_response` line. Since Hangar already owns that child
 //! process's stdin/stdout (`turn_runner::spawn_turn`), no separate hook
 //! process or local server is needed: `parse_control_request` and
 //! `build_control_response` here are pure text<->struct helpers, and
@@ -79,7 +79,7 @@ pub fn build_control_response(request_id: &str, allow: bool) -> String {
     let response = if allow {
         json!({ "behavior": "allow" })
     } else {
-        json!({ "behavior": "deny", "message": "denied by user in Fleet" })
+        json!({ "behavior": "deny", "message": "denied by user in Hangar" })
     };
     json!({
         "type": "control_response",
@@ -119,7 +119,7 @@ pub fn await_decision<R: Runtime>(app: &AppHandle<R>, session_id: &str, req: &Co
     crate::notifications::notify_if_enabled(
         app,
         |s| s.notify_needs_approval,
-        "Fleet needs your approval",
+        "Hangar needs your approval",
         &format!("{} wants to run {} — click to review", session_id, req.tool_name),
     );
 
@@ -195,7 +195,7 @@ mod tests {
         let response = build_control_response("abc-123", false);
         let parsed: Value = serde_json::from_str(&response).unwrap();
         assert_eq!(parsed["response"]["response"]["behavior"], "deny");
-        assert!(parsed["response"]["response"]["message"].as_str().unwrap().contains("Fleet"));
+        assert!(parsed["response"]["response"]["message"].as_str().unwrap().contains("Hangar"));
     }
 
     #[test]

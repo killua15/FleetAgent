@@ -10,7 +10,7 @@
 //! `#[tauri::command]` runs inline on the IPC-dispatch thread and would
 //! freeze the whole app for as long as the subprocess takes).
 
-use crate::commands::pull_requests::{detect_default_branch, detect_repo_owner_and_name, git_capture};
+use crate::commands::pull_requests::{detect_default_branch, detect_repo_owner_and_name, git_capture, row_to_pull_request, PR_COLUMNS};
 use crate::db::DbConnection;
 use crate::models::{
     BranchInfo, CommitFileChange, CommitFileDiff, CommitInfo, CommitLogPage, FileStatus, ProjectGitOverview, PullRequestInfo, WorktreeGitStatus,
@@ -56,51 +56,38 @@ fn ahead_behind_vs_upstream(cwd: &Path, fallback_upstream: &str) -> (i64, i64) {
 }
 
 fn fetch_open_prs_for_project(conn: &Connection, project_id: &str) -> Result<Vec<PullRequestInfo>, String> {
+    // Straight off `pull_requests.project_id` — a PR no longer has to reach its
+    // project through a session, since the ones other people opened have none.
     let mut stmt = conn
-        .prepare(
-            "SELECT pr.id, pr.session_id, pr.repo_owner, pr.repo_name, pr.number, pr.url, pr.state,
-                    pr.last_comment_seen_at, pr.last_check_error, pr.created_at, pr.last_seen_updated_at, pr.head_branch
-             FROM pull_requests pr
-             JOIN sessions s ON s.id = pr.session_id
-             WHERE s.project_id = ?1 AND pr.state = 'open'",
-        )
+        .prepare(&format!("SELECT {PR_COLUMNS} FROM pull_requests WHERE project_id = ?1 AND state = 'open'"))
         .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![project_id], |row| {
-            Ok(PullRequestInfo {
-                id: row.get(0)?,
-                session_id: row.get(1)?,
-                repo_owner: row.get(2)?,
-                repo_name: row.get(3)?,
-                number: row.get(4)?,
-                url: row.get(5)?,
-                state: row.get(6)?,
-                last_comment_seen_at: row.get(7)?,
-                last_check_error: row.get(8)?,
-                created_at: row.get(9)?,
-                last_seen_updated_at: row.get(10)?,
-                head_branch: row.get(11)?,
-            })
-        })
-        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(params![project_id], row_to_pull_request).map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
 /// Matches a worktree to the open PR it's actually reviewing, cheapest/most
 /// certain signal first: the PR's own head branch, then the PR's anchor
 /// session happening to be this exact worktree's session, then (for a
-/// worktree Fleet created via `resolve_session_for_pr_branch`) parsing the PR
-/// number back out of its `fleet/pr-<number>-review` branch name.
+/// worktree Hangar created via `resolve_session_for_pr_branch`) parsing the PR
+/// number back out of its `hangar/pr-<number>-review` branch name — or the
+/// pre-rename `fleet/pr-<number>-review`, since worktrees created by the old
+/// build still carry that name and must keep linking to their PR.
 fn match_linked_pr<'a>(prs: &'a [PullRequestInfo], session_id: &str, branch: Option<&str>) -> Option<&'a PullRequestInfo> {
     if let Some(b) = branch {
         if let Some(pr) = prs.iter().find(|pr| pr.head_branch.as_deref() == Some(b)) {
             return Some(pr);
         }
     }
-    if let Some(pr) = prs.iter().find(|pr| pr.session_id == session_id) {
+    if let Some(pr) = prs.iter().find(|pr| pr.session_id.as_deref() == Some(session_id)) {
         return Some(pr);
     }
-    let number: i64 = branch?.strip_prefix("fleet/pr-")?.strip_suffix("-review")?.parse().ok()?;
+    let branch = branch?;
+    let number: i64 = branch
+        .strip_prefix("hangar/pr-")
+        .or_else(|| branch.strip_prefix("fleet/pr-"))?
+        .strip_suffix("-review")?
+        .parse()
+        .ok()?;
     prs.iter().find(|pr| pr.number == number)
 }
 
@@ -239,7 +226,7 @@ pub async fn git_push(path: String) -> Result<(), String> {
 
 /// "Open in Finder" is handled entirely on the frontend via the opener
 /// plugin's `revealItemInDir` — only "open in Terminal" needs a real backend
-/// command, since there's no cross-platform plugin API for it and Fleet
+/// command, since there's no cross-platform plugin API for it and Hangar
 /// already assumes macOS elsewhere (see `resolve_binary`/worktree cleanup).
 #[tauri::command]
 pub async fn open_path_in_terminal(path: String) -> Result<(), String> {
@@ -440,7 +427,7 @@ fn checkout_branch_impl(cwd: &Path, branch: &str, is_remote: bool) -> Result<(),
     Ok(())
 }
 
-/// Checking out a remote branch (e.g. `origin/feature-x`) creates Fleet's own
+/// Checking out a remote branch (e.g. `origin/feature-x`) creates Hangar's own
 /// local tracking branch the first time (same one-click behavior as
 /// GitKraken/GitHub Desktop), then just switches to it on subsequent clicks.
 #[tauri::command]
@@ -455,7 +442,7 @@ mod tests {
     use uuid::Uuid;
 
     fn make_temp_dir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("fleet-test-gitpanel-{label}-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("hangar-test-gitpanel-{label}-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -471,8 +458,8 @@ mod tests {
         let work_dir = make_temp_dir(&format!("{label}-work"));
         git_capture(&work_dir, &["init"]).unwrap();
         git_capture(&work_dir, &["checkout", "-b", "main"]).unwrap();
-        git_capture(&work_dir, &["config", "user.email", "fleet-test@example.com"]).unwrap();
-        git_capture(&work_dir, &["config", "user.name", "Fleet Test"]).unwrap();
+        git_capture(&work_dir, &["config", "user.email", "hangar-test@example.com"]).unwrap();
+        git_capture(&work_dir, &["config", "user.name", "Hangar Test"]).unwrap();
         std::fs::write(work_dir.join("a.txt"), "one").unwrap();
         git_capture(&work_dir, &["add", "-A"]).unwrap();
         git_capture(&work_dir, &["commit", "-m", "initial"]).unwrap();
@@ -510,8 +497,8 @@ mod tests {
         // should surface it as "behind".
         let other_clone = make_temp_dir("ahead-behind-other-clone");
         git_capture(other_clone.parent().unwrap(), &["clone", remote_dir.to_str().unwrap(), other_clone.to_str().unwrap()]).unwrap();
-        git_capture(&other_clone, &["config", "user.email", "fleet-test@example.com"]).unwrap();
-        git_capture(&other_clone, &["config", "user.name", "Fleet Test"]).unwrap();
+        git_capture(&other_clone, &["config", "user.email", "hangar-test@example.com"]).unwrap();
+        git_capture(&other_clone, &["config", "user.name", "Hangar Test"]).unwrap();
         std::fs::write(other_clone.join("c.txt"), "remote-only").unwrap();
         git_capture(&other_clone, &["add", "-A"]).unwrap();
         git_capture(&other_clone, &["commit", "-m", "remote-only commit"]).unwrap();
@@ -539,6 +526,11 @@ mod tests {
         let matched = match_linked_pr(&prs, "session-2", Some("unrelated-branch")).unwrap();
         assert_eq!(matched.id, "pr-session");
 
+        let matched = match_linked_pr(&prs, "session-3", Some("hangar/pr-30-review")).unwrap();
+        assert_eq!(matched.id, "pr-review");
+
+        // A worktree created before the Fleet → Hangar rename still carries
+        // the old branch name and must keep linking to its PR.
         let matched = match_linked_pr(&prs, "session-3", Some("fleet/pr-30-review")).unwrap();
         assert_eq!(matched.id, "pr-review");
 
@@ -548,7 +540,8 @@ mod tests {
     fn sample_pr(id: &str, session_id: &str, head_branch: Option<String>, number: i64) -> PullRequestInfo {
         PullRequestInfo {
             id: id.to_string(),
-            session_id: session_id.to_string(),
+            project_id: "proj1".to_string(),
+            session_id: Some(session_id.to_string()),
             repo_owner: "owner".to_string(),
             repo_name: "repo".to_string(),
             number,
@@ -559,6 +552,10 @@ mod tests {
             created_at: "now".to_string(),
             last_seen_updated_at: None,
             head_branch,
+            base_branch: None,
+            title: None,
+            author_login: None,
+            relation: "mine".to_string(),
         }
     }
 
@@ -684,8 +681,8 @@ mod tests {
         // pushes it, the first clone only knows about it after a fetch).
         let other_clone = make_temp_dir("checkout-other-clone");
         git_capture(other_clone.parent().unwrap(), &["clone", remote_dir.to_str().unwrap(), other_clone.to_str().unwrap()]).unwrap();
-        git_capture(&other_clone, &["config", "user.email", "fleet-test@example.com"]).unwrap();
-        git_capture(&other_clone, &["config", "user.name", "Fleet Test"]).unwrap();
+        git_capture(&other_clone, &["config", "user.email", "hangar-test@example.com"]).unwrap();
+        git_capture(&other_clone, &["config", "user.name", "Hangar Test"]).unwrap();
         git_capture(&other_clone, &["checkout", "-b", "remote-only"]).unwrap();
         std::fs::write(other_clone.join("remote-only.txt"), "hi").unwrap();
         git_capture(&other_clone, &["add", "-A"]).unwrap();

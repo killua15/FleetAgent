@@ -1,0 +1,169 @@
+/* The header chip. Looks like the label it replaces until you hover it —
+   the panel header is dense, and a full button would compete with the
+   collapse/close controls for attention it doesn't deserve at rest. */
+.chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px 1px 7px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  background: var(--accD);
+  color: var(--acc);
+  font: 500 10.5px var(--font-ui);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chip:hover:not(:disabled),
+.chip[data-state='open'] {
+  border-color: var(--acc);
+}
+
+.chip:disabled {
+  cursor: progress;
+}
+
+.chipName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chipCaret {
+  font-size: 8px;
+  opacity: 0.7;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 300px;
+  max-height: 60vh;
+  overflow: auto;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  z-index: 40;
+}
+
+.label {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.16em;
+  color: var(--dim);
+  padding: 0 2px 2px;
+}
+
+.row,
+.rowCurrent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+
+.row:hover:not(:disabled) {
+  background: var(--panel2);
+  border-color: var(--acc);
+}
+
+.row:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* The account you're on stays legible rather than greyed out like a benched
+   one — it's disabled because there's nowhere to go, not because it's a
+   degraded choice. */
+.rowCurrent {
+  background: var(--panel2);
+  cursor: default;
+}
+
+.scopeDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.rowName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 500 12px var(--font-ui);
+  color: var(--txt);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.tagCurrent,
+.tagSuggested,
+.tagBenched,
+.tagLogin {
+  flex: none;
+  font: 500 9.5px var(--font-mono);
+  letter-spacing: 0.04em;
+}
+
+.tagCurrent {
+  color: var(--dim);
+}
+
+.tagSuggested {
+  color: var(--grn);
+}
+
+.tagBenched {
+  color: var(--amber);
+}
+
+.tagLogin {
+  color: var(--amber);
+}
+
+.note,
+.footer {
+  padding: 6px 8px;
+  font: 400 11px var(--font-ui);
+  color: var(--mut);
+  line-height: 1.45;
+}
+
+.footer {
+  border-top: 1px solid var(--line);
+  margin-top: 2px;
+}
+
+.error {
+  padding: 6px 8px;
+  font: 400 11px var(--font-ui);
+  color: var(--amber);
+}
+
+.manageLink {
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  padding: 2px 8px 0;
+  color: var(--acc);
+  font: 500 11px var(--font-ui);
+  cursor: pointer;
+}
+
+.manageLink:hover {
+  text-decoration: underline;
+}

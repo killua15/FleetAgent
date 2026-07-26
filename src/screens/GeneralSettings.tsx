@@ -18,12 +18,12 @@ import styles from './GeneralSettings.module.css';
 const THEME_OPTS: Theme[] = ['dark', 'light', 'glass', 'system'];
 
 /** `/Users/killua/.claude-work` → `~/.claude-work`. macOS-only, like the rest
- * of Fleet — the home prefix is the same on every row, so it's noise. */
+ * of Hangar — the home prefix is the same on every row, so it's noise. */
 function abbreviateHome(path: string): string {
   return path.replace(/^\/Users\/[^/]+/, '~');
 }
 
-/** Fleet's own login wizard parks a login in `pending-logins/<uuid>` and keeps
+/** Hangar's own login wizard parks a login in `pending-logins/<uuid>` and keeps
  * that as the account's home. It's the signature of an account not using one
  * of the user's own `~/.claude-*` directories — the reason its terminal
  * command shows an unrecognizable path. */
@@ -130,7 +130,7 @@ export function GeneralSettings() {
           <span className={styles.sectionLabel}>ACCOUNT LOGIN — CONFIG DIRECTORY</span>
           <span className={styles.hint}>
             Each subscription account runs the CLI against an isolated <code>CLAUDE_CONFIG_DIR</code>. Point it at a login you
-            already have (e.g. <code>~/.claude-work</code>) instead of the one Fleet created — nothing is moved, and the
+            already have (e.g. <code>~/.claude-work</code>) instead of the one Hangar created — nothing is moved, and the
             account keeps its sessions and history.
           </span>
           <div className={styles.capList}>
@@ -159,7 +159,7 @@ export function GeneralSettings() {
                       </Button>
                     }
                     title={`Config directory for ${acc.name}`}
-                    description="Pick a login already on this machine. Fleet adopts it in place — nothing is moved or copied, and the account's sessions and history stay intact."
+                    description="Pick a login already on this machine. Hangar adopts it in place — nothing is moved or copied, and the account's sessions and history stay intact."
                     onPick={async (login) => {
                       await invoke('set_account_config_dir', { id: acc.id, configDirPath: login.path });
                       await loadAccounts();
@@ -226,7 +226,7 @@ export function GeneralSettings() {
         <section className={styles.section}>
           <span className={styles.sectionLabel}>NOTIFICATIONS</span>
           <span className={styles.hint}>
-            Real macOS notifications for the events below — off by default, so turning one on is the moment Fleet
+            Real macOS notifications for the events below — off by default, so turning one on is the moment Hangar
             first asks the OS for permission.
           </span>
           <div className={styles.notifList}>
@@ -260,7 +260,7 @@ export function GeneralSettings() {
             />
             <NotificationRow
               label="New PR comments"
-              description="A pull request Fleet opened got new review comments — checked every 5 minutes while Fleet is open."
+              description="A pull request Hangar opened got new review comments — checked every 5 minutes while Hangar is open."
               checked={appSettings.notifyPrComments}
               saving={savingNotif === 'notifyPrComments'}
               onChange={(v) => toggleNotification('notifyPrComments', v)}

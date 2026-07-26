@@ -103,13 +103,22 @@ pub fn start_session(db: State<DbConnection>, input: StartSessionInput) -> Resul
         .map_err(|e| e.to_string())
 }
 
-// ".fleet" must always be skipped, not just as a size optimization: the
+// ".hangar" must always be skipped, not just as a size optimization: the
 // worktree destination for a "copy" subsession lives at
-// "<project_path>/.fleet/worktrees/<slug>", nested *inside* the very source
+// "<project_path>/.hangar/worktrees/<slug>", nested *inside* the very source
 // tree being copied. Without this exclusion, copy_project_dir would recurse
 // into its own destination directory as it walks the source, copying the
 // copy into itself indefinitely (surfaces as "File name too long").
-pub(crate) const COPY_SKIP_DIRS: &[&str] = &["node_modules", "dist", "target", ".next", "__pycache__", "venv", ".venv", "build", ".git", ".fleet"];
+// ".fleet" is the pre-rename location and stays on the list for as long as
+// any project can still contain worktrees created by the old build.
+pub(crate) const COPY_SKIP_DIRS: &[&str] = &["node_modules", "dist", "target", ".next", "__pycache__", "venv", ".venv", "build", ".git", ".hangar", ".fleet"];
+
+/// Directory, inside a managed project, that holds Hangar's worktrees.
+pub(crate) const WORKTREES_DIR: &str = ".hangar";
+
+/// Where the pre-rename build put them. Still read (never written) so
+/// worktrees created before the rename keep being recognized.
+pub(crate) const LEGACY_WORKTREES_DIR: &str = ".fleet";
 const ENV_FILE_CANDIDATES: &[&str] = &[".env", ".env.local", ".env.development", ".env.production"];
 
 /// Lowercase, ASCII-alphanumeric-only, dash-separated — used for both the
@@ -133,13 +142,21 @@ pub(crate) fn slugify(input: &str) -> String {
     }
 }
 
-/// Picks `.fleet/worktrees/<slug>`, disambiguating with a short suffix if a
+/// Picks `.hangar/worktrees/<slug>`, disambiguating with a short suffix if a
 /// worktree with that name already exists (e.g. two subsessions both named
 /// "fix-bug").
+///
+/// A slug already taken under the pre-rename `.fleet/worktrees` counts as
+/// taken too: the branch name is derived from this same slug, and git refuses
+/// to create a branch that already exists — so ignoring the legacy directory
+/// would turn every name reused from before the rename into a failed
+/// `git worktree add` instead of a silently disambiguated one.
 pub(crate) fn unique_worktree_dir(project_path: &str, slug: &str) -> PathBuf {
-    let base = Path::new(project_path).join(".fleet").join("worktrees");
+    let project = Path::new(project_path);
+    let base = project.join(WORKTREES_DIR).join("worktrees");
     let candidate = base.join(slug);
-    if !candidate.exists() {
+    let legacy_candidate = project.join(LEGACY_WORKTREES_DIR).join("worktrees").join(slug);
+    if !candidate.exists() && !legacy_candidate.exists() {
         return candidate;
     }
     let suffix = &Uuid::new_v4().to_string()[..6];
@@ -224,22 +241,26 @@ fn copy_env_files(project_path: &str, worktree_dir: &Path) {
     }
 }
 
-/// Appends `.fleet/` to the *project's* `.gitignore` (creating the file if
+/// Appends `.hangar/` to the *project's* `.gitignore` (creating the file if
 /// missing) so worktree folders don't show up as untracked clutter in the
 /// user's own `git status` — best-effort, never blocks subsession creation.
 /// `pub(crate)` so `resolve_session_for_pr_branch` (its own worktree lands
-/// at the same `.fleet/worktrees/...` location) can call it too.
-pub(crate) fn ensure_fleet_dir_ignored(project_path: &str) {
+/// at the same `.hangar/worktrees/...` location) can call it too.
+///
+/// A project already ignoring the pre-rename `.fleet/` still gets the new
+/// entry added — that's where new worktrees go now, so matching on the legacy
+/// line would leave them untracked and visible in `git status`.
+pub(crate) fn ensure_worktree_dir_ignored(project_path: &str) {
     let gitignore_path = Path::new(project_path).join(".gitignore");
     let existing = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
-    if existing.lines().any(|l| l.trim() == ".fleet/" || l.trim() == ".fleet") {
+    if existing.lines().any(|l| l.trim() == ".hangar/" || l.trim() == ".hangar") {
         return;
     }
     let mut updated = existing;
     if !updated.is_empty() && !updated.ends_with('\n') {
         updated.push('\n');
     }
-    updated.push_str("\n# Fleet subsession worktrees\n.fleet/\n");
+    updated.push_str("\n# Hangar subsession worktrees\n.hangar/\n");
     let _ = std::fs::write(&gitignore_path, updated);
 }
 
@@ -309,7 +330,7 @@ pub async fn create_subsession<R: tauri::Runtime>(app: AppHandle<R>, input: NewS
         let worktree_branch: Option<String> = if is_git { Some(branch) } else { None };
 
         copy_env_files(&project_path, &worktree_dir);
-        ensure_fleet_dir_ignored(&project_path);
+        ensure_worktree_dir_ignored(&project_path);
 
         let effective_setup_command = input.setup_command.clone().or(default_setup_command);
 
@@ -697,9 +718,9 @@ pub fn list_turn_usage(db: State<DbConnection>, session_id: String) -> Result<Ve
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
-/// Fleet's own recorded spend for an account since `since_iso` — not a live
-/// pull of the provider's real quota (Fleet has no API access to that), just
-/// a sum over the turns Fleet itself has captured.
+/// Hangar's own recorded spend for an account since `since_iso` — not a live
+/// pull of the provider's real quota (Hangar has no API access to that), just
+/// a sum over the turns Hangar itself has captured.
 #[tauri::command]
 pub fn get_account_usage_summary(db: State<DbConnection>, account_id: String, since_iso: String) -> Result<AccountUsageSummary, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
@@ -894,7 +915,7 @@ pub fn read_session_file(db: State<DbConnection>, session_id: String, path: Stri
 /// Scans this session's Claude Code config dir for other conversations
 /// against the same project, so the user can pick one to continue instead of
 /// this session's own conversation — there is no `claude -r`-style
-/// interactive picker available to a headless caller, so Fleet reads the
+/// interactive picker available to a headless caller, so Hangar reads the
 /// same on-disk transcripts (`<config_dir>/projects/<slug>/<id>.jsonl`) the
 /// real picker draws from.
 #[tauri::command]
@@ -1064,7 +1085,7 @@ mod subsession_tests {
     use tauri::Manager;
 
     fn make_temp_dir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("fleet-test-{label}-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("hangar-test-{label}-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -1081,12 +1102,30 @@ mod subsession_tests {
     #[test]
     fn unique_worktree_dir_disambiguates_existing_names() {
         let project = make_temp_dir("unique-worktree");
-        let worktrees_dir = project.join(".fleet").join("worktrees");
+        let worktrees_dir = project.join(WORKTREES_DIR).join("worktrees");
         std::fs::create_dir_all(worktrees_dir.join("fix-bug")).unwrap();
 
         let picked = unique_worktree_dir(project.to_str().unwrap(), "fix-bug");
         assert_ne!(picked, worktrees_dir.join("fix-bug"), "must not reuse an existing worktree dir");
         assert!(picked.starts_with(&worktrees_dir));
+
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    /// New worktrees land under `.hangar`, but a slug already used by a
+    /// pre-rename `.fleet` worktree is still taken as far as git is concerned:
+    /// the branch name comes from the same slug, and `git worktree add -b`
+    /// fails outright on a branch that already exists.
+    #[test]
+    fn a_slug_taken_by_a_pre_rename_worktree_still_gets_disambiguated() {
+        let project = make_temp_dir("legacy-worktree");
+        std::fs::create_dir_all(project.join(LEGACY_WORKTREES_DIR).join("worktrees").join("fix-bug")).unwrap();
+
+        let picked = unique_worktree_dir(project.to_str().unwrap(), "fix-bug");
+
+        let new_base = project.join(WORKTREES_DIR).join("worktrees");
+        assert!(picked.starts_with(&new_base), "new worktrees must go under .hangar, got {picked:?}");
+        assert_ne!(picked, new_base.join("fix-bug"), "the slug is taken by the legacy worktree — it must be suffixed");
 
         let _ = std::fs::remove_dir_all(&project);
     }
@@ -1116,7 +1155,7 @@ mod subsession_tests {
         run_git(&project_dir, &["add", "-A"]).unwrap();
         run_git(&project_dir, &["commit", "-m", "init"]).unwrap();
 
-        let worktree_dir = project_dir.join(".fleet").join("worktrees").join("fix-bug");
+        let worktree_dir = project_dir.join(WORKTREES_DIR).join("worktrees").join("fix-bug");
         let branch = "subsession/fix-bug".to_string();
         create_linked_worktree(project_dir.to_str().unwrap(), &worktree_dir, &branch)
             .expect("creating a linked worktree in a real git repo should succeed");
@@ -1158,7 +1197,7 @@ mod subsession_tests {
         std::fs::create_dir_all(project_dir.join("node_modules")).unwrap();
         std::fs::write(project_dir.join("node_modules").join("junk.js"), "should not be copied").unwrap();
 
-        let worktree_dir = project_dir.join(".fleet").join("worktrees").join("try-something");
+        let worktree_dir = project_dir.join(WORKTREES_DIR).join("worktrees").join("try-something");
         copy_project_dir(&project_dir, &worktree_dir).expect("copying a plain folder should succeed");
         init_fresh_git_repo(&worktree_dir);
 

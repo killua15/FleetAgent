@@ -29,7 +29,7 @@ export interface ProjectAccountRotation {
   allowed: boolean;
 }
 
-/** What Fleet does when a session's account runs out of quota. Stored per
+/** What Hangar does when a session's account runs out of quota. Stored per
  * (project, provider) in `rotation_policies`; see `src-tauri/src/rotation.rs`
  * for the ranking rules. */
 export type RotationPolicy = 'manual' | 'auto' | 'round_robin';

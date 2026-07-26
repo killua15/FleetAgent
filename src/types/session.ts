@@ -103,7 +103,7 @@ export interface TurnUsage {
   createdAt: string;
 }
 
-/** Fleet's own recorded spend for an account over a trailing window — not a
+/** Hangar's own recorded spend for an account over a trailing window — not a
  * live pull of the provider's real quota. */
 export interface AccountUsageSummary {
   inputTokens: number;

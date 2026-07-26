@@ -629,7 +629,7 @@ mod tests {
         let (app, _acc1, _acc2, _proj1) = setup_test_app();
         let db = app.state::<DbConnection>();
 
-        let project_dir = std::env::temp_dir().join(format!("fleet-test-discover-md-{}", Uuid::new_v4()));
+        let project_dir = std::env::temp_dir().join(format!("hangar-test-discover-md-{}", Uuid::new_v4()));
         std::fs::create_dir_all(project_dir.join("docs")).unwrap();
         std::fs::create_dir_all(project_dir.join("node_modules/some-dep")).unwrap();
         std::fs::write(project_dir.join("README.md"), "# hi").unwrap();

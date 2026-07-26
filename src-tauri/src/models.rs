@@ -159,7 +159,7 @@ pub struct TurnUsage {
 }
 
 /// Aggregate spend for one account over a trailing window (e.g. 7 days) —
-/// Fleet's own recorded usage, not a live pull of the provider's real quota.
+/// Hangar's own recorded usage, not a live pull of the provider's real quota.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountUsageSummary {
@@ -197,7 +197,7 @@ pub enum FileStatus {
 /// App-wide preferences from the `app_settings` key/value table, collapsed
 /// into one struct — the reviewer feature ("Review now") plus which events
 /// fire a real macOS notification, all opt-in (default `false`) so enabling
-/// the first one is the moment Fleet first asks the OS for permission,
+/// the first one is the moment Hangar first asks the OS for permission,
 /// rather than surprising the user at first launch.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -316,12 +316,18 @@ pub struct AgentNode {
     pub created_at: String,
 }
 
-/// A PR a session pushed/opened via `gh` — one row per `pull_requests`.
+/// An open PR on one of the projects' repos — one row per `pull_requests`.
+/// Either one a session here pushed via `gh`, or one discovered on GitHub,
+/// including PRs other people opened.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PullRequestInfo {
     pub id: String,
-    pub session_id: String,
+    /// The project whose repo this PR is on — the anchor, always present.
+    pub project_id: String,
+    /// The session that opened it, when Hangar did. `None` for a discovered
+    /// PR, which is every PR that isn't yours and most that are.
+    pub session_id: Option<String>,
     pub repo_owner: String,
     pub repo_name: String,
     pub number: i64,
@@ -336,9 +342,19 @@ pub struct PullRequestInfo {
     /// freshness cache, not something the frontend needs.
     #[serde(skip)]
     pub last_seen_updated_at: Option<String>,
-    /// The PR's actual head branch — `None` until either Fleet created the
+    /// The PR's actual head branch — `None` until either Hangar created the
     /// PR itself or `resolve_session_for_pr_branch` has backfilled it.
     pub head_branch: Option<String>,
+    /// The branch the PR targets — what a review reads the diff against.
+    pub base_branch: Option<String>,
+    pub title: Option<String>,
+    /// The PR author's GitHub login. `None` for rows that predate discovery
+    /// recording it (all of which are the user's own).
+    pub author_login: Option<String>,
+    /// `mine`, `review` (requested from me or assigned to me) or `other`.
+    /// Recomputed on every discovery pass — being asked to review a PR that
+    /// was `other` yesterday is the normal course of a week.
+    pub relation: String,
 }
 
 /// A read-only preview of what `create_pull_request` would produce for a
@@ -384,8 +400,10 @@ pub struct PrComment {
 #[serde(rename_all = "camelCase")]
 pub struct PrInboxEntry {
     pub pull_request: PullRequestInfo,
-    pub session_id: String,
-    pub session_name: String,
+    /// The session behind this PR, when there is one. A PR opened by someone
+    /// else has none — the card shows its author instead.
+    pub session_id: Option<String>,
+    pub session_name: Option<String>,
     pub comments: Vec<PrComment>,
 }
 

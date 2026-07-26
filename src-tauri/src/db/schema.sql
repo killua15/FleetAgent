@@ -1,4 +1,4 @@
--- Fleet SQLite schema. Applied idempotently on startup (CREATE TABLE IF NOT EXISTS).
+-- Hangar SQLite schema. Applied idempotently on startup (CREATE TABLE IF NOT EXISTS).
 
 CREATE TABLE IF NOT EXISTS accounts (
   id               TEXT PRIMARY KEY,
@@ -160,12 +160,28 @@ CREATE TABLE IF NOT EXISTS git_checkpoints (
 -- since a closed PR can still be reopened.
 CREATE TABLE IF NOT EXISTS pull_requests (
   id                    TEXT PRIMARY KEY,
-  session_id            TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  -- The project whose repo this PR belongs to. The real anchor: a PR opened by
+  -- someone else has no session behind it at all, and grouping the inbox by
+  -- project through `sessions` is what used to make such a PR unrepresentable.
+  project_id            TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  -- The session that produced this PR, when Hangar itself opened it. NULL for
+  -- a discovered PR — including every PR of someone else's. SET NULL rather
+  -- than CASCADE: the PR still exists on GitHub after its session is deleted.
+  session_id            TEXT REFERENCES sessions(id) ON DELETE SET NULL,
   repo_owner            TEXT NOT NULL,
   repo_name             TEXT NOT NULL,
   number                INTEGER NOT NULL,
   url                   TEXT NOT NULL,
   state                 TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','closed','merged')),
+  title                 TEXT,
+  -- The PR author's GitHub login, so a PR that isn't yours says whose it is.
+  author_login          TEXT,
+  -- What this PR is to the logged-in `gh` user, recomputed on every discovery
+  -- pass because it genuinely changes: 'mine' (I opened it), 'review'
+  -- (review-requested from me, or assigned to me), 'other' (just open on a
+  -- repo I work on). Only 'mine' is polled for review comments — see
+  -- `poll_all_open_prs`.
+  relation              TEXT NOT NULL DEFAULT 'mine' CHECK (relation IN ('mine','review','other')),
   last_comment_seen_at  TEXT,
   -- The error from the most recent failed `check_pr_comments_impl` run for
   -- this PR (a `gh` call failing — permissions, SSO, rate limit, whatever) —
@@ -180,15 +196,19 @@ CREATE TABLE IF NOT EXISTS pull_requests (
   -- of re-downloading everything every time.
   last_seen_updated_at  TEXT,
   -- The PR's actual head branch (`headRefName`) — known immediately for a
-  -- PR Fleet itself opened, backfilled lazily (one `gh pr view` call) for a
+  -- PR Hangar itself opened, backfilled lazily (one `gh pr view` call) for a
   -- discovered one the first time "Send to agent" needs it. This is what
   -- lets `resolve_session_for_pr_branch` check out the PR's real branch
   -- instead of trusting whatever session happens to be tied to the row.
   head_branch           TEXT,
+  -- The branch the PR targets (`baseRefName`) — what a review diffs against.
+  base_branch           TEXT,
   created_at            TEXT NOT NULL
 );
 
--- Every PR comment/review Fleet has ever fetched from someone other than the
+CREATE INDEX IF NOT EXISTS idx_pull_requests_repo_number ON pull_requests(repo_owner, repo_name, number);
+
+-- Every PR comment/review Hangar has ever fetched from someone other than the
 -- logged-in `gh` user, persisted so the PR review inbox screen survives
 -- restarts and doesn't depend on a panel being open when the poller finds
 -- one. `resolved_at` is NULL for anything still pending in the inbox.
@@ -239,10 +259,10 @@ CREATE TABLE IF NOT EXISTS turn_usage (
   created_at            TEXT NOT NULL
 );
 
--- Which terminals were open when Fleet last closed, so they can be reopened
+-- Which terminals were open when Hangar last closed, so they can be reopened
 -- on the next launch (and, when they carry a Claude session id, resumed).
 -- A mirror of the in-memory `TerminalRegistry`: `open_terminal` inserts,
--- `close_terminal` (the user closing one) deletes, but `kill_all` (Fleet
+-- `close_terminal` (the user closing one) deletes, but `kill_all` (Hangar
 -- shutting down) deliberately does NOT — that's what tells "forget this" apart
 -- from "remember this across a restart". `source_id` is a project or session
 -- id per `target_kind`, so it has no single FK; restore validates the target

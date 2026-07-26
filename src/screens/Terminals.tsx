@@ -3,6 +3,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '../lib/invoke';
 import { AppTopBar } from '../components/AppTopBar';
+import { AccountSwitcher } from '../components/AccountSwitcher';
 import { TerminalPane } from '../components/TerminalPane';
 import { toastError } from '../components/ErrorOverlay';
 import { Button } from '../components/ui/button';
@@ -42,12 +43,16 @@ export function Terminals() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [multiOpen, setMultiOpen] = useState(false);
   const [opening, setOpening] = useState(false);
+  // Which panel is mid-account-switch. Per terminal rather than the global
+  // `opening`: the swap takes a few seconds (a transcript copy and a new CLI
+  // coming up) and the feedback belongs on the panel it's happening to.
+  const [switchingId, setSwitchingId] = useState<string | null>(null);
   // Navigating here with an `openFor` param must open exactly one terminal,
   // not one per render — and not another one if the user navigates back to
   // this screen later with the same param still in the history entry.
   const handledOpenForRef = useRef(false);
 
-  // `restore_terminals` reopens whatever was open when Fleet last closed on the
+  // `restore_terminals` reopens whatever was open when Hangar last closed on the
   // first mount of this run (and resumes each conversation), and just returns
   // the live list on later mounts — so navigating away and back never
   // re-restores. 80x24 is the shell's initial size; each pane's first fit()
@@ -107,7 +112,7 @@ export function Terminals() {
         target,
         accountId: accountId ?? null,
         init: initCommand ?? null,
-        // Fleet mints the session id itself for a normal open.
+        // Hangar mints the session id itself for a normal open.
         sessionUuid: null,
         cols: 80,
         rows: 24,
@@ -145,7 +150,7 @@ export function Terminals() {
   };
 
   /** The init command an account needs: its CLI when authenticated, its login
-   * when not — the latter being the only way in Fleet to recover an account
+   * when not — the latter being the only way in Hangar to recover an account
    * whose token expired. `undefined` for the plain-shell pseudo-account. */
   const initFor = (accountId: string): InitCommand | undefined => {
     if (accountId === PLAIN_SHELL) return undefined;
@@ -178,7 +183,7 @@ export function Terminals() {
   };
 
   const reopenWithAccount = async (terminal: TerminalInfo, accountId: string) => {
-    setOpening(true);
+    setSwitchingId(terminal.id);
     try {
       const info = await invoke<TerminalInfo>('reopen_terminal_with_account', { id: terminal.id, accountId, cols: 80, rows: 24 });
       // The backend closed the old one and opened the new; swap it in place so
@@ -187,7 +192,7 @@ export function Terminals() {
     } catch (e) {
       toastError(String(e));
     } finally {
-      setOpening(false);
+      setSwitchingId(null);
     }
   };
 
@@ -230,7 +235,7 @@ export function Terminals() {
                   key={a.id}
                   className={styles.accountRow}
                   disabled={unsupported}
-                  title={unsupported ? `Fleet can't run a ${meta.name} CLI as a specific account yet` : undefined}
+                  title={unsupported ? `Hangar can't run a ${meta.name} CLI as a specific account yet` : undefined}
                   onClick={() => setPickedAccountId(a.id)}
                 >
                   <span className={styles.provBadge} style={{ background: meta.tintVar, color: meta.colorVar }}>
@@ -386,7 +391,20 @@ export function Terminals() {
                       {t.kind === 'session' ? '⑃' : '▣'}
                     </span>
                     <span className={styles.cardTitle}>{t.title}</span>
-                    {t.accountName && (
+                    {/* An account-scoped panel's chip is the account switcher:
+                        the project's rotation pool, one click, conversation
+                        carried over. A plain shell has no account to switch. */}
+                    {t.accountName && t.accountId && (
+                      <AccountSwitcher
+                        terminal={t}
+                        auth={auth}
+                        onEnsureAuth={ensureAuthLoaded}
+                        switching={switchingId === t.id}
+                        onSwitch={(accountId) => reopenWithAccount(t, accountId)}
+                        onManagePool={() => navigate('rotation-settings')}
+                      />
+                    )}
+                    {t.accountName && !t.accountId && (
                       <span className={styles.accountBadge} title={`Running with ${t.accountName}'s credentials`}>
                         {t.accountName}
                       </span>
@@ -408,7 +426,7 @@ export function Terminals() {
                     </Button>
                   </div>
                   {t.accountId && exhaustedAccountIds.has(t.accountId) && (
-                    <OutOfQuotaBanner terminal={t} busy={opening} onReopen={(accountId) => reopenWithAccount(t, accountId)} />
+                    <OutOfQuotaBanner terminal={t} busy={switchingId === t.id} onReopen={(accountId) => reopenWithAccount(t, accountId)} />
                   )}
                   {/* Keyed by id so React never recycles one pane's xterm
                       instance for a different terminal. */}
@@ -425,7 +443,7 @@ export function Terminals() {
 
 /** Shown on a panel whose account has run out of quota. Asks the backend which
  * allowed account to offer, and reopens the terminal there on click. For a
- * claude→claude switch the conversation is carried over (Fleet copies the
+ * claude→claude switch the conversation is carried over (Hangar copies the
  * transcript into the new account and resumes it), so it keeps going rather
  * than starting fresh. */
 function OutOfQuotaBanner({ terminal, busy, onReopen }: { terminal: TerminalInfo; busy: boolean; onReopen: (accountId: string) => void }) {
@@ -443,7 +461,7 @@ function OutOfQuotaBanner({ terminal, busy, onReopen }: { terminal: TerminalInfo
       .finally(() => setLoaded(true));
   }, [terminal.kind, terminal.sourceId, terminal.accountId]);
 
-  // Only a terminal Fleet started with a session id can carry its conversation.
+  // Only a terminal Hangar started with a session id can carry its conversation.
   const canKeepConversation = terminal.sessionUuid != null;
 
   return (

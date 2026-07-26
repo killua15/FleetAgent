@@ -1,3 +1,5 @@
+import type { AccountStatus, Scope } from './account';
+
 /** What a terminal was opened against. A session resolves to its worktree
  * when it has one — that's the case the feature exists for — and a project
  * resolves to its own path. See `src-tauri/src/terminals.rs`. */
@@ -24,7 +26,7 @@ export interface TerminalInfo {
   /** The account id behind `accountName` — lets the view tell when this
    * terminal's account has run out of quota (to show the reopen banner). */
   accountId: string | null;
-  /** The Claude Code session id Fleet started this terminal on, when it's an
+  /** The Claude Code session id Hangar started this terminal on, when it's an
    * account-scoped claude terminal — what makes the conversation resumable or
    * transferable later. `null` for a plain shell / login / non-claude. */
   sessionUuid: string | null;
@@ -36,8 +38,24 @@ export interface SuggestedAccount {
   accountName: string;
 }
 
+/** One row of the account switcher on a panel's header chip: the accounts this
+ * terminal's project may rotate across, from `list_terminal_rotation_accounts`.
+ * Includes the current account and any benched ones — the switcher shows the
+ * whole configured pool and disables what can't be picked right now, rather
+ * than quietly shrinking the list. */
+export interface RotatableAccount {
+  accountId: string;
+  accountName: string;
+  scope: Scope;
+  status: AccountStatus;
+  /** The account this terminal is running under. */
+  current: boolean;
+  /** What the project's rotation policy would pick. */
+  suggested: boolean;
+}
+
 /** What to type into the shell as soon as it comes up. Only meaningful with
- * an account — "start claude" as nobody in particular isn't a thing Fleet
+ * an account — "start claude" as nobody in particular isn't a thing Hangar
  * offers, and the backend rejects it. */
 export type InitCommand = 'start' | 'login';
 

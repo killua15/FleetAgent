@@ -12,7 +12,7 @@ pub fn init(app: &AppHandle) -> Connection {
         .app_data_dir()
         .expect("resolve app data dir");
     std::fs::create_dir_all(&dir).expect("create app data dir");
-    let db_path = dir.join("fleet.db");
+    let db_path = dir.join(crate::app_data::DB_FILE);
 
     let conn = Connection::open(db_path).expect("open sqlite database");
     conn.execute_batch("PRAGMA foreign_keys = ON;")
@@ -63,6 +63,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "open_terminals",
         run: open_terminals_table,
         transactional: true,
+    },
+    Migration {
+        version: 4,
+        name: "pull_requests_project_anchored",
+        run: pull_requests_project_anchored,
+        // Rebuilds a table other tables reference, so it has to toggle
+        // `PRAGMA foreign_keys` — a no-op inside a transaction. It runs its
+        // own BEGIN/COMMIT instead.
+        transactional: false,
     },
 ];
 
@@ -116,6 +125,80 @@ fn open_terminals_table(conn: &Connection) -> Result<(), String> {
          );",
     )
     .map_err(|e| format!("could not create open_terminals: {e}"))
+}
+
+/// Re-anchors `pull_requests` on the project instead of a session, so a PR
+/// opened by *someone else* can be tracked at all.
+///
+/// Two things made that impossible: `session_id` was `NOT NULL`, and the inbox
+/// reached the project by joining through `sessions`. A PR of another person's
+/// has no session, and inventing one (which discovery used to do — "the
+/// project's most recent session", an apaño its own doc comment admitted to)
+/// puts a stranger's PR under a session that never touched it.
+///
+/// SQLite can't relax a NOT NULL or change an FK action in place, so this is
+/// the standard 12-step rebuild, same as `migrate_sessions_account_fk_to_cascade`.
+/// Existing rows keep everything they had: `project_id` is backfilled through
+/// the session they were anchored to, and `relation` becomes `mine` — which is
+/// exactly what they all were, since discovery only ever looked for
+/// `--author @me`.
+///
+/// A row whose session vanished (an FK left dangling by an older, buggier
+/// schema) has no project to backfill from and is dropped: it can't be shown on
+/// any screen, and re-discovery will bring the PR back properly if it's still
+/// open.
+fn pull_requests_project_anchored(conn: &Connection) -> Result<(), String> {
+    if has_column(conn, "pull_requests", "project_id")? {
+        return Ok(());
+    }
+
+    // `pr_review_comments` references `pull_requests`, and a modern
+    // `ALTER TABLE ... RENAME` rewrites other tables' FKs to follow the rename —
+    // which is exactly how `repair_dangling_sessions_fk` came to exist. With
+    // `legacy_alter_table` on, the rename touches nothing but the renamed table,
+    // and the new `pull_requests` created right after slots straight back in
+    // under the name the FK still names. Both PRAGMAs are no-ops inside a
+    // transaction, so they sit outside it.
+    let _ = conn.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;");
+    let result = conn.execute_batch(
+        "BEGIN TRANSACTION;
+         ALTER TABLE pull_requests RENAME TO pull_requests_old_anchor_migration;
+         CREATE TABLE pull_requests (
+           id                    TEXT PRIMARY KEY,
+           project_id            TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+           session_id            TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+           repo_owner            TEXT NOT NULL,
+           repo_name             TEXT NOT NULL,
+           number                INTEGER NOT NULL,
+           url                   TEXT NOT NULL,
+           state                 TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','closed','merged')),
+           title                 TEXT,
+           author_login          TEXT,
+           relation              TEXT NOT NULL DEFAULT 'mine' CHECK (relation IN ('mine','review','other')),
+           last_comment_seen_at  TEXT,
+           last_check_error      TEXT,
+           last_seen_updated_at  TEXT,
+           head_branch           TEXT,
+           base_branch           TEXT,
+           created_at            TEXT NOT NULL
+         );
+         INSERT INTO pull_requests (id, project_id, session_id, repo_owner, repo_name, number, url, state, relation, last_comment_seen_at, last_check_error, last_seen_updated_at, head_branch, created_at)
+           SELECT pr.id, s.project_id, pr.session_id, pr.repo_owner, pr.repo_name, pr.number, pr.url, pr.state, 'mine', pr.last_comment_seen_at, pr.last_check_error, pr.last_seen_updated_at, pr.head_branch, pr.created_at
+           FROM pull_requests_old_anchor_migration pr
+           JOIN sessions s ON s.id = pr.session_id;
+         DROP TABLE pull_requests_old_anchor_migration;
+         CREATE INDEX IF NOT EXISTS idx_pull_requests_repo_number ON pull_requests(repo_owner, repo_name, number);
+         COMMIT;",
+    );
+    let outcome = match result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            Err(format!("could not re-anchor pull_requests on the project: {e}"))
+        }
+    };
+    let _ = conn.execute_batch("PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;");
+    outcome
 }
 
 /// Applies every migration newer than the database's recorded
@@ -676,5 +759,135 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(texts, vec!["hello".to_string(), "world".to_string()], "pre-existing block must survive the repair");
+    }
+
+    /// A database on the pre-migration-4 shape: `pull_requests` anchored to a
+    /// session, no project of its own. Rebuilt in the test rather than taken
+    /// from `SCHEMA`, which now declares the *new* shape.
+    fn db_with_session_anchored_prs() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             PRAGMA legacy_alter_table=ON;
+             DROP TABLE pull_requests;
+             CREATE TABLE pull_requests (
+               id                    TEXT PRIMARY KEY,
+               session_id            TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+               repo_owner            TEXT NOT NULL,
+               repo_name             TEXT NOT NULL,
+               number                INTEGER NOT NULL,
+               url                   TEXT NOT NULL,
+               state                 TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','closed','merged')),
+               last_comment_seen_at  TEXT,
+               last_check_error      TEXT,
+               last_seen_updated_at  TEXT,
+               head_branch           TEXT,
+               created_at            TEXT NOT NULL
+             );
+             PRAGMA legacy_alter_table=OFF;
+             PRAGMA foreign_keys=ON;",
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, status, created_at, updated_at)
+             VALUES ('acc1','claude','sub','Test','work','','','acc1','healthy','now','now')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO projects (id, name, path, created_at) VALUES ('proj1','Test','/tmp','now')", []).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, name, project_id, account_id, model, effort, mode, status, started_at)
+             VALUES ('sess1','s','proj1','acc1','opus','high','ask_edits','waiting','now')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pull_requests (id, session_id, repo_owner, repo_name, number, url, state, head_branch, created_at)
+             VALUES ('pr1','sess1','killua15','Hangar',7,'https://github.com/killua15/Hangar/pull/7','open','feat/x','now')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pr_review_comments (id, pull_request_id, author, body, comment_created_at, external_id, created_at)
+             VALUES ('c1','pr1','alice','fix this','now','gh-1','now')",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    /// The migration must carry every tracked PR over, find its project through
+    /// the session it used to hang off, and label it `mine` — which is what all
+    /// of them were, since discovery only ever asked for `--author @me`.
+    #[test]
+    fn re_anchoring_pull_requests_keeps_them_and_backfills_their_project() {
+        let conn = db_with_session_anchored_prs();
+        run_migrations(&conn).unwrap();
+
+        let (project_id, session_id, relation): (String, Option<String>, String) = conn
+            .query_row("SELECT project_id, session_id, relation FROM pull_requests WHERE id = 'pr1'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .expect("the tracked PR must survive the rebuild");
+        assert_eq!(project_id, "proj1");
+        assert_eq!(session_id.as_deref(), Some("sess1"), "a PR Hangar opened keeps the session that produced it");
+        assert_eq!(relation, "mine");
+    }
+
+    /// The whole point of the migration: a PR with no session at all — anyone
+    /// else's — is now representable.
+    #[test]
+    fn a_pull_request_with_no_session_can_be_tracked_after_the_migration() {
+        let conn = db_with_session_anchored_prs();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO pull_requests (id, project_id, session_id, repo_owner, repo_name, number, url, state, author_login, relation, created_at)
+             VALUES ('pr2','proj1',NULL,'killua15','Hangar',8,'https://github.com/killua15/Hangar/pull/8','open','alice','review','now')",
+            [],
+        )
+        .expect("a PR opened by someone else has no session, and must still insert");
+    }
+
+    /// The trap this file already paid for once: rebuilding a table that
+    /// others reference can leave their FK pointing at a name that no longer
+    /// exists, and every later insert fails. `pr_review_comments` references
+    /// `pull_requests`, so it must still work — and its rows must survive.
+    #[test]
+    fn re_anchoring_leaves_pr_comments_pointing_at_a_table_that_exists() {
+        let conn = db_with_session_anchored_prs();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO pr_review_comments (id, pull_request_id, author, body, comment_created_at, external_id, created_at)
+             VALUES ('c2','pr1','bob','and this','now','gh-2','now')",
+            [],
+        )
+        .expect("inserting a comment must still work after pull_requests is rebuilt");
+
+        let comments: i64 = conn.query_row("SELECT COUNT(*) FROM pr_review_comments WHERE pull_request_id = 'pr1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(comments, 2, "the pre-existing comment must survive alongside the new one");
+
+        let sql: String = conn.query_row("SELECT sql FROM sqlite_master WHERE name='pr_review_comments'", [], |r| r.get(0)).unwrap();
+        assert!(!sql.contains("anchor_migration"), "the FK must not have followed the rebuild's temporary name");
+    }
+
+    /// Deleting a session no longer takes its PR with it — the PR is the
+    /// project's, and it still exists on GitHub. Deleting the project does.
+    #[test]
+    fn a_pull_request_outlives_its_session_but_not_its_project() {
+        let conn = db_with_session_anchored_prs();
+        run_migrations(&conn).unwrap();
+
+        conn.execute("DELETE FROM sessions WHERE id = 'sess1'", []).unwrap();
+        let session_id: Option<String> = conn.query_row("SELECT session_id FROM pull_requests WHERE id = 'pr1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(session_id, None, "the PR stays, orphaned of its session");
+
+        conn.execute("DELETE FROM projects WHERE id = 'proj1'", []).unwrap();
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM pull_requests", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0, "deleting the project takes its PRs");
     }
 }

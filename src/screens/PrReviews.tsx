@@ -6,9 +6,14 @@ import { Button } from '../components/ui/button';
 import { Spinner } from '../components/Spinner';
 import { toastError } from '../components/ErrorOverlay';
 import { useNavigation } from '../nav/NavigationProvider';
-import type { PrComment, PrInboxEntry, ProjectPrInbox } from '../types/pullRequest';
+import { AccountPickerButton } from '../components/AccountPickerButton';
+import { PR_RELATION_LABEL, type PrComment, type PrInboxEntry, type PrRelation, type ProjectPrInbox } from '../types/pullRequest';
 import type { TerminalInfo } from '../types/terminal';
 import styles from './PrReviews.module.css';
+
+/** Tab order, and with it the reading order of the screen: what's yours to
+ * finish, what someone asked you to look at, then the rest of the repo. */
+const RELATION_TABS: PrRelation[] = ['mine', 'review', 'other'];
 
 // Mirrors the background poller's interval in `lib.rs` (`Duration::from_secs(300)`)
 // — purely a countdown display, doesn't drive the actual poll.
@@ -27,6 +32,8 @@ export function PrReviews() {
   const [loading, setLoading] = useState(true);
   const [checkingNow, setCheckingNow] = useState(false);
   const [busyCommentId, setBusyCommentId] = useState<string | null>(null);
+  const [reviewingPrId, setReviewingPrId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<PrRelation>('mine');
   const [secondsUntilAutoCheck, setSecondsUntilAutoCheck] = useState(AUTO_CHECK_INTERVAL_SECONDS);
 
   const load = async () => {
@@ -40,8 +47,8 @@ export function PrReviews() {
     }
   };
 
-  // `list_pr_review_inbox` only reads what Fleet already knows about —
-  // discovering PRs opened outside Fleet (or new comments) needs a real
+  // `list_pr_review_inbox` only reads what Hangar already knows about —
+  // discovering PRs opened outside Hangar (or new comments) needs a real
   // `gh` round-trip, so both the first load and the manual button run the
   // full check rather than just re-reading the local database.
   const runFullCheck = async () => {
@@ -52,7 +59,7 @@ export function PrReviews() {
       toastError(String(e));
     } finally {
       // Reload from the local DB either way — even if the real `gh` check
-      // failed, this at least shows whatever Fleet already had tracked,
+      // failed, this at least shows whatever Hangar already had tracked,
       // and clears the loading spinner instead of leaving it stuck.
       await load();
     }
@@ -90,20 +97,35 @@ export function PrReviews() {
     return () => clearInterval(id);
   }, []);
 
-  const handleSend = async (comment: PrComment) => {
+  const handleSend = async (comment: PrComment, accountId: string) => {
     setBusyCommentId(comment.id);
     try {
       // Opens a real interactive terminal on the PR's own branch (a worktree
-      // the backend resolves or creates) under the project's account, running
+      // the backend resolves or creates) under the chosen account, running
       // `claude` already working on the comments. 80x24 is the shell's initial
       // size; the pane's first fit() corrects it.
-      await invoke<TerminalInfo>('send_pr_comments_to_terminal', { commentIds: [comment.id], cols: 80, rows: 24 });
+      await invoke<TerminalInfo>('send_pr_comments_to_terminal', { commentIds: [comment.id], accountId, cols: 80, rows: 24 });
       await load();
       navigate('terminals');
     } catch (e) {
       toastError(String(e));
     } finally {
       setBusyCommentId(null);
+    }
+  };
+
+  /** Reviewing a PR — the point of listing other people's at all. Same
+   * worktree-on-the-PR's-branch machinery the comments path uses, with Claude
+   * Code opening on the diff instead of on feedback to address. */
+  const handleReview = async (entry: PrInboxEntry, accountId: string) => {
+    setReviewingPrId(entry.pullRequest.id);
+    try {
+      await invoke<TerminalInfo>('open_pr_review_terminal', { prId: entry.pullRequest.id, accountId, cols: 80, rows: 24 });
+      navigate('terminals');
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setReviewingPrId(null);
     }
   };
 
@@ -120,7 +142,12 @@ export function PrReviews() {
   };
 
   const selected = inbox.find((p) => p.projectId === selectedProjectId);
+  // Only your own PRs carry pending comments (they're the only ones polled),
+  // so this count keeps meaning "things waiting on you" now that the list is
+  // no longer only yours.
   const totalPending = (p: ProjectPrInbox) => p.entries.reduce((sum, e) => sum + e.comments.length, 0);
+  const entriesFor = (relation: PrRelation) => selected?.entries.filter((e) => e.pullRequest.relation === relation) ?? [];
+  const visibleEntries = entriesFor(activeTab);
 
   return (
     <div className={styles.screen}>
@@ -171,16 +198,36 @@ export function PrReviews() {
 
         <div className={styles.detail}>
           {selected ? (
-            selected.entries.map((entry) => (
-              <PrEntryCard
-                key={entry.pullRequest.id}
-                entry={entry}
-                busyCommentId={busyCommentId}
-                onOpenPr={() => openUrl(entry.pullRequest.url)}
-                onSend={handleSend}
-                onDismiss={handleDismiss}
-              />
-            ))
+            <>
+              <div className={styles.tabs}>
+                {RELATION_TABS.map((relation) => {
+                  const count = entriesFor(relation).length;
+                  return (
+                    <button
+                      key={relation}
+                      className={relation === activeTab ? styles.tabActive : styles.tab}
+                      onClick={() => setActiveTab(relation)}
+                    >
+                      {PR_RELATION_LABEL[relation]}
+                      <span className={styles.tabCount}>{count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {visibleEntries.map((entry) => (
+                <PrEntryCard
+                  key={entry.pullRequest.id}
+                  entry={entry}
+                  busyCommentId={busyCommentId}
+                  reviewing={reviewingPrId === entry.pullRequest.id}
+                  onOpenPr={() => openUrl(entry.pullRequest.url)}
+                  onSend={handleSend}
+                  onReview={handleReview}
+                  onDismiss={handleDismiss}
+                />
+              ))}
+              {visibleEntries.length === 0 && <span className={styles.dimText}>{emptyTabText(activeTab)}</span>}
+            </>
           ) : loading ? (
             <div className={styles.dimText}>
               <Spinner label="loading…" />
@@ -194,25 +241,44 @@ export function PrReviews() {
   );
 }
 
+/** What an empty tab should say — each one is empty for a different reason,
+ * and "nothing here" would hide which. */
+function emptyTabText(relation: PrRelation): string {
+  switch (relation) {
+    case 'mine':
+      return 'No open PRs of yours on this project.';
+    case 'review':
+      return 'Nobody has asked you to review anything on this project.';
+    case 'other':
+      return 'No other open PRs on this project.';
+  }
+}
+
 function PrEntryCard({
   entry,
   busyCommentId,
+  reviewing,
   onOpenPr,
   onSend,
+  onReview,
   onDismiss,
 }: {
   entry: PrInboxEntry;
   busyCommentId: string | null;
+  reviewing: boolean;
   onOpenPr: () => void;
-  onSend: (comment: PrComment) => void;
+  onSend: (comment: PrComment, accountId: string) => void;
+  onReview: (entry: PrInboxEntry, accountId: string) => void;
   onDismiss: (comment: PrComment) => void;
 }) {
+  const isMine = entry.pullRequest.relation === 'mine';
   // Collapsible per card — a PR with several long reviews shouldn't force
   // every other PR further down the page; the header (link/session/count)
-  // always stays visible, only the body folds away. Starts expanded so
-  // nothing pending goes unnoticed on first look.
-  const hasBody = entry.comments.length > 0 || Boolean(entry.pullRequest.lastCheckError);
-  const [collapsed, setCollapsed] = useState(false);
+  // always stays visible, only the body folds away. Someone else's PR starts
+  // folded: there's nothing pending on it, the title and author in the header
+  // are the whole story until you decide to review it.
+  const hasBody = entry.comments.length > 0 || Boolean(entry.pullRequest.lastCheckError) || !isMine;
+  const [collapsed, setCollapsed] = useState(!isMine);
 
   return (
     <div className={styles.prCard}>
@@ -229,7 +295,11 @@ function PrEntryCard({
         <button className={styles.prLink} onClick={onOpenPr} title="Open on GitHub">
           {entry.pullRequest.repoOwner}/{entry.pullRequest.repoName} #{entry.pullRequest.number} ↗
         </button>
-        <span className={styles.sessionLink}>{entry.sessionName}</span>
+        {entry.pullRequest.title && <span className={styles.prTitle}>{entry.pullRequest.title}</span>}
+        {/* Whose PR this is: the session for one of yours, the author for
+            anyone else's. */}
+        {entry.sessionName && <span className={styles.sessionLink}>{entry.sessionName}</span>}
+        {!isMine && entry.pullRequest.authorLogin && <span className={styles.prAuthor}>@{entry.pullRequest.authorLogin}</span>}
         {entry.pullRequest.headBranch && (
           <span className={styles.commentLocation} title="This PR's real branch — the terminal opens in a worktree checked out here">
             ⑃ {entry.pullRequest.headBranch}
@@ -237,6 +307,12 @@ function PrEntryCard({
         )}
         <span className={styles.spacer} />
         {entry.comments.length > 0 && <span className={styles.countBadge}>{entry.comments.length}</span>}
+        <AccountPickerButton
+          label={reviewing ? 'Opening…' : 'Review'}
+          busy={reviewing}
+          title="Open a terminal on this PR's branch with Claude Code reading the diff"
+          onPick={(accountId) => onReview(entry, accountId)}
+        />
       </div>
       {!collapsed && (
         <>
@@ -245,7 +321,13 @@ function PrEntryCard({
               ⚠ last check failed: {entry.pullRequest.lastCheckError}
             </div>
           ) : (
-            entry.comments.length === 0 && <div className={styles.noComments}>no new comments</div>
+            entry.comments.length === 0 && (
+              <div className={styles.noComments}>
+                {isMine
+                  ? 'no new comments'
+                  : `opened by ${entry.pullRequest.authorLogin ?? 'someone else'}${entry.pullRequest.baseBranch ? ` into ${entry.pullRequest.baseBranch}` : ''} — Hangar doesn't track comments on other people's PRs`}
+              </div>
+            )
           )}
           <div className={styles.commentList}>
             {entry.comments.map((c) => (
@@ -262,9 +344,12 @@ function PrEntryCard({
                 </div>
                 <p className={styles.commentBody}>{c.body}</p>
                 <div className={styles.commentActions}>
-                  <Button size="sm" disabled={busyCommentId === c.id} onClick={() => onSend(c)} title="Open a terminal on this PR's branch and hand the comments to Claude Code">
-                    {busyCommentId === c.id ? 'Opening…' : 'Send to terminal'}
-                  </Button>
+                  <AccountPickerButton
+                    label={busyCommentId === c.id ? 'Opening…' : 'Send to terminal'}
+                    busy={busyCommentId === c.id}
+                    title="Open a terminal on this PR's branch and hand the comments to Claude Code"
+                    onPick={(accountId) => onSend(c, accountId)}
+                  />
                   <Button size="sm" variant="outline" disabled={busyCommentId === c.id} onClick={() => onDismiss(c)}>
                     Dismiss
                   </Button>

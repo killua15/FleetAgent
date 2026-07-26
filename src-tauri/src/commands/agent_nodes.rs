@@ -5,9 +5,9 @@
 //! all run first (in parallel), and once every child has finished, its
 //! output is folded into the parent's prompt as context before the parent's
 //! own turn starts. This is NOT autonomous agent-to-agent delegation (no
-//! agent decides to invoke another) — Fleet walks the tree and sequences the
+//! agent decides to invoke another) — Hangar walks the tree and sequences the
 //! turns itself, same spirit as CrewAI's deterministic "Flow" mode rather
-//! than its free-form "Crew" mode. See the tree-canvas plan for why: Fleet
+//! than its free-form "Crew" mode. See the tree-canvas plan for why: Hangar
 //! has no inter-agent message bus, and building one is a much bigger project
 //! than this screen.
 

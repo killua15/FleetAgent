@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   build:
-    # macOS is the platform Fleet actually targets — `open -a Terminal`, the
+    # macOS is the platform Hangar actually targets — `open -a Terminal`, the
     # `resolve_binary` search paths, and the worktree cleanup all assume it —
     # so testing anywhere else would be testing a configuration nobody runs.
     runs-on: macos-latest

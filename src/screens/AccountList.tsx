@@ -9,7 +9,7 @@ import { PickConfigDirDialog } from '../components/PickConfigDirDialog';
 import { Spinner } from '../components/Spinner';
 import styles from './AccountList.module.css';
 
-/** Fleet's own login wizard parks each login in
+/** Hangar's own login wizard parks each login in
  * `<app data>/pending-logins/<uuid>` and keeps it as the account's permanent
  * home, so this path is the signature of an account that isn't using one of
  * the user's own `~/.claude-*` directories — the reason its terminal command
@@ -20,7 +20,7 @@ function isWizardConfigDir(path: string): boolean {
 
 /** `/Users/killua/.claude-work` → `~/.claude-work`. The home prefix is the
  * same on every row, so it's pure noise in a list; the full path stays in the
- * row's tooltip. macOS-only, like the rest of Fleet. */
+ * row's tooltip. macOS-only, like the rest of Hangar. */
 function abbreviateHome(path: string): string {
   return path.replace(/^\/Users\/[^/]+/, '~');
 }
@@ -152,7 +152,7 @@ export function AccountList() {
                   </Button>
                 }
                 title={`Delete ${acc.name}?`}
-                description="This removes the account and its credentials from Fleet. This cannot be undone."
+                description="This removes the account and its credentials from Hangar. This cannot be undone."
                 onConfirm={() => handleConfirmDelete(acc)}
               />
             </div>

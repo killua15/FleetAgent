@@ -108,7 +108,8 @@ pub fn ensure_project_for_path(db: State<DbConnection>, path: String) -> Result<
 }
 
 /// The only project field worth editing after creation — changing `path`
-/// isn't offered: existing worktrees under `.fleet/worktrees` inside the old
+/// isn't offered: existing worktrees under `.hangar/worktrees` (or the
+/// pre-rename `.fleet/worktrees`) inside the old
 /// path would silently orphan themselves.
 #[tauri::command]
 pub fn update_project(db: State<DbConnection>, id: String, name: String) -> Result<Project, String> {
@@ -192,7 +193,7 @@ mod tests {
         let db = app.state::<DbConnection>();
 
         // A real directory on the machine — the command validates it exists.
-        let dir = std::env::temp_dir().join(format!("fleet-test-project-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("hangar-test-project-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.to_string_lossy().to_string();
 
@@ -243,7 +244,7 @@ mod tests {
         let db = app.state::<DbConnection>();
 
         let project = create_project(db.clone(), NewProject { name: "doomed".to_string(), path: "/tmp/doomed-project-src".to_string() }).unwrap();
-        let worktree_dir = std::env::temp_dir().join(format!("fleet-test-delete-project-{}", Uuid::new_v4()));
+        let worktree_dir = std::env::temp_dir().join(format!("hangar-test-delete-project-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&worktree_dir).unwrap();
         assert!(worktree_dir.exists());
 

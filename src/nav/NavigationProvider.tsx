@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
 
 /**
- * Screen names mirror the Fleet mockup files (`<Name>.dc.html`). Not all are
+ * Screen names mirror the Hangar mockup files (`<Name>.dc.html`). Not all are
  * implemented yet — screens land phase by phase; this union is declared up
  * front so navigation calls compile against the full map as it fills in.
  */

@@ -64,7 +64,7 @@ interface Attachment {
 
 const MODE_OPTIONS: SessionMode[] = ['plan', 'ask_edits', 'auto_edit', 'yolo'];
 
-const FILES_VIEW_WIDTH_KEY = 'fleet.filesViewWidth';
+const FILES_VIEW_WIDTH_KEY = 'hangar.filesViewWidth';
 const FILES_VIEW_WIDTH_DEFAULT = 280;
 const FILES_VIEW_WIDTH_MIN = 260;
 const FILES_VIEW_WIDTH_MAX = 900;
@@ -995,7 +995,7 @@ export function AgentPanelBody({
       {(() => {
         // Prefer real numbers scraped from Claude Code's own `/usage` when
         // we have them (see src-tauri/src/usage_scraper.rs) — fall back to
-        // Fleet's own token-based estimate for any field that's null
+        // Hangar's own token-based estimate for any field that's null
         // (couldn't be parsed) or while the scrape is still pending, so the
         // bars never go blank or block on a slow background fetch.
         const real = realUsage.stats;

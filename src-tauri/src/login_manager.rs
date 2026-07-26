@@ -92,7 +92,7 @@ fn account_config_dir<R: Runtime>(app: &AppHandle<R>, name: &str) -> Result<std:
 
 /// Full parent environment plus an isolated `CLAUDE_CONFIG_DIR` and a sane
 /// `TERM`, so the CLI renders and can find its own helpers regardless of how
-/// Fleet itself was launched. `pub(crate)` so `usage_scraper` (another
+/// Hangar itself was launched. `pub(crate)` so `usage_scraper` (another
 /// interactive-PTY consumer of the same CLI) can reuse it instead of
 /// duplicating the same env-assembly logic.
 pub(crate) fn login_env(config_dir: &str) -> Vec<(String, String)> {
@@ -275,7 +275,7 @@ pub fn cancel_login(app: &AppHandle, login_id: &str) -> Result<(), String> {
 
 /// Kills every in-flight interactive login, used on app exit. These are real
 /// `claude auth login` processes sitting in a PTY waiting on stdin — quitting
-/// Fleet with the AddAccount wizard open would otherwise strand one forever.
+/// Hangar with the AddAccount wizard open would otherwise strand one forever.
 /// Their pending config dirs are deliberately left on disk: an OAuth login
 /// that actually completed before the quit is still adoptable next launch.
 pub fn kill_all_logins<R: tauri::Runtime>(app: &AppHandle<R>) {
@@ -368,7 +368,7 @@ mod tests {
     #[test]
     #[ignore = "requires a real `claude` CLI installed on the machine"]
     fn auth_status_for_dir_reports_logged_out_for_a_fresh_dir() {
-        let dir = std::env::temp_dir().join(format!("fleet-test-auth-status-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("hangar-test-auth-status-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let status = auth_status_for_dir(dir.to_str().unwrap()).expect("claude auth status should run and parse");

@@ -30,7 +30,7 @@ use uuid::Uuid;
 /// consider it again. Claude's headline subscription limit is a rolling
 /// 5-hour window, so an account that tripped it is plausibly usable again
 /// after one. This is deliberately a *recovery* heuristic, not a claim to
-/// know the real reset time — Fleet has no API for that (see
+/// know the real reset time — Hangar has no API for that (see
 /// `usage_scraper`), and the cost of guessing early is one failed turn that
 /// re-flags the account, not data loss.
 const EXHAUSTION_COOLDOWN_HOURS: i64 = 5;
@@ -73,7 +73,7 @@ impl Policy {
 pub struct Candidate {
     pub account_id: String,
     pub account_name: String,
-    /// Trailing-7-day recorded spend (Fleet's own `turn_usage` numbers, not a
+    /// Trailing-7-day recorded spend (Hangar's own `turn_usage` numbers, not a
     /// live provider figure) — the "load" in least-loaded.
     pub recent_cost_usd: f64,
     /// Recorded tokens over the same window. Subscription accounts never
@@ -364,6 +364,95 @@ pub fn suggest_terminal_account(
     Ok(pick(policy, &candidates).map(|c| SuggestedAccount { account_id: c.account_id.clone(), account_name: c.account_name.clone() }))
 }
 
+/// One row of the account switcher on a terminal panel's header chip.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RotatableAccount {
+    pub account_id: String,
+    pub account_name: String,
+    pub scope: String,
+    /// Straight from the accounts row (`healthy`, `exhausted`, …). A benched
+    /// account is listed and disabled rather than hidden: the pool the user
+    /// checked in Settings → Rotation should be the pool they see, with the
+    /// reason one of them can't be picked right now.
+    pub status: String,
+    pub current: bool,
+    /// The one this project's rotation policy would pick. Shows the policy
+    /// where the decision actually gets made, not only in Settings.
+    pub suggested: bool,
+}
+
+/// Every account the switcher offers for a terminal currently on
+/// `current_account_id`: the project's allowed accounts of the same provider,
+/// plus the current one whether or not it's checked.
+///
+/// Deliberately wider than `load_candidates` in two ways — it keeps benched
+/// accounts (the UI disables them) and it keeps the account you're on (so the
+/// list can say where you are). Narrower in none: the provider filter is as
+/// non-negotiable here as it is there, because a terminal can only reopen under
+/// a CLI Hangar can run it as.
+///
+/// Split from the command so the ordering and membership rules are testable
+/// without a mock app.
+fn rotatable_accounts(conn: &Connection, project_id: &str, provider: &str, current_account_id: &str) -> Result<Vec<RotatableAccount>, String> {
+    // Same fallback as `suggest_terminal_account`: clicking a row *is* the
+    // manual decision, so `manual` still means "no automatic switch", not "no
+    // recommendation".
+    let policy = match read_policy(conn, project_id, provider) {
+        Policy::Manual => Policy::Auto,
+        other => other,
+    };
+    let candidates = load_candidates(conn, project_id, provider, current_account_id)?;
+    let suggested = pick(policy, &candidates).map(|c| c.account_id.clone());
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT a.id, a.name, a.scope, a.status
+             FROM accounts a
+             LEFT JOIN project_allowed_accounts paa ON paa.account_id = a.id AND paa.project_id = ?1
+             WHERE a.provider = ?2 AND (COALESCE(paa.allowed, 0) = 1 OR a.id = ?3)
+             ORDER BY (a.id = ?3) DESC, a.scope, a.name",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![project_id, provider, current_account_id], |row| {
+            let account_id: String = row.get(0)?;
+            Ok(RotatableAccount {
+                current: account_id == current_account_id,
+                suggested: suggested.as_deref() == Some(account_id.as_str()),
+                account_id,
+                account_name: row.get(1)?,
+                scope: row.get(2)?,
+                status: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// The accounts a terminal's header chip offers to switch to. Unlike the
+/// out-of-quota banner, this is reachable while everything is fine — switching
+/// account is a choice, not only a recovery.
+#[tauri::command]
+pub fn list_terminal_rotation_accounts(
+    db: tauri::State<DbConnection>,
+    kind: String,
+    source_id: String,
+    current_account_id: String,
+) -> Result<Vec<RotatableAccount>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    // Benched accounts are re-checked lazily elsewhere (the usage poller); the
+    // cheap part — lifting anyone whose cooldown simply elapsed — is worth doing
+    // here so the list doesn't grey out an account that recovered hours ago.
+    recover_cooled_down_accounts(&conn)?;
+
+    let project_id = project_of_terminal(&conn, &kind, &source_id)?;
+    let provider: String = conn
+        .query_row("SELECT provider FROM accounts WHERE id = ?1", params![current_account_id], |r| r.get(0))
+        .map_err(|e| format!("terminal's account lookup failed: {e}"))?;
+    rotatable_accounts(&conn, &project_id, &provider, &current_account_id)
+}
+
 /// The accounts a project is allowed to rotate to that are *not* currently
 /// usable — the mirror image of `load_candidates`, which only ever returns
 /// healthy ones.
@@ -388,6 +477,22 @@ pub(crate) fn allowed_benched_accounts(conn: &Connection, project_id: &str, prov
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/// Why a terminal changed account, as recorded in `rotation_events`. Derived
+/// from the account it left rather than from the button that was pressed: both
+/// the header switcher and the out-of-quota banner call the same reopen, and
+/// what makes the two cases different is whether the old account could still
+/// run, not which control started it.
+pub(crate) fn terminal_rotation_reason(conn: &Connection, from_account_id: &str) -> String {
+    let status: String = conn
+        .query_row("SELECT status FROM accounts WHERE id = ?1", params![from_account_id], |r| r.get(0))
+        .unwrap_or_else(|_| "unknown".to_string());
+    if status == "healthy" {
+        "manual (switched from the panel)".to_string()
+    } else {
+        format!("{status} (terminal reopened by hand)")
+    }
+}
+
 /// Records a terminal reopened under another account in `rotation_events`, the
 /// same ledger `rotate_session_if_needed` writes to.
 ///
@@ -397,10 +502,11 @@ pub(crate) fn allowed_benched_accounts(conn: &Connection, project_id: &str, prov
 /// that it was already handed one.
 pub(crate) fn record_terminal_rotation(conn: &Connection, kind: &str, source_id: &str, from_account_id: &str, to_account_id: &str) -> Result<(), String> {
     let project_id = project_of_terminal(conn, kind, source_id)?;
+    let reason = terminal_rotation_reason(conn, from_account_id);
     conn.execute(
         "INSERT INTO rotation_events (id, project_id, from_account_id, to_account_id, reason, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![Uuid::new_v4().to_string(), project_id, from_account_id, to_account_id, "exhausted (terminal reopened by hand)", Utc::now().to_rfc3339()],
+        params![Uuid::new_v4().to_string(), project_id, from_account_id, to_account_id, reason, Utc::now().to_rfc3339()],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -776,6 +882,98 @@ mod tests {
     fn a_project_that_allows_nothing_has_no_benched_candidates() {
         let conn = seed(Some("auto"), &[], None);
         assert!(allowed_benched_accounts(&conn, "proj1", "claude", "acc1").unwrap().is_empty());
+    }
+
+    // -- the header chip's account switcher ---------------------------------
+
+    fn switcher_ids(conn: &Connection, current: &str) -> Vec<String> {
+        rotatable_accounts(conn, "proj1", "claude", current).unwrap().into_iter().map(|a| a.account_id).collect()
+    }
+
+    /// The pool is what the project checked in Settings → Rotation, and the
+    /// account you're on leads it so the chip can say where you are.
+    #[test]
+    fn the_switcher_lists_the_projects_allowed_accounts_with_the_current_one_first() {
+        let conn = seed(Some("auto"), &["acc2", "acc3"], None);
+        assert_eq!(switcher_ids(&conn, "acc1"), vec!["acc1", "acc2", "acc3"]);
+    }
+
+    /// `acc1` isn't checked for the project, but it's the account the terminal
+    /// is running under — dropping it would make the chip claim you're
+    /// somewhere you aren't.
+    #[test]
+    fn the_current_account_is_listed_even_when_the_project_does_not_allow_it() {
+        let conn = seed(Some("auto"), &["acc2"], None);
+        let rows = rotatable_accounts(&conn, "proj1", "claude", "acc1").unwrap();
+        assert_eq!(rows.iter().map(|a| a.account_id.as_str()).collect::<Vec<_>>(), vec!["acc1", "acc2"]);
+        assert!(rows[0].current);
+        assert!(!rows[1].current);
+    }
+
+    /// Unlike `load_candidates`, a benched account stays in the list — the UI
+    /// disables it and says why. Hiding it would look like the account vanished
+    /// from the pool the user configured.
+    #[test]
+    fn a_benched_account_is_listed_with_its_status_rather_than_hidden() {
+        let conn = seed(Some("auto"), &["acc2", "acc3"], None);
+        conn.execute("UPDATE accounts SET status = 'exhausted', exhausted_at = ?1 WHERE id = 'acc2'", params![Utc::now().to_rfc3339()]).unwrap();
+
+        let rows = rotatable_accounts(&conn, "proj1", "claude", "acc1").unwrap();
+        let acc2 = rows.iter().find(|a| a.account_id == "acc2").expect("a benched account must still be offered, greyed out");
+        assert_eq!(acc2.status, "exhausted");
+        assert!(!acc2.suggested, "a benched account is never the recommendation");
+    }
+
+    /// Switching CLI isn't switching account: a codex account can't run this
+    /// terminal's command line, so it never appears even if it's allowed.
+    #[test]
+    fn the_switcher_never_offers_a_different_providers_account() {
+        let conn = seed(Some("auto"), &["acc2", "other1"], None);
+        assert_eq!(switcher_ids(&conn, "acc1"), vec!["acc1", "acc2"]);
+    }
+
+    /// The recommendation follows the project's policy: round-robin points at
+    /// the account that went longest without being used, not the cheapest.
+    #[test]
+    fn the_suggested_row_follows_the_projects_rotation_policy() {
+        let conn = seed(Some("round_robin"), &["acc2", "acc3"], None);
+        conn.execute(
+            "INSERT INTO rotation_events (id, project_id, from_account_id, to_account_id, reason, created_at)
+             VALUES ('e1','proj1','acc1','acc2','test','2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        let rows = rotatable_accounts(&conn, "proj1", "claude", "acc1").unwrap();
+        let suggested: Vec<&str> = rows.iter().filter(|a| a.suggested).map(|a| a.account_id.as_str()).collect();
+        assert_eq!(suggested, vec!["acc3"], "acc3 has never been rotated to");
+    }
+
+    /// A `manual` project still gets a recommendation — clicking the row *is*
+    /// the manual decision. Same fallback the out-of-quota banner uses.
+    #[test]
+    fn a_manual_project_still_marks_a_suggestion() {
+        let conn = seed(Some("manual"), &["acc2"], None);
+        let rows = rotatable_accounts(&conn, "proj1", "claude", "acc1").unwrap();
+        assert!(rows.iter().any(|a| a.account_id == "acc2" && a.suggested));
+    }
+
+    /// Nothing to switch to: the list is just the account you're on, which is
+    /// what tells the UI to point at Settings → Rotation instead.
+    #[test]
+    fn a_project_with_no_allowed_accounts_offers_only_the_current_one() {
+        let conn = seed(Some("auto"), &[], None);
+        assert_eq!(switcher_ids(&conn, "acc1"), vec!["acc1"]);
+    }
+
+    /// The ledger has to distinguish "I chose to move" from "I was pushed":
+    /// both go through the same reopen, so the reason comes from whether the
+    /// account left behind could still run.
+    #[test]
+    fn the_rotation_reason_separates_a_deliberate_switch_from_a_quota_one() {
+        let conn = seed(Some("auto"), &["acc2"], None);
+        assert!(terminal_rotation_reason(&conn, "acc1").starts_with("exhausted"));
+        assert_eq!(terminal_rotation_reason(&conn, "acc2"), "manual (switched from the panel)");
     }
 
     #[test]

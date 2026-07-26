@@ -1,4 +1,4 @@
-/** Approximate context-window sizes per provider — Fleet has no API to ask
+/** Approximate context-window sizes per provider — Hangar has no API to ask
  * "what's my model's real limit," so these are reasonable, documented
  * estimates, not exact figures. */
 const CONTEXT_WINDOW_BY_PROVIDER: Record<string, number> = {
@@ -14,7 +14,7 @@ export function contextWindowFor(provider: string): number {
 }
 
 /** Subscription plans have no per-token price, so there's no real dollar
- * signal to show — but Fleet also has no API access to Anthropic's actual
+ * signal to show — but Hangar also has no API access to Anthropic's actual
  * 5h/7d rate-limit quota to show a real percentage either. These budgets are
  * a rough, clearly-estimated stand-in ("a generous long session" / "a heavy
  * week"), scaled off the same per-provider context window so they land in a

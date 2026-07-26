@@ -10,7 +10,7 @@ import styles from './PickConfigDirDialog.module.css';
  * machine — the `~/.claude-work` style folders a user drives by hand with
  * `CLAUDE_CONFIG_DIR=… claude`.
  *
- * Fleet's own wizard parks each login it performs in an opaque
+ * Hangar's own wizard parks each login it performs in an opaque
  * `pending-logins/<uuid>` folder, which is why an account created that way
  * shows an unrecognizable path in its terminal command. This is how an
  * account gets pointed at a directory the user actually recognizes.
@@ -75,7 +75,7 @@ export function PickConfigDirDialog({
         )}
         {logins?.length === 0 && !error && (
           <div className={styles.empty}>
-            No unused logins found. Fleet looks for <code>~/.claude*</code> folders that contain a valid login and aren't already
+            No unused logins found. Hangar looks for <code>~/.claude*</code> folders that contain a valid login and aren't already
             attached to another account.
           </div>
         )}

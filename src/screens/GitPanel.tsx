@@ -297,7 +297,7 @@ function WorktreeCard({
   return (
     <div className={styles.repoCard}>
       <div className={styles.repoCardHeader}>
-        <button className={styles.sessionLink} onClick={onOpenSession} title="Open this session in Fleet">
+        <button className={styles.sessionLink} onClick={onOpenSession} title="Open this session in Hangar">
           {worktree.sessionName}
         </button>
         {onOpenPr && (

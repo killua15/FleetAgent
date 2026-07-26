@@ -4,7 +4,7 @@
 
 ## Problema
 
-Fleet-Agent es una app Tauri + React 19 cuya UI está hecha 100% a mano: CSS Modules por pantalla/componente
+Hangar-Agent es una app Tauri + React 19 cuya UI está hecha 100% a mano: CSS Modules por pantalla/componente
 (`*.module.css`) más tokens propios en `src/styles/tokens.css` (dark/light vía `:root[data-theme]`) y
 `src/theme/ThemeProvider.tsx`. No hay ninguna librería de componentes. Mantener botones, inputs, selects,
 cards, badges, etc. a mano implica reinventar accesibilidad, estados (focus/disabled/hover) y consistencia

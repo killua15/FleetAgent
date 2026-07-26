@@ -4,7 +4,7 @@ export type Severity = 'error' | 'notable' | 'routine';
 
 /**
  * "Color = severity, not decoration" — a normal block stays dim/neutral;
- * color is reserved for genuine exceptions. `out` blocks Fleet's own backend
+ * color is reserved for genuine exceptions. `out` blocks Hangar's own backend
  * already prefixes with `"error: "` (see turn_runner.rs::parse_line) become
  * `error`; a turn's own final response (`agent`/`sum`) stays visually
  * prominent as `notable`; everything else (thinking, commands, ordinary

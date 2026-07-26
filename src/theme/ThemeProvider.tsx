@@ -3,7 +3,10 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 export type Theme = 'dark' | 'light' | 'glass' | 'system';
 export type ResolvedTheme = 'dark' | 'light' | 'glass';
 
-const STORAGE_KEY = 'fleet.theme';
+const STORAGE_KEY = 'hangar.theme';
+/// Key used before the Fleet → Hangar rename. Read once as a fallback so the
+/// rename doesn't silently reset a theme the user picked.
+const LEGACY_STORAGE_KEY = 'fleet.theme';
 
 interface ThemeContextValue {
   /** The user's stored preference — may be `'system'`. */
@@ -20,7 +23,7 @@ interface ThemeContextValue {
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 function readStoredTheme(): Theme {
-  const stored = window.localStorage.getItem(STORAGE_KEY);
+  const stored = window.localStorage.getItem(STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_STORAGE_KEY);
   return stored === 'light' || stored === 'dark' || stored === 'glass' || stored === 'system' ? stored : 'dark';
 }
 

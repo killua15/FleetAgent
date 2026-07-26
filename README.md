@@ -1,7 +1,61 @@
-# Tauri + React + Typescript
+# Hangar
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+**Mission control for your coding agents.**
 
-## Recommended IDE Setup
+A local-first desktop app that runs real agent CLI terminals in parallel — each in its own git
+worktree, each under the account it's supposed to use. When an account runs out of quota, Hangar
+carries on with another one, keeping the conversation. Nothing leaves the machine: state is SQLite,
+credentials are in the OS keychain.
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+Claude Code is the provider wired end to end today. Codex and Gemini are recognized but not yet
+supported (the UI marks them as such).
+
+## What it does
+
+- **A grid of real terminals** — one PTY each (up to six), spawned through your login shell so they
+  behave exactly like typing `claude` in Terminal.app. Minimized terminals keep running, and open
+  terminals come back with their conversation after a relaunch.
+- **Isolated worktrees** — every subsession works in `.hangar/worktrees/<slug>` on its own branch,
+  so parallel agents never fight over the same files.
+- **Multi-account, no cross-contamination** — each account gets its own isolated CLI config dir;
+  work and personal accounts are separate scopes and are never mixed silently.
+- **Capacity** — real 5h/weekly usage read from the CLI, monthly spend caps, and opt-in per-project
+  rotation that fails over to another allowed account of the same provider when one is exhausted.
+- **Continuity** — a conversation can move between accounts: the transcript is placed where the
+  destination CLI looks and resumed there.
+- **Governance** — four session modes (`plan` read-only, ask-edits, auto-edit, yolo) plus a
+  permission bridge that surfaces each tool call for approval, even in headless turns.
+- **Git and PRs** — diffs, branches, per-turn checkpoints, PR creation via `gh`, a review inbox, and
+  sending PR review comments straight back into a session.
+- **Hierarchies and shared memory** — parent agents that spawn children (three levels, three views)
+  and memory groups shared across projects.
+
+## Development
+
+Requires Node 22+, a stable Rust toolchain, and the `claude` CLI on PATH for anything that actually
+runs an agent.
+
+```sh
+npm install
+npm run tauri dev      # run the app
+npm run build          # typecheck + build the frontend
+cd src-tauri && cargo test
+```
+
+Tests marked `#[ignore]` spawn the real `claude` CLI — run them with `cargo test -- --ignored`.
+
+## Layout
+
+| Path | What's in it |
+| --- | --- |
+| `src/` | React + TypeScript frontend (screens, components, design tokens) |
+| `src-tauri/src/` | Rust backend: commands, PTY terminals, turn runner, rotation, git/PR, SQLite |
+| `src-tauri/src/db/schema.sql` | The schema, applied idempotently on startup |
+| `src-tauri/tests/fixtures/` | Real captured CLI output used by the parser tests — recorded data, not to be edited |
+
+## Note on the rename
+
+This project was called **Fleet** until July 2026. The rename is complete, with two deliberate
+exceptions kept for compatibility: worktrees created before it still live in `.fleet/` and are still
+honored, and PR review branches named `fleet/pr-<n>-review` are still recognized. App data is moved
+automatically from the old identifier on first launch (`src-tauri/src/app_data.rs`).

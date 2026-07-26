@@ -1,8 +1,24 @@
 export type PullRequestState = 'open' | 'closed' | 'merged';
 
+/** What an open PR is to the logged-in `gh` user. `mine` is the only one whose
+ * comments Hangar polls — on someone else's PR the comments are other people
+ * reviewing their code, not a queue of yours. Recomputed on every discovery
+ * pass, so a PR moves between tabs as reviews get requested. */
+export type PrRelation = 'mine' | 'review' | 'other';
+
+export const PR_RELATION_LABEL: Record<PrRelation, string> = {
+  mine: 'Mine',
+  review: 'To review',
+  other: 'All open',
+};
+
 export interface PullRequestInfo {
   id: string;
-  sessionId: string;
+  /** The project whose repo this PR is on — always set. */
+  projectId: string;
+  /** The session that opened it, when Hangar did. `null` for a discovered PR,
+   * which is every PR someone else opened. */
+  sessionId: string | null;
   repoOwner: string;
   repoName: string;
   number: number;
@@ -14,9 +30,16 @@ export interface PullRequestInfo {
    * silent "no new comments" so a persistently-failing check is visible. */
   lastCheckError: string | null;
   createdAt: string;
-  /** The PR's real head branch — null until either Fleet created the PR
+  /** The PR's real head branch — null until either Hangar created the PR
    * itself or "Send to agent" has backfilled it for a discovered one. */
   headBranch: string | null;
+  /** The branch the PR targets — what a review reads the diff against. */
+  baseBranch: string | null;
+  title: string | null;
+  /** Who opened it. Null for rows predating discovery recording it — all of
+   * which are the user's own. */
+  authorLogin: string | null;
+  relation: PrRelation;
 }
 
 /** Read-only preview of what `create_pull_request` would produce for a
@@ -51,8 +74,10 @@ export interface PrComment {
  * group in the PR review inbox screen. */
 export interface PrInboxEntry {
   pullRequest: PullRequestInfo;
-  sessionId: string;
-  sessionName: string;
+  /** The session behind this PR, when there is one — null for a PR opened by
+   * someone else, whose card shows its author instead. */
+  sessionId: string | null;
+  sessionName: string | null;
   comments: PrComment[];
 }
 

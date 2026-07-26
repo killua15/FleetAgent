@@ -322,7 +322,7 @@ export function MainView() {
                         </Button>
                       }
                       title={`Delete ${acc.name}?`}
-                      description="This removes the account and its credentials from Fleet. This cannot be undone."
+                      description="This removes the account and its credentials from Hangar. This cannot be undone."
                       onConfirm={() => handleDeleteAccount(acc)}
                     />
                   </div>
@@ -663,7 +663,7 @@ function AccountUsageRow({ acc, usage }: { acc: Account; usage: AccountUsageSumm
       );
     }
     // No real percentage yet (still fetching, or couldn't be parsed) — fall
-    // back to Fleet's own token counts rather than showing nothing.
+    // back to Hangar's own token counts rather than showing nothing.
     return (
       <div className={styles.usageRow}>
         ↑{formatTokenCount(usage.inputTokens)} ↓{formatTokenCount(usage.outputTokens)} / 7d
@@ -672,7 +672,7 @@ function AccountUsageRow({ acc, usage }: { acc: Account; usage: AccountUsageSumm
   }
 
   // A weekly budget is only a rough slice of the account's own monthly cap
-  // (if the user set one) — not a real provider quota, which Fleet has no
+  // (if the user set one) — not a real provider quota, which Hangar has no
   // API access to. No cap set → a neutral bar with just the recorded spend
   // as text.
   const weeklyCapEstimate = acc.monthlyCap ? acc.monthlyCap / 4.345 : null;
@@ -684,7 +684,7 @@ function AccountUsageRow({ acc, usage }: { acc: Account; usage: AccountUsageSumm
         pct={pct}
         color={color}
         label={`${formatUsd(usage.costUsd)} / 7d`}
-        title={`↑${formatTokenCount(usage.inputTokens)} ↓${formatTokenCount(usage.outputTokens)} tokens this week — Fleet's own recorded spend, not a live provider quota`}
+        title={`↑${formatTokenCount(usage.inputTokens)} ↓${formatTokenCount(usage.outputTokens)} tokens this week — Hangar's own recorded spend, not a live provider quota`}
         width={60}
       />
     </div>
@@ -779,7 +779,7 @@ function NewSessionControl({
 
   const selectableAccounts = rotation ? accounts.filter((a) => rotation.find((r) => r.accountId === a.id)?.allowed) : accounts;
 
-  // Auto-pick the least-loaded allowed account (by Fleet's own recorded 7-day
+  // Auto-pick the least-loaded allowed account (by Hangar's own recorded 7-day
   // spend) once rotation narrows the list, instead of leaving it on whatever
   // was selected before the project changed.
   useEffect(() => {
