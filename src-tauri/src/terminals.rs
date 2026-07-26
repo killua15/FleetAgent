@@ -1169,6 +1169,9 @@ pub fn tick_terminal_states<R: Runtime>(app: &AppHandle<R>) {
 
     for (id, panel_title, agent_title) in newly_waiting {
         emit_state(app, &id, TerminalState::Waiting, agent_title.clone());
+        // A queued run finishes when its agent stops talking — the only
+        // completion signal available from outside the CLI.
+        crate::run_queue::note_terminal_waiting(app, &id);
         crate::notifications::notify_if_enabled(
             app,
             |s| s.notify_session_waiting,

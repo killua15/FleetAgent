@@ -15,6 +15,7 @@ import { SharedMemorySettings } from './screens/SharedMemorySettings';
 import { PrReviews } from './screens/PrReviews';
 import { GitPanel } from './screens/GitPanel';
 import { Files } from './screens/Files';
+import { Queue } from './screens/Queue';
 import { GitHistoryView } from './screens/GitHistoryView';
 import { TreeCanvas } from './screens/TreeCanvas';
 import { TreeColumns } from './screens/TreeColumns';
@@ -90,6 +91,8 @@ function Screens() {
       return <GitPanel />;
     case 'files':
       return <Files />;
+    case 'queue':
+      return <Queue />;
     case 'git-history':
       return <GitHistoryView />;
     case 'tree-canvas':

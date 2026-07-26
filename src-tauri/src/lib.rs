@@ -14,6 +14,7 @@ mod process_timeout;
 mod providers;
 mod quota;
 mod rotation;
+mod run_queue;
 mod terminals;
 mod turn_runner;
 mod usage_scraper;
@@ -114,6 +115,9 @@ pub fn run() {
             let usage_handle = app.handle().clone();
             std::thread::spawn(move || loop {
                 terminals::poll_account_usage(&usage_handle);
+                // Right after sampling, because that's the only moment the
+                // answer to "does any account have room" can have changed.
+                run_queue::tick_queue(&usage_handle);
                 std::thread::sleep(std::time::Duration::from_secs(300));
             });
 
@@ -222,7 +226,13 @@ pub fn run() {
             terminals::fan_out_prompt,
             terminals::list_terminal_states,
             terminals::rename_terminal,
+            run_queue::enqueue_run,
+            run_queue::list_queued_runs,
+            run_queue::cancel_queued_run,
             quota::list_account_quotas,
+            quota::list_project_budgets,
+            quota::get_project_budget,
+            quota::set_project_budget,
             quota::project_fan_out,
             auth::start_oauth_callback,
             auth::store_refresh_token,

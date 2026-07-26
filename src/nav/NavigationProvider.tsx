@@ -17,6 +17,7 @@ export type ScreenName =
   | 'shared-memory'
   | 'git-panel'
   | 'files'
+  | 'queue'
   | 'git-history'
   | 'pr-modal'
   | 'pr-reviews'

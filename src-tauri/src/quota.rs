@@ -13,7 +13,7 @@
 
 use crate::db::DbConnection;
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 /// One `/usage` reading.
@@ -305,6 +305,37 @@ mod tests {
         assert_eq!(f.hours_left, Some(0.0));
     }
 
+    #[test]
+    fn one_project_on_an_account_gets_the_whole_burn_and_it_is_not_an_estimate() {
+        let (share, estimated) = attribute_burn(20.0, 1);
+        assert_eq!(share, 20.0);
+        assert!(!estimated, "nothing was split, so nothing is being guessed at");
+    }
+
+    /// Two projects on one account is where per-project accounting stops being
+    /// possible: usage is sampled per account. Splitting evenly is the honest
+    /// approximation, and the flag is what stops the UI presenting it as a bill.
+    #[test]
+    fn a_shared_account_splits_the_burn_and_says_it_is_an_estimate() {
+        let (share, estimated) = attribute_burn(30.0, 3);
+        assert_eq!(share, 10.0);
+        assert!(estimated);
+    }
+
+    #[test]
+    fn a_project_with_no_cap_is_always_within_budget() {
+        let b = ProjectBudget { project_id: "p".into(), project_name: "P".into(), weekly_pct: None, spent_pct: 99.0, estimated: false };
+        assert!(within_budget(&b));
+    }
+
+    #[test]
+    fn a_project_over_its_cap_stops_taking_new_work() {
+        let under = ProjectBudget { project_id: "p".into(), project_name: "P".into(), weekly_pct: Some(40.0), spent_pct: 39.9, estimated: false };
+        let over = ProjectBudget { spent_pct: 40.0, ..under.clone() };
+        assert!(within_budget(&under));
+        assert!(!within_budget(&over), "at the cap is over the cap — a budget that lets you start one more isn't a budget");
+    }
+
     fn seed() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
@@ -352,4 +383,146 @@ mod tests {
         let weekly = quotas[0].weekly.as_ref().unwrap();
         assert!(weekly.hours_left.unwrap() > session.hours_left.unwrap(), "the weekly window is burning far slower here");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Budgets
+// ---------------------------------------------------------------------------
+
+/// A project's cap and what it has spent against it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectBudget {
+    pub project_id: String,
+    pub project_name: String,
+    /// Share of the weekly pool this project may spend, or `None` for no cap.
+    pub weekly_pct: Option<f64>,
+    /// Estimated share already spent this week.
+    pub spent_pct: f64,
+    /// True while the estimate rests on periods where more than one project was
+    /// using the same account, which is when the split stops being a fact.
+    pub estimated: bool,
+}
+
+/// What one project burned this week, estimated.
+///
+/// **This is an estimate and the type says so.** Usage is sampled per account,
+/// not per project, so when two projects run on one account at the same time
+/// the only honest thing to do is split that account's burn between them. It
+/// stops being an estimate exactly when leases exist, because a lease records
+/// who held which account between which times — so the same query becomes an
+/// attribution rather than a guess.
+///
+/// Pure, taking the pieces it needs, so the arithmetic is testable without a
+/// week of samples.
+pub fn attribute_burn(account_burn_pct: f64, projects_sharing: usize) -> (f64, bool) {
+    if projects_sharing <= 1 {
+        return (account_burn_pct, false);
+    }
+    (account_burn_pct / projects_sharing as f64, true)
+}
+
+/// Whether new work may start for this project.
+///
+/// Only ever blocks *new* work. Anything already running keeps going: killing
+/// an agent mid-edit to enforce a budget trades a number for a broken worktree.
+pub fn within_budget(budget: &ProjectBudget) -> bool {
+    match budget.weekly_pct {
+        Some(cap) => budget.spent_pct < cap,
+        None => true,
+    }
+}
+
+#[tauri::command]
+pub fn get_project_budget(db: tauri::State<DbConnection>, project_id: String) -> Result<Option<f64>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    conn.query_row("SELECT weekly_pct FROM quota_budgets WHERE project_id = ?1", params![project_id], |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_project_budget(db: tauri::State<DbConnection>, project_id: String, weekly_pct: Option<f64>) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    match weekly_pct {
+        Some(pct) if pct > 0.0 && pct <= 100.0 => {
+            conn.execute(
+                "INSERT INTO quota_budgets (project_id, weekly_pct, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(project_id) DO UPDATE SET weekly_pct = excluded.weekly_pct, updated_at = excluded.updated_at",
+                params![project_id, pct, Utc::now().to_rfc3339()],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Some(_) => return Err("a budget has to be between 1 and 100 percent of the weekly pool".to_string()),
+        // Clearing the cap is a real action, not an error.
+        None => {
+            conn.execute("DELETE FROM quota_budgets WHERE project_id = ?1", params![project_id]).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Every project's cap and spend, for the budgets screen.
+pub(crate) fn project_budgets(conn: &Connection) -> Result<Vec<ProjectBudget>, String> {
+    let week_ago = (Utc::now() - chrono::Duration::days(7)).to_rfc3339();
+
+    // How much each account burned this week, from the samples. Resets are
+    // handled the same way the forecast handles them: a drop is a new window,
+    // and the burn either side of it both count.
+    let mut stmt = conn
+        .prepare(
+            "SELECT p.id, p.name, b.weekly_pct
+             FROM projects p LEFT JOIN quota_budgets b ON b.project_id = p.id
+             ORDER BY p.name",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String, Option<f64>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for (project_id, project_name, weekly_pct) in rows {
+        // Rotation events are the only per-project record of which account was
+        // used — approximate, and the reason `estimated` exists.
+        let mut used_stmt = conn
+            .prepare("SELECT DISTINCT to_account_id FROM rotation_events WHERE project_id = ?1 AND created_at >= ?2")
+            .map_err(|e| e.to_string())?;
+        let accounts_used: Vec<String> = used_stmt
+            .query_map(params![project_id, week_ago], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+
+        let mut spent = 0.0;
+        let mut estimated = false;
+        for account_id in accounts_used {
+            let samples = load_samples(conn, &account_id, "weekly_pct")?;
+            let window = samples_since_reset(&samples);
+            let burn = match (window.first(), window.last()) {
+                (Some(first), Some(last)) => (last.pct - first.pct).max(0.0),
+                _ => 0.0,
+            };
+            let sharing: i64 = conn
+                .query_row(
+                    "SELECT COUNT(DISTINCT project_id) FROM rotation_events WHERE to_account_id = ?1 AND created_at >= ?2",
+                    params![account_id, week_ago],
+                    |r| r.get(0),
+                )
+                .unwrap_or(1);
+            let (share, was_split) = attribute_burn(burn, sharing.max(1) as usize);
+            spent += share;
+            estimated |= was_split;
+        }
+
+        out.push(ProjectBudget { project_id, project_name, weekly_pct, spent_pct: spent, estimated });
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn list_project_budgets(db: tauri::State<DbConnection>) -> Result<Vec<ProjectBudget>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    project_budgets(&conn)
 }

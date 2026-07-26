@@ -85,6 +85,18 @@ const MIGRATIONS: &[Migration] = &[
         run: open_terminals_display_name,
         transactional: true,
     },
+    Migration {
+        version: 7,
+        name: "queued_runs",
+        run: queued_runs_table,
+        transactional: true,
+    },
+    Migration {
+        version: 8,
+        name: "quota_budgets_and_team_accounts",
+        run: quota_budgets_and_team_accounts,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -137,6 +149,49 @@ fn open_terminals_table(conn: &Connection) -> Result<(), String> {
          );",
     )
     .map_err(|e| format!("could not create open_terminals: {e}"))
+}
+
+/// Per-project spending caps, and the link from a local account to its row in
+/// a shared team pool. Both are additive; neither changes existing behaviour
+/// until something is configured.
+fn quota_budgets_and_team_accounts(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS quota_budgets (
+           project_id  TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+           weekly_pct  REAL NOT NULL CHECK (weekly_pct > 0 AND weekly_pct <= 100),
+           updated_at  TEXT NOT NULL
+         );",
+    )
+    .map_err(|e| format!("could not create quota_budgets: {e}"))?;
+    if !has_column(conn, "accounts", "team_account_id")? {
+        conn.execute_batch("ALTER TABLE accounts ADD COLUMN team_account_id TEXT;")
+            .map_err(|e| format!("could not add accounts.team_account_id: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Work that waits for quota instead of failing against it. Same shape
+/// `schema.sql` declares for a fresh database.
+fn queued_runs_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS queued_runs (
+           id           TEXT PRIMARY KEY,
+           project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+           prompt       TEXT NOT NULL,
+           branch_name  TEXT NOT NULL,
+           account_id   TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+           state        TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','running','done','failed','cancelled')),
+           terminal_id  TEXT,
+           session_id   TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+           attempts     INTEGER NOT NULL DEFAULT 0,
+           last_error   TEXT,
+           created_at   TEXT NOT NULL,
+           started_at   TEXT,
+           finished_at  TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_queued_runs_state ON queued_runs(state, created_at);",
+    )
+    .map_err(|e| format!("could not create queued_runs: {e}"))
 }
 
 /// Lets a panel carry a name the user typed. Needed once terminals are listed

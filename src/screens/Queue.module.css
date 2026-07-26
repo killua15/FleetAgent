@@ -1,0 +1,244 @@
+.screen {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 24px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.compose,
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.compose {
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.sectionLabel {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.16em;
+  color: var(--dim);
+}
+
+.waitHint {
+  font: 400 10px var(--font-mono);
+  letter-spacing: 0;
+  color: var(--amber);
+  text-transform: none;
+}
+
+.composeRow {
+  display: flex;
+  gap: 8px;
+}
+
+.select,
+.input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--txt);
+  font: 400 11.5px var(--font-ui);
+}
+
+.prompt {
+  resize: vertical;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--txt);
+  font: 400 12px var(--font-ui);
+  line-height: 1.5;
+}
+
+.select:focus,
+.input:focus,
+.prompt:focus {
+  outline: none;
+  border-color: var(--acc);
+}
+
+.composeActions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.hint {
+  flex: 1;
+  font: 400 11px var(--font-ui);
+  color: var(--mut);
+  line-height: 1.5;
+}
+
+.run,
+.runPast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.runPast {
+  padding: 6px 12px;
+  background: transparent;
+  border-color: transparent;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+}
+
+.dotQueued,
+.dotRunning {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dim);
+}
+
+.dotRunning {
+  background: var(--acc);
+  animation: queuePulse 1.6s ease-in-out infinite;
+}
+
+@keyframes queuePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dotRunning { animation: none; }
+}
+
+.runMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.runTop {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.runProject {
+  font: 500 12px var(--font-ui);
+  color: var(--txt);
+}
+
+.runBranch {
+  font: 400 10.5px var(--font-mono);
+  color: var(--teal);
+}
+
+.runAccount {
+  font: 500 10px var(--font-ui);
+  color: var(--acc);
+}
+
+.runState {
+  font: 400 10.5px var(--font-ui);
+  color: var(--mut);
+}
+
+.runPrompt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 11.5px var(--font-ui);
+  color: var(--mut);
+}
+
+.runError {
+  font: 400 10.5px var(--font-mono);
+  color: var(--amber);
+}
+
+.dim {
+  font: 400 11.5px var(--font-ui);
+  color: var(--dim);
+}
+
+.budget {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.budgetName {
+  flex: none;
+  width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 12px var(--font-ui);
+  color: var(--txt);
+}
+
+.budgetBar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--panel2);
+  overflow: hidden;
+}
+
+.budgetFill,
+.budgetFillOver {
+  height: 100%;
+  background: var(--teal);
+}
+
+.budgetFillOver {
+  background: var(--amber);
+}
+
+.budgetSpent {
+  flex: none;
+  width: 62px;
+  text-align: right;
+  font: 500 11px var(--font-mono);
+  color: var(--mut);
+}
+
+.budgetInput {
+  flex: none;
+  width: 78px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--txt);
+  font: 400 11px var(--font-mono);
+}
+
+.budgetInput:focus {
+  outline: none;
+  border-color: var(--acc);
+}

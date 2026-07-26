@@ -120,6 +120,11 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
             ⌗
           </Button>
         </IconTooltip>
+        <IconTooltip label="Queue — work waiting for quota, and weekly budgets">
+          <Button variant="outline" className={styles.iconBtn} style={{ color: 'var(--grn)' }} onClick={() => navigate('queue')}>
+            ⧗
+          </Button>
+        </IconTooltip>
         <IconTooltip label="Files — browse and read any project's files">
           <Button variant="outline" className={styles.iconBtn} style={{ color: 'var(--gemini)' }} onClick={() => navigate('files')}>
             ⌸

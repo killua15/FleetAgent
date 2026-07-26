@@ -19,7 +19,12 @@ CREATE TABLE IF NOT EXISTS accounts (
   -- however long ago that edit was. NULL whenever the account isn't benched —
   -- and also on a flag inherited from before this column existed, whose age is
   -- unknowable and which recovery therefore treats as expired.
-  exhausted_at     TEXT
+  exhausted_at     TEXT,
+  -- This account's row in a shared team pool, when the user has joined one.
+  -- The pool never holds credentials: it records that the account exists and
+  -- who is using it right now, so two people don't spend the same subscription
+  -- at once. NULL for a purely local account, which is all of them by default.
+  team_account_id  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -318,3 +323,51 @@ CREATE TABLE IF NOT EXISTS account_usage_samples (
 );
 
 CREATE INDEX IF NOT EXISTS idx_account_usage_samples ON account_usage_samples(account_id, sampled_at);
+
+-- Work waiting for quota instead of failing against it.
+--
+-- The loudest documented complaint about Claude Code is hitting the usage limit
+-- mid-task and losing the session. Every tool in this category, including this
+-- one until now, lets you walk into that wall. A queued run waits for an
+-- account with headroom and starts itself when one appears.
+--
+-- `branch_name` is NOT NULL on purpose: unattended work always gets its own
+-- worktree. A prompt that runs at 3am while you sleep does not touch your main
+-- checkout, and that isn't a preference to configure.
+CREATE TABLE IF NOT EXISTS queued_runs (
+  id           TEXT PRIMARY KEY,
+  project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  prompt       TEXT NOT NULL,
+  branch_name  TEXT NOT NULL,
+  -- A specific account, or NULL for "any the project is allowed to use".
+  account_id   TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+  state        TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','running','done','failed','cancelled')),
+  -- The terminal and worktree session this run took over once it started.
+  terminal_id  TEXT,
+  session_id   TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+  attempts     INTEGER NOT NULL DEFAULT 0,
+  last_error   TEXT,
+  created_at   TEXT NOT NULL,
+  started_at   TEXT,
+  finished_at  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_queued_runs_state ON queued_runs(state, created_at);
+
+-- Caps on how much of the quota pool one project may spend.
+--
+-- Attribution is honest about its limits: usage is sampled per *account*, so
+-- when two projects share an account at the same time, splitting the burn
+-- between them is an estimate and the UI says so. With team leases the same
+-- number becomes exact, because a lease records precisely who held which
+-- account between which times.
+--
+-- Enforcement blocks *new* work only. A run already in flight is never killed:
+-- stopping an agent mid-edit leaves a worktree in a state nobody asked for.
+CREATE TABLE IF NOT EXISTS quota_budgets (
+  project_id  TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  -- Share of the weekly pool this project may spend, 1-100. The weekly window
+  -- is the one worth budgeting: the 5-hour one refills over lunch.
+  weekly_pct  REAL NOT NULL CHECK (weekly_pct > 0 AND weekly_pct <= 100),
+  updated_at  TEXT NOT NULL
+);
