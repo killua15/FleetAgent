@@ -643,3 +643,50 @@
   font: 500 10.5px var(--font-ui);
   white-space: nowrap;
 }
+
+/* Agent state, as a dot in each panel header. Colour alone carries the state;
+   the pulse is reserved for "working" so a still screen means nothing is
+   running — the opposite would make a busy grid impossible to read. */
+.stateDot,
+.stateDotPulse {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.stateDotPulse {
+  animation: statePulse 1.6s ease-in-out infinite;
+}
+
+@keyframes statePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* Respect the OS setting: a pulsing dot per panel is exactly the kind of
+   motion people turn this on to avoid. */
+@media (prefers-reduced-motion: reduce) {
+  .stateDotPulse { animation: none; }
+}
+
+.agentTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 10.5px var(--font-ui);
+  color: var(--mut);
+}
+
+/* The fan-out's projected cost. Informative, not a warning: the amber row above
+   it is for things that will actually fail. */
+.fanForecast {
+  font: 400 11px var(--font-ui);
+  color: var(--mut);
+}
+
+.fanForecast strong {
+  color: var(--txt);
+  font-weight: 500;
+}

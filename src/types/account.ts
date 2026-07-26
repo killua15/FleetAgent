@@ -87,3 +87,41 @@ export const PROVIDER_META: Record<
     loginCmd: 'gemini auth',
   },
 };
+
+/** One quota window, forecast from the readings the usage poller has been
+ * taking all along. `hoursLeft` is null when nothing is being burned — a flat
+ * line means "not running out", not "runs out now". */
+export interface Forecast {
+  pct: number;
+  burnPerHour: number | null;
+  hoursLeft: number | null;
+  samples: number;
+}
+
+export interface AccountQuota {
+  accountId: string;
+  accountName: string;
+  status: AccountStatus;
+  /** The rolling 5-hour window — the one you recover from over lunch. */
+  session: Forecast | null;
+  /** The weekly window — the one you don't recover from, and so the only one
+   * worth planning around. */
+  weekly: Forecast | null;
+}
+
+export interface FanOutProjection {
+  accountId: string;
+  accountName: string;
+  hoursLeft: number | null;
+  limitingWindow: 'session' | 'weekly' | 'none';
+  exhausted: boolean;
+}
+
+/** "2 h 10 m", "45 m", or "—" when there's nothing to run out of. */
+export function formatHoursLeft(hours: number | null): string {
+  if (hours == null) return '—';
+  if (hours < 1) return `${Math.max(1, Math.round(hours * 60))} m`;
+  const h = Math.floor(hours);
+  const m = Math.round((hours - h) * 60);
+  return m === 0 ? `${h} h` : `${h} h ${m} m`;
+}

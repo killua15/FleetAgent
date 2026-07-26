@@ -73,6 +73,12 @@ const MIGRATIONS: &[Migration] = &[
         // own BEGIN/COMMIT instead.
         transactional: false,
     },
+    Migration {
+        version: 5,
+        name: "account_usage_samples",
+        run: account_usage_samples_table,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -125,6 +131,23 @@ fn open_terminals_table(conn: &Connection) -> Result<(), String> {
          );",
     )
     .map_err(|e| format!("could not create open_terminals: {e}"))
+}
+
+/// Keeps the `/usage` readings the poller was already taking. Same shape
+/// `schema.sql` declares for a fresh database.
+fn account_usage_samples_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS account_usage_samples (
+           id           TEXT PRIMARY KEY,
+           account_id   TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+           session_pct  REAL,
+           weekly_pct   REAL,
+           context_pct  REAL,
+           sampled_at   TEXT NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_account_usage_samples ON account_usage_samples(account_id, sampled_at);",
+    )
+    .map_err(|e| format!("could not create account_usage_samples: {e}"))
 }
 
 /// Re-anchors `pull_requests` on the project instead of a session, so a PR

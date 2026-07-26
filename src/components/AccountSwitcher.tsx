@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Popover as PopoverPrimitive } from 'radix-ui';
 import { invoke } from '../lib/invoke';
 import { Spinner } from './Spinner';
-import type { AccountAuth } from '../types/account';
+import { formatHoursLeft, type AccountAuth, type AccountQuota } from '../types/account';
 import type { RotatableAccount, TerminalInfo } from '../types/terminal';
 import styles from './AccountSwitcher.module.css';
 
@@ -37,6 +37,7 @@ export function AccountSwitcher({
 }) {
   const [open, setOpen] = useState(false);
   const [accounts, setAccounts] = useState<RotatableAccount[] | null>(null);
+  const [quotas, setQuotas] = useState<Record<string, AccountQuota>>({});
   const [error, setError] = useState<string | null>(null);
 
   const onOpenChange = (next: boolean) => {
@@ -54,6 +55,12 @@ export function AccountSwitcher({
     })
       .then(setAccounts)
       .catch((e) => setError(String(e)));
+    // How long each account has left, forecast from the readings the usage
+    // poller has been taking anyway. This is the number that actually decides
+    // which account to switch to — "healthy" only says it works right now.
+    invoke<AccountQuota[]>('list_account_quotas')
+      .then((list) => setQuotas(Object.fromEntries(list.map((q) => [q.accountId, q]))))
+      .catch(() => {});
   };
 
   const others = accounts?.filter((a) => !a.current) ?? [];
@@ -98,6 +105,19 @@ export function AccountSwitcher({
                 <span className={styles.scopeDot} style={{ background: a.scope === 'work' ? 'var(--acc)' : 'var(--teal)' }} />
                 <span className={styles.rowName}>{a.accountName}</span>
                 <span className={styles.spacer} />
+                {/* The forecast, where the choice is made. A window that isn't
+                    being burned has no time-to-empty, and says nothing rather
+                    than pretending. */}
+                {(() => {
+                  const q = quotas[a.accountId];
+                  const left = q?.session?.hoursLeft ?? null;
+                  if (!q || left == null) return null;
+                  return (
+                    <span className={styles.tagLeft} title={`5-hour window at ${q.session?.pct.toFixed(0)}%, burning ${q.session?.burnPerHour?.toFixed(1)} pts/h`}>
+                      ~{formatHoursLeft(left)}
+                    </span>
+                  );
+                })()}
                 {a.current && <span className={styles.tagCurrent}>current</span>}
                 {!a.current && a.suggested && <span className={styles.tagSuggested}>suggested</span>}
                 {benched && <span className={styles.tagBenched}>out of quota</span>}

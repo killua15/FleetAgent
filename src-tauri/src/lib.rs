@@ -12,6 +12,7 @@ mod permission_bridge;
 mod process_manager;
 mod process_timeout;
 mod providers;
+mod quota;
 mod rotation;
 mod terminals;
 mod turn_runner;
@@ -100,6 +101,16 @@ pub fn run() {
             // a terminal and be told an account is out of quota when it isn't.
             // The startup pass is also cheap in the common case: with no
             // terminals open yet it does the cooldown recovery and no scraping.
+            // One-second tick that turns "no output for a while" into a state
+            // change. Cheap by construction — it walks the open terminals and
+            // touches nothing else — and it's what lets the app tell you an
+            // agent finished instead of making you notice.
+            let state_handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                terminals::tick_terminal_states(&state_handle);
+            });
+
             let usage_handle = app.handle().clone();
             std::thread::spawn(move || loop {
                 terminals::poll_account_usage(&usage_handle);
@@ -209,6 +220,9 @@ pub fn run() {
             commands::sessions::list_files,
             commands::sessions::read_file,
             terminals::fan_out_prompt,
+            terminals::list_terminal_states,
+            quota::list_account_quotas,
+            quota::project_fan_out,
             auth::start_oauth_callback,
             auth::store_refresh_token,
             auth::load_refresh_token,

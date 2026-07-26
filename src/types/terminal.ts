@@ -79,3 +79,23 @@ export const INIT_COMMAND_LABEL: Record<InitCommand, string> = {
 export interface TerminalChunk {
   base64: string;
 }
+
+/** What a terminal's agent is doing, observed from its output stream — no hook
+ * and no configuration of the user's CLI. `waiting` is the one that matters:
+ * it means the agent finished its turn and it's your move. */
+export type TerminalState = 'working' | 'waiting' | 'idle' | 'exited';
+
+export interface TerminalActivity {
+  id: string;
+  state: TerminalState;
+  /** The last terminal title the program set. Claude Code puts its status line
+   * here, which describes the actual task far better than the project name. */
+  title: string | null;
+}
+
+export const TERMINAL_STATE_META: Record<TerminalState, { label: string; color: string }> = {
+  working: { label: 'working', color: 'var(--acc)' },
+  waiting: { label: 'waiting for you', color: 'var(--amber)' },
+  idle: { label: 'idle', color: 'var(--dim)' },
+  exited: { label: 'exited', color: 'var(--dim)' },
+};

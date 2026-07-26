@@ -9,9 +9,9 @@ import { toastError } from '../components/ErrorOverlay';
 import { Button } from '../components/ui/button';
 import { useNavigation } from '../nav/NavigationProvider';
 import { autoGridColumns } from '../lib/gridLayout';
-import { PROVIDER_META, type Account, type AccountAuth } from '../types/account';
+import { formatHoursLeft, PROVIDER_META, type Account, type AccountAuth, type FanOutProjection } from '../types/account';
 import type { Project, Session } from '../types/session';
-import type { FanOutBranch, InitCommand, SuggestedAccount, TerminalInfo, TerminalTarget } from '../types/terminal';
+import { TERMINAL_STATE_META, type FanOutBranch, type InitCommand, type SuggestedAccount, type TerminalActivity, type TerminalInfo, type TerminalTarget } from '../types/terminal';
 import styles from './Terminals.module.css';
 
 /** Terminals opened past this point stop being supervisable at a glance —
@@ -52,6 +52,9 @@ export function Terminals() {
   // `opening`: the swap takes a few seconds (a transcript copy and a new CLI
   // coming up) and the feedback belongs on the panel it's happening to.
   const [switchingId, setSwitchingId] = useState<string | null>(null);
+  // Live agent state per terminal, keyed by id. Seeded once and then driven by
+  // events — polling six PTYs for "are you done" would be the wrong shape.
+  const [activity, setActivity] = useState<Record<string, TerminalActivity>>({});
   // Navigating here with an `openFor` param must open exactly one terminal,
   // not one per render — and not another one if the user navigates back to
   // this screen later with the same param still in the history entry.
@@ -70,6 +73,19 @@ export function Terminals() {
 
   useEffect(() => {
     Promise.all([loadTerminals(), loadProjects(), loadAccounts()]).catch((e) => toastError(String(e)));
+  }, []);
+
+  // Agent state: one snapshot for the first render, then the event stream.
+  useEffect(() => {
+    invoke<TerminalActivity[]>('list_terminal_states')
+      .then((list) => setActivity(Object.fromEntries(list.map((a) => [a.id, a]))))
+      .catch(() => {});
+    const unlisten = listen<TerminalActivity>('terminal-state', (event) => {
+      setActivity((prev) => ({ ...prev, [event.payload.id]: event.payload }));
+    });
+    return () => {
+      unlisten.then((f) => f());
+    };
   }, []);
 
   // The usage poller flips an account to `exhausted` when it runs out of quota;
@@ -468,7 +484,11 @@ export function Terminals() {
                     <span className={styles.kindBadge} style={{ background: t.kind === 'session' ? 'var(--tealD)' : 'var(--accD)', color: t.kind === 'session' ? 'var(--teal)' : 'var(--acc)' }}>
                       {t.kind === 'session' ? '⑃' : '▣'}
                     </span>
+                    <StateDot activity={activity[t.id]} />
                     <span className={styles.cardTitle}>{t.title}</span>
+                    {/* What the agent says it's doing beats what the project is
+                        called — it's the only label that changes as work moves. */}
+                    {activity[t.id]?.title && <span className={styles.agentTitle}>{activity[t.id].title}</span>}
                     {/* An account-scoped panel's chip is the account switcher:
                         the project's rotation pool, one click, conversation
                         carried over. A plain shell has no account to switch. */}
@@ -565,6 +585,20 @@ function OutOfQuotaBanner({ terminal, busy, onReopen }: { terminal: TerminalInfo
   );
 }
 
+/** The one thing you need at a glance with six panels open: which agent is
+ * working, and which has stopped and is waiting for you. */
+function StateDot({ activity }: { activity?: TerminalActivity }) {
+  const state = activity?.state ?? 'idle';
+  const meta = TERMINAL_STATE_META[state];
+  return (
+    <span
+      className={state === 'working' ? styles.stateDotPulse : styles.stateDot}
+      style={{ background: meta.color }}
+      title={activity?.title ? `${meta.label} — ${activity.title}` : meta.label}
+    />
+  );
+}
+
 /** Names the branch for a terminal that gets its own worktree. Two fields, both
  * consequential: the name becomes a real git branch (`hangar/<slug>`), and the
  * setup command is what makes the worktree usable — a fresh checkout has no
@@ -658,10 +692,28 @@ function FanOutPicker({
   const [projectId, setProjectId] = useState('');
   const [prompt, setPrompt] = useState('');
   const [rows, setRows] = useState<FanRow[]>([newFanRow(1), newFanRow(2)]);
+  const [projection, setProjection] = useState<FanOutProjection[]>([]);
 
   const update = (id: string, patch: Partial<FanRow>) => setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   const ready = rows.filter((r) => r.name.trim() && r.accountId);
   const reusedAccount = new Set(ready.map((r) => r.accountId)).size < ready.length;
+
+  // Pre-flight. A fan-out is the most expensive thing this app can do, and
+  // until now it launched blind — you found out what it cost when an account
+  // stopped mid-task. The forecast is per account, so the answer is per branch.
+  const chosenAccounts = ready.map((r) => r.accountId).join(',');
+  useEffect(() => {
+    if (!chosenAccounts) {
+      setProjection([]);
+      return;
+    }
+    invoke<FanOutProjection[]>('project_fan_out', { accountIds: chosenAccounts.split(',') })
+      .then(setProjection)
+      .catch(() => setProjection([]));
+  }, [chosenAccounts]);
+
+  const tightest = projection.filter((p) => p.hoursLeft != null).sort((a, b) => (a.hoursLeft ?? 0) - (b.hoursLeft ?? 0))[0];
+  const benched = projection.filter((p) => p.exhausted);
 
   return (
     <div className={styles.picker}>
@@ -719,6 +771,17 @@ function FanOutPicker({
       {reusedAccount && (
         <span className={styles.envWarn}>
           ⚠ two branches share an account — they'll spend the same quota in parallel, which is exactly what fanning out across accounts avoids
+        </span>
+      )}
+      {benched.length > 0 && (
+        <span className={styles.envWarn}>
+          ⚠ {benched.map((p) => p.accountName).join(', ')} {benched.length === 1 ? 'is' : 'are'} out of quota — those branches won't start
+        </span>
+      )}
+      {tightest && (
+        <span className={styles.fanForecast}>
+          ⏱ tightest account: <strong>{tightest.accountName}</strong> has ~{formatHoursLeft(tightest.hoursLeft)} left
+          {tightest.limitingWindow === 'weekly' && ' on its weekly window — that one does not come back after lunch'}
         </span>
       )}
       <div className={styles.multiActions}>

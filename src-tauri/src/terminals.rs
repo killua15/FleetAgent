@@ -121,6 +121,64 @@ pub struct TerminalInfo {
     pub session_uuid: Option<String>,
 }
 
+/// What a terminal's agent is doing, as far as Hangar can tell from the
+/// outside.
+///
+/// This is the thing the app was missing: with six terminals open, knowing
+/// which one needs you meant reading six panes. Every comparable tool has some
+/// form of it (Orca's state dots, herdr's "status detection"), and it's the
+/// foundation for notifying, sorting and summarising — none of which can exist
+/// without a state to observe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalState {
+    /// Producing output right now.
+    Working,
+    /// Quiet after having worked — the agent has almost certainly finished its
+    /// turn and is waiting for you.
+    Waiting,
+    /// Nothing has happened yet, or the shell is just sitting at a prompt.
+    Idle,
+    /// The process is gone.
+    Exited,
+}
+
+/// How long a terminal must stay quiet before "working" becomes "waiting".
+///
+/// Deliberately generous. An agent thinking between tool calls can go quiet for
+/// several seconds, and a state that flickers back and forth is worse than no
+/// state at all — it trains you to ignore the dot.
+const QUIET_BEFORE_WAITING: Duration = Duration::from_secs(4);
+
+/// Terminal-title escape sequences: `ESC ] 0 ; text BEL` and the `2` variant,
+/// either terminated by BEL (0x07) or ST (`ESC \`).
+///
+/// Parsed straight out of the PTY stream rather than asked for: it needs no
+/// hook, no configuration of the user's Claude Code, and works for any CLI that
+/// sets a title. Claude Code's status line is the richest source of this, but
+/// nothing here depends on it being present.
+fn parse_osc_title(chunk: &[u8]) -> Option<String> {
+    let mut i = 0;
+    let mut found = None;
+    while i + 3 < chunk.len() {
+        if chunk[i] == 0x1b && chunk[i + 1] == b']' && (chunk[i + 2] == b'0' || chunk[i + 2] == b'2') && chunk[i + 3] == b';' {
+            let start = i + 4;
+            let mut end = start;
+            while end < chunk.len() && chunk[end] != 0x07 && !(chunk[end] == 0x1b && end + 1 < chunk.len() && chunk[end + 1] == b'\\') {
+                end += 1;
+            }
+            if end < chunk.len() {
+                // Later titles win: one read can carry several updates, and the
+                // last one is the current state of the world.
+                found = Some(String::from_utf8_lossy(&chunk[start..end]).trim().to_string());
+                i = end;
+            }
+        }
+        i += 1;
+    }
+    found.filter(|t| !t.is_empty())
+}
+
 /// One chunk of terminal output on its way to the frontend.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -143,7 +201,29 @@ struct TerminalHandle {
     /// `None` while nobody is. The reader thread keeps filling `scrollback`
     /// either way, so a background terminal never loses output.
     sink: Arc<Mutex<Option<Channel<TerminalChunk>>>>,
+    /// Live state, written by the reader thread and by the watcher that ages
+    /// `Working` into `Waiting`. Shared rather than stored on `info` because
+    /// both of those run outside any command.
+    activity: Arc<Mutex<Activity>>,
     info: TerminalInfo,
+}
+
+/// The observable part of a terminal: when it last spoke, what it called
+/// itself, and what that adds up to.
+#[derive(Debug, Clone)]
+struct Activity {
+    state: TerminalState,
+    last_output: Instant,
+    /// The last title the program set, when it sets one — Claude Code's status
+    /// line puts the current task here, which is a far better label for a panel
+    /// than the project name.
+    title: Option<String>,
+}
+
+impl Activity {
+    fn new() -> Self {
+        Activity { state: TerminalState::Idle, last_output: Instant::now(), title: None }
+    }
 }
 
 pub struct TerminalRegistry(pub Mutex<HashMap<String, TerminalHandle>>);
@@ -492,11 +572,14 @@ pub fn open_terminal<R: Runtime>(
 
     let scrollback = Arc::new(Mutex::new(VecDeque::new()));
     let sink: Arc<Mutex<Option<Channel<TerminalChunk>>>> = Arc::new(Mutex::new(None));
+    let activity = Arc::new(Mutex::new(Activity::new()));
 
     {
         let scrollback = scrollback.clone();
         let sink = sink.clone();
+        let activity = activity.clone();
         let id = id.clone();
+        let app_for_reader = app.clone();
         std::thread::spawn(move || {
             let mut buf = vec![0u8; READ_CHUNK_BYTES];
             loop {
@@ -506,6 +589,19 @@ pub fn open_terminal<R: Runtime>(
                         let chunk = &buf[..n];
                         if let Ok(mut buffer) = scrollback.lock() {
                             push_scrollback(&mut buffer, chunk);
+                        }
+                        // Output means the agent is doing something. The title,
+                        // when there is one, comes from the same bytes — no
+                        // extra channel, no hook, no configuration.
+                        if let Ok(mut act) = activity.lock() {
+                            act.last_output = Instant::now();
+                            if let Some(title) = parse_osc_title(chunk) {
+                                act.title = Some(title);
+                            }
+                            if act.state != TerminalState::Working {
+                                act.state = TerminalState::Working;
+                                emit_state(&app_for_reader, &id, TerminalState::Working, act.title.clone());
+                            }
                         }
                         if let Ok(sink) = sink.lock() {
                             if let Some(channel) = sink.as_ref() {
@@ -517,6 +613,10 @@ pub fn open_terminal<R: Runtime>(
                     Err(_) => break,
                 }
             }
+            if let Ok(mut act) = activity.lock() {
+                act.state = TerminalState::Exited;
+            }
+            emit_state(&app_for_reader, &id, TerminalState::Exited, None);
             log::info!("terminal {id}: pty closed");
         });
     }
@@ -563,7 +663,7 @@ pub fn open_terminal<R: Runtime>(
         .0
         .lock()
         .map_err(|e| e.to_string())?
-        .insert(id.clone(), TerminalHandle { master: pair.master, writer, child, scrollback, sink, info: info.clone() });
+        .insert(id.clone(), TerminalHandle { master: pair.master, writer, child, scrollback, sink, activity, info: info.clone() });
 
     // Mirror the terminal to disk so it can be reopened next launch. Only a
     // registered terminal is persisted, so this can't outlive the shell.
@@ -971,6 +1071,76 @@ pub async fn fan_out_prompt<R: Runtime>(
     Ok(opened)
 }
 
+/// One terminal's live state, for the UI.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalActivity {
+    pub id: String,
+    pub state: TerminalState,
+    /// Whatever the program last set as the terminal title — for Claude Code
+    /// that's its status line, which says what it's actually doing.
+    pub title: Option<String>,
+}
+
+fn emit_state<R: Runtime>(app: &AppHandle<R>, id: &str, state: TerminalState, title: Option<String>) {
+    let _ = app.emit("terminal-state", TerminalActivity { id: id.to_string(), state, title });
+}
+
+/// Every open terminal's state, for the first render. After that the UI follows
+/// `terminal-state` events rather than polling.
+#[tauri::command]
+pub fn list_terminal_states<R: Runtime>(app: AppHandle<R>) -> Result<Vec<TerminalActivity>, String> {
+    let registry = app.state::<TerminalRegistry>();
+    let map = registry.0.lock().map_err(|e| e.to_string())?;
+    Ok(map
+        .iter()
+        .map(|(id, handle)| {
+            let (state, title) = handle
+                .activity
+                .lock()
+                .map(|a| (a.state, a.title.clone()))
+                .unwrap_or((TerminalState::Idle, None));
+            TerminalActivity { id: id.clone(), state, title }
+        })
+        .collect())
+}
+
+/// Ages `Working` into `Waiting` once a terminal has been quiet long enough,
+/// and tells the user when it happens.
+///
+/// A separate pass rather than a timer per terminal: the reader thread can only
+/// react to bytes arriving, and the interesting transition is precisely the
+/// absence of them. One tick over the registry costs nothing and scales to as
+/// many panels as anyone will open.
+///
+/// The notification is the payoff of the whole feature — it's what makes five
+/// agents in parallel something you can walk away from instead of something you
+/// have to supervise.
+pub fn tick_terminal_states<R: Runtime>(app: &AppHandle<R>) {
+    let Some(registry) = app.try_state::<TerminalRegistry>() else { return };
+    let mut newly_waiting = Vec::new();
+    {
+        let Ok(map) = registry.0.lock() else { return };
+        for (id, handle) in map.iter() {
+            let Ok(mut act) = handle.activity.lock() else { continue };
+            if act.state == TerminalState::Working && act.last_output.elapsed() >= QUIET_BEFORE_WAITING {
+                act.state = TerminalState::Waiting;
+                newly_waiting.push((id.clone(), handle.info.title.clone(), act.title.clone()));
+            }
+        }
+    }
+
+    for (id, panel_title, agent_title) in newly_waiting {
+        emit_state(app, &id, TerminalState::Waiting, agent_title.clone());
+        crate::notifications::notify_if_enabled(
+            app,
+            |s| s.notify_session_waiting,
+            "Agent is waiting",
+            &agent_title.unwrap_or_else(|| format!("{panel_title} finished its turn")),
+        );
+    }
+}
+
 /// Kills every shell on app exit — a PTY child outlives its parent happily,
 /// so without this quitting Hangar leaves a login shell per terminal running
 /// forever. Called from `lib.rs`'s `shutdown_children`.
@@ -1059,6 +1229,14 @@ fn refresh_account_status<R: Runtime>(app: &AppHandle<R>, account_id: &str) -> b
             return false;
         }
     };
+    // Keep the reading. The scrape already happened; throwing it away is what
+    // made "how fast am I burning" unanswerable for the life of the project.
+    if let Ok(conn) = db.0.lock() {
+        if let Err(e) = crate::quota::record_sample(&conn, account_id, stats.session_pct, stats.weekly_pct, stats.context_pct) {
+            log::warn!("usage check: couldn't record the sample for account {account_id}: {e}");
+        }
+    }
+
     let exhausted = crate::usage_scraper::is_exhausted(&stats);
     let desired = if exhausted { "exhausted" } else { "healthy" };
     if desired == current_status {
@@ -1608,6 +1786,43 @@ mod tests {
 
         close_terminal(handle, info.id).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- agent state ---------------------------------------------------------
+
+    #[test]
+    fn a_title_is_read_from_either_osc_form() {
+        // BEL-terminated, the common one.
+        assert_eq!(parse_osc_title(b"\x1b]0;fixing the rounding\x07").as_deref(), Some("fixing the rounding"));
+        // ST-terminated (ESC \), which some programs prefer.
+        assert_eq!(parse_osc_title(b"\x1b]2;running tests\x1b\\").as_deref(), Some("running tests"));
+    }
+
+    /// Titles arrive mixed into ordinary output, often several in one read —
+    /// the last one is the current state of the world.
+    #[test]
+    fn the_last_title_in_a_chunk_wins_and_surrounding_output_is_ignored() {
+        let chunk = b"some output\x1b]0;first\x07more output\x1b]0;second\x07trailing";
+        assert_eq!(parse_osc_title(chunk).as_deref(), Some("second"));
+    }
+
+    /// A sequence split across two reads must not produce half a title. The
+    /// next chunk carries a complete one anyway, so dropping the fragment is
+    /// right; inventing a truncated title would put garbage in the UI.
+    #[test]
+    fn an_unterminated_sequence_yields_nothing() {
+        assert_eq!(parse_osc_title(b"\x1b]0;half a tit"), None);
+        assert_eq!(parse_osc_title(b"plain output with no escapes at all"), None);
+        assert_eq!(parse_osc_title(b"\x1b]0;\x07"), None, "an empty title is not a title");
+    }
+
+    /// Other OSC commands share the prefix — 4 is a palette change, 8 is a
+    /// hyperlink. Reading those as titles would fill the panel header with
+    /// colour codes.
+    #[test]
+    fn other_osc_commands_are_not_mistaken_for_titles() {
+        assert_eq!(parse_osc_title(b"\x1b]4;1;rgb:00/00/00\x07"), None);
+        assert_eq!(parse_osc_title(b"\x1b]8;;https://example.com\x07"), None);
     }
 
     /// A fan-out with nothing to fan is a mistake, not an empty success: it

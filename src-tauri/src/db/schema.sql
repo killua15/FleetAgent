@@ -290,3 +290,27 @@ CREATE INDEX IF NOT EXISTS idx_file_edits_session ON file_edits(session_id);
 CREATE INDEX IF NOT EXISTS idx_turn_usage_session ON turn_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_pull_requests_session ON pull_requests(session_id);
 CREATE INDEX IF NOT EXISTS idx_pr_review_comments_pr ON pr_review_comments(pull_request_id);
+
+-- Every `/usage` reading the poller takes, kept instead of thrown away.
+--
+-- The poller has always scraped the real 5h/weekly/context percentages every
+-- five minutes and cached them in memory, where each sample overwrote the last
+-- and the whole history died with the process. One number tells you where you
+-- are; a series tells you how fast you're burning and when you'll run out —
+-- which is the thing no other agent orchestrator can compute, because none of
+-- them models accounts at all.
+--
+-- Cheap by construction: one row per account per five minutes, only for
+-- accounts with a terminal open.
+CREATE TABLE IF NOT EXISTS account_usage_samples (
+  id           TEXT PRIMARY KEY,
+  account_id   TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  -- All three are nullable: `/usage` is a TUI-only built-in and its output is
+  -- parsed leniently, so a reading can legitimately be partial.
+  session_pct  REAL,
+  weekly_pct   REAL,
+  context_pct  REAL,
+  sampled_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_usage_samples ON account_usage_samples(account_id, sampled_at);
