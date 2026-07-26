@@ -1,7 +1,8 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { ThemeProvider, useTheme } from './theme/ThemeProvider';
 import { NavigationProvider, useNavigation } from './nav/NavigationProvider';
 import { AuthProvider } from './auth/AuthProvider';
+import { JumpPalette } from './components/JumpPalette';
 import { Landing } from './screens/Landing';
 import { MainView } from './screens/MainView';
 import { AddAccount } from './screens/AddAccount';
@@ -30,6 +31,8 @@ import './styles/global.css';
 function GlobalShortcuts() {
   const { toggleTheme } = useTheme();
   const { current, navigate } = useNavigation();
+  const [jumpOpen, setJumpOpen] = useState(false);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const meta = e.metaKey || e.ctrlKey;
@@ -39,12 +42,25 @@ function GlobalShortcuts() {
       } else if (meta && !e.shiftKey && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         if (current.screen !== 'command-palette') navigate('command-palette');
+      } else if (meta && !e.shiftKey && e.key.toLowerCase() === 'j') {
+        // ⌘J jumps to a running terminal from anywhere — including the Git
+        // panel or the file viewer, which is exactly when navigating home first
+        // and then hunting is most annoying.
+        e.preventDefault();
+        setJumpOpen((wasOpen) => !wasOpen);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [toggleTheme, navigate, current.screen]);
-  return null;
+
+  return (
+    <JumpPalette
+      open={jumpOpen}
+      onClose={() => setJumpOpen(false)}
+      onJump={(id) => navigate('terminals', { focusTerminalId: id })}
+    />
+  );
 }
 
 function Screens() {

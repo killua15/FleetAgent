@@ -119,6 +119,9 @@ pub struct TerminalInfo {
     /// — so it can be resumed or copied to another account later. `None` for a
     /// plain shell, a login, or a non-claude terminal.
     pub session_uuid: Option<String>,
+    /// A name the user typed for this panel, which wins over `title` in the UI.
+    /// `None` until they rename it.
+    pub display_name: Option<String>,
 }
 
 /// What a terminal's agent is doing, as far as Hangar can tell from the
@@ -568,6 +571,9 @@ pub fn open_terminal<R: Runtime>(
         account_name,
         account_id: account_id.clone(),
         session_uuid,
+        // A fresh terminal has no name of its own; `restore_terminals` puts back
+        // the one the user typed before, via `rename_terminal`.
+        display_name: None,
     };
 
     let scrollback = Arc::new(Mutex::new(VecDeque::new()));
@@ -692,9 +698,9 @@ fn persist_terminal<R: Runtime>(app: &AppHandle<R>, info: &TerminalInfo) {
         TargetKind::Session => "session",
     };
     if let Err(e) = conn.execute(
-        "INSERT OR REPLACE INTO open_terminals (id, target_kind, source_id, account_id, session_uuid, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![info.id, kind, info.source_id, info.account_id, info.session_uuid, chrono::Utc::now().to_rfc3339()],
+        "INSERT OR REPLACE INTO open_terminals (id, target_kind, source_id, account_id, session_uuid, display_name, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![info.id, kind, info.source_id, info.account_id, info.session_uuid, info.display_name, chrono::Utc::now().to_rfc3339()],
     ) {
         log::warn!("persist_terminal: {e}");
     }
@@ -798,6 +804,7 @@ struct PersistedTerminal {
     source_id: String,
     account_id: Option<String>,
     session_uuid: Option<String>,
+    display_name: Option<String>,
 }
 
 /// Reopens the terminals that were open when Hangar last closed — the first
@@ -825,11 +832,11 @@ pub fn restore_terminals<R: Runtime>(app: AppHandle<R>, cols: u16, rows: u16) ->
         let db = app.state::<DbConnection>();
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT target_kind, source_id, account_id, session_uuid FROM open_terminals ORDER BY created_at ASC")
+            .prepare("SELECT target_kind, source_id, account_id, session_uuid, display_name FROM open_terminals ORDER BY created_at ASC")
             .map_err(|e| e.to_string())?;
         let collected: Vec<PersistedTerminal> = stmt
             .query_map([], |r| {
-                Ok(PersistedTerminal { target_kind: r.get(0)?, source_id: r.get(1)?, account_id: r.get(2)?, session_uuid: r.get(3)? })
+                Ok(PersistedTerminal { target_kind: r.get(0)?, source_id: r.get(1)?, account_id: r.get(2)?, session_uuid: r.get(3)?, display_name: r.get(4)? })
             })
             .map_err(|e| e.to_string())?
             .filter_map(Result::ok)
@@ -848,7 +855,16 @@ pub fn restore_terminals<R: Runtime>(app: AppHandle<R>, cols: u16, rows: u16) ->
         let (init, session_uuid) = decide_restore_init(&app, &row);
         let target = TerminalTarget { kind, id: row.source_id.clone() };
         match open_terminal(app.clone(), target, row.account_id.clone(), init, session_uuid, None, cols, rows) {
-            Ok(info) => restored.push(info),
+            Ok(mut info) => {
+                // The name the user gave this panel is part of what "restore"
+                // means — without it, three panels on one project come back
+                // indistinguishable.
+                if let Some(name) = row.display_name.clone() {
+                    let _ = rename_terminal(app.clone(), info.id.clone(), name.clone());
+                    info.display_name = Some(name);
+                }
+                restored.push(info);
+            }
             Err(e) => log::info!("restore: skipping terminal for {} ({}): {e}", row.target_kind, row.source_id),
         }
     }
@@ -1069,6 +1085,27 @@ pub async fn fan_out_prompt<R: Runtime>(
         log::warn!("fan_out_prompt: {} of the branches failed — {}", failures.len(), failures.join("; "));
     }
     Ok(opened)
+}
+
+/// Renames a panel. Persisted, because a name that vanishes on restart is worse
+/// than no name: you'd have to re-derive which of three panels on the same
+/// project was the one doing the migration.
+#[tauri::command]
+pub fn rename_terminal<R: Runtime>(app: AppHandle<R>, id: String, name: String) -> Result<(), String> {
+    let trimmed = name.trim().to_string();
+    // Empty means "go back to the project's own name", not "call it nothing".
+    let display_name = (!trimmed.is_empty()).then_some(trimmed);
+    {
+        let registry = app.state::<TerminalRegistry>();
+        let mut map = registry.0.lock().map_err(|e| e.to_string())?;
+        let handle = map.get_mut(&id).ok_or_else(|| format!("no terminal with id {id}"))?;
+        handle.info.display_name = display_name.clone();
+    }
+    let Some(db) = app.try_state::<DbConnection>() else { return Ok(()) };
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE open_terminals SET display_name = ?2 WHERE id = ?1", rusqlite::params![id, display_name])
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// One terminal's live state, for the UI.
@@ -2028,6 +2065,7 @@ mod tests {
             account_name: None,
             account_id: account_id.map(str::to_string),
             session_uuid: session_uuid.map(str::to_string),
+            display_name: None,
         }
     }
 
@@ -2079,7 +2117,7 @@ mod tests {
     fn restore_starts_a_plain_shell_when_there_was_no_account() {
         let app = tauri::test::mock_app();
         app.manage(crate::db::DbConnection(Mutex::new(seed())));
-        let row = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: None, session_uuid: None };
+        let row = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: None, session_uuid: None, display_name: None };
         assert_eq!(decide_restore_init(app.handle(), &row), (None, None));
     }
 
@@ -2103,11 +2141,11 @@ mod tests {
         let handle = app.handle();
 
         // Transcript present → resume that exact session.
-        let with = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: Some("accR".into()), session_uuid: Some(uuid.into()) };
+        let with = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: Some("accR".into()), session_uuid: Some(uuid.into()), display_name: None };
         assert_eq!(decide_restore_init(handle, &with), (Some(InitCommand::Resume), Some(uuid.to_string())));
 
         // Same account, a session id with no transcript on disk → fresh start.
-        let without = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: Some("accR".into()), session_uuid: Some("no-such-uuid".into()) };
+        let without = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: Some("accR".into()), session_uuid: Some("no-such-uuid".into()), display_name: None };
         assert_eq!(decide_restore_init(handle, &without), (Some(InitCommand::Start), None));
 
         let _ = std::fs::remove_dir_all(&cfg);

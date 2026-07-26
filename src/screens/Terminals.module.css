@@ -690,3 +690,157 @@
   color: var(--txt);
   font-weight: 500;
 }
+
+/* The fleet sidebar: every terminal, grouped by project, sorted by who needs
+   you. Replaces a rail that only listed minimized ones — which made "more
+   panels than fit" a problem to be warned about rather than navigated. */
+.sidebar {
+  width: 260px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 8px;
+  border-right: 1px solid var(--line);
+  background: var(--bg2);
+  overflow: auto;
+}
+
+.sideHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.sideWaiting {
+  font: 500 10px var(--font-mono);
+  color: var(--amber);
+}
+
+.sideFilter {
+  margin: 2px 6px 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--txt);
+  font: 400 11px var(--font-ui);
+}
+
+.sideFilter:focus {
+  outline: none;
+  border-color: var(--acc);
+}
+
+.sideGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 8px;
+}
+
+.sideGroupTitle {
+  font: 600 9px var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+  padding: 4px 6px 3px;
+}
+
+.sideRow,
+.sideRowActive {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+}
+
+.sideRow:hover,
+.sideRowActive {
+  background: var(--panel2);
+}
+
+.sideRowActive {
+  border-color: var(--acc);
+}
+
+.sideRowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 4px 6px 7px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sideName,
+.sideNameAttention {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 11.5px var(--font-ui);
+  color: var(--mut);
+}
+
+/* Attention as weight, not as a badge — a count you have to interpret is worse
+   than a shape you can scan. */
+.sideNameAttention {
+  font-weight: 600;
+  color: var(--txt);
+}
+
+.sideAgentTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 10px var(--font-mono);
+  color: var(--dim);
+}
+
+.sideIconBtn {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--dim);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.sideIconBtn:hover {
+  background: var(--panel);
+  color: var(--txt);
+}
+
+.renameInput {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 5px;
+  border-radius: 5px;
+  border: 1px solid var(--acc);
+  background: var(--panel);
+  color: var(--txt);
+  font: 400 11.5px var(--font-ui);
+}
+
+.renameInput:focus {
+  outline: none;
+}
+
+/* Where the sidebar just sent you. Brief and quiet — it answers "which one did
+   I click" without becoming a second selection model. */
+.cardFocused {
+  composes: card;
+  border-color: var(--acc);
+}

@@ -30,6 +30,9 @@ export interface TerminalInfo {
    * account-scoped claude terminal — what makes the conversation resumable or
    * transferable later. `null` for a plain shell / login / non-claude. */
   sessionUuid: string | null;
+  /** A name the user typed for this panel, which wins over `title`. Persisted,
+   * so it survives a restart — a name that vanished would be worse than none. */
+  displayName: string | null;
 }
 
 /** The account the out-of-quota banner offers to reopen a terminal under. */

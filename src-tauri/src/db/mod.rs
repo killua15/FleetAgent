@@ -79,6 +79,12 @@ const MIGRATIONS: &[Migration] = &[
         run: account_usage_samples_table,
         transactional: true,
     },
+    Migration {
+        version: 6,
+        name: "open_terminals_display_name",
+        run: open_terminals_display_name,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -131,6 +137,16 @@ fn open_terminals_table(conn: &Connection) -> Result<(), String> {
          );",
     )
     .map_err(|e| format!("could not create open_terminals: {e}"))
+}
+
+/// Lets a panel carry a name the user typed. Needed once terminals are listed
+/// in a sidebar: two panels on the same project read identically there.
+fn open_terminals_display_name(conn: &Connection) -> Result<(), String> {
+    if has_column(conn, "open_terminals", "display_name")? {
+        return Ok(());
+    }
+    conn.execute_batch("ALTER TABLE open_terminals ADD COLUMN display_name TEXT;")
+        .map_err(|e| format!("could not add open_terminals.display_name: {e}"))
 }
 
 /// Keeps the `/usage` readings the poller was already taking. Same shape

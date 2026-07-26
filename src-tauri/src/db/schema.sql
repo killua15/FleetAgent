@@ -273,6 +273,10 @@ CREATE TABLE IF NOT EXISTS open_terminals (
   source_id    TEXT NOT NULL,
   account_id   TEXT,
   session_uuid TEXT,
+  -- A name the user typed for this panel, overriding the project or session
+  -- name. Two terminals on the same project are otherwise indistinguishable in
+  -- a list, which is exactly when a sidebar makes them worth naming.
+  display_name TEXT,
   created_at   TEXT NOT NULL
 );
 

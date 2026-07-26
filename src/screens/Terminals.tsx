@@ -27,6 +27,7 @@ export function Terminals() {
   const { current, navigate } = useNavigation();
   const openFor = current.params?.openFor as TerminalTarget | undefined;
   const openForAccountId = current.params?.accountId as string | undefined;
+  const focusTerminalId = current.params?.focusTerminalId as string | undefined;
 
   const [terminals, setTerminals] = useState<TerminalInfo[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -55,6 +56,9 @@ export function Terminals() {
   // Live agent state per terminal, keyed by id. Seeded once and then driven by
   // events — polling six PTYs for "are you done" would be the wrong shape.
   const [activity, setActivity] = useState<Record<string, TerminalActivity>>({});
+  // The panel the sidebar last sent you to, highlighted briefly so a click on a
+  // row of twelve lands somewhere visible instead of scrolling silently.
+  const [focusedId, setFocusedId] = useState<string | null>(null);
   // Navigating here with an `openFor` param must open exactly one terminal,
   // not one per render — and not another one if the user navigates back to
   // this screen later with the same param still in the history entry.
@@ -240,6 +244,34 @@ export function Terminals() {
     }
   };
 
+  /** Sidebar → panel. Un-hides it if it was hidden, then scrolls it into view:
+   * a row that does nothing because its panel is collapsed is a dead control. */
+  const focusTerminal = (id: string) => {
+    setCollapsed((prev) => (prev[id] ? { ...prev, [id]: false } : prev));
+    setFocusedId(id);
+    // After the panel has had a frame to mount if it was hidden.
+    requestAnimationFrame(() => {
+      document.getElementById(`terminal-card-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  };
+
+  // ⌘J landed here asking for a specific panel. Waits for the terminal list so
+  // the scroll target exists — jumping before the grid renders does nothing.
+  useEffect(() => {
+    if (!focusTerminalId || !terminals.some((t) => t.id === focusTerminalId)) return;
+    focusTerminal(focusTerminalId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusTerminalId, terminals.length]);
+
+  const renameTerminal = async (id: string, name: string) => {
+    try {
+      await invoke('rename_terminal', { id, name });
+      setTerminals((prev) => prev.map((t) => (t.id === id ? { ...t, displayName: name.trim() || null } : t)));
+    } catch (e) {
+      toastError(String(e));
+    }
+  };
+
   const closeTerminal = async (id: string) => {
     try {
       await invoke('close_terminal', { id });
@@ -265,8 +297,9 @@ export function Terminals() {
 
   const exhaustedAccountIds = new Set(accounts.filter((a) => a.status === 'exhausted').map((a) => a.id));
 
+  // Hidden terminals no longer need their own list: the sidebar shows every
+  // terminal and marks which ones have a panel on screen.
   const panels = terminals.filter((t) => !collapsed[t.id]);
-  const hidden = terminals.filter((t) => collapsed[t.id]);
   const effectiveGridColumns = gridColumns === 'auto' ? autoGridColumns(panels.length) : gridColumns;
 
   const pickedAccount = accounts.find((a) => a.id === pickedAccountId);
@@ -431,28 +464,25 @@ export function Terminals() {
       )}
 
       <div className={styles.body}>
-        {hidden.length > 0 && (
-          <div className={styles.rail}>
-            <span className={styles.railLabel}>MINIMIZED — STILL RUNNING</span>
-            {hidden.map((t) => (
-              <button
-                key={t.id}
-                className={styles.pill}
-                title={t.cwd}
-                onClick={() => setCollapsed((prev) => ({ ...prev, [t.id]: false }))}
-              >
-                <span className={styles.pillName}>{t.title}</span>
-                <span className={styles.pillRestore}>⤢</span>
-              </button>
-            ))}
-          </div>
+        {terminals.length > 0 && (
+          <FleetSidebar
+            terminals={terminals}
+            projects={projects}
+            activity={activity}
+            collapsed={collapsed}
+            focusedId={focusedId}
+            onFocus={focusTerminal}
+            onToggleVisible={(id) => setCollapsed((prev) => ({ ...prev, [id]: !prev[id] }))}
+            onRename={renameTerminal}
+            onClose={closeTerminal}
+          />
         )}
 
         <div className={styles.gridArea}>
           {panels.length >= WARN_THRESHOLD && (
             <div className={styles.warnBanner}>
               <span className={styles.warnDot} />
-              <span>{panels.length} terminals at once — collapse one to the rail ▁ to give the rest more room</span>
+              <span>{panels.length} panels on screen — hide some from the sidebar; they keep running either way</span>
               <span className={styles.spacer} />
               <label className={styles.colControl}>
                 columns
@@ -479,13 +509,13 @@ export function Terminals() {
           ) : (
             <div className={styles.grid} style={{ gridTemplateColumns: `repeat(${effectiveGridColumns}, minmax(0, 1fr))` }}>
               {panels.map((t) => (
-                <div key={t.id} className={styles.card}>
+                <div key={t.id} id={`terminal-card-${t.id}`} className={focusedId === t.id ? styles.cardFocused : styles.card}>
                   <div className={styles.cardHeader}>
                     <span className={styles.kindBadge} style={{ background: t.kind === 'session' ? 'var(--tealD)' : 'var(--accD)', color: t.kind === 'session' ? 'var(--teal)' : 'var(--acc)' }}>
                       {t.kind === 'session' ? '⑃' : '▣'}
                     </span>
                     <StateDot activity={activity[t.id]} />
-                    <span className={styles.cardTitle}>{t.title}</span>
+                    <span className={styles.cardTitle}>{t.displayName ?? t.title}</span>
                     {/* What the agent says it's doing beats what the project is
                         called — it's the only label that changes as work moves. */}
                     {activity[t.id]?.title && <span className={styles.agentTitle}>{activity[t.id].title}</span>}
@@ -581,6 +611,150 @@ function OutOfQuotaBanner({ terminal, busy, onReopen }: { terminal: TerminalInfo
           {busy ? '…' : `Reopen in ${suggestion.accountName}`}
         </Button>
       )}
+    </div>
+  );
+}
+
+/** The index of everything running, grouped by project.
+ *
+ * Replaces a rail that only listed *minimized* terminals — which meant the
+ * moment you had more panels than fit, the app's answer was a banner telling you
+ * to hide some. A sidebar makes many terminals navigable instead of a problem,
+ * which is the shape every comparable tool converged on.
+ *
+ * **Sorted by who needs you**, not by when it was opened: `waiting` first, then
+ * working, then the rest. That ordering is the entire reason B1 (agent state)
+ * had to come first — without a state there's nothing to sort by, and a list of
+ * twelve identical rows is no better than twelve panels.
+ */
+function FleetSidebar({
+  terminals,
+  projects,
+  activity,
+  collapsed,
+  focusedId,
+  onFocus,
+  onToggleVisible,
+  onRename,
+  onClose,
+}: {
+  terminals: TerminalInfo[];
+  projects: Project[];
+  activity: Record<string, TerminalActivity>;
+  collapsed: Record<string, boolean>;
+  focusedId: string | null;
+  onFocus: (id: string) => void;
+  onToggleVisible: (id: string) => void;
+  onRename: (id: string, name: string) => void;
+  onClose: (id: string) => void;
+}) {
+  const [filter, setFilter] = useState('');
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+
+  const q = filter.trim().toLowerCase();
+  const label = (t: TerminalInfo) => t.displayName ?? t.title;
+  const matches = (t: TerminalInfo) =>
+    !q || label(t).toLowerCase().includes(q) || t.cwd.toLowerCase().includes(q) || (t.accountName ?? '').toLowerCase().includes(q) || (activity[t.id]?.title ?? '').toLowerCase().includes(q);
+
+  // Attention first. A terminal that stopped and is waiting is the only kind
+  // that costs you something by going unnoticed.
+  const rank = (t: TerminalInfo) => {
+    switch (activity[t.id]?.state) {
+      case 'waiting':
+        return 0;
+      case 'working':
+        return 1;
+      case 'exited':
+        return 3;
+      default:
+        return 2;
+    }
+  };
+
+  const visible = terminals.filter(matches);
+  const groups = projects
+    .map((p) => ({ project: p, rows: visible.filter((t) => t.cwd === p.path || t.cwd.startsWith(`${p.path}/`)).sort((a, b) => rank(a) - rank(b)) }))
+    .filter((g) => g.rows.length > 0);
+  // A terminal whose cwd doesn't sit under any known project — an explored
+  // folder — still has to appear somewhere.
+  const grouped = new Set(groups.flatMap((g) => g.rows.map((r) => r.id)));
+  const loose = visible.filter((t) => !grouped.has(t.id)).sort((a, b) => rank(a) - rank(b));
+
+  const waiting = terminals.filter((t) => activity[t.id]?.state === 'waiting').length;
+
+  const renderRow = (t: TerminalInfo) => {
+    const state = activity[t.id]?.state ?? 'idle';
+    const hidden = Boolean(collapsed[t.id]);
+    return (
+      <div key={t.id} className={focusedId === t.id ? styles.sideRowActive : styles.sideRow}>
+        <button className={styles.sideRowMain} onClick={() => onFocus(t.id)} title={`${t.cwd}\n${TERMINAL_STATE_META[state].label}`}>
+          <StateDot activity={activity[t.id]} />
+          {renaming === t.id ? (
+            <input
+              autoFocus
+              className={styles.renameInput}
+              value={draft}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={() => {
+                onRename(t.id, draft);
+                setRenaming(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  onRename(t.id, draft);
+                  setRenaming(null);
+                }
+                if (e.key === 'Escape') setRenaming(null);
+              }}
+            />
+          ) : (
+            <span
+              /* Unread is bold, not badged: a badge shouts a number you then
+                 have to interpret; weight tells you where to look. */
+              className={state === 'waiting' ? styles.sideNameAttention : styles.sideName}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                setDraft(t.displayName ?? '');
+                setRenaming(t.id);
+              }}
+            >
+              {label(t)}
+            </span>
+          )}
+          {activity[t.id]?.title && <span className={styles.sideAgentTitle}>{activity[t.id].title}</span>}
+        </button>
+        <button className={styles.sideIconBtn} title={hidden ? 'Show this panel' : 'Hide the panel — the shell keeps running'} onClick={() => onToggleVisible(t.id)}>
+          {hidden ? '○' : '●'}
+        </button>
+        <button className={styles.sideIconBtn} title="Close terminal — kills the shell" onClick={() => onClose(t.id)}>
+          ×
+        </button>
+      </div>
+    );
+  };
+
+  return (
+    <div className={styles.sidebar}>
+      <div className={styles.sideHeader}>
+        <span className={styles.railLabel}>FLEET</span>
+        {waiting > 0 && <span className={styles.sideWaiting}>{waiting} waiting</span>}
+      </div>
+      <input className={styles.sideFilter} placeholder="filter…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+      {groups.map((g) => (
+        <div key={g.project.id} className={styles.sideGroup}>
+          <span className={styles.sideGroupTitle}>{g.project.name}</span>
+          {g.rows.map(renderRow)}
+        </div>
+      ))}
+      {loose.length > 0 && (
+        <div className={styles.sideGroup}>
+          <span className={styles.sideGroupTitle}>OTHER FOLDERS</span>
+          {loose.map(renderRow)}
+        </div>
+      )}
+      {visible.length === 0 && <span className={styles.pickerEmpty}>nothing matches “{filter}”</span>}
     </div>
   );
 }

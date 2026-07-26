@@ -221,6 +221,7 @@ pub fn run() {
             commands::sessions::read_file,
             terminals::fan_out_prompt,
             terminals::list_terminal_states,
+            terminals::rename_terminal,
             quota::list_account_quotas,
             quota::project_fan_out,
             auth::start_oauth_callback,
