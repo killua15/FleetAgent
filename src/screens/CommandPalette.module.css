@@ -27,7 +27,7 @@
   width: 560px;
   max-width: calc(100vw - 40px);
   max-height: 70vh;
-  background: var(--panel);
+  background: var(--overlay);
   border: 1px solid var(--line2);
   border-radius: 12px;
   box-shadow: var(--shadow);

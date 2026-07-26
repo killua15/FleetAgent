@@ -59,6 +59,9 @@ export function Terminals() {
   // The panel the sidebar last sent you to, highlighted briefly so a click on a
   // row of twelve lands somewhere visible instead of scrolling silently.
   const [focusedId, setFocusedId] = useState<string | null>(null);
+  // Remembered across launches: whether the sidebar is worth its 260px is a
+  // standing preference, not a per-session mood.
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.localStorage.getItem('hangar.sidebar') !== 'closed');
   // Navigating here with an `openFor` param must open exactly one terminal,
   // not one per render — and not another one if the user navigates back to
   // this screen later with the same param still in the history entry.
@@ -254,6 +257,24 @@ export function Terminals() {
       document.getElementById(`terminal-card-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     });
   };
+
+  useEffect(() => {
+    window.localStorage.setItem('hangar.sidebar', sidebarOpen ? 'open' : 'closed');
+  }, [sidebarOpen]);
+
+  // ⌘B toggles it, the convention every editor with a sidebar uses. Ignored
+  // while typing in a field so it can't fire from the filter box or a rename.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'b') return;
+      const el = document.activeElement;
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return;
+      e.preventDefault();
+      setSidebarOpen((wasOpen) => !wasOpen);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   // ⌘J landed here asking for a specific panel. Waits for the terminal list so
   // the scroll target exists — jumping before the grid renders does nothing.
@@ -464,8 +485,9 @@ export function Terminals() {
       )}
 
       <div className={styles.body}>
-        {terminals.length > 0 && (
+        {terminals.length > 0 && sidebarOpen && (
           <FleetSidebar
+            onCollapse={() => setSidebarOpen(false)}
             terminals={terminals}
             projects={projects}
             activity={activity}
@@ -476,6 +498,12 @@ export function Terminals() {
             onRename={renameTerminal}
             onClose={closeTerminal}
           />
+        )}
+
+        {terminals.length > 0 && !sidebarOpen && (
+          <button className={styles.sidebarReopen} title="Show the fleet sidebar (⌘B)" onClick={() => setSidebarOpen(true)}>
+            ›
+          </button>
         )}
 
         <div className={styles.gridArea}>
@@ -637,6 +665,7 @@ function FleetSidebar({
   onToggleVisible,
   onRename,
   onClose,
+  onCollapse,
 }: {
   terminals: TerminalInfo[];
   projects: Project[];
@@ -647,6 +676,7 @@ function FleetSidebar({
   onToggleVisible: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onClose: (id: string) => void;
+  onCollapse: () => void;
 }) {
   const [filter, setFilter] = useState('');
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -740,6 +770,10 @@ function FleetSidebar({
       <div className={styles.sideHeader}>
         <span className={styles.railLabel}>FLEET</span>
         {waiting > 0 && <span className={styles.sideWaiting}>{waiting} waiting</span>}
+        <span className={styles.spacer} />
+        <button className={styles.sideIconBtn} title="Hide the sidebar (⌘B)" onClick={onCollapse}>
+          ‹
+        </button>
       </div>
       <input className={styles.sideFilter} placeholder="filter…" value={filter} onChange={(e) => setFilter(e.target.value)} />
       {groups.map((g) => (

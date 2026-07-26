@@ -15,8 +15,8 @@
   display: flex;
   flex-direction: column;
   border-radius: 12px;
-  border: 1px solid var(--line);
-  background: var(--panel);
+  border: 1px solid var(--overlay-line);
+  background: var(--overlay);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
   overflow: hidden;
 }

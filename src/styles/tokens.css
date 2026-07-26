@@ -75,10 +75,14 @@
  * flat color, so panels read as translucent layers over --bg rather than
  * opaque cards. Deliberately subtle — this is a tint, not frosted blur. */
 :root[data-theme='glass'] {
-  --bg: #0e0f14;
-  --bg2: rgba(255, 255, 255, 0.03);
-  --panel: rgba(255, 255, 255, 0.05);
-  --panel2: rgba(255, 255, 255, 0.07);
+  /* The window itself is transparent (see tauri.conf.json), so this tint *is*
+     the glass: dark enough to read text on, thin enough to see through. It was
+     previously an opaque `#0e0f14`, which meant "glass" was a white wash over a
+     solid background rather than actual transparency. */
+  --bg: rgba(14, 15, 20, var(--glass-alpha));
+  --bg2: rgba(18, 19, 26, calc(var(--glass-alpha) * 0.9));
+  --panel: rgba(23, 24, 34, calc(var(--glass-alpha) * 0.85));
+  --panel2: rgba(29, 30, 42, calc(var(--glass-alpha) * 0.95));
   --line: rgba(255, 255, 255, 0.08);
   --line2: rgba(255, 255, 255, 0.14);
 
@@ -105,4 +109,24 @@
   --geminiD: rgba(122, 162, 255, 0.13);
 
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+
+  /* How much of the desktop shows through. Two values, because a window you're
+     typing in and a window you glanced away from want different answers: the
+     first has to be readable, the second only has to be identifiable. The
+     unfocused one is user-set (Settings → Appearance) and lands here as an
+     inline style on :root. */
+  --glass-tint: 0.72;
+  --glass-tint-unfocused: 0.38;
+  --glass-alpha: var(--glass-tint);
+
+  /* The one surface that never dissolves. */
+  --overlay: #1b1c26;
+  --overlay-line: rgba(255, 255, 255, 0.12);
+}
+
+/* Away from the app, the window fades to whatever the user chose — enough to
+   see the wallpaper and your other windows through it, still enough to find
+   Hangar at a glance. */
+:root[data-theme='glass'][data-window-focused='false'] {
+  --glass-alpha: var(--glass-tint-unfocused);
 }

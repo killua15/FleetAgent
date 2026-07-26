@@ -158,3 +158,29 @@
   font: 400 10.5px var(--font-ui);
   color: var(--dim);
 }
+
+.tintRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.tintLabel {
+  flex: none;
+  font: 400 12px var(--font-ui);
+  color: var(--mut);
+}
+
+.tintSlider {
+  flex: 1;
+  max-width: 260px;
+  accent-color: var(--acc);
+}
+
+.tintValue {
+  flex: none;
+  min-width: 110px;
+  font: 500 11px var(--font-mono);
+  color: var(--dim);
+}

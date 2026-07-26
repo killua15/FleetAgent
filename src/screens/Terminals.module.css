@@ -176,7 +176,7 @@
   gap: 8px;
   padding: 6px 8px;
   border-radius: 7px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--overlay-line);
   background: var(--panel);
   color: var(--mut);
   font: 400 11.5px var(--font-ui);
@@ -210,8 +210,8 @@
   margin: 10px;
   padding: 12px 14px;
   border-radius: 10px;
-  border: 1px solid var(--line);
-  background: var(--panel);
+  border: 1px solid var(--overlay-line);
+  background: var(--overlay);
   max-height: 40vh;
   overflow: auto;
 }
@@ -843,4 +843,23 @@
 .cardFocused {
   composes: card;
   border-color: var(--acc);
+}
+
+/* The way back when the sidebar is hidden. Thin and against the edge: hiding a
+   panel must not be a one-way door, and a hidden sidebar with no visible way to
+   return is how people conclude a feature is broken. */
+.sidebarReopen {
+  flex: none;
+  width: 16px;
+  border: none;
+  border-right: 1px solid var(--line);
+  background: var(--bg2);
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.sidebarReopen:hover {
+  color: var(--txt);
+  background: var(--panel2);
 }

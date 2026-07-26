@@ -32,7 +32,7 @@ function isWizardConfigDir(path: string): boolean {
 }
 
 export function GeneralSettings() {
-  const { theme, setTheme } = useTheme();
+  const { theme, resolvedTheme, setTheme, unfocusedTint, setUnfocusedTint } = useTheme();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [usage, setUsage] = useState<Record<string, AccountUsageSummary>>({});
   const [caps, setCaps] = useState<Record<string, string>>({});
@@ -124,6 +124,29 @@ export function GeneralSettings() {
               </button>
             ))}
           </div>
+          {/* Only meaningful in glass, and hiding it elsewhere is better than
+              showing a slider that does nothing. */}
+          {resolvedTheme === 'glass' && (
+            <div className={styles.tintRow}>
+              <span className={styles.tintLabel}>Transparency when Hangar isn't focused</span>
+              <input
+                type="range"
+                min={0.1}
+                max={1}
+                step={0.02}
+                value={unfocusedTint}
+                onChange={(e) => setUnfocusedTint(Number(e.target.value))}
+                className={styles.tintSlider}
+              />
+              <span className={styles.tintValue}>{unfocusedTint >= 0.99 ? 'no fade' : `${Math.round((1 - unfocusedTint) * 100)}% see-through`}</span>
+            </div>
+          )}
+          {resolvedTheme === 'glass' && (
+            <span className={styles.hint}>
+              The window fades to this while you're in another app and comes back when you return. Popovers, dialogs and the
+              command palette stay solid at every setting — anything you have to read shouldn't have your wallpaper behind it.
+            </span>
+          )}
         </section>
 
         <section className={styles.section}>

@@ -22,6 +22,8 @@ function decodeChunk(base64: string): Uint8Array {
 function themeFromTokens(): Record<string, string> {
   const css = getComputedStyle(document.documentElement);
   const token = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback;
+  // In glass, `--panel` is already an rgba tint, so xterm composites over the
+  // window's own translucency and the desktop shows through the terminal too.
   return {
     background: token('--panel', '#171822'),
     foreground: token('--txt', '#e8e8f2'),
@@ -58,6 +60,10 @@ export function TerminalPane({ terminalId, className }: { terminalId: string; cl
       fontSize: 12,
       theme: themeFromTokens(),
       cursorBlink: true,
+      // Without this xterm paints an opaque background regardless of the theme
+      // colour, and the terminals — the largest surface in the app — would be
+      // the one place the glass stops.
+      allowTransparency: true,
       // Matches the backend's own scrollback cap — keeping far more here than
       // Rust can replay would only be visible until the first remount.
       scrollback: 5000,

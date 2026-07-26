@@ -16,12 +16,14 @@
         "width": 1440,
         "height": 880,
         "minWidth": 1024,
-        "minHeight": 640
+        "minHeight": 640,
+        "transparent": true
       }
     ],
     "security": {
       "csp": null
-    }
+    },
+    "macOSPrivateApi": true
   },
   "bundle": {
     "active": true,

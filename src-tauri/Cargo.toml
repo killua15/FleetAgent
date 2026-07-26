@@ -18,7 +18,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `macos-private-api` is what `macOSPrivateApi` in tauri.conf.json requires, and
+# it's what makes a genuinely transparent window with vibrancy possible on macOS.
+# The name is literal: it uses private Apple APIs, so a build with this feature
+# cannot be published on the Mac App Store. Hangar ships as a DMG / GitHub
+# release, so that trade is already made — but it's the reason this can't be
+# turned on casually.
+tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
