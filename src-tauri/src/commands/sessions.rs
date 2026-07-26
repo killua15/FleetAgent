@@ -188,11 +188,23 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<(), String> {
 /// project's local HEAD (not the remote default) so the subsession starts
 /// from whatever's already checked out, including uncommitted... no —
 /// worktrees only carry committed history, same as real `git worktree add`.
-fn create_linked_worktree(project_path: &str, worktree_dir: &Path, branch: &str) -> Result<(), String> {
+/// Cuts the worktree. `base` is the branch (or ref) the new one starts from;
+/// `None` means whatever the project has checked out.
+///
+/// Naming the base matters more than it looks: branching off whatever happened
+/// to be checked out means a worktree cut while you were on a half-finished
+/// feature silently inherits it, and the agent's diff then contains work that
+/// isn't its own.
+fn create_linked_worktree(project_path: &str, worktree_dir: &Path, branch: &str, base: Option<&str>) -> Result<(), String> {
     if let Some(parent) = worktree_dir.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    run_git(Path::new(project_path), &["worktree", "add", &worktree_dir.to_string_lossy(), "-b", branch])
+    let dir = worktree_dir.to_string_lossy().to_string();
+    let mut args = vec!["worktree", "add", &dir, "-b", branch];
+    if let Some(base) = base {
+        args.push(base);
+    }
+    run_git(Path::new(project_path), &args)
 }
 
 /// Recursively copies a project directory into an isolated folder, skipping
@@ -306,6 +318,9 @@ pub(crate) struct WorktreeRequest {
     pub effort: String,
     pub mode: String,
     pub setup_command: Option<String>,
+    /// The branch the worktree starts from. `None` keeps the old behaviour of
+    /// branching off whatever the project has checked out.
+    pub base_branch: Option<String>,
     /// Namespace for the branch: `subsession` for an agent's, `hangar` for a
     /// terminal's. Deterministic on purpose — a branch named after whatever the
     /// user typed would sooner or later collide with a real one.
@@ -361,6 +376,7 @@ pub async fn create_subsession<R: tauri::Runtime>(app: AppHandle<R>, input: NewS
                 effort: input.effort,
                 mode: input.mode,
                 setup_command: input.setup_command,
+                base_branch: None,
                 branch_prefix: "subsession",
             },
         )?;
@@ -385,6 +401,7 @@ pub async fn create_worktree_for_project<R: tauri::Runtime>(
     name: String,
     account_id: String,
     setup_command: Option<String>,
+    base_branch: Option<String>,
 ) -> Result<Session, String> {
     crate::blocking::run_blocking(move || {
         let db = app.state::<DbConnection>();
@@ -409,6 +426,16 @@ pub async fn create_worktree_for_project<R: tauri::Runtime>(
             (project_path, default_setup_command, model)
         };
 
+        // A worktree is a git object. Without a repo there is nothing to branch
+        // from, no base to choose, and no diff to review at the end — so this
+        // says so instead of quietly copying the folder into something that
+        // looks like a worktree and behaves like a photocopy.
+        if !project_is_git_repo(&project_path) {
+            return Err(format!(
+                "{project_path} isn't a git repository, so Hangar can't cut a worktree for it. Run `git init` there (and make one commit) first."
+            ));
+        }
+
         let session_id = create_worktree_session(
             &app,
             &db,
@@ -423,6 +450,7 @@ pub async fn create_worktree_for_project<R: tauri::Runtime>(
                 effort: TERMINAL_WORKTREE_EFFORT.to_string(),
                 mode: TERMINAL_WORKTREE_MODE.to_string(),
                 setup_command,
+                base_branch,
                 branch_prefix: "hangar",
             },
         )?;
@@ -445,7 +473,7 @@ pub(crate) fn create_worktree_session<R: tauri::Runtime>(app: &AppHandle<R>, db:
         let branch = format!("{}/{slug}", input.branch_prefix);
 
         let worktree_kind = if is_git {
-            create_linked_worktree(project_path, &worktree_dir, &branch)?;
+            create_linked_worktree(project_path, &worktree_dir, &branch, input.base_branch.as_deref())?;
             "linked"
         } else {
             copy_project_dir(Path::new(project_path), &worktree_dir)?;
@@ -1359,7 +1387,7 @@ mod subsession_tests {
 
         let worktree_dir = project_dir.join(WORKTREES_DIR).join("worktrees").join("fix-bug");
         let branch = "subsession/fix-bug".to_string();
-        create_linked_worktree(project_dir.to_str().unwrap(), &worktree_dir, &branch)
+        create_linked_worktree(project_dir.to_str().unwrap(), &worktree_dir, &branch, None)
             .expect("creating a linked worktree in a real git repo should succeed");
 
         assert!(worktree_dir.join("README.md").is_file(), "worktree should have the parent's committed files");
@@ -1522,6 +1550,7 @@ mod subsession_tests {
             "Fix Billing".to_string(),
             account_id,
             None,
+            None,
         ))
         .expect("a project should be able to grow a worktree with no session behind it");
 
@@ -1548,31 +1577,69 @@ mod subsession_tests {
         let _ = std::fs::remove_dir_all(&project_dir);
     }
 
-    /// A worktree for a project that isn't a git repo still works — it copies
-    /// the folder and inits a fresh repo, same as the agent path.
+    /// A worktree is a git object. Without a repo there's nothing to branch
+    /// from, no base to choose and no diff to review at the end — so the
+    /// terminal path refuses instead of quietly copying the folder into
+    /// something that looks like a worktree and behaves like a photocopy.
+    /// (`create_subsession`, the agent path, still copies: not this change.)
     #[test]
-    fn create_worktree_for_project_falls_back_to_a_copy_without_git() {
+    fn a_project_without_git_cannot_get_a_worktree_and_says_why() {
         let project_dir = make_temp_dir("e2e-worktree-no-git");
         std::fs::write(project_dir.join("notes.txt"), "no repo here").unwrap();
+
+        let (app, account_id, project_id) = setup_test_app_with_account_and_project(project_dir.to_str().unwrap());
+
+        let err = tauri::async_runtime::block_on(create_worktree_for_project(
+            app.handle().clone(),
+            project_id,
+            "scratch".to_string(),
+            account_id,
+            None,
+            None,
+        ))
+        .expect_err("a folder with no repo must be refused, not copied");
+
+        assert!(err.contains("isn't a git repository"), "the message has to say what's wrong: {err}");
+        assert!(err.contains("git init"), "and what to do about it: {err}");
+
+        let _ = std::fs::remove_dir_all(&project_dir);
+    }
+
+    /// Naming the base is the point of listing branches: a worktree cut off
+    /// whatever happened to be checked out inherits half-finished work, and the
+    /// agent's diff then contains changes that aren't its own.
+    #[test]
+    fn a_worktree_starts_from_the_base_branch_it_was_given() {
+        let project_dir = make_temp_dir("e2e-worktree-base");
+        run_git(&project_dir, &["init"]).unwrap();
+        std::fs::write(project_dir.join("README.md"), "on main").unwrap();
+        run_git(&project_dir, &["add", "-A"]).unwrap();
+        run_git(&project_dir, &["commit", "-m", "init"]).unwrap();
+        // A second branch with a file main doesn't have, then back to main.
+        run_git(&project_dir, &["checkout", "-b", "release"]).unwrap();
+        std::fs::write(project_dir.join("only-on-release.txt"), "release only").unwrap();
+        run_git(&project_dir, &["add", "-A"]).unwrap();
+        run_git(&project_dir, &["commit", "-m", "release work"]).unwrap();
+        let main = run_git(&project_dir, &["rev-parse", "--abbrev-ref", "HEAD"]).map(|_| ()).and(Ok::<(), String>(())).is_ok();
+        assert!(main);
+        run_git(&project_dir, &["checkout", "-"]).unwrap();
 
         let (app, account_id, project_id) = setup_test_app_with_account_and_project(project_dir.to_str().unwrap());
 
         let worktree = tauri::async_runtime::block_on(create_worktree_for_project(
             app.handle().clone(),
             project_id,
-            "scratch".to_string(),
+            "from release".to_string(),
             account_id,
             None,
+            Some("release".to_string()),
         ))
-        .expect("a project with no git repo must still get an isolated folder");
+        .expect("branching from an existing branch must succeed");
 
-        assert_eq!(worktree.worktree_kind.as_deref(), Some("copy"));
-        assert_eq!(worktree.worktree_branch, None, "a copied folder has no branch in the project's repo");
-        let path = worktree.worktree_path.clone().unwrap();
-        assert!(std::path::Path::new(&path).join("notes.txt").is_file());
+        let path = std::path::PathBuf::from(worktree.worktree_path.clone().unwrap());
+        assert!(path.join("only-on-release.txt").is_file(), "the worktree must carry the base branch's content, not the checked-out branch's");
 
         let _ = std::fs::remove_dir_all(&project_dir);
-        let _ = std::fs::remove_dir_all(&path);
     }
 
     fn create_subsession_end_to_end_for_a_real_git_project() {

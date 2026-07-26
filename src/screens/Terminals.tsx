@@ -8,6 +8,7 @@ import { TerminalPane } from '../components/TerminalPane';
 import { toastError } from '../components/ErrorOverlay';
 import { Button } from '../components/ui/button';
 import { IconTooltip } from '../components/ui/tooltip';
+import { BaseBranchPicker, useBaseBranch } from '../components/BaseBranchPicker';
 import { useNavigation } from '../nav/NavigationProvider';
 import { autoGridColumns } from '../lib/gridLayout';
 import { formatHoursLeft, PROVIDER_META, type Account, type AccountAuth, type FanOutProjection } from '../types/account';
@@ -192,7 +193,7 @@ export function Terminals() {
    * setup command run) and opens the terminal inside it. The worktree outlives
    * the terminal on purpose — closing a panel must never take uncommitted work
    * with it; removing it lives in the Git panel. */
-  const openWorktreeTerminal = async (project: Project, name: string, setupCommand: string) => {
+  const openWorktreeTerminal = async (project: Project, name: string, setupCommand: string, baseBranch: string) => {
     if (pickedAccountId === null || pickedAccountId === PLAIN_SHELL) return;
     setOpening(true);
     try {
@@ -201,6 +202,7 @@ export function Terminals() {
         name,
         accountId: pickedAccountId,
         setupCommand: setupCommand.trim() || null,
+        baseBranch: baseBranch || null,
       });
       await openTerminal({ kind: 'session', id: session.id }, pickedAccountId, initFor(pickedAccountId));
       setWorktreeFor(null);
@@ -211,10 +213,10 @@ export function Terminals() {
     }
   };
 
-  const runFanOut = async (projectId: string, branches: FanOutBranch[], prompt: string) => {
+  const runFanOut = async (projectId: string, branches: FanOutBranch[], prompt: string, baseBranch: string) => {
     setOpening(true);
     try {
-      const infos = await invoke<TerminalInfo[]>('fan_out_prompt', { projectId, branches, prompt, cols: 80, rows: 24 });
+      const infos = await invoke<TerminalInfo[]>('fan_out_prompt', { projectId, branches, prompt, baseBranch, cols: 80, rows: 24 });
       setTerminals((prev) => [...prev, ...infos]);
       setFanOpen(false);
     } catch (e) {
@@ -444,7 +446,7 @@ export function Terminals() {
               project={worktreeFor}
               busy={opening}
               onCancel={() => setWorktreeFor(null)}
-              onCreate={(name, setupCommand) => openWorktreeTerminal(worktreeFor, name, setupCommand)}
+              onCreate={(name, setupCommand, baseBranch) => openWorktreeTerminal(worktreeFor, name, setupCommand, baseBranch)}
             />
           ) : (
             <div className={styles.pickerGroup}>
@@ -826,10 +828,11 @@ function NewWorktreeForm({
   project: Project;
   busy: boolean;
   onCancel: () => void;
-  onCreate: (name: string, setupCommand: string) => void;
+  onCreate: (name: string, setupCommand: string, baseBranch: string) => void;
 }) {
   const [name, setName] = useState('');
   const [setupCommand, setSetupCommand] = useState('');
+  const [baseBranch, setBaseBranch] = useBaseBranch(project.path);
   const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
   return (
@@ -842,7 +845,7 @@ function NewWorktreeForm({
           placeholder="what are you working on — e.g. fix billing rounding"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && slug && !busy && onCreate(name, setupCommand)}
+          onKeyDown={(e) => e.key === 'Enter' && slug && !busy && baseBranch.selected && onCreate(name, setupCommand, baseBranch.selected)}
         />
         <input
           className={styles.worktreeInput}
@@ -850,10 +853,12 @@ function NewWorktreeForm({
           value={setupCommand}
           onChange={(e) => setSetupCommand(e.target.value)}
         />
+        <BaseBranchPicker projectPath={project.path} state={baseBranch} onChange={setBaseBranch} />
         <span className={styles.worktreeHint}>
           {slug ? (
             <>
-              branch <code>hangar/{slug}</code> · own working directory in <code>.hangar/worktrees/{slug}</code> · your main checkout is untouched
+              branch <code>hangar/{slug}</code> off <code>{baseBranch.selected || '…'}</code> · own directory in{' '}
+              <code>.hangar/worktrees/{slug}</code> · your main checkout is untouched
             </>
           ) : (
             'a real git worktree: its own branch and directory, with your .env files copied in'
@@ -863,7 +868,7 @@ function NewWorktreeForm({
           <Button size="sm" variant="outline" onClick={onCancel}>
             cancel
           </Button>
-          <Button size="sm" disabled={!slug || busy} onClick={() => onCreate(name, setupCommand)}>
+          <Button size="sm" disabled={!slug || busy || !baseBranch.selected} onClick={() => onCreate(name, setupCommand, baseBranch.selected)}>
             {busy ? 'creating…' : 'Create & open'}
           </Button>
         </div>
@@ -901,12 +906,15 @@ function FanOutPicker({
   auth: Record<string, AccountAuth>;
   busy: boolean;
   onClose: () => void;
-  onLaunch: (projectId: string, branches: FanOutBranch[], prompt: string) => void;
+  onLaunch: (projectId: string, branches: FanOutBranch[], prompt: string, baseBranch: string) => void;
 }) {
   const [projectId, setProjectId] = useState('');
   const [prompt, setPrompt] = useState('');
   const [rows, setRows] = useState<FanRow[]>([newFanRow(1), newFanRow(2)]);
   const [projection, setProjection] = useState<FanOutProjection[]>([]);
+  // Every branch of a fan-out is a worktree, so the same two questions apply
+  // before anything can launch: is this a repo, and off which branch?
+  const [baseBranch, setBaseBranch] = useBaseBranch(projects.find((p) => p.id === projectId)?.path);
 
   const update = (id: string, patch: Partial<FanRow>) => setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   const ready = rows.filter((r) => r.name.trim() && r.accountId);
@@ -941,6 +949,7 @@ function FanOutPicker({
             </option>
           ))}
         </select>
+        <BaseBranchPicker projectPath={projects.find((p) => p.id === projectId)?.path} state={baseBranch} onChange={setBaseBranch} />
         <textarea
           className={styles.fanPrompt}
           rows={2}
@@ -1007,7 +1016,11 @@ function FanOutPicker({
         <Button size="sm" variant="outline" onClick={onClose}>
           cancel
         </Button>
-        <Button size="sm" disabled={!projectId || !prompt.trim() || ready.length === 0 || busy} onClick={() => onLaunch(projectId, ready.map(({ name, accountId }) => ({ name, accountId })), prompt)}>
+        <Button
+          size="sm"
+          disabled={!projectId || !prompt.trim() || ready.length === 0 || busy || !baseBranch.selected}
+          onClick={() => onLaunch(projectId, ready.map(({ name, accountId }) => ({ name, accountId })), prompt, baseBranch.selected)}
+        >
           {busy ? 'launching…' : `Fan out ${ready.length || ''}`}
         </Button>
       </div>

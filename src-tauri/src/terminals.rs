@@ -1029,6 +1029,10 @@ pub struct FanOutBranch {
 /// each account already has its own config dir; a tool with one globally-active
 /// account cannot, no matter how many worktrees it cuts.
 ///
+/// `base_branch` is the branch every worktree starts from, chosen in the picker
+/// from the project's real branches — a fan-out that silently inherited
+/// whatever was checked out would put half-finished work in every agent's diff.
+///
 /// Serial, not parallel, for the same two reasons the multi-terminal picker is:
 /// accounts sharing a config dir must not race, and N CLIs spawning at once
 /// stampedes the machine. A branch that fails is reported and the rest continue —
@@ -1039,6 +1043,7 @@ pub async fn fan_out_prompt<R: Runtime>(
     project_id: String,
     branches: Vec<FanOutBranch>,
     prompt: String,
+    base_branch: Option<String>,
     cols: u16,
     rows: u16,
 ) -> Result<Vec<TerminalInfo>, String> {
@@ -1052,7 +1057,7 @@ pub async fn fan_out_prompt<R: Runtime>(
     let mut opened = Vec::new();
     let mut failures = Vec::new();
     for branch in branches {
-        let session = crate::commands::sessions::create_worktree_for_project(app.clone(), project_id.clone(), branch.name.clone(), branch.account_id.clone(), None).await;
+        let session = crate::commands::sessions::create_worktree_for_project(app.clone(), project_id.clone(), branch.name.clone(), branch.account_id.clone(), None, base_branch.clone()).await;
         let session = match session {
             Ok(session) => session,
             Err(e) => {
@@ -1870,7 +1875,7 @@ mod tests {
     #[test]
     fn a_fan_out_needs_at_least_one_branch() {
         let app = tauri::test::mock_app();
-        let err = tauri::async_runtime::block_on(fan_out_prompt(app.handle().clone(), "proj1".to_string(), vec![], "do the thing".to_string(), 80, 24)).unwrap_err();
+        let err = tauri::async_runtime::block_on(fan_out_prompt(app.handle().clone(), "proj1".to_string(), vec![], "do the thing".to_string(), None, 80, 24)).unwrap_err();
         assert!(err.contains("at least one branch"), "got: {err}");
     }
 
@@ -1881,7 +1886,7 @@ mod tests {
     fn a_fan_out_needs_a_prompt() {
         let app = tauri::test::mock_app();
         let branches = vec![FanOutBranch { name: "one".to_string(), account_id: "sub1".to_string() }];
-        let err = tauri::async_runtime::block_on(fan_out_prompt(app.handle().clone(), "proj1".to_string(), branches, "   ".to_string(), 80, 24)).unwrap_err();
+        let err = tauri::async_runtime::block_on(fan_out_prompt(app.handle().clone(), "proj1".to_string(), branches, "   ".to_string(), None, 80, 24)).unwrap_err();
         assert!(err.contains("needs a prompt"), "got: {err}");
     }
 

@@ -1,0 +1,39 @@
+.row {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.label {
+  font: 400 11px var(--font-ui);
+  color: var(--dim);
+}
+
+.select {
+  min-width: 0;
+  max-width: 220px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--txt);
+  font: 400 11.5px var(--font-ui);
+}
+
+.select:focus {
+  outline: none;
+  border-color: var(--acc);
+}
+
+/* A project with no repo can't have a worktree at all. Amber rather than red:
+   it's a precondition the user can fix in one command, not a failure. */
+.error {
+  font: 500 11px var(--font-ui);
+  color: var(--amber);
+  line-height: 1.45;
+}
+
+.loading {
+  font: 400 11px var(--font-ui);
+  color: var(--dim);
+}

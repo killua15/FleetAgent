@@ -312,6 +312,10 @@ fn start_run<R: Runtime>(app: &AppHandle<R>, db: &DbConnection, run: &QueuedRun,
         run.branch_name.clone(),
         account_id.to_string(),
         None,
+        // Queued work branches off whatever the project has checked out: there
+        // is nobody at the keyboard to pick a base, and inventing one would be
+        // a guess with consequences.
+        None,
     ))?;
 
     let info = crate::terminals::open_terminal(

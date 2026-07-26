@@ -102,7 +102,7 @@ planificarlo como si lo fuera es cómo se pierde un año.
 6. Sync SQLite ↔ Supabase     ← y el cimiento de Teams
 7. Auditoría de gasto / Teams ← lo que se factura
 8. Buscar PR                  ← pequeño, útil
-9. Codex como segundo proveedor
+9. Codex y Kimi                ← `CODEX_HOME` mapea 1:1; Kimi entra por dos caminos
 ```
 
 Y el **spike del wrapper** en paralelo, cuando toque decidir distribución.
@@ -482,22 +482,97 @@ ofrece revisarlo: sin clon local no hay worktree, y el botón fallaría después
 
 ---
 
-# Fase 9 — Codex como segundo proveedor · M
+# Fase 9 — Codex y Kimi · M/L
 
-## Qué puedes hacer hoy
+Reescrita el 2026-07-26 tras verificar cómo funcionan los dos CLIs. **Codex mapea
+casi 1:1 con lo que ya construimos:**
 
-Nada: `account_command_line` (`terminals.rs:322`) rechaza explícitamente cualquier provider que no
-sea claude — *"Hangar can't run a 'codex' CLI as a specific account yet"* — porque no existe el
-equivalente de `env_for_account` para ellos.
+| Pieza de Hangar | Claude | Codex |
+|---|---|---|
+| Config dir por cuenta | `CLAUDE_CONFIG_DIR` | **`CODEX_HOME`** |
+| Retomar conversación | `--resume <uuid>` | **`codex resume <id>`** |
+| Transcripts | `projects/<slug>/<uuid>.jsonl` | **`~/.codex/sessions/YYYY/MM/DD/*.jsonl`** |
+| Cuota real | `/usage`, texto de TUI | **`/status`**, con `used_percent`, `window_minutes`, `resets_at` |
+| Ventanas | 5 h + semanal | 5 h rodante + semanal/mensual |
 
-## Por qué está al final y por qué está
+La cuota de Codex es **mejor que la nuestra**: viene estructurada y con
+`resets_at`, así que ahí desaparece la heurística de estimar el reset.
 
-Al final porque no desbloquea nada que no tengamos. Y está porque **"rotar entre proveedores" no
-significa nada con un solo proveedor**, y ese es el titular de la fase 3 en cuanto haya dos.
+Y `openai/codex#21073` se titula *"Auto-resume CLI session when usage limit
+resets"* — la cola por capacidad, pedida en su propio tracker.
 
-El límite honesto: entre CLIs distintos **no hay transferencia de sesión**. Los transcripts no
-comparten esquema. Lo que sí se puede llevar es el contexto renderizado, que es lo que `handoff.rs`
-ya hace — y es también lo que su #5592 pide.
+## A1 · Un descriptor por proveedor
+
+Hoy el rechazo de todo lo que no sea claude está en tres sitios sueltos
+(`terminals.rs:406`, `:958`, `:1255`) más dos `match` de un brazo en
+`providers/mod.rs`. Antes de añadir nada: una tabla por proveedor con binario,
+variable de config dir, arranque, reanudación y consulta de cuota. Sin eso, el
+segundo proveedor multiplica los condicionales y el tercero los vuelve
+inmanejables.
+
+## A2 · Codex arrancando, y su cuota
+
+`CODEX_HOME` por cuenta y un parser de `/status`.
+
+## A3 · La pieza que NO mapea
+
+Con Claude **nosotros acuñamos el id de sesión** (`--session-id`), y eso es lo que
+hace exacta la transferencia de conversación: sabemos qué fichero copiar. **Codex
+asigna el suyo**, así que solo queda "retoma la más reciente de este config dir" —
+la heurística que `TERMINAL_CONTINUITY.md` descartó por peligrosa.
+
+Con un atenuante: el config dir es **por cuenta** y podemos acotar por cwd, así
+que "la más reciente de esta cuenta en esta carpeta" es mucho más estrecho que lo
+que se rechazó entonces. Aun así es más débil, y la UI tiene que decir que en
+Codex el cambio de cuenta conserva la conversación **casi siempre**, no siempre.
+
+## B1 · Kimi como motor de Claude Code — barato y potente
+
+Moonshot expone un endpoint **compatible con Anthropic**
+(`/anthropic/v1/messages`). Una cuenta Kimi sería `billing = 'key'` cuyo binario
+**es `claude`**, con dos variables:
+
+```
+ANTHROPIC_BASE_URL=https://api.moonshot.ai/anthropic
+ANTHROPIC_AUTH_TOKEN=<clave de Moonshot>
+```
+
+Y entonces heredamos todo sin escribir un adaptador: worktrees, abanico,
+`--session-id`, `--resume`, transferencia de transcript, handoff, estado del
+agente. Lo que desbloquea: **cuando tu ventana de Max muere, rotar a Kimi y
+seguir la misma conversación** — que para la gente del hilo de 1.482 comentarios
+no es una feature, es la solución.
+
+## B2 · Kimi nativo — solo bajo demanda
+
+El CLI propio (`MoonshotAI/kimi-code`) aísla con **`KIMI_CODE_HOME`**, mismo
+patrón. Pero es otro adaptador entero: otro formato de transcript, otra
+reanudación, otra cuota. Y con B1 hecho, Kimi ya es usable.
+
+## Lo que rompe con las cuentas por clave
+
+Una suscripción tiene **ventanas con porcentaje**; una clave tiene **saldo**. Eso
+toca cuatro cosas que ya funcionan, y hay que decidirlo antes de construir B1:
+
+- Sin `%` no hay previsión: hay que enseñar "por tokens", no un pronóstico falso.
+- `is_exhausted` no aplica: una cuenta de clave está sana hasta que falla.
+- La cola las admitiría siempre — correcto, pero son destino de último recurso.
+- Los presupuestos en % no significan nada ahí; el tope tendría que ser en dinero.
+
+## Orden
+
+```
+A1  descriptor por proveedor
+A2  Codex: arranque + /status
+B1  Kimi como motor de Claude Code
+A3  Codex: continuidad acotada por cuenta y cwd
+A4  migración del CHECK (rebuild) + `kimi` en la lista y en PROVIDER_META
+B2  Kimi nativo, si alguien lo pide
+```
+
+**A1 primero** aunque no se vea: es lo que hace pequeños a A2, B1 y a cualquier
+proveedor futuro. **B1 antes que A3** porque es más barato y vale más: con Codex y
+Kimi arrancando, "rotar entre proveedores" deja de ser una frase.
 
 ---
 
