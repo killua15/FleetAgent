@@ -1022,26 +1022,46 @@ fn resolve_session_for_pr_branch<R: Runtime>(app: &AppHandle<R>, db: &DbConnecti
     // `git status` the first time this runs.
     ensure_worktree_dir_ignored(&project_path);
 
-    // Fetching into a *remote-tracking* ref (no local branch name involved)
-    // is never blocked by anything being checked out — only creating/moving
-    // a local branch ref is. Prefer checking the worktree out on the PR's
-    // own branch name when nothing local already claims that name anywhere
-    // in the repo; only fall back to the Hangar-owned name when there'd be
-    // an actual conflict, so the common case shows the PR's real branch
-    // instead of always inventing one.
+    // Fetching into a *remote-tracking* ref (no local branch name involved) is
+    // never blocked by anything being checked out — only creating or moving a
+    // local branch ref is.
     git_capture(project_dir, &["fetch", "origin", &head_branch])?;
     if let Some(parent) = worktree_dir.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let chosen_branch = if local_branch_exists(project_dir, &head_branch) { local_review_branch.clone() } else { head_branch.clone() };
-    git_capture(
-        project_dir,
-        &["worktree", "add", "-b", &chosen_branch, &worktree_dir.to_string_lossy(), &format!("origin/{head_branch}")],
-    )?;
-    // Track the real remote branch explicitly (rather than relying on
-    // whatever `-b ... origin/<head_branch>` inferred) so a plain
-    // `git push` from inside this worktree updates the actual PR either way.
-    git_capture(&worktree_dir, &["branch", "--set-upstream-to", &format!("origin/{head_branch}"), &chosen_branch])?;
+
+    // Three cases, and getting the first two confused is what put review
+    // worktrees on `hangar/pr-N-review` when they could have been on the PR's
+    // own branch — so commits landed somewhere GitHub Desktop reported as a
+    // different branch than the PR.
+    //
+    // A branch merely *existing* locally is no obstacle: `git worktree add
+    // <dir> <branch>` checks it out happily. What git refuses is the same
+    // branch checked out in two places at once, which is a much narrower
+    // condition and the only one worth inventing a name for.
+    let exists_locally = local_branch_exists(project_dir, &head_branch);
+    let checked_out_elsewhere = git_capture(project_dir, &["worktree", "list", "--porcelain"])
+        .ok()
+        .map(|out| crate::commands::sessions::parse_worktree_list(&out).into_iter().any(|(_, branch)| branch == head_branch))
+        .unwrap_or(false);
+
+    let chosen_branch = if checked_out_elsewhere { local_review_branch.clone() } else { head_branch.clone() };
+    let dir = worktree_dir.to_string_lossy().to_string();
+
+    if exists_locally && !checked_out_elsewhere {
+        // The good case: the branch is right there and free. Attach to it, and
+        // don't touch its upstream — it already has whatever the user set.
+        git_capture(project_dir, &["worktree", "add", &dir, &head_branch])?;
+    } else {
+        // Either the branch doesn't exist here yet, or it's held somewhere else
+        // and this worktree gets Hangar's own name. Both start from the remote.
+        git_capture(project_dir, &["worktree", "add", "-b", &chosen_branch, &dir, &format!("origin/{head_branch}")])?;
+        // Track the real remote branch explicitly rather than relying on what
+        // `-b … origin/<head>` inferred, so a plain `git push` from inside this
+        // worktree updates the actual PR — which is the whole point when the
+        // branch had to be renamed.
+        git_capture(&worktree_dir, &["branch", "--set-upstream-to", &format!("origin/{head_branch}"), &chosen_branch])?;
+    }
 
     let new_session_id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
@@ -2318,6 +2338,48 @@ mod tests {
         assert!(Path::new(&worktree_path).join("pr_file.txt").is_file(), "the new worktree must actually be checked out on the PR's real branch content");
         let gitignore = std::fs::read_to_string(work_dir.join(".gitignore")).unwrap_or_default();
         assert!(gitignore.contains(".hangar/"), "the project's .gitignore must cover the worktree folder so it's not untracked clutter");
+
+        let _ = std::fs::remove_dir_all(&remote_dir);
+        let _ = std::fs::remove_dir_all(&work_dir);
+    }
+
+    /// The regression a user hit: "Send to terminal" on PR #103 produced a
+    /// worktree on `hangar/pr-103-review` even though the PR's own branch was
+    /// sitting right there, unused — so commits went to a branch GitHub Desktop
+    /// reported as something other than the PR.
+    ///
+    /// The cause was testing "does this branch exist locally" when the thing
+    /// git actually refuses is "is it checked out somewhere else".
+    #[test]
+    fn a_pr_worktree_checks_out_the_prs_own_branch_when_it_exists_and_is_free() {
+        let (remote_dir, work_dir) = setup_real_repo_with_remote("pr-branch-reuse");
+        git_capture(&work_dir, &["checkout", "-b", "feat/pr-branch"]).unwrap();
+        std::fs::write(work_dir.join("pr_file.txt"), "from the PR").unwrap();
+        git_capture(&work_dir, &["add", "-A"]).unwrap();
+        git_capture(&work_dir, &["commit", "-m", "pr commit"]).unwrap();
+        git_capture(&work_dir, &["push", "-u", "origin", "feat/pr-branch"]).unwrap();
+        // Back to main, but *leave the branch in place* — the state the bug
+        // needed, and the ordinary state after fetching a colleague's PR.
+        git_capture(&work_dir, &["checkout", "main"]).unwrap();
+
+        let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
+        {
+            let conn = db.0.lock().unwrap();
+            conn.execute("UPDATE projects SET path = ?1 WHERE id = 'proj1'", params![work_dir.to_string_lossy().to_string()]).unwrap();
+            conn.execute("UPDATE pull_requests SET head_branch = 'feat/pr-branch' WHERE id = 'pr1'", []).unwrap();
+        }
+        let pr = fetch_pull_request_by_id(&db, "pr1").unwrap().unwrap();
+
+        let app = tauri::test::mock_app();
+        app.manage(db);
+        let db_state = app.state::<DbConnection>();
+        let session_id = resolve_session_for_pr_branch(app.handle(), &db_state, &pr, "acc1").expect("an existing, free branch must just be checked out");
+
+        let branch: String = {
+            let conn = db_state.0.lock().unwrap();
+            conn.query_row("SELECT worktree_branch FROM sessions WHERE id = ?1", params![session_id], |row| row.get(0)).unwrap()
+        };
+        assert_eq!(branch, "feat/pr-branch", "the worktree belongs on the PR's branch, not on a name Hangar made up");
 
         let _ = std::fs::remove_dir_all(&remote_dir);
         let _ = std::fs::remove_dir_all(&work_dir);
