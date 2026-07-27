@@ -1062,28 +1062,47 @@ fn resolve_session_for_pr_branch<R: Runtime>(app: &AppHandle<R>, db: &DbConnecti
     // <dir> <branch>` checks it out happily. What git refuses is the same
     // branch checked out in two places at once, which is a much narrower
     // condition and the only one worth inventing a name for.
-    let exists_locally = local_branch_exists(project_dir, &head_branch);
-    let checked_out_elsewhere = git_capture(project_dir, &["worktree", "list", "--porcelain"])
+    let checked_out: Vec<String> = git_capture(project_dir, &["worktree", "list", "--porcelain"])
         .ok()
-        .map(|out| crate::commands::sessions::parse_worktree_list(&out).into_iter().any(|(_, branch)| branch == head_branch))
-        .unwrap_or(false);
+        .map(|out| crate::commands::sessions::parse_worktree_list(&out).into_iter().map(|(_, branch)| branch).collect())
+        .unwrap_or_default();
+    let checked_out_elsewhere = checked_out.iter().any(|branch| branch == &head_branch);
 
-    let chosen_branch = if checked_out_elsewhere { local_review_branch.clone() } else { head_branch.clone() };
+    // The fallback name outlives the worktree it was cut for: delete the
+    // directory and `hangar/pr-103-review` is still a branch, so the next
+    // attempt used to die on "a branch named … already exists". Existing is
+    // fine — we attach to it below. Only *checked out somewhere else* forces a
+    // new name, and it's the same rule as for the PR's own branch.
+    let mut chosen_branch = if checked_out_elsewhere { local_review_branch.clone() } else { head_branch.clone() };
+    let mut suffix = 2;
+    while checked_out.iter().any(|branch| branch == &chosen_branch) {
+        chosen_branch = format!("{local_review_branch}-{suffix}");
+        suffix += 1;
+    }
     let dir = worktree_dir.to_string_lossy().to_string();
 
-    if exists_locally && !checked_out_elsewhere {
-        // The good case: the branch is right there and free. Attach to it, and
-        // don't touch its upstream — it already has whatever the user set.
-        git_capture(project_dir, &["worktree", "add", &dir, &head_branch])?;
+    if local_branch_exists(project_dir, &chosen_branch) {
+        // The branch is right there and free — attach to it. Its upstream is
+        // whatever it already had, deliberately: for the PR's own branch that's
+        // the user's setting, and a review branch we created already points at
+        // the PR.
+        git_capture(project_dir, &["worktree", "add", &dir, &chosen_branch])?;
     } else {
-        // Either the branch doesn't exist here yet, or it's held somewhere else
-        // and this worktree gets Hangar's own name. Both start from the remote.
+        // Doesn't exist here yet: cut it from the remote.
         git_capture(project_dir, &["worktree", "add", "-b", &chosen_branch, &dir, &format!("origin/{head_branch}")])?;
+    }
+
+    if chosen_branch != head_branch {
         // Track the real remote branch explicitly rather than relying on what
         // `-b … origin/<head>` inferred, so a plain `git push` from inside this
         // worktree updates the actual PR — which is the whole point when the
         // branch had to be renamed.
         git_capture(&worktree_dir, &["branch", "--set-upstream-to", &format!("origin/{head_branch}"), &chosen_branch])?;
+        // A reused review branch can be behind the PR by however many commits
+        // landed since. Fast-forward only: if it has commits of its own the
+        // merge refuses and we leave it exactly as it was, because losing
+        // someone's review commits is far worse than opening on a stale tree.
+        let _ = git_capture(&worktree_dir, &["merge", "--ff-only", &format!("origin/{head_branch}")]);
     }
 
     let new_session_id = Uuid::new_v4().to_string();
@@ -2521,6 +2540,71 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&remote_dir);
         let _ = std::fs::remove_dir_all(&other_checkout);
+        let _ = std::fs::remove_dir_all(&work_dir);
+    }
+
+    /// The second half of the deleted-worktree bug, and the one that actually
+    /// bit: pruning the registry lets `worktree add` reuse the *path*, but the
+    /// review *branch* is still there — deleting a directory doesn't delete a
+    /// ref. So the retry died on "a branch named 'hangar/pr-1-review' already
+    /// exists", forever, with no way out from the UI.
+    ///
+    /// Confirms it now attaches to the leftover branch instead of trying to
+    /// create it, and fast-forwards it to whatever the PR has gained since.
+    #[test]
+    fn resolve_session_for_pr_branch_reuses_a_leftover_review_branch_whose_worktree_is_gone() {
+        let (remote_dir, work_dir) = setup_real_repo_with_remote("resolve-session-leftover-branch");
+        git_capture(&work_dir, &["checkout", "-b", "feat/pr-branch"]).unwrap();
+        std::fs::write(work_dir.join("pr_file.txt"), "hello from the PR branch").unwrap();
+        git_capture(&work_dir, &["add", "-A"]).unwrap();
+        git_capture(&work_dir, &["commit", "-m", "pr commit"]).unwrap();
+        git_capture(&work_dir, &["push", "-u", "origin", "feat/pr-branch"]).unwrap();
+        // The PR's own branch stays checked out here — the real situation, where
+        // the user has the project itself open on it — which is what forces the
+        // fallback name in the first place.
+
+        // A previous review worktree existed and its directory was deleted by
+        // hand. Git's registry gets pruned; the branch does not.
+        let stale = make_temp_dir("resolve-session-leftover-branch-stale");
+        std::fs::remove_dir(&stale).unwrap();
+        git_capture(&work_dir, &["worktree", "add", "-b", "hangar/pr-1-review", &stale.to_string_lossy(), "origin/feat/pr-branch"]).unwrap();
+        std::fs::remove_dir_all(&stale).unwrap();
+
+        // …and the PR moved on afterwards.
+        std::fs::write(work_dir.join("pr_file.txt"), "a later commit on the PR").unwrap();
+        git_capture(&work_dir, &["add", "-A"]).unwrap();
+        git_capture(&work_dir, &["commit", "-m", "later pr commit"]).unwrap();
+        git_capture(&work_dir, &["push", "origin", "feat/pr-branch"]).unwrap();
+
+        let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
+        {
+            let conn = db.0.lock().unwrap();
+            conn.execute("UPDATE projects SET path = ?1 WHERE id = 'proj1'", params![work_dir.to_string_lossy().to_string()]).unwrap();
+            conn.execute("UPDATE pull_requests SET head_branch = 'feat/pr-branch' WHERE id = 'pr1'", []).unwrap();
+        }
+        let pr = fetch_pull_request_by_id(&db, "pr1").unwrap().unwrap();
+
+        let app = tauri::test::mock_app();
+        app.manage(db);
+        let db_state = app.state::<DbConnection>();
+        let new_session_id = resolve_session_for_pr_branch(app.handle(), &db_state, &pr, "acc1")
+            .expect("must succeed even though hangar/pr-1-review is left over from a deleted worktree");
+
+        let (branch, path): (String, String) = {
+            let conn = db_state.0.lock().unwrap();
+            conn.query_row("SELECT worktree_branch, worktree_path FROM sessions WHERE id = ?1", params![new_session_id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap()
+        };
+        assert_eq!(branch, "hangar/pr-1-review", "the leftover branch must be reused, not renamed around");
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&path).join("pr_file.txt")).unwrap(),
+            "a later commit on the PR",
+            "a reused review branch must be fast-forwarded to the PR's current tip"
+        );
+
+        let _ = std::fs::remove_dir_all(&remote_dir);
         let _ = std::fs::remove_dir_all(&work_dir);
     }
 
