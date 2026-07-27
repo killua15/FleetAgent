@@ -271,7 +271,7 @@ pub fn check_account_auth(db: State<DbConnection>, id: String) -> Result<login_m
     if provider != "claude" {
         return Ok(login_manager::AuthStatus { logged_in: false, auth_method: "unsupported".to_string(), email: None, subscription_type: None });
     }
-    login_manager::auth_status_for_dir(&config_dir_path)
+    login_manager::auth_status_for(&provider, &config_dir_path)
 }
 
 /// A Claude Code config directory already on disk with a working login, that
@@ -338,7 +338,10 @@ pub async fn list_discoverable_logins<R: Runtime>(app: AppHandle<R>) -> Result<V
                 let home = home.clone();
                 std::thread::spawn(move || {
                     let path_str = path.to_string_lossy().to_string();
-                    let status = login_manager::auth_status_for_dir(&path_str).ok()?;
+                    // Literal on purpose: this scan looks for `~/.claude*`
+                    // directories containing `.claude.json`, so it can only
+                    // ever be about Claude.
+                    let status = login_manager::auth_status_for("claude", &path_str).ok()?;
                     if !status.logged_in {
                         return None;
                     }
@@ -367,14 +370,22 @@ pub async fn set_account_config_dir<R: Runtime>(app: AppHandle<R>, id: String, c
         if !std::path::Path::new(&config_dir_path).is_dir() {
             return Err(format!("{config_dir_path} isn't a directory"));
         }
+        let db = app.state::<DbConnection>();
+        let provider: String = {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            conn.query_row("SELECT provider FROM accounts WHERE id = ?1", params![id], |row| row.get(0))
+                .map_err(|e| format!("account lookup failed: {e}"))?
+        };
         // Verified before the write, not after: an account silently pointed at
         // a logged-out directory looks healthy and fails on its first turn.
-        let status = login_manager::auth_status_for_dir(&config_dir_path)?;
+        // Asked of *this* account's CLI — asking Claude about a Codex directory
+        // is how a completed login got reported as failed.
+        let status = login_manager::auth_status_for(&provider, &config_dir_path)?;
         if !status.logged_in {
-            return Err(format!("{config_dir_path} exists but isn't logged in — run `claude auth login` against it first"));
+            let binary = crate::providers::spec(&provider).map(|s| s.binary).unwrap_or("claude");
+            return Err(format!("{config_dir_path} exists but isn't logged in — log in with `{binary}` against it first"));
         }
 
-        let db = app.state::<DbConnection>();
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         conn.execute(
             "UPDATE accounts SET config_dir_path = ?2, updated_at = ?3 WHERE id = ?1",
@@ -437,7 +448,12 @@ pub async fn list_account_auth(app: AppHandle) -> Result<Vec<AccountAuth>, Strin
             .into_iter()
             .map(|(id, provider, billing, config_dir_path)| {
                 std::thread::spawn(move || {
-                    let supported = provider == "claude";
+                    // Supported means "there's a way to ask this CLI whether
+                    // it's logged in" — which is now true of Codex too, and was
+                    // hardcoded to Claude.
+                    let supported = crate::providers::spec(&provider)
+                        .is_some_and(|s| !matches!(s.auth_status, crate::providers::AuthStatusProbe::None));
+                    let probe_provider = provider.clone();
                     let account = crate::terminals::AccountForTerminal {
                         provider,
                         billing: billing.clone(),
@@ -452,7 +468,7 @@ pub async fn list_account_auth(app: AppHandle) -> Result<Vec<AccountAuth>, Strin
                     } else if !supported {
                         (false, "unsupported".to_string())
                     } else {
-                        match login_manager::auth_status_for_dir(&config_dir_path) {
+                        match login_manager::auth_status_for(&probe_provider, &config_dir_path) {
                             Ok(status) => (status.logged_in, status.auth_method),
                             Err(e) => {
                                 log::warn!("list_account_auth: check failed for account {id}: {e}");

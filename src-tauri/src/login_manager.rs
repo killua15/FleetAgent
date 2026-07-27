@@ -1,4 +1,3 @@
-use crate::providers::claude;
 use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -238,12 +237,36 @@ pub fn send_login_input(app: &AppHandle, login_id: &str, mut data: String) -> Re
 
 /// Runs `claude auth status --json` scoped to a config dir and parses it.
 pub fn auth_status_for_dir(config_dir: &str) -> Result<AuthStatus, String> {
-    let mut env = login_env(config_dir);
-    // Never let an inherited ANTHROPIC_API_KEY mask the real login state.
-    env.retain(|(k, _)| k != "ANTHROPIC_API_KEY");
+    auth_status_for("claude", config_dir)
+}
 
-    let mut cmd = Command::new(claude::binary());
-    cmd.args(claude::auth_status_args());
+/// Asks **this provider's** CLI whether the config dir is logged in.
+///
+/// It used to run `claude auth status --json` no matter what, which is why a
+/// Codex login hung forever: the user authorised in the browser, Codex wrote
+/// its credentials, and Hangar then asked *Claude* about a directory Claude had
+/// never seen. It answered "logged out", correctly, and the wizard waited for a
+/// state that could never arrive.
+pub fn auth_status_for(provider: &str, config_dir: &str) -> Result<AuthStatus, String> {
+    let Some(spec) = crate::providers::spec(provider) else {
+        return Err(format!("Hangar doesn't know a provider called '{provider}'"));
+    };
+
+    let args: Vec<&str> = match spec.auth_status {
+        crate::providers::AuthStatusProbe::Json(args) | crate::providers::AuthStatusProbe::Text { args, .. } => args.to_vec(),
+        // Nothing to ask: a key-billed provider is authenticated when it has a
+        // key, and the wizard validates that separately.
+        crate::providers::AuthStatusProbe::None => {
+            return Ok(AuthStatus { logged_in: false, auth_method: "key".to_string(), email: None, subscription_type: None })
+        }
+    };
+
+    let mut env = login_env_for(provider, config_dir);
+    // Never let an inherited key mask the real login state.
+    env.retain(|(k, _)| k != spec.key_env);
+
+    let mut cmd = Command::new(crate::providers::resolve_binary(spec.binary));
+    cmd.args(&args);
     cmd.env_clear();
     for (k, v) in env {
         cmd.env(k, v);
@@ -251,31 +274,43 @@ pub fn auth_status_for_dir(config_dir: &str) -> Result<AuthStatus, String> {
 
     let output = crate::process_timeout::run_with_timeout(cmd, crate::process_timeout::DEFAULT_TIMEOUT)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let value: serde_json::Value = serde_json::from_str(stdout.trim())
-        .map_err(|e| format!("could not parse auth status: {e} — got: {stdout}"))?;
 
-    Ok(AuthStatus {
-        logged_in: value.get("loggedIn").and_then(|v| v.as_bool()).unwrap_or(false),
-        auth_method: value
-            .get("authMethod")
-            .and_then(|v| v.as_str())
-            .unwrap_or("none")
-            .to_string(),
-        email: value.get("email").and_then(|v| v.as_str()).map(str::to_string),
-        subscription_type: value.get("subscriptionType").and_then(|v| v.as_str()).map(str::to_string),
-    })
+    match spec.auth_status {
+        crate::providers::AuthStatusProbe::Json(_) => {
+            let value: serde_json::Value = serde_json::from_str(stdout.trim())
+                .map_err(|e| format!("could not parse auth status: {e} — got: {stdout}"))?;
+            Ok(AuthStatus {
+                logged_in: value.get("loggedIn").and_then(|v| v.as_bool()).unwrap_or(false),
+                auth_method: value.get("authMethod").and_then(|v| v.as_str()).unwrap_or("none").to_string(),
+                email: value.get("email").and_then(|v| v.as_str()).map(str::to_string),
+                subscription_type: value.get("subscriptionType").and_then(|v| v.as_str()).map(str::to_string),
+            })
+        }
+        // Coarser by necessity: the CLI prints a sentence, so there's no email
+        // or plan to report and the UI shows the name the user typed rather
+        // than inventing detail it doesn't have.
+        crate::providers::AuthStatusProbe::Text { logged_marker, .. } => Ok(AuthStatus {
+            logged_in: stdout.contains(logged_marker),
+            auth_method: stdout.trim().to_string(),
+            email: None,
+            subscription_type: None,
+        }),
+        crate::providers::AuthStatusProbe::None => unreachable!("handled above"),
+    }
 }
 
 pub fn check_login_status(app: &AppHandle, login_id: &str) -> Result<AuthStatus, String> {
-    let config_dir = {
+    let (config_dir, provider) = {
         let state = app.state::<LoginRegistry>();
         let registry = state.0.lock().map_err(|e| e.to_string())?;
         registry
             .get(login_id)
-            .map(|p| p.config_dir.clone())
+            .map(|p| (p.config_dir.clone(), p.provider.clone()))
             .ok_or_else(|| "login session not found".to_string())?
     };
-    auth_status_for_dir(&config_dir)
+    // The provider comes off the login itself — asking the wrong CLI is the bug
+    // that made a completed Codex login look like it never happened.
+    auth_status_for(&provider, &config_dir)
 }
 
 pub fn cancel_login(app: &AppHandle, login_id: &str) -> Result<(), String> {

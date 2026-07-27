@@ -105,6 +105,14 @@ export const PROVIDER_META: Record<
  * would open a terminal running a command that doesn't exist. */
 export const KEY_ONLY_PROVIDERS: Provider[] = ['kimi'];
 
+/** Providers whose interactive login ends by asking for a code pasted back.
+ *
+ * Claude prints a URL and waits on stdin. Codex runs a loopback OAuth flow that
+ * finishes on its own when the browser redirects — showing it a paste box is
+ * asking for something that will never exist, which is exactly what made a
+ * completed Codex login look stuck. */
+export const LOGIN_EXPECTS_CODE: Provider[] = ['claude'];
+
 /** One quota window, forecast from the readings the usage poller has been
  * taking all along. `hoursLeft` is null when nothing is being burned — a flat
  * line means "not running out", not "runs out now". */

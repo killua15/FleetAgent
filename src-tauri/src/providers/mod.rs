@@ -89,10 +89,37 @@ pub struct ProviderSpec {
     pub extra_env: &'static [(&'static str, &'static str)],
     /// Name of the variable an API key is passed in, for key-billed accounts.
     pub key_env: &'static str,
+    /// How to ask this CLI whether the config dir is logged in.
+    pub auth_status: AuthStatusProbe,
+    /// Whether the interactive login ends by asking for a code pasted back.
+    ///
+    /// Claude prints a URL and waits on stdin; Codex runs a loopback OAuth flow
+    /// that completes by itself when the browser redirects. Showing a paste box
+    /// for the second is asking for something that will never exist — which is
+    /// exactly what made the Codex login look stuck.
+    pub login_expects_code: bool,
+}
+
+/// Every CLI answers "am I logged in?" differently, and there is no
+/// standard — Claude has a `--json` flag, Codex prints a sentence.
+#[derive(Debug, Clone, Copy)]
+pub enum AuthStatusProbe {
+    /// Run these args and read `loggedIn`/`authMethod`/`email` out of JSON.
+    Json(&'static [&'static str]),
+    /// Run these args and treat stdout containing `logged_marker` as success.
+    /// Coarser, and honest about it: it yields no email or plan, so the UI
+    /// shows the account name the user typed instead of inventing detail.
+    Text { args: &'static [&'static str], logged_marker: &'static str },
+    /// No way to ask — a key-billed provider is "logged in" when it has a key.
+    None,
 }
 
 const CLAUDE_LOGIN: &[&str] = &["auth", "login", "--claudeai"];
+const CLAUDE_STATUS: &[&str] = &["auth", "status", "--json"];
 const CODEX_LOGIN: &[&str] = &["login"];
+/// Verified against the installed CLI: prints "Not logged in" or "Logged in
+/// using ChatGPT", and respects `CODEX_HOME`.
+const CODEX_STATUS: &[&str] = &["login", "status"];
 const GEMINI_LOGIN: &[&str] = &["auth", "login"];
 
 /// Moonshot's Anthropic-compatible endpoint. A Kimi account *is* Claude Code
@@ -108,6 +135,8 @@ pub fn spec(provider: &str) -> Option<ProviderSpec> {
             login_args: Some(CLAUDE_LOGIN),
             extra_env: &[],
             key_env: "ANTHROPIC_API_KEY",
+            auth_status: AuthStatusProbe::Json(CLAUDE_STATUS),
+            login_expects_code: true,
         }),
         "codex" => Some(ProviderSpec {
             binary: "codex",
@@ -115,6 +144,10 @@ pub fn spec(provider: &str) -> Option<ProviderSpec> {
             login_args: Some(CODEX_LOGIN),
             extra_env: &[],
             key_env: "OPENAI_API_KEY",
+            auth_status: AuthStatusProbe::Text { args: CODEX_STATUS, logged_marker: "Logged in" },
+            // Loopback OAuth: the browser redirect finishes it, there is
+            // nothing to paste.
+            login_expects_code: false,
         }),
         "gemini" => Some(ProviderSpec {
             binary: "gemini",
@@ -122,6 +155,8 @@ pub fn spec(provider: &str) -> Option<ProviderSpec> {
             login_args: Some(GEMINI_LOGIN),
             extra_env: &[],
             key_env: "GEMINI_API_KEY",
+            auth_status: AuthStatusProbe::None,
+            login_expects_code: false,
         }),
         // Kimi has no interactive subscription login here: it's a Moonshot API
         // key, so the wizard's key path is the only one that applies.
@@ -131,6 +166,8 @@ pub fn spec(provider: &str) -> Option<ProviderSpec> {
             login_args: None,
             extra_env: KIMI_ENV,
             key_env: "ANTHROPIC_AUTH_TOKEN",
+            auth_status: AuthStatusProbe::None,
+            login_expects_code: false,
         }),
         _ => None,
     }
@@ -156,6 +193,44 @@ pub fn is_provider_available(provider: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The isolation variable is the whole basis of the multi-account model,
+    /// and it's per-CLI. Getting it wrong doesn't fail — it silently writes a
+    /// Codex login into the shared `~/.codex`, so every "isolated" account ends
+    /// up sharing credentials.
+    #[test]
+    fn each_provider_isolates_with_its_own_variable() {
+        assert_eq!(spec("claude").unwrap().config_dir_env, "CLAUDE_CONFIG_DIR");
+        assert_eq!(spec("codex").unwrap().config_dir_env, "CODEX_HOME");
+        assert_eq!(spec("gemini").unwrap().config_dir_env, "GEMINI_CONFIG_DIR");
+    }
+
+    /// Kimi is Claude Code pointed elsewhere. If the binary ever stopped being
+    /// `claude`, it would quietly lose session ids, resume and transcript
+    /// transfer — every feature it inherits for free.
+    #[test]
+    fn kimi_runs_through_claude_against_moonshot() {
+        let kimi = spec("kimi").unwrap();
+        assert_eq!(kimi.binary, "claude");
+        assert_eq!(kimi.key_env, "ANTHROPIC_AUTH_TOKEN");
+        assert!(kimi.extra_env.iter().any(|(k, v)| *k == "ANTHROPIC_BASE_URL" && v.contains("moonshot")));
+        assert!(kimi.login_args.is_none(), "there is no interactive Kimi login to offer");
+    }
+
+    /// The two halves of the Codex bug, as assertions: it has a login, and that
+    /// login doesn't end with a code to paste.
+    #[test]
+    fn codex_has_a_login_that_completes_without_a_pasted_code() {
+        let codex = spec("codex").unwrap();
+        assert!(codex.login_args.is_some());
+        assert!(!codex.login_expects_code, "codex finishes through the browser redirect");
+        assert!(spec("claude").unwrap().login_expects_code, "claude does wait on stdin for one");
+    }
+
+    #[test]
+    fn an_unknown_provider_has_no_spec_rather_than_a_default_one() {
+        assert!(spec("copilot").is_none(), "guessing a binary for a provider we don't know would run something arbitrary");
+    }
 
     /// `resolve_binary` is tested against a binary this test plants itself on
     /// a temporary PATH, rather than against whatever CLIs happen to be
