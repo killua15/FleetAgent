@@ -13,7 +13,7 @@ import { useNavigation } from '../nav/NavigationProvider';
 import { autoGridColumns } from '../lib/gridLayout';
 import { formatHoursLeft, PROVIDER_META, type Account, type AccountAuth, type FanOutProjection } from '../types/account';
 import type { Project, Session } from '../types/session';
-import { TERMINAL_STATE_META, type FanOutBranch, type InitCommand, type SuggestedAccount, type TerminalActivity, type TerminalInfo, type TerminalTarget } from '../types/terminal';
+import { TERMINAL_STATE_META, type BranchAvailability, type FanOutBranch, type TaskWorktree, type InitCommand, type SuggestedAccount, type TerminalActivity, type TerminalInfo, type TerminalTarget } from '../types/terminal';
 import styles from './Terminals.module.css';
 
 /** Terminals opened past this point stop being supervisable at a glance —
@@ -46,6 +46,7 @@ export function Terminals() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [multiOpen, setMultiOpen] = useState(false);
   const [fanOpen, setFanOpen] = useState(false);
+  const [tasksOpen, setTasksOpen] = useState(false);
   const [opening, setOpening] = useState(false);
   // The project a "⑃ new worktree…" is being named for — `null` when that
   // sub-step isn't open. Two steps rather than one because the name matters:
@@ -185,8 +186,32 @@ export function Terminals() {
   const openFanPicker = () => {
     setPickerOpen(false);
     setMultiOpen(false);
+    setTasksOpen(false);
     setFanOpen((wasOpen) => !wasOpen);
     if (!fanOpen) ensureAuthLoaded();
+  };
+
+  const openTasksPicker = () => {
+    setPickerOpen(false);
+    setMultiOpen(false);
+    setFanOpen(false);
+    setTasksOpen((wasOpen) => !wasOpen);
+    if (!tasksOpen) ensureAuthLoaded();
+  };
+
+  /** Opens one worktree and one agent per task, each on the task's own branch.
+   * The opposite of a fan-out: N different jobs, all of which you keep. */
+  const runTasks = async (projectId: string, tasks: TaskWorktree[]) => {
+    setOpening(true);
+    try {
+      const infos = await invoke<TerminalInfo[]>('open_task_worktrees', { projectId, tasks, cols: 80, rows: 24 });
+      setTerminals((prev) => [...prev, ...infos]);
+      setTasksOpen(false);
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setOpening(false);
+    }
   };
 
   /** Creates a real git worktree for `project` (its own branch, `.env` copied,
@@ -352,6 +377,9 @@ export function Terminals() {
         }
         primaryAction={
           <div style={{ display: 'flex', gap: 8 }}>
+            <Button size="sm" variant="outline" onClick={openTasksPicker} disabled={opening}>
+              ☰ Tasks
+            </Button>
             <Button size="sm" variant="outline" onClick={openFanPicker} disabled={opening}>
               ⑃ Fan out
             </Button>
@@ -477,6 +505,8 @@ export function Terminals() {
           )}
         </div>
       )}
+
+      {tasksOpen && <TaskPicker projects={projects} accounts={accounts} busy={opening} onClose={() => setTasksOpen(false)} onLaunch={runTasks} />}
 
       {fanOpen && <FanOutPicker projects={projects} accounts={accounts} auth={auth} busy={opening} onClose={() => setFanOpen(false)} onLaunch={runFanOut} />}
 
@@ -872,6 +902,187 @@ function NewWorktreeForm({
             {busy ? 'creating…' : 'Create & open'}
           </Button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+interface TaskRow {
+  id: string;
+  branch: string;
+  accountId: string;
+  prompt: string;
+  baseBranch: string;
+}
+
+const newTaskRow = (): TaskRow => ({ id: crypto.randomUUID(), branch: '', accountId: '', prompt: '', baseBranch: '' });
+
+/**
+ * Several tasks at once, each on its own real branch.
+ *
+ * Looks like the fan-out and means the opposite. A fan-out is N attempts at one
+ * job: shared base, namespaced branches, keep the winner, throw the rest away.
+ * This is N different jobs: each on the branch the task already has (or a new
+ * one named after it), each with its own prompt, and you keep all of them.
+ *
+ * Which is why the base is chosen per row — two unrelated tasks have no reason
+ * to start from the same commit — and why the branch name is never decorated.
+ */
+function TaskPicker({
+  projects,
+  accounts,
+  busy,
+  onClose,
+  onLaunch,
+}: {
+  projects: Project[];
+  accounts: Account[];
+  busy: boolean;
+  onClose: () => void;
+  onLaunch: (projectId: string, tasks: TaskWorktree[]) => void;
+}) {
+  const [projectId, setProjectId] = useState('');
+  const [rows, setRows] = useState<TaskRow[]>([newTaskRow(), newTaskRow()]);
+  const [availability, setAvailability] = useState<Record<string, BranchAvailability>>({});
+  const project = projects.find((p) => p.id === projectId);
+  const [baseBranch] = useBaseBranch(project?.path);
+
+  const update = (id: string, patch: Partial<TaskRow>) => setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+
+  // Ask git about each branch as it's typed. Doing this on launch instead would
+  // mean discovering that T2 is open in the main clone after three other
+  // worktrees already exist.
+  useEffect(() => {
+    if (!projectId) return;
+    const names = rows.map((r) => r.branch.trim()).filter(Boolean);
+    let cancelled = false;
+    Promise.all(
+      names.map((branch) =>
+        invoke<BranchAvailability>('check_branch_availability', { projectId, branch }).catch(() => null),
+      ),
+    ).then((results) => {
+      if (cancelled) return;
+      const next: Record<string, BranchAvailability> = {};
+      for (const r of results) if (r) next[r.branch] = r;
+      setAvailability(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, rows.map((r) => r.branch.trim()).join('\u0000')]);
+
+  const rowState = (row: TaskRow) => availability[row.branch.trim()];
+  const blocked = rows.some((r) => r.branch.trim() && rowState(r)?.checkedOutAt);
+  const ready = rows.filter((r) => r.branch.trim() && r.accountId && !rowState(r)?.checkedOutAt);
+
+  return (
+    <div className={styles.picker}>
+      <span className={styles.pickerLabel}>SEVERAL TASKS AT ONCE — EACH ON ITS OWN BRANCH</span>
+      <div className={styles.fanTop}>
+        <select className={styles.multiSelect} value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+          <option value="">project…</option>
+          {projects.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+        {baseBranch.error && <span className={styles.envWarn}>⚠ {baseBranch.error}</span>}
+      </div>
+
+      <div className={styles.multiRows}>
+        {rows.map((row) => {
+          const state = rowState(row);
+          const isNew = Boolean(row.branch.trim()) && state && !state.exists;
+          return (
+            <div key={row.id} className={styles.taskRow}>
+              <span className={styles.fanBranchIcon}>⑃</span>
+              <input
+                className={state?.checkedOutAt ? styles.fanBranchInputBad : styles.fanBranchInput}
+                placeholder="task branch — e.g. T2"
+                list={`branches-${row.id}`}
+                value={row.branch}
+                onChange={(e) => update(row.id, { branch: e.target.value })}
+              />
+              {/* The project's real branches, as suggestions rather than a
+                  closed list: a task whose branch doesn't exist yet is typed
+                  here too, and forcing a choice would block that. */}
+              <datalist id={`branches-${row.id}`}>
+                {(baseBranch.branches ?? []).map((b) => (
+                  <option key={b.name} value={b.name} />
+                ))}
+              </datalist>
+
+              {isNew && (
+                <label className={styles.taskBase}>
+                  new, from
+                  <select className={styles.taskBaseSelect} value={row.baseBranch} onChange={(e) => update(row.id, { baseBranch: e.target.value })}>
+                    <option value="">{baseBranch.selected || 'current'}</option>
+                    {(baseBranch.branches ?? []).map((b) => (
+                      <option key={b.name} value={b.name}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {state?.checkedOutAt && <span className={styles.taskBlocked}>already checked out at {state.checkedOutAt}</span>}
+
+              <select className={styles.multiSelect} value={row.accountId} onChange={(e) => update(row.id, { accountId: e.target.value })}>
+                <option value="">account…</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name} · {PROVIDER_META[a.provider].name}
+                  </option>
+                ))}
+              </select>
+              <input
+                className={styles.taskPrompt}
+                placeholder="what to tell this agent (optional)"
+                value={row.prompt}
+                onChange={(e) => update(row.id, { prompt: e.target.value })}
+              />
+              <button className={styles.multiRemove} disabled={rows.length === 1} onClick={() => setRows((prev) => (prev.length > 1 ? prev.filter((r) => r.id !== row.id) : prev))}>
+                ×
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      {blocked && (
+        <span className={styles.envWarn}>
+          ⚠ a branch can only be checked out in one place — switch away from it in that worktree, or pick another task
+        </span>
+      )}
+
+      <div className={styles.multiActions}>
+        <button className={styles.addRowLink} onClick={() => setRows((prev) => [...prev, newTaskRow()])}>
+          + add task
+        </button>
+        <span className={styles.spacer} />
+        <span className={styles.fanNote}>each task gets its own worktree, on its own branch — you keep all of them</span>
+        <Button size="sm" variant="outline" onClick={onClose}>
+          cancel
+        </Button>
+        <Button
+          size="sm"
+          disabled={!projectId || ready.length === 0 || busy || Boolean(baseBranch.error)}
+          onClick={() =>
+            onLaunch(
+              projectId,
+              ready.map((r) => ({
+                branch: r.branch.trim(),
+                create: !rowState(r)?.exists,
+                baseBranch: r.baseBranch || baseBranch.selected || null,
+                accountId: r.accountId,
+                prompt: r.prompt.trim() || null,
+              })),
+            )
+          }
+        >
+          {busy ? 'opening…' : `Open ${ready.length || ''}`}
+        </Button>
       </div>
     </div>
   );

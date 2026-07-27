@@ -1186,6 +1186,83 @@ pub fn tick_terminal_states<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// One task being picked up: its branch, who works it, and what to tell them.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskWorktree {
+    /// The branch this task lives on. Used **verbatim** — no namespace — because
+    /// it's the name the PR, the CI and the rest of the team already know.
+    pub branch: String,
+    /// True when the branch doesn't exist yet and has to be cut.
+    pub create: bool,
+    /// Only for a branch being created, and **per row**: unlike a fan-out,
+    /// where a shared base is what makes the comparison mean anything, two
+    /// tasks are unrelated work and can perfectly well start from different
+    /// places.
+    pub base_branch: Option<String>,
+    pub account_id: String,
+    /// What to hand the agent. Optional: sometimes you just want the worktree
+    /// open and will type it yourself.
+    pub prompt: Option<String>,
+}
+
+/// Opens one worktree and one agent per task, in parallel.
+///
+/// The opposite gesture to `fan_out_prompt`, and worth stating because the two
+/// look alike in the UI: a fan-out is N attempts at **one** job that you compare
+/// and then throw all but one away; this is N **different** jobs that you keep.
+/// Which is why the base branch is per row here and shared there, and why the
+/// branch name is used verbatim instead of being namespaced.
+///
+/// Serial for the same reasons as everything else that spawns CLIs: accounts
+/// sharing a config dir must not race, and N of them starting at once stampedes
+/// the machine. A task that fails is reported; the rest continue.
+#[tauri::command]
+pub async fn open_task_worktrees<R: Runtime>(
+    app: AppHandle<R>,
+    project_id: String,
+    tasks: Vec<TaskWorktree>,
+    cols: u16,
+    rows: u16,
+) -> Result<Vec<TerminalInfo>, String> {
+    if tasks.is_empty() {
+        return Err("pick at least one task".to_string());
+    }
+
+    let mut opened = Vec::new();
+    let mut failures = Vec::new();
+    for task in tasks {
+        let branch = if task.create {
+            crate::commands::sessions::WorktreeBranch::Exact { name: task.branch.clone(), base: task.base_branch.clone() }
+        } else {
+            crate::commands::sessions::WorktreeBranch::Existing(task.branch.clone())
+        };
+
+        let session = crate::commands::sessions::create_worktree_on_branch(app.clone(), project_id.clone(), branch, task.account_id.clone()).await;
+        let session = match session {
+            Ok(session) => session,
+            Err(e) => {
+                failures.push(format!("{}: {e}", task.branch));
+                continue;
+            }
+        };
+
+        let target = TerminalTarget { kind: TargetKind::Session, id: session.id };
+        match open_terminal(app.clone(), target, Some(task.account_id), Some(InitCommand::Start), None, task.prompt, cols, rows) {
+            Ok(info) => opened.push(info),
+            Err(e) => failures.push(format!("{}: {e}", task.branch)),
+        }
+    }
+
+    if opened.is_empty() {
+        return Err(format!("no task could be opened — {}", failures.join("; ")));
+    }
+    if !failures.is_empty() {
+        log::warn!("open_task_worktrees: {} task(s) failed — {}", failures.len(), failures.join("; "));
+    }
+    Ok(opened)
+}
+
 /// Kills every shell on app exit — a PTY child outlives its parent happily,
 /// so without this quitting Hangar leaves a login shell per terminal running
 /// forever. Called from `lib.rs`'s `shutdown_children`.

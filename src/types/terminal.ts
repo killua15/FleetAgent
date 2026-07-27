@@ -66,6 +66,31 @@ export interface FanOutBranch {
   accountId: string;
 }
 
+/** One task being picked up in parallel with others.
+ *
+ * The opposite of a fan-out branch: there, N attempts at one job share a base
+ * and get namespaced branches, and you keep one. Here each row is a different
+ * job on **its own real branch** — the name the PR, the CI and the team already
+ * know — and you keep all of them. Hence the per-row base: two unrelated tasks
+ * have no reason to start from the same place. */
+export interface TaskWorktree {
+  branch: string;
+  /** True when the branch doesn't exist yet and has to be cut from `baseBranch`. */
+  create: boolean;
+  baseBranch: string | null;
+  accountId: string;
+  prompt: string | null;
+}
+
+/** What a project's git already thinks about a branch you want to work on. */
+export interface BranchAvailability {
+  branch: string;
+  exists: boolean;
+  /** Where it's currently checked out — git will refuse to put it anywhere
+   * else. Usually the user's own main clone. */
+  checkedOutAt: string | null;
+}
+
 /** What to type into the shell as soon as it comes up. Only meaningful with
  * an account — "start claude" as nobody in particular isn't a thing Hangar
  * offers, and the backend rejects it. */

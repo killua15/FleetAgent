@@ -83,7 +83,7 @@ pub(crate) fn detect_default_branch(cwd: &Path) -> String {
 /// elsewhere" check) is deliberately the more conservative question: if the
 /// ref exists at all, `resolve_session_for_pr_branch` leaves it alone
 /// rather than guessing whether it's safe to reuse or move.
-fn local_branch_exists(cwd: &Path, branch: &str) -> bool {
+pub(crate) fn local_branch_exists(cwd: &Path, branch: &str) -> bool {
     Command::new(providers::resolve_binary("git"))
         .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
         .current_dir(cwd)

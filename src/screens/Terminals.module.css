@@ -898,3 +898,51 @@
   composes: fanBranchInput;
   border-color: var(--amber);
 }
+
+/* A task row carries more than a fan-out row — branch, base, account and its
+   own prompt — so it wraps instead of squeezing everything onto one line. */
+.taskRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.taskBase {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 400 10.5px var(--font-ui);
+  color: var(--dim);
+}
+
+.taskBaseSelect {
+  padding: 3px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--txt);
+  font: 400 10.5px var(--font-ui);
+}
+
+.taskBlocked {
+  font: 500 10.5px var(--font-ui);
+  color: var(--amber);
+}
+
+.taskPrompt {
+  flex: 1;
+  min-width: 180px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--txt);
+  font: 400 11px var(--font-ui);
+}
+
+.taskPrompt:focus,
+.taskBaseSelect:focus {
+  outline: none;
+  border-color: var(--acc);
+}

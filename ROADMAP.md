@@ -576,6 +576,90 @@ Kimi arrancando, "rotar entre proveedores" deja de ser una frase.
 
 ---
 
+# Fase 10 — Fuentes de tareas (ClickUp, Jira, Notion…) · M/L
+
+> **La mitad local está hecha** (2026-07-26): el panel `☰ Tasks` abre N worktrees,
+> cada uno en la rama real de su tarea, con su cuenta y su prompt. Lo que falta es
+> de dónde salen esas filas.
+
+## La costura, que es lo único que importa decidir ahora
+
+Hangar no necesita saber qué es ClickUp. Necesita filas. Así que el corte va aquí:
+
+```
+Fuente (ClickUp | Jira | Notion | GitHub Issues | Linear)
+   → Task normalizada
+      → fila del panel ☰ Tasks  { rama, base, cuenta, prompt }
+```
+
+Y la `Task` normalizada es deliberadamente pequeña — solo lo que el panel usa:
+
+| Campo | De dónde sale | Por qué está |
+|---|---|---|
+| `external_id` | id o clave de la tarea (`DEV-123`, `T2`) | identidad estable entre pasadas |
+| `title` | nombre | encabeza el prompt |
+| `description` | cuerpo | es el prompt |
+| `url` | enlace | el agente puede citarlo; tú puedes abrirlo |
+| `branch_hint` | convención de la fuente, si la tiene | rellena la rama |
+| `status`, `assignee` | estado y asignado | filtrar "mías y sin cerrar" |
+
+Todo lo demás de cada herramienta —sprints, puntos, campos personalizados,
+relaciones— **se queda fuera a propósito**. En cuanto un campo específico de una
+fuente entra en el modelo, las otras tienen que fingirlo.
+
+## Lo que de verdad varía entre fuentes, y hay que resolver una vez
+
+1. **Autenticación.** ClickUp: token personal. Jira: token de API + email + dominio
+   de la instancia. Notion: token de integración interna. Linear: clave o OAuth.
+   Todos caben en "una credencial en el llavero + una config por fuente", y ese
+   es el contrato.
+2. **La jerarquía.** ClickUp tiene space→folder→list; Jira, proyecto→board→sprint;
+   Notion, una base de datos con propiedades arbitrarias. **No se modela.** Cada
+   adaptador resuelve lo suyo y entrega un `source_scope_id` opaco, y Hangar solo
+   guarda qué scope alimenta qué proyecto.
+3. **El nombre de rama.** ClickUp y Linear tienen convención propia; Jira suele
+   ser `CLAVE-descripción`; Notion no tiene ninguna. Por eso `branch_hint` es
+   opcional y hay **plantilla configurable** por fuente, con el hint como valor
+   por defecto y la clave de la tarea como último recurso.
+4. **Escribir de vuelta** (mover a "en progreso", comentar el PR). Cada API es
+   distinta y **es opcional en el trait**: una fuente de solo lectura sigue siendo
+   una fuente válida. Va detrás de un interruptor, siempre: escribe en el tablero
+   de tu equipo.
+
+## Tablas
+
+```
+task_sources        (id, kind, label, credential_ref, config_json, created_at)
+task_source_links   (project_id, source_id, scope_id, branch_template)
+```
+
+`credential_ref` apunta al llavero, nunca a la base — mismo trato que las cuentas
+de proveedor. `config_json` es el vertedero por-fuente (dominio de Jira, id de la
+base de Notion), y es lo que evita una columna por herramienta.
+
+## Lo que NO haría
+
+**Un trait con un solo implementador.** Hasta que exista la segunda fuente, el
+adaptador de ClickUp es una función; la abstracción se extrae cuando Jira la
+obligue a existir y enseñe dónde estaba realmente la junta. Escribirla ahora es
+adivinar el eje de variación con un solo punto de datos.
+
+## Orden
+
+```
+B1  ClickUp: token en el llavero + `reqwest` + leer workspaces y tareas
+B2  task_source_links + plantilla de rama + prompt desde la tarea
+B3  Escritura de vuelta, opt-in
+B4  Segunda fuente (Jira o Notion) — y ahí se extrae el adaptador
+```
+
+**El coste oculto de B1**: sería la primera petición HTTP saliente desde Rust.
+Supabase pasa por el webview porque existe `supabase-js`; aquí no hay esa razón,
+así que entra `reqwest` y el token se queda en Rust en vez de pasearse por el
+webview.
+
+---
+
 # Supuestos vivos
 
 1. **El sync no lleva secretos ni transcripts.** Ver el contrato de la Fase 6.

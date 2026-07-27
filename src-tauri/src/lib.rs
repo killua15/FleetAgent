@@ -224,6 +224,8 @@ pub fn run() {
             commands::sessions::list_files,
             commands::sessions::read_file,
             terminals::fan_out_prompt,
+            terminals::open_task_worktrees,
+            commands::sessions::check_branch_availability,
             terminals::list_terminal_states,
             terminals::rename_terminal,
             run_queue::enqueue_run,
