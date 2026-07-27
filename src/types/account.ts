@@ -1,4 +1,4 @@
-export type Provider = 'claude' | 'codex' | 'gemini';
+export type Provider = 'claude' | 'codex' | 'gemini' | 'kimi';
 export type Billing = 'sub' | 'key';
 export type Scope = 'work' | 'personal';
 export type AccountStatus = 'healthy' | 'cooling_down' | 'exhausted';
@@ -86,7 +86,24 @@ export const PROVIDER_META: Record<
     tintVar: 'var(--geminiD)',
     loginCmd: 'gemini auth',
   },
+  // Kimi runs *through* Claude Code, pointed at Moonshot's
+  // Anthropic-compatible endpoint — which is why it inherits session ids,
+  // resume and transcript transfer instead of needing its own adapter. It has
+  // no interactive login: the credential is a Moonshot API key.
+  kimi: {
+    name: 'Kimi',
+    cli: 'claude code → moonshot',
+    letter: 'K',
+    colorVar: 'var(--teal)',
+    tintVar: 'var(--tealD)',
+    loginCmd: '',
+  },
 };
+
+/** Providers that authenticate with an API key rather than an interactive
+ * login. The wizard has to skip the login step for these, and offering one
+ * would open a terminal running a command that doesn't exist. */
+export const KEY_ONLY_PROVIDERS: Provider[] = ['kimi'];
 
 /** One quota window, forecast from the readings the usage poller has been
  * taking all along. `hoursLeft` is null when nothing is being burned — a flat

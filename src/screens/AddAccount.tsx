@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useNavigation } from '../nav/NavigationProvider';
 import { extractUrl, stripAnsi } from '../lib/ansi';
-import { PROVIDER_META, type Billing, type DiscoveredLogin, type NewAccount, type Provider, type Scope } from '../types/account';
+import { KEY_ONLY_PROVIDERS, PROVIDER_META, type Billing, type DiscoveredLogin, type NewAccount, type Provider, type Scope } from '../types/account';
 import type { ApiKeyCheck, AuthStatus, LoginOutputEvent, LoginSession, ProviderAvailability } from '../types/login';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -23,8 +23,16 @@ export function AddAccount() {
 
   const [availability, setAvailability] = useState<Record<string, boolean>>({});
   const [step, setStep] = useState(1);
-  const [provider, setProvider] = useState<Provider>('claude');
+  const [provider, setProviderState] = useState<Provider>('claude');
   const [billing, setBilling] = useState<Billing>('sub');
+  /** Picking a key-only provider settles the billing question, so it's answered
+   * here instead of leaving the wizard on a choice whose only option is
+   * hidden. */
+  const setProvider = (next: Provider) => {
+    setProviderState(next);
+    if (KEY_ONLY_PROVIDERS.includes(next)) setBilling('key');
+  };
+
   const [name, setName] = useState('');
   const [scope, setScope] = useState<Scope>('work');
   const [monthlyCap, setMonthlyCap] = useState('150');
@@ -317,18 +325,25 @@ export function AddAccount() {
                 value={billing}
                 onValueChange={(value) => setBilling(value as Billing)}
               >
-                <Label className={`${styles.card2} ${billing === 'sub' ? styles.selected : ''}`}>
-                  <RadioGroupItem value="sub" className="sr-only" />
-                  <span className={styles.billingName}>Subscription</span>
-                  <span className={styles.billingDesc}>
-                    Login via browser/CLI. Hangar tracks the 5h session + weekly windows.
-                  </span>
-                </Label>
+                {/* Hidden rather than disabled for a key-only provider: an
+                    option you can see but never choose is a question the user
+                    has to answer and then discover was rhetorical. */}
+                {!KEY_ONLY_PROVIDERS.includes(provider) && (
+                  <Label className={`${styles.card2} ${billing === 'sub' ? styles.selected : ''}`}>
+                    <RadioGroupItem value="sub" className="sr-only" />
+                    <span className={styles.billingName}>Subscription</span>
+                    <span className={styles.billingDesc}>
+                      Login via browser/CLI. Hangar tracks the 5h session + weekly windows.
+                    </span>
+                  </Label>
+                )}
                 <Label className={`${styles.card2} ${billing === 'key' ? styles.selected : ''}`}>
                   <RadioGroupItem value="key" className="sr-only" />
                   <span className={styles.billingName}>API key</span>
                   <span className={styles.billingDesc}>
-                    Pay per token. Hangar tracks accumulated spend and enforces your cap.
+                    {KEY_ONLY_PROVIDERS.includes(provider)
+                      ? 'Kimi authenticates with a Moonshot API key — there is no subscription login. It runs through Claude Code against Moonshot’s Anthropic-compatible endpoint, so everything else works the same.'
+                      : 'Pay per token. Hangar tracks accumulated spend and enforces your cap.'}
                   </span>
                 </Label>
               </RadioGroup>

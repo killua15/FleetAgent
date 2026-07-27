@@ -353,7 +353,15 @@ fn account_key_env(account: &AccountForTerminal, account_id: &str) -> Result<Vec
         return Ok(Vec::new());
     }
     let key = crate::credential_vault::get(account_id)?;
-    Ok(vec![("ANTHROPIC_API_KEY".to_string(), key)])
+    // Which variable carries the key is the provider's business: Anthropic
+    // reads `ANTHROPIC_API_KEY`, Moonshot is reached through Claude Code's
+    // `ANTHROPIC_AUTH_TOKEN`, and Codex wants `OPENAI_API_KEY`.
+    let var = crate::providers::spec(&account.provider).map(|s| s.key_env).unwrap_or("ANTHROPIC_API_KEY");
+    let mut env = vec![(var.to_string(), key)];
+    for (k, v) in crate::providers::spec(&account.provider).map(|s| s.extra_env).unwrap_or(&[]) {
+        env.push((k.to_string(), v.to_string()));
+    }
+    Ok(env)
 }
 
 /// Wraps a value in single quotes for the shell, escaping any single quotes
@@ -403,17 +411,16 @@ fn shell_quote(value: &str) -> String {
 /// A prompt with newlines would trip zsh's PS2 continuation prompt inside the
 /// quotes, so callers pass a single-line prompt.
 pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitCommand, session_uuid: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
-    if account.provider != "claude" {
-        // No `env_for_account` equivalent exists for these, so nothing would
-        // actually scope the CLI to this account. Refusing beats opening a
-        // shell that looks isolated and isn't.
-        return Err(format!("Hangar can't run a '{}' CLI as a specific account yet", account.provider));
-    }
-    let binary = crate::providers::provider_binary(&account.provider).ok_or_else(|| format!("unknown provider '{}'", account.provider))?;
+    let spec = crate::providers::spec(&account.provider).ok_or_else(|| format!("unknown provider '{}'", account.provider))?;
+    let binary = spec.binary;
     if !crate::providers::is_provider_available(&account.provider) {
-        return Err(format!("the {binary} CLI isn't installed on this machine"));
+        return Err(format!("the `{binary}` CLI isn't installed on this machine"));
     }
     let config = shell_quote(&account.config_dir_path);
+    // Fixed environment the provider always needs — for Kimi, pointing Claude
+    // Code at Moonshot's Anthropic-compatible endpoint. Rendered into the
+    // command line so what the picker previews is literally what runs.
+    let extra: String = spec.extra_env.iter().map(|(k, v)| format!("{k}={} ", shell_quote(v))).collect();
     // The trailing prompt, if any — a positional first message. Shared by Start
     // and Resume (both open an interactive session that can carry one).
     let prompt_arg = || match prompt.map(str::trim).filter(|p| !p.is_empty()) {
@@ -433,9 +440,12 @@ pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitComma
             format!(" --resume {}{}", shell_quote(uuid), prompt_arg())
         }
         // A login command takes no prompt or session — there's nothing to seed.
-        InitCommand::Login => format!(" {}", crate::providers::claude::login_args().join(" ")),
+        InitCommand::Login => match spec.login_args {
+            Some(login) => format!(" {}", login.join(" ")),
+            None => return Err(format!("'{}' authenticates with an API key — there's no login to run", account.provider)),
+        },
     };
-    Ok(format!("CLAUDE_CONFIG_DIR={config} {binary}{args}"))
+    Ok(format!("{}={config} {extra}{binary}{args}", spec.config_dir_env))
 }
 
 /// The full script a terminal runs: change directory first, then the account's
@@ -1763,8 +1773,56 @@ mod tests {
             config_dir_path: "/tmp/cx".to_string(),
             name: "Codex".to_string(),
         };
-        let err = account_command_line(&codex, InitCommand::Start, None, None).unwrap_err();
-        assert!(err.contains("codex"), "got: {err}");
+        let result = account_command_line(&codex, InitCommand::Start, None, None);
+
+        // Branching on availability rather than assuming: this asserts the
+        // command's *shape*, and the shape only exists on a machine that has
+        // the CLI. The alternative — assuming codex is installed — is a test
+        // that passes here and fails in CI for a reason unrelated to the code.
+        if crate::providers::is_provider_available("codex") {
+            let line = result.expect("codex is installed here, so it must produce a command");
+            assert!(line.starts_with("CODEX_HOME=/tmp/cx "), "codex isolates with its own variable, not Claude's: {line}");
+            assert!(!line.contains("CLAUDE_CONFIG_DIR"), "using Claude's variable would write into the shared ~/.codex: {line}");
+        } else {
+            let err = result.unwrap_err();
+            assert!(err.contains("codex") && err.contains("isn't installed"), "an absent CLI must say so plainly: {err}");
+        }
+    }
+
+    /// Kimi is Claude Code pointed at Moonshot's Anthropic-compatible endpoint,
+    /// which is why it inherits every feature built for Claude rather than
+    /// needing an adapter. The base URL has to be on the command line for that
+    /// to be true — and visible there, so the picker's preview isn't a fiction.
+    #[test]
+    fn a_kimi_account_runs_claude_against_moonshot() {
+        let kimi = AccountForTerminal {
+            provider: "kimi".to_string(),
+            billing: "key".to_string(),
+            config_dir_path: "/tmp/kimi".to_string(),
+            name: "Kimi".to_string(),
+        };
+        let result = account_command_line(&kimi, InitCommand::Start, None, None);
+        if crate::providers::is_provider_available("kimi") {
+            let line = result.expect("kimi runs through claude, which is installed here");
+            assert!(line.contains("ANTHROPIC_BASE_URL=https://api.moonshot.ai/anthropic"), "got: {line}");
+            assert!(line.contains(" claude"), "the binary is claude, not a kimi CLI: {line}");
+        } else {
+            assert!(result.is_err());
+        }
+    }
+
+    /// An API-key provider has no interactive login, and offering one would
+    /// open a terminal that runs a command that doesn't exist.
+    #[test]
+    fn a_key_only_provider_refuses_a_login_command() {
+        let kimi = AccountForTerminal {
+            provider: "kimi".to_string(),
+            billing: "key".to_string(),
+            config_dir_path: "/tmp/kimi".to_string(),
+            name: "Kimi".to_string(),
+        };
+        let err = account_command_line(&kimi, InitCommand::Login, None, None).unwrap_err();
+        assert!(err.contains("API key"), "the message has to explain why there's no login: {err}");
     }
 
     #[test]
@@ -2120,8 +2178,13 @@ mod tests {
 
         let old = open_terminal(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp2".into() }, Some("sub1".to_string()), None, None, None, 80, 24).unwrap();
 
-        let err = reopen_with_account_inner(handle.clone(), old.id.clone(), "cx1".to_string(), Some(InitCommand::Start), None, 80, 24).unwrap_err();
-        assert!(err.contains("codex"), "the failure has to say what couldn't run; got: {err}");
+        // An account that doesn't exist, rather than one whose CLI is missing:
+        // the invariant under test is the rollback, and tying it to which CLIs
+        // happen to be installed made it pass here and fail elsewhere — which
+        // is exactly what happened once codex started working.
+        let err = reopen_with_account_inner(handle.clone(), old.id.clone(), "no-such-account".to_string(), Some(InitCommand::Start), None, 80, 24)
+            .unwrap_err();
+        assert!(!err.is_empty(), "a reopen that can't start has to say something");
 
         let live = list_terminals(handle.clone()).unwrap();
         assert_eq!(live.len(), 1, "a failed reopen must not leave the user with no terminal at all");

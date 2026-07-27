@@ -63,16 +63,84 @@ pub fn resolve_binary(name: &str) -> String {
     name.to_string()
 }
 
+/// Everything Hangar needs to run one provider's CLI as a specific account.
+///
+/// Exists because the alternative was `if provider != "claude"` in three
+/// unrelated files plus two one-armed `match`es — which meant adding a second
+/// provider touched every one of them, and the failure mode was a *misleading*
+/// one: the login refused with "its CLI isn't installed on this machine" when
+/// the CLI was installed and the real reason was that nobody had wired it.
+#[derive(Debug, Clone, Copy)]
+pub struct ProviderSpec {
+    /// The binary that actually runs. Note that this is not always the
+    /// provider's own name: Kimi is served through `claude`, because Moonshot
+    /// exposes an Anthropic-compatible API and Claude Code speaks it.
+    pub binary: &'static str,
+    /// The environment variable that isolates one account's config and
+    /// credentials from another's. This is the whole basis of Hangar's
+    /// multi-account model, and it's per-CLI: `CLAUDE_CONFIG_DIR` for Claude
+    /// Code, `CODEX_HOME` for Codex.
+    pub config_dir_env: &'static str,
+    /// Args for the interactive subscription login, or `None` when the
+    /// provider has no such thing and authenticates with a key instead.
+    pub login_args: Option<&'static [&'static str]>,
+    /// Fixed environment this provider always needs — how a Kimi account
+    /// points Claude Code at Moonshot instead of Anthropic.
+    pub extra_env: &'static [(&'static str, &'static str)],
+    /// Name of the variable an API key is passed in, for key-billed accounts.
+    pub key_env: &'static str,
+}
+
+const CLAUDE_LOGIN: &[&str] = &["auth", "login", "--claudeai"];
+const CODEX_LOGIN: &[&str] = &["login"];
+const GEMINI_LOGIN: &[&str] = &["auth", "login"];
+
+/// Moonshot's Anthropic-compatible endpoint. A Kimi account *is* Claude Code
+/// pointed somewhere else, which is why it inherits every feature built for
+/// Claude — session ids, resume, transcript transfer — without an adapter.
+const KIMI_ENV: &[(&str, &str)] = &[("ANTHROPIC_BASE_URL", "https://api.moonshot.ai/anthropic")];
+
+pub fn spec(provider: &str) -> Option<ProviderSpec> {
+    match provider {
+        "claude" => Some(ProviderSpec {
+            binary: claude::BINARY,
+            config_dir_env: "CLAUDE_CONFIG_DIR",
+            login_args: Some(CLAUDE_LOGIN),
+            extra_env: &[],
+            key_env: "ANTHROPIC_API_KEY",
+        }),
+        "codex" => Some(ProviderSpec {
+            binary: "codex",
+            config_dir_env: "CODEX_HOME",
+            login_args: Some(CODEX_LOGIN),
+            extra_env: &[],
+            key_env: "OPENAI_API_KEY",
+        }),
+        "gemini" => Some(ProviderSpec {
+            binary: "gemini",
+            config_dir_env: "GEMINI_CONFIG_DIR",
+            login_args: Some(GEMINI_LOGIN),
+            extra_env: &[],
+            key_env: "GEMINI_API_KEY",
+        }),
+        // Kimi has no interactive subscription login here: it's a Moonshot API
+        // key, so the wizard's key path is the only one that applies.
+        "kimi" => Some(ProviderSpec {
+            binary: claude::BINARY,
+            config_dir_env: "CLAUDE_CONFIG_DIR",
+            login_args: None,
+            extra_env: KIMI_ENV,
+            key_env: "ANTHROPIC_AUTH_TOKEN",
+        }),
+        _ => None,
+    }
+}
+
 /// The CLI a provider is driven through, or `None` for a provider Hangar
 /// doesn't know. Single source of truth so "is it installed?" and "what do I
 /// run?" can never disagree about which binary a provider means.
 pub fn provider_binary(provider: &str) -> Option<&'static str> {
-    match provider {
-        "claude" => Some(claude::BINARY),
-        "codex" => Some("codex"),
-        "gemini" => Some("gemini"),
-        _ => None,
-    }
+    spec(provider).map(|s| s.binary)
 }
 
 /// Whether a provider's CLI is installed and resolvable on this machine.

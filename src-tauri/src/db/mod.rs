@@ -97,6 +97,14 @@ const MIGRATIONS: &[Migration] = &[
         run: quota_budgets_and_team_accounts,
         transactional: true,
     },
+    Migration {
+        version: 9,
+        name: "allow_kimi_provider",
+        run: allow_kimi_provider,
+        // Rebuilds tables other tables reference, so it toggles PRAGMAs and
+        // runs its own transaction.
+        transactional: false,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -149,6 +157,68 @@ fn open_terminals_table(conn: &Connection) -> Result<(), String> {
          );",
     )
     .map_err(|e| format!("could not create open_terminals: {e}"))
+}
+
+/// Adds `kimi` to the providers an account may have.
+///
+/// It's a `CHECK` constraint, and SQLite can't alter one — the only way is the
+/// 12-step rebuild. Same `legacy_alter_table` care as migration 4: `sessions`
+/// and several other tables reference `accounts`, and a modern rename would
+/// rewrite their foreign keys to follow it and leave them pointing at a table
+/// that's about to be dropped.
+fn allow_kimi_provider(conn: &Connection) -> Result<(), String> {
+    let already: bool = conn
+        .query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='accounts'", [], |row| row.get::<_, String>(0))
+        .map(|sql| sql.contains("'kimi'"))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let _ = conn.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;");
+    let result = conn.execute_batch(
+        "BEGIN TRANSACTION;
+         ALTER TABLE accounts RENAME TO accounts_old_provider_migration;
+         CREATE TABLE accounts (
+           id               TEXT PRIMARY KEY,
+           provider         TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini','kimi')),
+           billing          TEXT NOT NULL CHECK (billing IN ('sub','key')),
+           name             TEXT NOT NULL,
+           scope            TEXT NOT NULL CHECK (scope IN ('work','personal')),
+           plan_label       TEXT NOT NULL DEFAULT '',
+           config_dir_path  TEXT NOT NULL,
+           credential_ref   TEXT NOT NULL,
+           monthly_cap      REAL,
+           status           TEXT NOT NULL DEFAULT 'healthy' CHECK (status IN ('healthy','cooling_down','exhausted')),
+           created_at       TEXT NOT NULL,
+           updated_at       TEXT NOT NULL,
+           exhausted_at     TEXT,
+           team_account_id  TEXT
+         );
+         INSERT INTO accounts SELECT id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, monthly_cap, status, created_at, updated_at, exhausted_at, team_account_id
+           FROM accounts_old_provider_migration;
+         DROP TABLE accounts_old_provider_migration;
+
+         ALTER TABLE rotation_policies RENAME TO rotation_policies_old_provider_migration;
+         CREATE TABLE rotation_policies (
+           project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+           provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini','kimi')),
+           policy     TEXT NOT NULL DEFAULT 'manual' CHECK (policy IN ('auto','round_robin','manual')),
+           PRIMARY KEY (project_id, provider)
+         );
+         INSERT INTO rotation_policies SELECT project_id, provider, policy FROM rotation_policies_old_provider_migration;
+         DROP TABLE rotation_policies_old_provider_migration;
+         COMMIT;",
+    );
+    let outcome = match result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            Err(format!("could not widen the provider constraint: {e}"))
+        }
+    };
+    let _ = conn.execute_batch("PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;");
+    outcome
 }
 
 /// Per-project spending caps, and the link from a local account to its row in
@@ -853,6 +923,38 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(texts, vec!["hello".to_string(), "world".to_string()], "pre-existing block must survive the repair");
+    }
+
+    /// Widening a CHECK means rebuilding the table, and `accounts` is
+    /// referenced by half the schema — the migration has to leave every one of
+    /// those foreign keys pointing at a table that exists, which is the trap
+    /// this file already paid for once.
+    #[test]
+    fn kimi_becomes_a_valid_provider_without_breaking_what_references_accounts() {
+        let conn = fresh_db();
+        run_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, status, created_at, updated_at)
+             VALUES ('k1','kimi','key','Kimi','personal','','','k1','healthy','now','now')",
+            [],
+        )
+        .expect("kimi must be a valid provider after the migration");
+
+        conn.execute("INSERT INTO projects (id, name, path, created_at) VALUES ('p1','P','/tmp','now')", []).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, name, project_id, account_id, model, effort, mode, status, started_at)
+             VALUES ('s1','s','p1','k1','','high','ask_edits','waiting','now')",
+            [],
+        )
+        .expect("a session referencing the rebuilt accounts table must still insert");
+
+        conn.execute("INSERT INTO rotation_policies (project_id, provider, policy) VALUES ('p1','kimi','auto')", [])
+            .expect("rotation policies were rebuilt too, or a kimi pool couldn't have a policy");
+
+        // And deleting the account still cascades, which is what the FK is for.
+        conn.execute("DELETE FROM accounts WHERE id = 'k1'", []).unwrap();
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0, "ON DELETE CASCADE must survive the rebuild");
     }
 
     /// A database on the pre-migration-4 shape: `pull_requests` anchored to a

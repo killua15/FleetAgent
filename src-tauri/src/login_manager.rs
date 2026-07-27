@@ -96,9 +96,21 @@ fn account_config_dir<R: Runtime>(app: &AppHandle<R>, name: &str) -> Result<std:
 /// interactive-PTY consumer of the same CLI) can reuse it instead of
 /// duplicating the same env-assembly logic.
 pub(crate) fn login_env(config_dir: &str) -> Vec<(String, String)> {
+    login_env_for("claude", config_dir)
+}
+
+/// Full parent environment plus the isolation variable **this provider** uses,
+/// and a sane `TERM` so the CLI renders regardless of how Hangar was launched.
+///
+/// The variable is per-CLI and getting it wrong is worse than failing: a Codex
+/// login run with `CLAUDE_CONFIG_DIR` set would write into the shared
+/// `~/.codex`, and the account would look isolated while sharing credentials
+/// with every other one.
+pub(crate) fn login_env_for(provider: &str, config_dir: &str) -> Vec<(String, String)> {
+    let var = crate::providers::spec(provider).map(|s| s.config_dir_env).unwrap_or("CLAUDE_CONFIG_DIR");
     let mut env: Vec<(String, String)> = std::env::vars().collect();
-    env.retain(|(k, _)| k != "CLAUDE_CONFIG_DIR");
-    env.push(("CLAUDE_CONFIG_DIR".to_string(), config_dir.to_string()));
+    env.retain(|(k, _)| k != var);
+    env.push((var.to_string(), config_dir.to_string()));
     if !env.iter().any(|(k, _)| k == "TERM") {
         env.push(("TERM".to_string(), "xterm-256color".to_string()));
     }
@@ -114,13 +126,19 @@ pub(crate) fn login_env(config_dir: &str) -> Vec<(String, String)> {
 /// precisely because the directory can't be renamed afterwards without
 /// breaking the keychain token.
 pub fn begin_login(app: AppHandle, provider: String, name: String) -> Result<LoginSession, String> {
-    if provider != "claude" {
+    // Two different failures that used to be reported as the same one — and as
+    // the wrong one. Saying "its CLI isn't installed" to someone who has it
+    // installed sends them to fix a machine that isn't broken.
+    let Some(spec) = crate::providers::spec(&provider) else {
+        return Err(format!("Hangar doesn't know a provider called '{provider}'"));
+    };
+    let Some(login_args) = spec.login_args else {
         return Err(format!(
-            "'{provider}' login isn't wired yet — its CLI isn't installed on this machine"
+            "'{provider}' has no interactive login — it authenticates with an API key, so add it as a key-billed account instead"
         ));
-    }
+    };
     if !crate::providers::is_provider_available(&provider) {
-        return Err("the claude CLI wasn't found — install Claude Code first".to_string());
+        return Err(format!("the `{}` CLI wasn't found on this machine — install it first", spec.binary));
     }
 
     let login_id = Uuid::new_v4().to_string();
@@ -138,14 +156,14 @@ pub fn begin_login(app: AppHandle, provider: String, name: String) -> Result<Log
         })
         .map_err(|e| e.to_string())?;
 
-    let mut cmd = CommandBuilder::new(claude::binary());
-    for arg in claude::login_args() {
+    let mut cmd = CommandBuilder::new(crate::providers::resolve_binary(spec.binary));
+    for arg in login_args {
         cmd.arg(arg);
     }
     if let Ok(home) = std::env::var("HOME") {
         cmd.cwd(home);
     }
-    for (k, v) in login_env(&config_dir) {
+    for (k, v) in login_env_for(&provider, &config_dir) {
         cmd.env(k, v);
     }
 

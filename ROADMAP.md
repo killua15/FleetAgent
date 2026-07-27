@@ -484,6 +484,12 @@ ofrece revisarlo: sin clon local no hay worktree, y el botón fallaría después
 
 # Fase 9 — Codex y Kimi · M/L
 
+> **A1, A2 y la mitad de B1 hechos** (2026-07-26). `ProviderSpec` reemplaza los tres
+> `if provider != "claude"`; el login de Codex funciona con `CODEX_HOME`; Kimi es un
+> proveedor seleccionable que corre `claude` contra Moonshot (migración 9 para el
+> `CHECK`). **Falta**: cuota de Codex por `/status`, su continuidad de conversación
+> (A3), y todo lo que las cuentas por clave rompen — ver abajo.
+
 Reescrita el 2026-07-26 tras verificar cómo funcionan los dos CLIs. **Codex mapea
 casi 1:1 con lo que ya construimos:**
 
@@ -562,13 +568,32 @@ toca cuatro cosas que ya funcionan, y hay que decidirlo antes de construir B1:
 ## Orden
 
 ```
-A1  descriptor por proveedor
-A2  Codex: arranque + /status
-B1  Kimi como motor de Claude Code
-A3  Codex: continuidad acotada por cuenta y cwd
-A4  migración del CHECK (rebuild) + `kimi` en la lista y en PROVIDER_META
-B2  Kimi nativo, si alguien lo pide
+A1  descriptor por proveedor                      ✅ hecho
+A2a Codex: login y terminal con CODEX_HOME        ✅ hecho
+A2b Codex: cuota por /status                      ← pendiente
+B1  Kimi seleccionable, corriendo contra Moonshot ✅ hecho
+A3  Codex: continuidad acotada por cuenta y cwd   ← pendiente
+A4  migración del CHECK + kimi en la UI           ✅ hecho (migración 9)
+B2  Kimi nativo, si alguien lo pide               ← no planificado
 ```
+
+## Lo que queda abierto y hay que decidir antes de seguir
+
+Las **cuentas por clave** (Kimi hoy, y Codex por clave mañana) rompen cuatro cosas
+que ya funcionan, y ahora existen de verdad en la base de datos:
+
+1. **No hay `%` de ventana**, así que la previsión (`~2 h 10 m`) no aplica: hay que
+   enseñar "por tokens" en vez de un pronóstico falso.
+2. **`is_exhausted` no aplica**: una cuenta de clave está sana hasta que la clave
+   falla o se acaba el saldo, así que la rotación nunca la benchea ni la recupera.
+3. **La cola por capacidad las admite siempre** — correcto, pero deberían ser
+   destino de último recurso, no el primero que elige `account_for_run`.
+4. **Los presupuestos en porcentaje no significan nada** ahí; el tope tendría que
+   ser en dinero, contra `turn_usage`.
+
+Hoy una cuenta Kimi funciona para abrir terminales y para el abanico. Lo que no
+hace es participar honestamente en cuota, rotación ni presupuestos — y eso es un
+trabajo con nombre, no un detalle.
 
 **A1 primero** aunque no se vea: es lo que hace pequeños a A2, B1 y a cualquier
 proveedor futuro. **B1 antes que A3** porque es más barato y vale más: con Codex y
