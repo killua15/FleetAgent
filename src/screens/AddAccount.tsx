@@ -20,6 +20,9 @@ const STEP_LABELS = ['provider', 'billing', 'login', 'details'] as const;
  * is how Kimi shipped invisible. */
 const PROVIDERS = Object.keys(PROVIDER_META) as Provider[];
 const STATUS_POLL_MS = 1500;
+/** Consecutive failed checks before giving up. Several, because the check
+ * spawns a CLI and one slow answer is not the same as a broken login. */
+const MAX_POLL_FAILURES = 5;
 
 export function AddAccount() {
   const { back } = useNavigation();
@@ -108,16 +111,26 @@ export function AddAccount() {
     invoke<LoginSession>('begin_login', { provider, name: accountName })
       .then((session) => {
         setLoginSession(session);
+        // A single failed poll used to stop the loop for good, silently — so
+        // one transient error (a slow CLI, a status command that hiccups) left
+        // the wizard waiting forever for a state it had stopped looking for.
+        // Now it keeps looking, and gives up loudly rather than quietly.
+        let consecutiveFailures = 0;
         pollRef.current = window.setInterval(async () => {
           try {
             const status = await invoke<AuthStatus>('check_login_status', { loginId: session.loginId });
+            consecutiveFailures = 0;
+            setLoginError(null);
             if (status.loggedIn) {
               setLoggedIn(true);
               stopPolling();
             }
-          } catch {
-            // session may have been cancelled — stop quietly
-            stopPolling();
+          } catch (e) {
+            consecutiveFailures += 1;
+            if (consecutiveFailures >= MAX_POLL_FAILURES) {
+              stopPolling();
+              setLoginError(`Couldn't tell whether the login finished: ${e}`);
+            }
           }
         }, STATUS_POLL_MS);
       })

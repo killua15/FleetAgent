@@ -114,6 +114,21 @@ pub enum AuthStatusProbe {
     None,
 }
 
+/// A file whose presence in the config dir means "logged in", checked before
+/// spawning anything.
+///
+/// Belt and braces for the probe, and cheaper: `codex login status` is a
+/// process spawn parsed by matching a sentence, while `auth.json` appearing is
+/// what actually happened. Every community tool that switches Codex accounts
+/// works by moving that file, which is a good sign it's the durable signal and
+/// the sentence is the fragile one.
+pub fn auth_marker_file(provider: &str) -> Option<&'static str> {
+    match provider {
+        "codex" => Some("auth.json"),
+        _ => None,
+    }
+}
+
 const CLAUDE_LOGIN: &[&str] = &["auth", "login", "--claudeai"];
 const CLAUDE_STATUS: &[&str] = &["auth", "status", "--json"];
 const CODEX_LOGIN: &[&str] = &["login"];

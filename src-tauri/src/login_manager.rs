@@ -252,6 +252,14 @@ pub fn auth_status_for(provider: &str, config_dir: &str) -> Result<AuthStatus, S
         return Err(format!("Hangar doesn't know a provider called '{provider}'"));
     };
 
+    // On disk before on the CLI: it's free, it can't time out, and it's what
+    // the credential actually *is* rather than a sentence about it.
+    if let Some(marker) = crate::providers::auth_marker_file(provider) {
+        if std::path::Path::new(config_dir).join(marker).is_file() {
+            return Ok(AuthStatus { logged_in: true, auth_method: "oauth".to_string(), email: None, subscription_type: None });
+        }
+    }
+
     let args: Vec<&str> = match spec.auth_status {
         crate::providers::AuthStatusProbe::Json(args) | crate::providers::AuthStatusProbe::Text { args, .. } => args.to_vec(),
         // Nothing to ask: a key-billed provider is authenticated when it has a
@@ -408,11 +416,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&first);
     }
 
+    /// The signal that doesn't depend on parsing a sentence: Codex writes
+    /// `auth.json` into its config dir, and every tool that switches Codex
+    /// accounts works by moving that file.
+    #[test]
+    fn a_codex_dir_with_credentials_reads_as_logged_in_without_spawning_anything() {
+        let dir = std::env::temp_dir().join(format!("hangar-test-codex-auth-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.to_str().unwrap();
+
+        // Empty dir: whatever the CLI says, it must not claim to be logged in.
+        let empty = auth_status_for("codex", path).expect("an empty codex home must still answer");
+        assert!(!empty.logged_in);
+
+        std::fs::write(dir.join("auth.json"), "{}").unwrap();
+        let filled = auth_status_for("codex", path).expect("the marker file alone is enough");
+        assert!(filled.logged_in, "a codex home holding auth.json is logged in");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Exercises the exact code path the app uses to check login state,
     /// against a real `claude` invocation (no mocking) and a scratch config
-    /// dir that has never been logged into — this is the same command used
-    /// by `check_account_auth`/AccountList, just without going through the
-    /// Tauri IPC layer we can't drive headlessly.
+    /// dir that has never been logged into.
     ///
     /// `#[ignore]` because it needs Claude Code actually installed: it's a
     /// genuinely valuable integration test on a dev machine, but on CI it
