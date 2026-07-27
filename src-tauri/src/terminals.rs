@@ -428,17 +428,26 @@ pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitComma
         None => String::new(),
     };
     let args = match init {
-        // Hangar owns the id so it can locate this exact transcript later. A
-        // caller with no uuid still gets a plain `claude` (backwards-safe), but
-        // the real flows always supply one.
-        InitCommand::Start => match session_uuid {
-            Some(uuid) => format!(" --session-id {}{}", shell_quote(uuid), prompt_arg()),
-            None => prompt_arg(),
+        InitCommand::Start => match (spec.session, session_uuid) {
+            // Hangar owns the id so it can locate this exact transcript later.
+            (crate::providers::SessionControl::MintableId { start_flag, .. }, Some(uuid)) => {
+                format!(" {start_flag} {}{}", shell_quote(uuid), prompt_arg())
+            }
+            // Codex assigns its own id and has no flag to name one — passing
+            // Claude's would be `error: unexpected argument '--session-id'`,
+            // which is exactly what a terminal used to open with.
+            _ => prompt_arg(),
         },
-        InitCommand::Resume => {
-            let uuid = session_uuid.ok_or("resuming a terminal needs the session id to resume")?;
-            format!(" --resume {}{}", shell_quote(uuid), prompt_arg())
-        }
+        InitCommand::Resume => match spec.session {
+            crate::providers::SessionControl::MintableId { resume_flag, .. } => {
+                let uuid = session_uuid.ok_or("resuming a terminal needs the session id to resume")?;
+                format!(" {resume_flag} {}{}", shell_quote(uuid), prompt_arg())
+            }
+            // We never held an id for this CLI, so there's nothing to resume by
+            // name. Starting fresh is the honest outcome; resuming "the most
+            // recent session" would be a guess dressed as continuity.
+            _ => prompt_arg(),
+        },
         // A login command takes no prompt or session — there's nothing to seed.
         InitCommand::Login => match spec.login_args {
             Some(login) => format!(" {}", login.join(" ")),
@@ -529,9 +538,17 @@ pub fn open_terminal<R: Runtime>(
     // Hangar owns the conversation id for an account-scoped `Start`: use the one
     // the caller supplied (a restore/transfer resuming a known id) or mint a
     // fresh one. `Resume` must carry its id; `Login` and plain shells have none.
+    let mintable = account
+        .as_ref()
+        .and_then(|a| crate::providers::spec(&a.provider))
+        .is_some_and(|s| matches!(s.session, crate::providers::SessionControl::MintableId { .. }));
     let session_uuid = match (&account, init) {
-        (Some(_), Some(InitCommand::Start)) => Some(session_uuid.unwrap_or_else(|| Uuid::new_v4().to_string())),
-        (Some(_), Some(InitCommand::Resume)) => Some(session_uuid.ok_or("resuming a terminal needs a session id")?),
+        // Only for a CLI that lets Hangar choose the id. Minting one for Codex
+        // would record a conversation id nothing can address — and every
+        // feature that reads `session_uuid` (the switcher's "this carries your
+        // conversation", restore's `--resume`) would be promising on it.
+        (Some(_), Some(InitCommand::Start)) if mintable => Some(session_uuid.unwrap_or_else(|| Uuid::new_v4().to_string())),
+        (Some(_), Some(InitCommand::Resume)) if mintable => Some(session_uuid.ok_or("resuming a terminal needs a session id")?),
         _ => None,
     };
 
@@ -1787,6 +1804,37 @@ mod tests {
             let err = result.unwrap_err();
             assert!(err.contains("codex") && err.contains("isn't installed"), "an absent CLI must say so plainly: {err}");
         }
+    }
+
+    /// The bug a user hit in a real terminal: `codex --session-id <uuid>` →
+    /// `error: unexpected argument '--session-id' found`. Verified against the
+    /// installed CLI: Codex has no flag to name a session, so Hangar must not
+    /// pass Claude's.
+    #[test]
+    fn a_codex_terminal_carries_no_session_flag_because_codex_has_none() {
+        let codex = AccountForTerminal {
+            provider: "codex".to_string(),
+            billing: "sub".to_string(),
+            config_dir_path: "/tmp/cx".to_string(),
+            name: "Codex".to_string(),
+        };
+        if !crate::providers::is_provider_available("codex") {
+            return;
+        }
+
+        let start = account_command_line(&codex, InitCommand::Start, Some("some-uuid"), None).unwrap();
+        assert!(!start.contains("--session-id"), "codex rejects that flag outright: {start}");
+        assert!(start.trim_end().ends_with("codex"), "a plain start is just the binary: {start}");
+
+        // A prompt still rides along — `codex [PROMPT]` is positional.
+        let with_prompt = account_command_line(&codex, InitCommand::Start, None, Some("fix the tests")).unwrap();
+        assert!(with_prompt.contains("'fix the tests'"), "got: {with_prompt}");
+
+        // And a resume we have no id for degrades to a fresh start rather than
+        // guessing at "the most recent session", which would be a guess dressed
+        // up as continuity.
+        let resumed = account_command_line(&codex, InitCommand::Resume, None, None).unwrap();
+        assert!(!resumed.contains("--resume"), "got: {resumed}");
     }
 
     /// Kimi is Claude Code pointed at Moonshot's Anthropic-compatible endpoint,

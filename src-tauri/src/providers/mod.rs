@@ -91,6 +91,8 @@ pub struct ProviderSpec {
     pub key_env: &'static str,
     /// How to ask this CLI whether the config dir is logged in.
     pub auth_status: AuthStatusProbe,
+    /// How this CLI lets Hangar address a conversation.
+    pub session: SessionControl,
     /// Whether the interactive login ends by asking for a code pasted back.
     ///
     /// Claude prints a URL and waits on stdin; Codex runs a loopback OAuth flow
@@ -111,6 +113,23 @@ pub enum AuthStatusProbe {
     /// shows the account name the user typed instead of inventing detail.
     Text { args: &'static [&'static str], logged_marker: &'static str },
     /// No way to ask — a key-billed provider is "logged in" when it has a key.
+    None,
+}
+
+/// How a CLI lets a conversation be named and resumed — the difference that
+/// decides whether Hangar can transfer one exactly or only approximately.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SessionControl {
+    /// Hangar chooses the id up front and resumes it by name. This is what
+    /// makes exact transcript transfer between accounts possible: knowing the
+    /// id means knowing which file to copy.
+    MintableId { start_flag: &'static str, resume_flag: &'static str },
+    /// The CLI assigns its own id. Verified against `codex --help`: there is no
+    /// flag to name a session at start, and `codex resume [SESSION_ID]` is the
+    /// only way back — so Hangar can't mint one, and resuming means finding it
+    /// afterwards rather than choosing it.
+    AssignedId { resume_subcommand: &'static str },
+    /// No session concept exposed.
     None,
 }
 
@@ -151,6 +170,7 @@ pub fn spec(provider: &str) -> Option<ProviderSpec> {
             extra_env: &[],
             key_env: "ANTHROPIC_API_KEY",
             auth_status: AuthStatusProbe::Json(CLAUDE_STATUS),
+            session: SessionControl::MintableId { start_flag: "--session-id", resume_flag: "--resume" },
             login_expects_code: true,
         }),
         "codex" => Some(ProviderSpec {
@@ -160,6 +180,7 @@ pub fn spec(provider: &str) -> Option<ProviderSpec> {
             extra_env: &[],
             key_env: "OPENAI_API_KEY",
             auth_status: AuthStatusProbe::Text { args: CODEX_STATUS, logged_marker: "Logged in" },
+            session: SessionControl::AssignedId { resume_subcommand: "resume" },
             // Loopback OAuth: the browser redirect finishes it, there is
             // nothing to paste.
             login_expects_code: false,
@@ -171,6 +192,7 @@ pub fn spec(provider: &str) -> Option<ProviderSpec> {
             extra_env: &[],
             key_env: "GEMINI_API_KEY",
             auth_status: AuthStatusProbe::None,
+            session: SessionControl::None,
             login_expects_code: false,
         }),
         // Kimi has no interactive subscription login here: it's a Moonshot API
@@ -182,6 +204,8 @@ pub fn spec(provider: &str) -> Option<ProviderSpec> {
             extra_env: KIMI_ENV,
             key_env: "ANTHROPIC_AUTH_TOKEN",
             auth_status: AuthStatusProbe::None,
+            // It *is* Claude Code, so it addresses conversations the same way.
+            session: SessionControl::MintableId { start_flag: "--session-id", resume_flag: "--resume" },
             login_expects_code: false,
         }),
         _ => None,
