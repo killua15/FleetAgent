@@ -988,9 +988,10 @@ fn resolve_session_for_pr_branch<R: Runtime>(app: &AppHandle<R>, db: &DbConnecti
     let legacy_review_branch = format!("fleet/pr-{}-review", pr.number);
 
     if let Some(session_id) = &pr.session_id {
-        if anchor_worktree_branch.as_deref() == Some(head_branch.as_str())
+        if (anchor_worktree_branch.as_deref() == Some(head_branch.as_str())
             || anchor_worktree_branch.as_deref() == Some(local_review_branch.as_str())
-            || anchor_worktree_branch.as_deref() == Some(legacy_review_branch.as_str())
+            || anchor_worktree_branch.as_deref() == Some(legacy_review_branch.as_str()))
+            && session_worktree_is_on_disk(db, session_id)
         {
             return Ok(session_id.clone());
         }
@@ -1001,18 +1002,40 @@ fn resolve_session_for_pr_branch<R: Runtime>(app: &AppHandle<R>, db: &DbConnecti
         // A previous "Send to agent" for this same PR could have landed on
         // any of the names, depending on whether there was a conflict at the
         // time and whether it ran before or after the rename — check all.
-        if let Some(existing) = conn
-            .query_row(
-                "SELECT id FROM sessions WHERE project_id = ?1 AND worktree_branch IN (?2, ?3, ?4) ORDER BY started_at DESC LIMIT 1",
-                params![project_id, head_branch, local_review_branch, legacy_review_branch],
-                |row| row.get::<_, String>(0),
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, worktree_path FROM sessions WHERE project_id = ?1 AND worktree_branch IN (?2, ?3, ?4) ORDER BY started_at DESC",
             )
-            .optional()
+            .map_err(|e| e.to_string())?;
+        let candidates: Vec<(String, Option<String>)> = stmt
+            .query_map(params![project_id, head_branch, local_review_branch, legacy_review_branch], |row| Ok((row.get(0)?, row.get(1)?)))
             .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+        drop(stmt);
+        drop(conn);
+
+        // A row can outlive its directory — the user deletes the worktree by
+        // hand, or from the Git panel, and the session stays behind. Reusing it
+        // hands back a session whose cwd doesn't exist, which is what produced
+        // "…/worktrees/pr-103 no longer exists on disk" at the moment the
+        // terminal tried to open.
+        // Same rule as the anchor check above, deliberately: a session with no
+        // worktree runs in the project root, which exists by definition; one
+        // with a path has to still have it.
+        if let Some((existing, _)) = candidates
+            .into_iter()
+            .find(|(_, path)| path.as_deref().is_none_or(|p| Path::new(p).is_dir()))
         {
             return Ok(existing);
         }
     }
+
+    // Git keeps its own registry of worktrees, and a directory deleted outside
+    // git stays in it — so `worktree add` on that same path fails with "already
+    // registered" until it's pruned. Pruning here is what makes recovering from
+    // a hand-deleted worktree work at all.
+    let _ = git_capture(Path::new(&project_path), &["worktree", "prune"]);
 
     let worktree_dir = unique_worktree_dir(&project_path, &format!("pr-{}", pr.number));
     let project_dir = Path::new(&project_path);
@@ -1094,6 +1117,27 @@ fn resolve_session_for_pr_branch<R: Runtime>(app: &AppHandle<R>, db: &DbConnecti
     );
 
     Ok(new_session_id)
+}
+
+/// Whether a session's worktree is still on disk.
+///
+/// The row and the directory are separate facts: deleting a worktree by hand,
+/// or from the Git panel, leaves the session behind. Anything that reuses a
+/// session has to ask, or it returns one whose working directory doesn't exist.
+fn session_worktree_is_on_disk(db: &DbConnection, session_id: &str) -> bool {
+    let Ok(conn) = db.0.lock() else { return false };
+    let path: Option<String> = conn
+        .query_row("SELECT worktree_path FROM sessions WHERE id = ?1", params![session_id], |row| row.get(0))
+        .optional()
+        .ok()
+        .flatten()
+        .flatten();
+    match path {
+        Some(path) => Path::new(&path).is_dir(),
+        // No worktree at all means the session runs in the project root, which
+        // exists by definition.
+        None => true,
+    }
 }
 
 /// The account a PR's work should run under: the one the user picked, else the
@@ -1194,6 +1238,15 @@ pub async fn send_pr_comments_to_terminal(
         let target_session_id = resolve_session_for_pr_branch(&app, &db, &pr, &account_id)?;
 
         let prompt = to_single_line(&format_pr_comments_prompt(&comments));
+
+        // Already working there: type into it instead of opening a second
+        // terminal on the same worktree, where two agents would edit the same
+        // files without knowing about each other.
+        if let Some(existing) = crate::terminals::terminal_for_session(&app, &target_session_id) {
+            crate::terminals::send_line_to_terminal(&app, &existing.id, &prompt)?;
+            mark_comments_resolved(&db, &comment_ids, "sent")?;
+            return Ok(existing);
+        }
         let info = crate::terminals::open_terminal(
             app.clone(),
             crate::terminals::TerminalTarget { kind: crate::terminals::TargetKind::Session, id: target_session_id },
@@ -1245,13 +1298,19 @@ pub async fn open_pr_review_terminal(app: AppHandle, pr_id: String, account_id: 
         let account_id = account_for_pr(&db, &pr, Some(account_id))?;
         let target_session_id = resolve_session_for_pr_branch(&app, &db, &pr, &account_id)?;
 
+        let prompt = to_single_line(&format_pr_review_prompt(&pr));
+        if let Some(existing) = crate::terminals::terminal_for_session(&app, &target_session_id) {
+            crate::terminals::send_line_to_terminal(&app, &existing.id, &prompt)?;
+            return Ok(existing);
+        }
+
         crate::terminals::open_terminal(
             app.clone(),
             crate::terminals::TerminalTarget { kind: crate::terminals::TargetKind::Session, id: target_session_id },
             Some(account_id),
             Some(crate::terminals::InitCommand::Start),
             None, // let Hangar mint the session id
-            Some(to_single_line(&format_pr_review_prompt(&pr))),
+            Some(prompt),
             cols,
             rows,
         )
@@ -2341,6 +2400,33 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&remote_dir);
         let _ = std::fs::remove_dir_all(&work_dir);
+    }
+
+    /// The failure a user hit twice in a row: the worktree directory was gone,
+    /// the session row wasn't, and "Send to terminal" handed back a session
+    /// whose working directory didn't exist — so the terminal refused with
+    /// "…/worktrees/pr-103 no longer exists on disk".
+    ///
+    /// The row and the directory are separate facts, and only one of them is
+    /// deleted when someone removes a worktree by hand.
+    #[test]
+    fn a_session_whose_worktree_was_deleted_is_not_reused() {
+        let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
+        {
+            let conn = db.0.lock().unwrap();
+            // A session pointing at a directory that doesn't exist — exactly
+            // what's left behind after deleting a worktree from the Git panel.
+            conn.execute("UPDATE sessions SET worktree_path = '/nope/gone/pr-103' WHERE id = 'session-pr1'", []).unwrap();
+        }
+        assert!(!session_worktree_is_on_disk(&db, "session-pr1"), "a missing directory must not count as a usable worktree");
+
+        // And a session with no worktree at all runs in the project root, which
+        // exists by definition — that one is still fine to reuse.
+        {
+            let conn = db.0.lock().unwrap();
+            conn.execute("UPDATE sessions SET worktree_path = NULL WHERE id = 'session-pr1'", []).unwrap();
+        }
+        assert!(session_worktree_is_on_disk(&db, "session-pr1"));
     }
 
     /// The regression a user hit: "Send to terminal" on PR #103 produced a

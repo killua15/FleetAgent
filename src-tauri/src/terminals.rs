@@ -1164,6 +1164,24 @@ pub fn rename_terminal<R: Runtime>(app: AppHandle<R>, id: String, name: String) 
     Ok(())
 }
 
+/// An open terminal already working in this session, if there is one.
+///
+/// Two agents in one worktree edit the same files with no idea the other
+/// exists, so anything that "sends work to a terminal" should find the one
+/// that's already there before opening a second.
+pub(crate) fn terminal_for_session<R: Runtime>(app: &AppHandle<R>, session_id: &str) -> Option<TerminalInfo> {
+    let registry = app.try_state::<TerminalRegistry>()?;
+    let map = registry.0.lock().ok()?;
+    map.values()
+        .find(|handle| handle.info.kind == TargetKind::Session && handle.info.source_id == session_id)
+        .map(|handle| handle.info.clone())
+}
+
+/// Types a line into a terminal that's already open, as if the user had.
+pub(crate) fn send_line_to_terminal<R: Runtime>(app: &AppHandle<R>, id: &str, line: &str) -> Result<(), String> {
+    write_terminal(app.clone(), id.to_string(), format!("{line}\n"))
+}
+
 /// One terminal's live state, for the UI.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
