@@ -105,6 +105,12 @@ const MIGRATIONS: &[Migration] = &[
         // runs its own transaction.
         transactional: false,
     },
+    Migration {
+        version: 10,
+        name: "project_git_identity",
+        run: project_git_identity_table,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -157,6 +163,22 @@ fn open_terminals_table(conn: &Connection) -> Result<(), String> {
          );",
     )
     .map_err(|e| format!("could not create open_terminals: {e}"))
+}
+
+/// Per-project git identity and credential reference. Same shape `schema.sql`
+/// declares for a fresh database.
+fn project_git_identity_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS project_git_identity (
+           project_id     TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+           user_name      TEXT,
+           user_email     TEXT,
+           auth_user      TEXT,
+           credential_ref TEXT,
+           updated_at     TEXT NOT NULL
+         );",
+    )
+    .map_err(|e| format!("could not create project_git_identity: {e}"))
 }
 
 /// Adds `kimi` to the providers an account may have.

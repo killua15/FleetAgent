@@ -594,6 +594,10 @@ pub(crate) fn create_worktree_session<R: tauri::Runtime>(app: &AppHandle<R>, db:
 
         copy_env_files(project_path, &worktree_dir);
         ensure_worktree_dir_ignored(project_path);
+        // Written into the worktree's own config, not just passed as
+        // environment: the agent runs `git commit` itself in here, in a process
+        // whose environment Hangar no longer controls once the shell is live.
+        crate::git_identity::apply_identity_to_worktree(app, &input.project_id, &worktree_dir);
 
         let effective_setup_command = input.setup_command.clone().or(input.default_setup_command.clone());
 

@@ -371,3 +371,24 @@ CREATE TABLE IF NOT EXISTS quota_budgets (
   weekly_pct  REAL NOT NULL CHECK (weekly_pct > 0 AND weekly_pct <= 100),
   updated_at  TEXT NOT NULL
 );
+
+-- Which git identity and credential a project's repo needs.
+--
+-- The default on the machine is one person; a repo belonging to another account
+-- needs another. Until this existed, Hangar committed with whatever
+-- `git config --global user.name` said — silently, and into permanent history.
+--
+-- `credential_ref` points at the OS keychain, never at a token stored here. And
+-- the token is never written into `.git/config` or the remote URL either: that
+-- is the easy way, and it leaves the secret in the repo, in `git remote -v`, and
+-- in every error message that quotes the URL.
+CREATE TABLE IF NOT EXISTS project_git_identity (
+  project_id     TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  user_name      TEXT,
+  user_email     TEXT,
+  -- Username for HTTPS auth (often the GitHub login).
+  auth_user      TEXT,
+  -- Keychain key holding the token/password. NULL when only the identity is set.
+  credential_ref TEXT,
+  updated_at     TEXT NOT NULL
+);

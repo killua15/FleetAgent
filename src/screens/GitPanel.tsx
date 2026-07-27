@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Spinner } from '../components/Spinner';
 import { toastError, toastSuccess } from '../components/ErrorOverlay';
 import { useNavigation } from '../nav/NavigationProvider';
+import { GitIdentityForm } from '../components/GitIdentityForm';
 import type { ProjectGitOverview, WorktreeGitStatus } from '../types/gitPanel';
 import type { PrComment, ProjectPrInbox } from '../types/pullRequest';
 import styles from './GitPanel.module.css';
@@ -136,6 +137,10 @@ export function GitPanel() {
                 onPush={() => runAction(selected.projectPath, 'push', 'git_push')}
                 onHistory={() => navigate('git-history', { path: selected.projectPath, label: selected.projectName })}
               />
+
+              {/* Right under the repo it applies to: which identity commits
+                  here, and which credential pushes. */}
+              <GitIdentityForm projectId={selected.projectId} projectName={selected.projectName} />
 
               <span className={styles.sectionLabel}>ACTIVE WORKTREES</span>
               {selected.worktrees.length === 0 && <span className={styles.dimText}>No active worktrees for this project.</span>}

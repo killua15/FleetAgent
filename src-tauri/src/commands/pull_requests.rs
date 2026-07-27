@@ -20,8 +20,19 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use uuid::Uuid;
 
 pub(crate) fn git_capture(cwd: &Path, args: &[&str]) -> Result<String, String> {
+    git_capture_with_env(cwd, args, &[])
+}
+
+/// `git_capture` with extra environment — the project's identity and push
+/// credential (see `git_identity`). Separate rather than a default because most
+/// git calls here are reads that don't need either, and threading a keychain
+/// lookup through `rev-parse` would be a cost paid on every call for nothing.
+pub(crate) fn git_capture_with_env(cwd: &Path, args: &[&str], env: &[(String, String)]) -> Result<String, String> {
     let mut cmd = Command::new(providers::resolve_binary("git"));
     cmd.args(args).current_dir(cwd);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
     let output = crate::process_timeout::run_with_timeout(cmd, crate::process_timeout::DEFAULT_TIMEOUT)
         .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
     if !output.status.success() {
@@ -223,7 +234,7 @@ fn fetch_pull_request_by_id(db: &DbConnection, pr_id: &str) -> Result<Option<Pul
 /// (no stage/commit UI exists yet, so this is a single blanket commit);
 /// pushes to `origin`. Returns `(branch, base)`. Pure git, no `gh` calls, so
 /// it's testable against a real local remote without touching GitHub.
-fn prepare_branch_for_pr(cwd: &Path, session_name: &str) -> Result<(String, String), String> {
+fn prepare_branch_for_pr(cwd: &Path, session_name: &str, git_env: &[(String, String)]) -> Result<(String, String), String> {
     let base = detect_default_branch(cwd);
     let current_branch = git_capture(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     let branch = if current_branch == base || current_branch == "HEAD" {
@@ -237,10 +248,13 @@ fn prepare_branch_for_pr(cwd: &Path, session_name: &str) -> Result<(String, Stri
     let status = git_capture(cwd, &["status", "--porcelain"])?;
     if !status.trim().is_empty() {
         git_capture(cwd, &["add", "-A"])?;
-        git_capture(cwd, &["commit", "-m", &format!("Changes from Hangar session: {session_name}")])?;
+        // The two calls that must not use the machine's default identity: a
+        // commit records who wrote it, forever, and a push has to authenticate
+        // as whoever owns that repo.
+        git_capture_with_env(cwd, &["commit", "-m", &format!("Changes from Hangar session: {session_name}")], git_env)?;
     }
 
-    git_capture(cwd, &["push", "-u", "origin", &branch])?;
+    git_capture_with_env(cwd, &["push", "-u", "origin", &branch], git_env)?;
     Ok((branch, base))
 }
 
@@ -332,7 +346,15 @@ pub async fn create_pull_request<R: Runtime>(app: AppHandle<R>, session_id: Stri
             return Err(format!("working directory {cwd} does not exist"));
         }
 
-        let (branch, base) = prepare_branch_for_pr(cwd_path, &session_name)?;
+        // The project's own identity and credential, if it has one — otherwise
+        // the machine's default, which is the pre-existing behaviour.
+        let project_id_for_git: String = {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            conn.query_row("SELECT project_id FROM sessions WHERE id = ?1", params![session_id], |row| row.get(0))
+                .map_err(|e| format!("session lookup failed: {e}"))?
+        };
+        let git_env = crate::git_identity::git_env_for_project(&app, &project_id_for_git);
+        let (branch, base) = prepare_branch_for_pr(cwd_path, &session_name, &git_env)?;
 
         let (owner, repo) = detect_repo_owner_and_name(cwd_path)?;
         let (default_title, body) = generate_pr_title_and_body(cwd_path, &base, &branch, &session_name)?;
@@ -2395,7 +2417,7 @@ mod tests {
         let (remote_dir, work_dir) = setup_real_repo_with_remote("new-branch");
         std::fs::write(work_dir.join("feature.txt"), "new stuff").unwrap();
 
-        let (branch, base) = prepare_branch_for_pr(&work_dir, "My Cool Session").expect("prepare_branch_for_pr should succeed");
+        let (branch, base) = prepare_branch_for_pr(&work_dir, "My Cool Session", &[]).expect("prepare_branch_for_pr should succeed");
         assert_eq!(base, "main");
         assert_eq!(branch, "hangar/my-cool-session");
 
@@ -2423,7 +2445,7 @@ mod tests {
         assert_eq!(git_capture(&work_dir, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap(), "HEAD", "must actually be detached for this test to mean anything");
         std::fs::write(work_dir.join("scratch.txt"), "detached head content").unwrap();
 
-        let (branch, base) = prepare_branch_for_pr(&work_dir, "Detached Session").expect("prepare_branch_for_pr must handle a detached HEAD, not try to push it literally");
+        let (branch, base) = prepare_branch_for_pr(&work_dir, "Detached Session", &[]).expect("prepare_branch_for_pr must handle a detached HEAD, not try to push it literally");
         assert_eq!(base, "main");
         assert_eq!(branch, "hangar/detached-session");
 
@@ -2440,7 +2462,7 @@ mod tests {
         git_capture(&work_dir, &["checkout", "-b", "already-working-here"]).unwrap();
         std::fs::write(work_dir.join("more.txt"), "more stuff").unwrap();
 
-        let (branch, base) = prepare_branch_for_pr(&work_dir, "irrelevant name").expect("prepare_branch_for_pr should succeed");
+        let (branch, base) = prepare_branch_for_pr(&work_dir, "irrelevant name", &[]).expect("prepare_branch_for_pr should succeed");
         assert_eq!(base, "main");
         assert_eq!(branch, "already-working-here", "must not create a new branch when already off base");
 
@@ -2456,7 +2478,7 @@ mod tests {
         let (remote_dir, work_dir) = setup_real_repo_with_remote("clean-tree");
         git_capture(&work_dir, &["checkout", "-b", "already-clean"]).unwrap();
         // No uncommitted changes at all.
-        let (branch, _base) = prepare_branch_for_pr(&work_dir, "irrelevant").expect("prepare_branch_for_pr should succeed even with nothing to commit");
+        let (branch, _base) = prepare_branch_for_pr(&work_dir, "irrelevant", &[]).expect("prepare_branch_for_pr should succeed even with nothing to commit");
         assert_eq!(branch, "already-clean");
 
         let _ = std::fs::remove_dir_all(&remote_dir);

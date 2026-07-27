@@ -313,6 +313,12 @@ fn merge_env(base: Vec<(String, String)>, account_vars: &[(String, String)], sco
     if !env.iter().any(|(k, _)| k == "TERM") {
         env.push(("TERM".to_string(), "xterm-256color".to_string()));
     }
+    // Real terminal emulators set this; a GUI app's inherited environment does
+    // not. Without it a CLI that checks for truecolour falls back to 256, which
+    // is a visible downgrade for anything that draws its own interface.
+    if !env.iter().any(|(k, _)| k == "COLORTERM") {
+        env.push(("COLORTERM".to_string(), "truecolor".to_string()));
+    }
     env
 }
 
@@ -562,10 +568,28 @@ pub fn open_terminal<R: Runtime>(
         (None, Some(_)) => return Err("choose an account before picking a command to run".to_string()),
         _ => None,
     };
-    let account_vars = match (&account, &account_id) {
+    let mut account_vars = match (&account, &account_id) {
         (Some(account), Some(id)) => account_key_env(account, id)?,
         _ => Vec::new(),
     };
+    // The project's git identity and push credential go into the PTY too, not
+    // just into Hangar's own git calls: the process that runs `git push` most
+    // often here is the agent, in a shell whose environment can't be changed
+    // once it's live.
+    {
+        let db = app.state::<DbConnection>();
+        let project_id = {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            let kind = match target.kind {
+                TargetKind::Project => "project",
+                TargetKind::Session => "session",
+            };
+            crate::rotation::project_of_terminal(&conn, kind, &target.id).ok()
+        };
+        if let Some(project_id) = project_id {
+            account_vars.extend(crate::git_identity::git_env_for_project(&app, &project_id));
+        }
+    }
     let account_name = account.as_ref().map(|a| a.name.clone());
 
     let pty = native_pty_system();

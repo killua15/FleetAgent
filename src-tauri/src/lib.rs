@@ -4,6 +4,7 @@ mod blocking;
 mod commands;
 mod credential_vault;
 mod db;
+mod git_identity;
 mod handoff;
 mod login_manager;
 mod models;
@@ -226,6 +227,9 @@ pub fn run() {
             terminals::fan_out_prompt,
             terminals::open_task_worktrees,
             commands::sessions::check_branch_availability,
+            git_identity::get_project_git_identity,
+            git_identity::set_project_git_identity,
+            git_identity::clear_project_git_identity,
             terminals::list_terminal_states,
             terminals::rename_terminal,
             run_queue::enqueue_run,
