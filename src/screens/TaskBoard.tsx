@@ -6,7 +6,7 @@ import { Button } from '../components/ui/button';
 import { useNavigation } from '../nav/NavigationProvider';
 import { PROVIDER_META, type Account } from '../types/account';
 import type { Project } from '../types/session';
-import { TASK_SOURCE_META, type BoardTask, type TaskFetch, type TaskSource, type TaskSourceLink } from '../types/task';
+import { TASK_SOURCE_META, type BoardTask, type TaskFetch, type TaskSource } from '../types/task';
 import type { TerminalInfo } from '../types/terminal';
 import styles from './TaskBoard.module.css';
 
@@ -24,7 +24,6 @@ export function TaskBoard() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [projectId, setProjectId] = useState('');
-  const [links, setLinks] = useState<TaskSourceLink[]>([]);
   // Every source configured in Settings, not only the ones this project narrows
   // down. They're the tabs: one account per board — Technomar's ClickUp, the
   // other org's GitHub — and each keeps its own credential.
@@ -50,32 +49,31 @@ export function TaskBoard() {
         if (found.length === 1) setProjectId(found[0].id);
       }),
       invoke<Account[]>('list_accounts').then(setAccounts),
-      invoke<TaskSource[]>('list_task_sources').then(setSources),
+      invoke<TaskSource[]>('list_task_sources').then((found) => {
+        setSources(found);
+        // One board is the common case; making you choose it from a list of one
+        // is a step with a single right answer.
+        if (found.length === 1) setSourceFilter(found[0].id);
+      }),
     ]).catch((e) => toastError(String(e)));
   }, []);
 
+  // The account decides what's on screen; the project only decides where a
+  // worktree lands. Reading the board no longer waits for a project to be
+  // chosen — which was backwards, since "which board am I working from" is the
+  // question you can answer without looking anything up.
   useEffect(() => {
     setBoard(null);
     setPicked({});
-    if (!projectId) {
-      setLinks([]);
-      return;
-    }
-    invoke<TaskSourceLink[]>('list_task_source_links', { projectId })
-      .then((found) => {
-        setLinks(found);
-        load(projectId);
-      })
-      .catch(() => {
-        setLinks([]);
-        load(projectId);
-      });
-  }, [projectId]);
+    setBoardFilter('all');
+    setStatusFilter('all');
+    if (sourceFilter !== 'all') load(sourceFilter);
+  }, [sourceFilter]);
 
-  const load = async (id: string) => {
+  const load = async (sourceId: string) => {
     setLoading(true);
     try {
-      setBoard(await invoke<TaskFetch>('list_project_tasks', { projectId: id }));
+      setBoard(await invoke<TaskFetch>('list_source_tasks', { sourceId }));
     } catch (e) {
       // Shown in the list, not as a toast: four stacked toasts saying the same
       // thing is what a failed fetch looked like before, and none of them said
@@ -111,7 +109,7 @@ export function TaskBoard() {
   );
 
   const send = async () => {
-    if (!accountId || chosen.length === 0) return;
+    if (!accountId || !projectId || chosen.length === 0) return;
     setOpening(true);
     try {
       await invoke<TerminalInfo[]>('open_task_worktrees', {
@@ -148,34 +146,22 @@ export function TaskBoard() {
         <span className={styles.title}>Tasks</span>
         <span className={styles.subtitle}>what's assigned to you — pick some and each one gets a worktree on its own branch</span>
         <span className={styles.spacer} />
-        <span className={styles.fieldLabel}>worktrees in</span>
-        <select className={styles.select} value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-          <option value="">project…</option>
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
+        <span className={styles.fieldLabel}>account</span>
+        <select className={styles.select} value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}>
+          <option value="all">choose a board…</option>
+          {sources.map((source) => (
+            <option key={source.id} value={source.id}>
+              {source.label} · {TASK_SOURCE_META[source.kind]?.name ?? source.kind}
             </option>
           ))}
         </select>
-        <Button size="sm" variant="outline" disabled={!projectId || loading} onClick={() => load(projectId)}>
+        <Button size="sm" variant="outline" disabled={sourceFilter === 'all' || loading} onClick={() => load(sourceFilter)}>
           {loading ? 'reading…' : '↻ refresh'}
         </Button>
       </div>
 
-      {projectId && board && (
+      {board && board.tasks.length > 0 && (
         <div className={styles.filters}>
-          <label className={styles.filter}>
-            account
-            <select className={styles.select} value={sourceFilter} onChange={(e) => { setSourceFilter(e.target.value); setBoardFilter('all'); setStatusFilter('all'); }}>
-              <option value="all">all sources</option>
-              {sources.map((source) => (
-                <option key={source.id} value={source.id}>
-                  {source.label} · {TASK_SOURCE_META[source.kind]?.name ?? source.kind} ({all.filter((t) => t.sourceId === source.id).length})
-                </option>
-              ))}
-            </select>
-          </label>
-
           <label className={styles.filter}>
             project
             <select className={styles.select} value={boardFilter} onChange={(e) => setBoardFilter(e.target.value)}>
@@ -204,8 +190,8 @@ export function TaskBoard() {
           <span className={styles.count}>
             {shown.length === all.length ? `${all.length} tasks` : `${shown.length} of ${all.length}`}
           </span>
-          {(sourceFilter !== 'all' || boardFilter !== 'all' || statusFilter !== 'all') && (
-            <button className={styles.inlineLink} onClick={() => { setSourceFilter('all'); setBoardFilter('all'); setStatusFilter('all'); }}>
+          {(boardFilter !== 'all' || statusFilter !== 'all') && (
+            <button className={styles.inlineLink} onClick={() => { setBoardFilter('all'); setStatusFilter('all'); }}>
               clear
             </button>
           )}
@@ -213,8 +199,8 @@ export function TaskBoard() {
       )}
 
       <div className={styles.list}>
-        {!projectId && <span className={styles.empty}>Pick a project to see its board.</span>}
-        {projectId && sources.length === 0 && (
+        {sources.length > 0 && sourceFilter === 'all' && <span className={styles.empty}>Choose a board above to see what's assigned to you.</span>}
+        {sources.length === 0 && (
           <span className={styles.empty}>
             No board configured yet.{' '}
             <button className={styles.inlineLink} onClick={() => navigate('task-settings')}>
@@ -232,7 +218,7 @@ export function TaskBoard() {
         {board && shown.length === 0 && board.errors.length === 0 && !loading && (
           <span className={styles.empty}>
             {all.length === 0
-              ? `Nothing assigned to you in ${(links.length > 0 ? links.map((l) => l.label) : sources.map((s) => s.label)).join(' or ')}.`
+              ? `Nothing assigned to you in ${sources.find((s) => s.id === sourceFilter)?.label ?? 'this board'}.`
               : `No task matches these filters — ${all.length} are hidden by them.`}
           </span>
         )}
@@ -244,9 +230,6 @@ export function TaskBoard() {
               <input type="checkbox" checked={isPicked} onChange={() => toggle(task)} onClick={(e) => e.stopPropagation()} />
               <span className={styles.key}>{task.key}</span>
               <span className={styles.taskTitle}>{task.title}</span>
-              {sourceFilter === 'all' && sources.length > 1 && (
-                <span className={styles.container}>{sources.find((s) => s.id === task.sourceId)?.label ?? task.sourceKind}</span>
-              )}
               {task.container && <span className={styles.container}>{task.container}</span>}
               {task.status && <span className={styles.status}>{task.status}</span>}
               <span className={styles.branch}>⑃ {task.suggestedBranch}</span>
@@ -267,6 +250,15 @@ export function TaskBoard() {
             {chosen.length} task{chosen.length === 1 ? '' : 's'} — {chosen.length === 1 ? 'one worktree' : `${chosen.length} worktrees, one branch each`}
           </span>
           <span className={styles.spacer} />
+          <span className={styles.fieldLabel}>worktrees in</span>
+          <select className={styles.select} value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+            <option value="">project…</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
           <select className={styles.select} value={accountId} onChange={(e) => setAccountId(e.target.value)}>
             <option value="">account…</option>
             {accounts.map((a) => (
@@ -275,7 +267,7 @@ export function TaskBoard() {
               </option>
             ))}
           </select>
-          <Button size="sm" disabled={!accountId || opening} onClick={send}>
+          <Button size="sm" disabled={!accountId || !projectId || opening} onClick={send}>
             {opening ? 'opening…' : 'Send to terminals'}
           </Button>
         </div>

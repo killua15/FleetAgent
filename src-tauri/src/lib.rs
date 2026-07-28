@@ -239,6 +239,7 @@ pub fn run() {
             task_sources::list_task_source_links,
             task_sources::list_source_scopes,
             task_sources::list_project_tasks,
+            task_sources::list_source_tasks,
             terminals::list_terminal_states,
             terminals::rename_terminal,
             run_queue::enqueue_run,

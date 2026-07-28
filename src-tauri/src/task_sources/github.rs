@@ -20,6 +20,22 @@ pub fn check_available() -> Result<(), String> {
     gh_available_and_authed()
 }
 
+/// Everything assigned to you across every repo you can see.
+///
+/// The board is chosen by *account* now, not by project — so at that point
+/// there is no repo to ask about. `gh search issues` is the only call that
+/// answers without one, and it's the same login either way.
+pub fn fetch_everywhere(source_id: &str) -> Result<Vec<Task>, String> {
+    let output = gh_output(
+        None,
+        &["search", "issues", "--assignee=@me", "--state=open", "--limit", LIMIT, "--json", "number,title,body,url,state,repository"],
+    )?;
+    if !output.status.success() {
+        return Err(format!("gh search issues failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    parse_issues(&String::from_utf8_lossy(&output.stdout), source_id, "")
+}
+
 pub fn fetch(link: &TaskSourceLink, project_path: &Path) -> Result<Vec<Task>, String> {
     // The link's scope wins when it's set (a repo whose issues live somewhere
     // other than the code, which is common for monorepo satellites); otherwise
@@ -73,7 +89,14 @@ pub(crate) fn parse_issues(raw: &str, source_id: &str, repo: &str) -> Result<Vec
                 branch_hint: None,
                 source_id: source_id.to_string(),
                 source_kind: "github".to_string(),
-                container: Some(repo.to_string()),
+                // From the search result when it's there (a board of every
+                // repo), else the repo we asked about.
+                container: issue
+                    .get("repository")
+                    .and_then(|r| r.get("nameWithOwner"))
+                    .and_then(|n| n.as_str())
+                    .map(str::to_string)
+                    .or_else(|| Some(repo.to_string()).filter(|r| !r.is_empty())),
                 suggested_branch: String::new(),
             })
         })
@@ -104,6 +127,16 @@ mod tests {
         let tasks = parse_issues(raw, "src1", "o/r").unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].description, "");
+    }
+
+    /// `gh search issues` carries the repo on each row — which is the only
+    /// thing that tells two identically-named issues apart when the board spans
+    /// every repo you can see.
+    #[test]
+    fn a_search_result_keeps_the_repo_it_came_from() {
+        let raw = r#"[{"number": 4, "title": "Flaky test", "body": "", "url": "u", "state": "open", "repository": {"nameWithOwner": "wfo/api"}}]"#;
+        let tasks = parse_issues(raw, "src1", "").unwrap();
+        assert_eq!(tasks[0].container.as_deref(), Some("wfo/api"));
     }
 
     /// No issues assigned to you is the normal state most days, and it must

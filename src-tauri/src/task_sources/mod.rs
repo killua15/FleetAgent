@@ -428,6 +428,58 @@ pub struct TaskFetch {
     pub errors: Vec<String>,
 }
 
+/// Everything one account has assigned to you, with no project in the picture.
+///
+/// The board is chosen by account first — "Technomar's ClickUp", "the other
+/// org's GitHub" — because that's the question you can answer without looking:
+/// which of your boards am I working from. Which repo the worktree lands in is
+/// a later decision, and belongs next to the button that cuts it.
+#[tauri::command]
+pub async fn list_source_tasks<R: tauri::Runtime>(app: tauri::AppHandle<R>, source_id: String) -> Result<TaskFetch, String> {
+    crate::blocking::run_blocking(move || {
+        use tauri::Manager;
+        let db = app.state::<DbConnection>();
+        let (kind, label): (String, String) = {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            conn.query_row("SELECT kind, label FROM task_sources WHERE id = ?1", params![source_id], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(|e| format!("source lookup failed: {e}"))?
+        };
+
+        // No link, so no narrowing: the whole account, at its default scope.
+        // Any project's own scope is applied later, when one is chosen.
+        let link = TaskSourceLink { source_id: source_id.clone(), kind: kind.clone(), label: label.clone(), scope_id: None, branch_template: None };
+
+        let fetched = match kind.as_str() {
+            "github" => github::fetch_everywhere(&source_id),
+            "clickup" => {
+                let token = credential_for(&db, &source_id)?;
+                let config = config_for(&db, &source_id)?;
+                clickup::fetch(&link, &token, &config)
+            }
+            other => Err(format!("unknown task source: {other}")),
+        };
+
+        match fetched {
+            Ok(found) => Ok(TaskFetch { tasks: with_branches(found, &link), errors: Vec::new() }),
+            Err(e) => Err(format!("{label}: {e}")),
+        }
+    })
+    .await?
+}
+
+/// Fills in each task's branch from the link's template. Here rather than in
+/// the panel so git's naming rules live in one place.
+fn with_branches(tasks: Vec<Task>, link: &TaskSourceLink) -> Vec<Task> {
+    let template = link.branch_template.as_deref().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| default_branch_template(&link.kind));
+    tasks
+        .into_iter()
+        .map(|mut task| {
+            task.suggested_branch = branch_name(template, &task);
+            task
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub async fn list_project_tasks<R: tauri::Runtime>(app: tauri::AppHandle<R>, project_id: String) -> Result<TaskFetch, String> {
     crate::blocking::run_blocking(move || {
@@ -468,13 +520,7 @@ pub async fn list_project_tasks<R: tauri::Runtime>(app: tauri::AppHandle<R>, pro
                 other => Err(format!("unknown task source: {other}")),
             };
             match fetched {
-                Ok(found) => {
-                    let template = link.branch_template.as_deref().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| default_branch_template(&link.kind));
-                    tasks.extend(found.into_iter().map(|mut task| {
-                        task.suggested_branch = branch_name(template, &task);
-                        task
-                    }));
-                }
+                Ok(found) => tasks.extend(with_branches(found, &link)),
                 Err(e) => errors.push(format!("{}: {e}", link.label)),
             }
         }
