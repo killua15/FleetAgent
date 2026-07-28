@@ -1,0 +1,11 @@
+{
+  "version": "0.1.1",
+  "notes": "Task board (ClickUp + GitHub Issues), per-turn usage metering, Codex resume, contrast pass, private update channel",
+  "pub_date": "2026-07-28T21:13:27.403117Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbFBESU5lUVZRMlpmUnQyZ0tmcDd4NjI5VnNhQXlFTCtTRTVnVVQ2WjU3TVA4ZG1JU3JCZmNTMDN4V2NnRjdoSnY3aTFoejN6STRscUdURlVld1ZpbVF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1MjczMjA3CWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKVFBYU0RZK0czWG1PYTYrMGVBTnRDdUQ5L2R4NklqQVJCdThaR3JQOHhQNWcreW9LZmpMbTFGNC9QZUhqcGY2bS9BYnFzcFFSNUx0d2o4TkdqaE9OQ1E9PQo=",
+      "url": "https://api.github.com/repos/killua15/FleetAgent/contents/updates/Hangar.app.tar.gz"
+    }
+  }
+}
