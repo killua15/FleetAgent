@@ -1,3 +1,4 @@
+import type { BoardTask } from './task';
 import type { AccountStatus, Scope } from './account';
 
 /** What a terminal was opened against. A session resolves to its worktree
@@ -80,6 +81,11 @@ export interface TaskWorktree {
   baseBranch: string | null;
   accountId: string;
   prompt: string | null;
+  /** The board task this row came from, when it came from one. Its body can't
+   * ride in `prompt` — that's a single-line shell argument — so the backend
+   * writes it into the worktree as `.hangar/task-<key>.md` and points the agent
+   * at the file. */
+  task: BoardTask | null;
 }
 
 /** What a project's git already thinks about a branch you want to work on. */

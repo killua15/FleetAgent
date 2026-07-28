@@ -10,6 +10,7 @@ import { AccountList } from './screens/AccountList';
 import { AgentPanel } from './screens/AgentPanel';
 import { SplitView } from './screens/SplitView';
 import { GeneralSettings } from './screens/GeneralSettings';
+import { TaskSettings } from './screens/TaskSettings';
 import { RotationSettings } from './screens/RotationSettings';
 import { SharedMemorySettings } from './screens/SharedMemorySettings';
 import { PrReviews } from './screens/PrReviews';
@@ -83,6 +84,8 @@ function Screens() {
       return <GeneralSettings />;
     case 'rotation-settings':
       return <RotationSettings />;
+    case 'task-settings':
+      return <TaskSettings />;
     case 'shared-memory':
       return <SharedMemorySettings />;
     case 'pr-reviews':

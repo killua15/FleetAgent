@@ -38,6 +38,11 @@ chrono = { version = "0.4", features = ["serde"] }
 keyring = "3"
 portable-pty = "0.9"
 base64 = "0.22"
+# The first outgoing HTTP from Rust (ClickUp). `rustls` rather than the system
+# TLS stack so the build doesn't depend on whichever OpenSSL the machine has,
+# and `blocking` because every other outbound call here already runs inside
+# `blocking::run_blocking`.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

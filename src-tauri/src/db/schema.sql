@@ -392,3 +392,38 @@ CREATE TABLE IF NOT EXISTS project_git_identity (
   credential_ref TEXT,
   updated_at     TEXT NOT NULL
 );
+
+-- Where the rows in the ☰ Tasks panel come from.
+--
+-- Hangar doesn't need to know what ClickUp is; it needs rows. So each adapter
+-- normalises its tool into the same small task shape and everything downstream
+-- — branch, worktree, prompt — is source-agnostic.
+--
+-- `config_json` is the per-tool dumping ground (a ClickUp team id, a Jira
+-- domain) and it is what keeps this from growing a column per tool. Same rule
+-- as everywhere else: `credential_ref` points at the OS keychain, and the token
+-- itself is never stored here.
+CREATE TABLE IF NOT EXISTS task_sources (
+  id             TEXT PRIMARY KEY,
+  kind           TEXT NOT NULL CHECK (kind IN ('github', 'clickup')),
+  label          TEXT NOT NULL,
+  -- NULL for GitHub: it borrows the `gh` CLI's own login rather than holding a
+  -- credential of its own.
+  credential_ref TEXT,
+  config_json    TEXT NOT NULL DEFAULT '{}',
+  created_at     TEXT NOT NULL
+);
+
+-- Which source feeds which project, and how its branches get named.
+--
+-- `scope_id` is deliberately opaque: a ClickUp list id, a GitHub repo, a Jira
+-- board. Each hierarchy is different and none of them is modelled here — the
+-- adapter resolves its own and hands back a string.
+CREATE TABLE IF NOT EXISTS task_source_links (
+  project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_id       TEXT NOT NULL REFERENCES task_sources(id) ON DELETE CASCADE,
+  scope_id        TEXT,
+  -- NULL means the source's own default (see `task_sources::branch_name`).
+  branch_template TEXT,
+  PRIMARY KEY (project_id, source_id)
+);

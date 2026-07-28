@@ -946,3 +946,71 @@
   outline: none;
   border-color: var(--acc);
 }
+
+/* Tasks read off a board. A scroll cap rather than a full list: this sits
+   inside a picker, and a 50-issue board must not push the rows that actually
+   launch something off the screen. */
+.boardList {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 210px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--overlay);
+}
+
+.boardTask {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+
+.boardTask:hover {
+  background: var(--accD);
+}
+
+/* Already on the list below. Still shown — its absence would read as "the
+   fetch missed it" — but inert, because adding it twice would cut two
+   worktrees for one task and then fight over the branch. */
+.boardTaskTaken {
+  composes: boardTask;
+  opacity: 0.4;
+  cursor: default;
+}
+
+.boardKey {
+  flex: none;
+  font: 500 10.5px var(--font-mono);
+  color: var(--acc);
+}
+
+.boardTitle {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 11.5px var(--font-ui);
+}
+
+.boardStatus {
+  flex: none;
+  font: 400 10px var(--font-ui);
+  color: var(--dim);
+}
+
+.boardBranch {
+  flex: none;
+  font: 400 10px var(--font-mono);
+  color: var(--dim);
+}

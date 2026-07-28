@@ -111,6 +111,12 @@ const MIGRATIONS: &[Migration] = &[
         run: project_git_identity_table,
         transactional: true,
     },
+    Migration {
+        version: 11,
+        name: "task_sources",
+        run: task_sources_tables,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -179,6 +185,30 @@ fn project_git_identity_table(conn: &Connection) -> Result<(), String> {
          );",
     )
     .map_err(|e| format!("could not create project_git_identity: {e}"))
+}
+
+/// Where task rows come from: a configured source, and which project each one
+/// feeds. See `schema.sql` for why the per-tool detail lives in `config_json`
+/// instead of a column per tool.
+fn task_sources_tables(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS task_sources (
+           id             TEXT PRIMARY KEY,
+           kind           TEXT NOT NULL CHECK (kind IN ('github', 'clickup')),
+           label          TEXT NOT NULL,
+           credential_ref TEXT,
+           config_json    TEXT NOT NULL DEFAULT '{}',
+           created_at     TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS task_source_links (
+           project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+           source_id       TEXT NOT NULL REFERENCES task_sources(id) ON DELETE CASCADE,
+           scope_id        TEXT,
+           branch_template TEXT,
+           PRIMARY KEY (project_id, source_id)
+         );",
+    )
+    .map_err(|e| format!("could not create the task source tables: {e}"))
 }
 
 /// Adds `kimi` to the providers an account may have.

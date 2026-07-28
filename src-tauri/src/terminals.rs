@@ -1273,6 +1273,11 @@ pub struct TaskWorktree {
     /// What to hand the agent. Optional: sometimes you just want the worktree
     /// open and will type it yourself.
     pub prompt: Option<String>,
+    /// The task this row came from, when it came from a board rather than
+    /// being typed. Its body can't ride in `prompt` — that's a single-line
+    /// shell argument — so it's written into the worktree and the prompt
+    /// becomes a one-line pointer at it. See `task_sources::write_task_brief`.
+    pub task: Option<crate::task_sources::Task>,
 }
 
 /// Opens one worktree and one agent per task, in parallel.
@@ -1316,8 +1321,16 @@ pub async fn open_task_worktrees<R: Runtime>(
             }
         };
 
+        // An explicit prompt wins: a row the user typed over is a row they
+        // meant. Otherwise the brief goes to disk and the prompt points at it.
+        let prompt = match (task.prompt.filter(|p| !p.trim().is_empty()), task.task.as_ref(), session.worktree_path.as_deref()) {
+            (Some(typed), _, _) => Some(typed),
+            (None, Some(brief), Some(worktree)) => Some(crate::task_sources::write_task_brief(std::path::Path::new(worktree), brief)),
+            _ => None,
+        };
+
         let target = TerminalTarget { kind: TargetKind::Session, id: session.id };
-        match open_terminal(app.clone(), target, Some(task.account_id), Some(InitCommand::Start), None, task.prompt, cols, rows) {
+        match open_terminal(app.clone(), target, Some(task.account_id), Some(InitCommand::Start), None, prompt, cols, rows) {
             Ok(info) => opened.push(info),
             Err(e) => failures.push(format!("{}: {e}", task.branch)),
         }

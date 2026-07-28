@@ -13,6 +13,7 @@ import { useNavigation } from '../nav/NavigationProvider';
 import { autoGridColumns } from '../lib/gridLayout';
 import { formatHoursLeft, PROVIDER_META, type Account, type AccountAuth, type FanOutProjection } from '../types/account';
 import type { Project, Session } from '../types/session';
+import type { BoardTask, TaskFetch, TaskSourceLink } from '../types/task';
 import { TERMINAL_STATE_META, type BranchAvailability, type FanOutBranch, type TaskWorktree, type InitCommand, type SuggestedAccount, type TerminalActivity, type TerminalInfo, type TerminalTarget } from '../types/terminal';
 import styles from './Terminals.module.css';
 
@@ -913,9 +914,24 @@ interface TaskRow {
   accountId: string;
   prompt: string;
   baseBranch: string;
+  /** Set when the row came from a board rather than being typed. Carries the
+   * body to the backend, which writes it into the worktree — a task body has
+   * newlines and the prompt is a single-line shell argument. */
+  task?: BoardTask;
 }
 
 const newTaskRow = (): TaskRow => ({ id: crypto.randomUUID(), branch: '', accountId: '', prompt: '', baseBranch: '' });
+
+const rowFromTask = (task: BoardTask): TaskRow => ({
+  id: crypto.randomUUID(),
+  branch: task.suggestedBranch,
+  accountId: '',
+  // Left empty on purpose: an empty prompt means "use the brief", and anything
+  // typed here wins over it.
+  prompt: '',
+  baseBranch: '',
+  task,
+});
 
 /**
  * Several tasks at once, each on its own real branch.
@@ -946,6 +962,47 @@ function TaskPicker({
   const [availability, setAvailability] = useState<Record<string, BranchAvailability>>({});
   const project = projects.find((p) => p.id === projectId);
   const [baseBranch] = useBaseBranch(project?.path);
+  const [links, setLinks] = useState<TaskSourceLink[]>([]);
+  const [board, setBoard] = useState<TaskFetch | null>(null);
+  const [loadingBoard, setLoadingBoard] = useState(false);
+
+  // Which sources this project is wired to. Nothing configured is the normal
+  // first state, and it must read as "not set up yet" rather than as an error.
+  useEffect(() => {
+    setBoard(null);
+    if (!projectId) {
+      setLinks([]);
+      return;
+    }
+    invoke<TaskSourceLink[]>('list_task_source_links', { projectId })
+      .then(setLinks)
+      .catch(() => setLinks([]));
+  }, [projectId]);
+
+  const loadBoard = async () => {
+    setLoadingBoard(true);
+    try {
+      setBoard(await invoke<TaskFetch>('list_project_tasks', { projectId }));
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setLoadingBoard(false);
+    }
+  };
+
+  const addFromBoard = (task: BoardTask) => {
+    setRows((prev) => {
+      // Already on the list: adding it twice would cut two worktrees for one
+      // task and then fight over the branch.
+      if (prev.some((r) => r.task?.externalId === task.externalId && r.task?.sourceId === task.sourceId)) return prev;
+      const blank = prev.findIndex((r) => !r.branch.trim() && !r.prompt.trim());
+      const row = { ...rowFromTask(task), accountId: prev.find((r) => r.accountId)?.accountId ?? '' };
+      if (blank === -1) return [...prev, row];
+      // Fill the empty row rather than appending under it — an empty row left
+      // above a filled one looks like something failed.
+      return prev.map((r, i) => (i === blank ? row : r));
+    });
+  };
 
   const update = (id: string, patch: Partial<TaskRow>) => setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
 
@@ -988,7 +1045,37 @@ function TaskPicker({
           ))}
         </select>
         {baseBranch.error && <span className={styles.envWarn}>⚠ {baseBranch.error}</span>}
+        {projectId && links.length > 0 && (
+          <Button size="sm" variant="outline" disabled={loadingBoard} onClick={loadBoard}>
+            {loadingBoard ? 'reading your board…' : `☰ from ${links.map((l) => l.label).join(' + ')}`}
+          </Button>
+        )}
+        {projectId && links.length === 0 && <span className={styles.fanNote}>no task source linked — Settings → Tasks</span>}
       </div>
+
+      {board && (
+        <div className={styles.boardList}>
+          {board.errors.map((error) => (
+            // One source failing doesn't hide the others, so this sits beside
+            // the tasks that did arrive instead of replacing them.
+            <span key={error} className={styles.envWarn}>
+              ⚠ {error}
+            </span>
+          ))}
+          {board.tasks.length === 0 && board.errors.length === 0 && <span className={styles.fanNote}>nothing assigned to you right now</span>}
+          {board.tasks.map((task) => {
+            const taken = rows.some((r) => r.task?.externalId === task.externalId && r.task?.sourceId === task.sourceId);
+            return (
+              <button key={`${task.sourceId}-${task.externalId}`} className={taken ? styles.boardTaskTaken : styles.boardTask} onClick={() => addFromBoard(task)} disabled={taken}>
+                <span className={styles.boardKey}>{task.key}</span>
+                <span className={styles.boardTitle}>{task.title}</span>
+                {task.status && <span className={styles.boardStatus}>{task.status}</span>}
+                <span className={styles.boardBranch}>⑃ {task.suggestedBranch}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <div className={styles.multiRows}>
         {rows.map((row) => {
@@ -1038,7 +1125,7 @@ function TaskPicker({
               </select>
               <input
                 className={styles.taskPrompt}
-                placeholder="what to tell this agent (optional)"
+                placeholder={row.task ? `brief from ${row.task.key} — type to override` : 'what to tell this agent (optional)'}
                 value={row.prompt}
                 onChange={(e) => update(row.id, { prompt: e.target.value })}
               />
@@ -1077,6 +1164,7 @@ function TaskPicker({
                 baseBranch: r.baseBranch || baseBranch.selected || null,
                 accountId: r.accountId,
                 prompt: r.prompt.trim() || null,
+                task: r.task ?? null,
               })),
             )
           }

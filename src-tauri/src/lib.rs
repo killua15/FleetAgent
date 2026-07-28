@@ -16,6 +16,7 @@ mod providers;
 mod quota;
 mod rotation;
 mod run_queue;
+mod task_sources;
 mod terminals;
 mod turn_runner;
 mod usage_scraper;
@@ -230,6 +231,13 @@ pub fn run() {
             git_identity::get_project_git_identity,
             git_identity::set_project_git_identity,
             git_identity::clear_project_git_identity,
+            task_sources::list_task_sources,
+            task_sources::save_task_source,
+            task_sources::delete_task_source,
+            task_sources::link_task_source,
+            task_sources::unlink_task_source,
+            task_sources::list_task_source_links,
+            task_sources::list_project_tasks,
             terminals::list_terminal_states,
             terminals::rename_terminal,
             run_queue::enqueue_run,

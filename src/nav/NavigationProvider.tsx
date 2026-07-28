@@ -14,6 +14,7 @@ export type ScreenName =
   | 'split-view'
   | 'exec-run'
   | 'rotation-settings'
+  | 'task-settings'
   | 'shared-memory'
   | 'git-panel'
   | 'files'

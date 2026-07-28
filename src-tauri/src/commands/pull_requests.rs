@@ -45,7 +45,7 @@ pub(crate) fn git_capture_with_env(cwd: &Path, args: &[&str], env: &[(String, St
 /// (dead network, an interactive re-auth prompt) would otherwise block
 /// whichever `run_blocking` thread called it forever, see
 /// `process_timeout` for why that matters.
-fn gh_output(cwd: Option<&Path>, args: &[&str]) -> Result<std::process::Output, String> {
+pub(crate) fn gh_output(cwd: Option<&Path>, args: &[&str]) -> Result<std::process::Output, String> {
     let mut cmd = Command::new(providers::resolve_binary("gh"));
     cmd.args(args);
     if let Some(dir) = cwd {
@@ -56,7 +56,7 @@ fn gh_output(cwd: Option<&Path>, args: &[&str]) -> Result<std::process::Output, 
 
 /// Clear, actionable error instead of letting a bare `gh pr create` failure
 /// (missing binary or expired login) surface as a cryptic exit-code message.
-fn gh_available_and_authed() -> Result<(), String> {
+pub(crate) fn gh_available_and_authed() -> Result<(), String> {
     let gh_path = providers::resolve_binary("gh");
     if gh_path == "gh" {
         return Err("the GitHub CLI (gh) isn't installed — install it from https://cli.github.com and run `gh auth login`".to_string());
