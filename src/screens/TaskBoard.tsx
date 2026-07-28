@@ -32,6 +32,11 @@ export function TaskBoard() {
   const [board, setBoard] = useState<TaskFetch | null>(null);
   const [loading, setLoading] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<string>('all');
+  // The board's own project — a ClickUp list, a GitHub repo. Distinct from the
+  // Hangar project below, which decides *where the worktree is cut*: one repo
+  // can take work from three lists, and one list can feed two repos.
+  const [boardFilter, setBoardFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
   const [picked, setPicked] = useState<Record<string, BoardTask>>({});
   const [accountId, setAccountId] = useState('');
   const [opening, setOpening] = useState(false);
@@ -92,7 +97,18 @@ export function TaskBoard() {
     });
 
   const chosen = Object.values(picked);
-  const shown = (board?.tasks ?? []).filter((t) => sourceFilter === 'all' || t.sourceId === sourceFilter);
+  const all = board?.tasks ?? [];
+
+  // Options come from what actually arrived, not from a fixed list: ClickUp
+  // statuses are per-space and made up by whoever set the board up
+  // ("verificar", "pronto para teste"), so anything hardcoded would be wrong
+  // for everyone but the person who wrote it.
+  const bySource = all.filter((t) => sourceFilter === 'all' || t.sourceId === sourceFilter);
+  const boards = [...new Set(bySource.map((t) => t.container).filter((c): c is string => Boolean(c)))].sort();
+  const statuses = [...new Set(bySource.map((t) => t.status).filter((s): s is string => Boolean(s)))].sort();
+  const shown = bySource.filter(
+    (t) => (boardFilter === 'all' || t.container === boardFilter) && (statusFilter === 'all' || t.status === statusFilter),
+  );
 
   const send = async () => {
     if (!accountId || chosen.length === 0) return;
@@ -132,6 +148,7 @@ export function TaskBoard() {
         <span className={styles.title}>Tasks</span>
         <span className={styles.subtitle}>what's assigned to you — pick some and each one gets a worktree on its own branch</span>
         <span className={styles.spacer} />
+        <span className={styles.fieldLabel}>worktrees in</span>
         <select className={styles.select} value={projectId} onChange={(e) => setProjectId(e.target.value)}>
           <option value="">project…</option>
           {projects.map((p) => (
@@ -145,18 +162,53 @@ export function TaskBoard() {
         </Button>
       </div>
 
-      {projectId && sources.length > 1 && (
-        <div className={styles.tabs}>
-          <button className={sourceFilter === 'all' ? styles.tabActive : styles.tab} onClick={() => setSourceFilter('all')}>
-            all {board ? board.tasks.length : ''}
-          </button>
-          {sources.map((source) => (
-            <button key={source.id} className={sourceFilter === source.id ? styles.tabActive : styles.tab} onClick={() => setSourceFilter(source.id)}>
-              {source.label}
-              <span className={styles.tabKind}>{TASK_SOURCE_META[source.kind]?.name ?? source.kind}</span>
-              {board ? board.tasks.filter((t) => t.sourceId === source.id).length : ''}
+      {projectId && board && (
+        <div className={styles.filters}>
+          <label className={styles.filter}>
+            account
+            <select className={styles.select} value={sourceFilter} onChange={(e) => { setSourceFilter(e.target.value); setBoardFilter('all'); setStatusFilter('all'); }}>
+              <option value="all">all sources</option>
+              {sources.map((source) => (
+                <option key={source.id} value={source.id}>
+                  {source.label} · {TASK_SOURCE_META[source.kind]?.name ?? source.kind} ({all.filter((t) => t.sourceId === source.id).length})
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className={styles.filter}>
+            project
+            <select className={styles.select} value={boardFilter} onChange={(e) => setBoardFilter(e.target.value)}>
+              <option value="all">all</option>
+              {boards.map((name) => (
+                <option key={name} value={name}>
+                  {name} ({bySource.filter((t) => t.container === name).length})
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className={styles.filter}>
+            status
+            <select className={styles.select} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+              <option value="all">all</option>
+              {statuses.map((name) => (
+                <option key={name} value={name}>
+                  {name} ({bySource.filter((t) => t.status === name).length})
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <span className={styles.spacer} />
+          <span className={styles.count}>
+            {shown.length === all.length ? `${all.length} tasks` : `${shown.length} of ${all.length}`}
+          </span>
+          {(sourceFilter !== 'all' || boardFilter !== 'all' || statusFilter !== 'all') && (
+            <button className={styles.inlineLink} onClick={() => { setSourceFilter('all'); setBoardFilter('all'); setStatusFilter('all'); }}>
+              clear
             </button>
-          ))}
+          )}
         </div>
       )}
 
@@ -179,7 +231,9 @@ export function TaskBoard() {
         ))}
         {board && shown.length === 0 && board.errors.length === 0 && !loading && (
           <span className={styles.empty}>
-            Nothing assigned to you in {(links.length > 0 ? links.map((l) => l.label) : sources.map((s) => s.label)).join(' or ')}.
+            {all.length === 0
+              ? `Nothing assigned to you in ${(links.length > 0 ? links.map((l) => l.label) : sources.map((s) => s.label)).join(' or ')}.`
+              : `No task matches these filters — ${all.length} are hidden by them.`}
           </span>
         )}
 
