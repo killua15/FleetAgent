@@ -29,8 +29,8 @@ fi
 # The version in the manifest and the version in the bundle have to agree: the
 # updater compares what it downloads against what it was promised, and installs
 # nothing when they differ.
-npm version "$VERSION" --no-git-tag-version --allow-same-version >/dev/null
-python3 - "$VERSION" <<'PY'
+npm version "${VERSION}" --no-git-tag-version --allow-same-version >/dev/null
+python3 - "${VERSION}" <<'PY'
 import json, sys
 version = sys.argv[1]
 path = "src-tauri/tauri.conf.json"
@@ -40,7 +40,7 @@ json.dump(conf, open(path, "w"), indent=2)
 open(path, "a").write("\n")
 PY
 
-echo "Building $VERSION…"
+echo "Building ${VERSION}..."
 TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY")" \
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
   npm run tauri build -- --bundles app,dmg
@@ -54,7 +54,7 @@ cp "$BUNDLE/Hangar.app.tar.gz" "updates/Hangar.app.tar.gz"
 # `darwin-aarch64` only, because that is what this builds. An Intel Mac asking
 # this manifest finds no entry for its platform and is told there is no update,
 # which is true — better than handing it a binary it cannot run.
-python3 - "$VERSION" "$NOTES" "$SIGNATURE" <<'PY'
+python3 - "${VERSION}" "${NOTES}" "${SIGNATURE}" <<'PY'
 import datetime, json, sys
 version, notes, signature = sys.argv[1], sys.argv[2], sys.argv[3]
 manifest = {
@@ -73,9 +73,9 @@ open("updates/latest.json", "a").write("\n")
 PY
 
 git add package.json package-lock.json src-tauri/tauri.conf.json updates
-git commit -m "release: v$VERSION"
+git commit -m "release: v${VERSION}"
 git push
 
 echo
-echo "Published v$VERSION. Installed copies will see it on their next launch,"
+echo "Published v${VERSION}. Installed copies will see it on their next launch,"
 echo "provided the machine has an update token in Settings → general → updates."

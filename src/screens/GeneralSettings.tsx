@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '../lib/invoke';
 import { toastError } from '../components/ErrorOverlay';
+import { check } from '@tauri-apps/plugin-updater';
+import { getVersion } from '@tauri-apps/api/app';
 import { SettingsTabs } from '../components/SettingsTabs';
 import { UsageBar } from '../components/UsageBar';
 import { PickConfigDirDialog } from '../components/PickConfigDirDialog';
@@ -330,10 +332,32 @@ function UpdateAccessRow() {
   const [stored, setStored] = useState(false);
   const [token, setToken] = useState('');
   const [saving, setSaving] = useState(false);
+  const [version, setVersion] = useState('');
+  // What the last check actually said. The banner stays silent by design — an
+  // absent token, no network, or simply being up to date are all normal — but
+  // silence made "is this working?" unanswerable, which cost a release cut to
+  // find out the answer was "you already installed it".
+  const [checked, setChecked] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
 
   useEffect(() => {
     invoke<boolean>('has_update_access').then(setStored).catch(() => setStored(false));
+    getVersion().then(setVersion).catch(() => {});
   }, []);
+
+  const checkNow = async () => {
+    setChecking(true);
+    setChecked(null);
+    try {
+      const headers = await invoke<Record<string, string> | null>('update_request_headers');
+      const found = await check(headers ? { headers } : undefined);
+      setChecked(found ? `v${found.version} is available — restart Hangar to see the update bar.` : `Up to date. Nothing newer than v${version}.`);
+    } catch (e) {
+      setChecked(`Check failed: ${e}`);
+    } finally {
+      setChecking(false);
+    }
+  };
 
   const save = async (next: string | null) => {
     setSaving(true);
@@ -366,7 +390,12 @@ function UpdateAccessRow() {
             remove
           </Button>
         )}
+        <Button size="sm" variant="outline" disabled={checking} onClick={checkNow}>
+          {checking ? 'checking…' : 'Check now'}
+        </Button>
       </div>
+      {checked && <span className={styles.updateHint}>{checked}</span>}
+      {version && <span className={styles.updateHint}>Running v{version}.</span>}
       <span className={styles.updateHint}>
         Stored in the macOS keychain, never in the app or the database. A fine-grained token with read-only <code>Contents</code> on the
         releases repository is enough — nothing else. Without one, Hangar simply never finds an update.
