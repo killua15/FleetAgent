@@ -38,6 +38,24 @@ pub fn is_exhaustion_signal(provider: &str, line: &str) -> bool {
 /// search PATH first, then the common install locations, and fall back to
 /// the bare name so a PATH-based spawn can still work in dev.
 pub fn resolve_binary(name: &str) -> String {
+    if let Ok(cached) = RESOLVED.lock() {
+        if let Some(path) = cached.get(name) {
+            return path.clone();
+        }
+    }
+    let resolved = resolve_binary_uncached(name);
+    if let Ok(mut cached) = RESOLVED.lock() {
+        cached.insert(name.to_string(), resolved.clone());
+    }
+    resolved
+}
+
+/// Resolving can end up spawning a login shell, which costs a few hundred
+/// milliseconds — and `resolve_binary` is called on every terminal open, every
+/// auth probe and every `gh` call.
+static RESOLVED: std::sync::Mutex<std::collections::BTreeMap<String, String>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn resolve_binary_uncached(name: &str) -> String {
     if let Ok(path) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path) {
             let candidate = dir.join(name);
@@ -53,6 +71,11 @@ pub fn resolve_binary(name: &str) -> String {
         format!("/opt/homebrew/bin/{name}"),
         format!("/usr/local/bin/{name}"),
         format!("{home}/.claude/local/{name}"),
+        // Version managers that keep binaries outside any fixed directory.
+        format!("{home}/.volta/bin/{name}"),
+        format!("{home}/.bun/bin/{name}"),
+        format!("{home}/.asdf/shims/{name}"),
+        format!("{home}/.local/share/mise/shims/{name}"),
     ];
     for candidate in candidates {
         if std::path::Path::new(&candidate).is_file() {
@@ -60,7 +83,65 @@ pub fn resolve_binary(name: &str) -> String {
         }
     }
 
+    // nvm keeps a directory per Node version and puts every globally installed
+    // CLI inside it — which is where `codex` lands for anyone who installed
+    // Node with nvm, and it's reachable from a terminal (the shell profile adds
+    // it) but not from an app launched by Finder.
+    if let Some(found) = newest_nvm_binary(&home, name) {
+        return found;
+    }
+
+    // Last resort before giving up: ask the user's own login shell. It knows
+    // about every version manager, including ones invented after this code was
+    // written, because it's the thing that sets them up. `-ilc` rather than
+    // `-lc` on purpose: nvm is initialised in `.zshrc`, which only an
+    // interactive shell reads.
+    if let Some(found) = ask_login_shell(name) {
+        return found;
+    }
+
     name.to_string()
+}
+
+/// The newest Node version that has this binary.
+///
+/// Newest rather than first because nvm directories sort by name and versions
+/// don't: `v9.0.0` sorts after `v24.18.0`, so taking the last alphabetically
+/// would pick an ancient Node with no `codex` in it.
+fn newest_nvm_binary(home: &str, name: &str) -> Option<String> {
+    let versions = std::fs::read_dir(format!("{home}/.nvm/versions/node")).ok()?;
+    let mut best: Option<((u32, u32, u32), String)> = None;
+    for entry in versions.flatten() {
+        let candidate = entry.path().join("bin").join(name);
+        if !candidate.is_file() {
+            continue;
+        }
+        let version = parse_node_version(&entry.file_name().to_string_lossy());
+        if best.as_ref().is_none_or(|(current, _)| version > *current) {
+            best = Some((version, candidate.to_string_lossy().into_owned()));
+        }
+    }
+    best.map(|(_, path)| path)
+}
+
+fn parse_node_version(dir: &str) -> (u32, u32, u32) {
+    let mut parts = dir.trim_start_matches('v').split('.').map(|p| p.parse().unwrap_or(0));
+    (parts.next().unwrap_or(0), parts.next().unwrap_or(0), parts.next().unwrap_or(0))
+}
+
+fn ask_login_shell(name: &str) -> Option<String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let mut cmd = std::process::Command::new(shell);
+    cmd.args(["-ilc", &format!("command -v {name}")]);
+    let output = crate::process_timeout::run_with_timeout(cmd, std::time::Duration::from_secs(10)).ok()?;
+    // An interactive shell prints whatever the profile prints, so the answer is
+    // the last line that looks like a path rather than the whole output.
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| line.starts_with('/') && std::path::Path::new(line).is_file())
+        .map(str::to_string)
 }
 
 /// Everything Hangar needs to run one provider's CLI as a specific account.
@@ -232,6 +313,36 @@ pub fn is_provider_available(provider: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// nvm directories sort by name and versions don't. Taking the last one
+    /// alphabetically picks `v9` over `v24` — an ancient Node that has none of
+    /// the CLIs installed, which reads to the user as "codex isn't installed"
+    /// while `codex` runs fine in their terminal.
+    #[test]
+    fn the_newest_node_wins_even_though_it_sorts_first() {
+        assert!(parse_node_version("v24.18.0") > parse_node_version("v9.11.2"));
+        assert!(parse_node_version("v22.0.0") > parse_node_version("v20.19.4"));
+        assert_eq!(parse_node_version("nonsense"), (0, 0, 0), "an unparseable directory must lose, not panic");
+    }
+
+    /// Finds a binary that only exists inside an nvm version directory —
+    /// exactly where a globally installed `codex` lands, and exactly where an
+    /// app launched from Finder can't see it.
+    #[test]
+    fn a_binary_only_installed_under_nvm_is_still_found() {
+        let home = std::env::temp_dir().join(format!("hangar-test-nvm-{}", uuid::Uuid::new_v4()));
+        let old = home.join(".nvm/versions/node/v9.11.2/bin");
+        let new = home.join(".nvm/versions/node/v24.18.0/bin");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(new.join("codex"), "#!/bin/sh\n").unwrap();
+
+        let found = newest_nvm_binary(&home.to_string_lossy(), "codex");
+        assert_eq!(found.as_deref(), Some(new.join("codex").to_string_lossy().as_ref()));
+        assert_eq!(newest_nvm_binary(&home.to_string_lossy(), "not-installed"), None);
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     /// The isolation variable is the whole basis of the multi-account model,
     /// and it's per-CLI. Getting it wrong doesn't fail — it silently writes a
