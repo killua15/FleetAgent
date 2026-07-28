@@ -1062,7 +1062,12 @@ function TaskPicker({
               ⚠ {error}
             </span>
           ))}
-          {board.tasks.length === 0 && board.errors.length === 0 && <span className={styles.fanNote}>nothing assigned to you right now</span>}
+          {/* Naming what was asked, because "no tasks" and "asked the wrong
+              board" look identical otherwise — and the second one is the one
+              you can fix. */}
+          {board.tasks.length === 0 && board.errors.length === 0 && (
+            <span className={styles.fanNote}>nothing assigned to you in {links.map((l) => l.label).join(' or ')} — narrow it to a list in Settings → tasks if you expected work here</span>
+          )}
           {board.tasks.map((task) => {
             const taken = rows.some((r) => r.task?.externalId === task.externalId && r.task?.sourceId === task.sourceId);
             return (

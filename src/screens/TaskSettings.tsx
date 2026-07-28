@@ -3,7 +3,7 @@ import { invoke } from '../lib/invoke';
 import { SettingsTabs } from '../components/SettingsTabs';
 import { toastError } from '../components/ErrorOverlay';
 import { Button } from '../components/ui/button';
-import { TASK_SOURCE_META, type TaskSource, type TaskSourceKind, type TaskSourceLink } from '../types/task';
+import { TASK_SOURCE_META, type SourceScope, type TaskSource, type TaskSourceKind, type TaskSourceLink } from '../types/task';
 import type { Project } from '../types/session';
 import styles from './TaskSettings.module.css';
 
@@ -21,6 +21,9 @@ export function TaskSettings() {
   const [projectId, setProjectId] = useState('');
   const [links, setLinks] = useState<TaskSourceLink[]>([]);
   const [adding, setAdding] = useState<TaskSourceKind | null>(null);
+  // Real lists, so the scope is a menu rather than an id copied out of a URL.
+  // Keyed by source: two ClickUp accounts see different lists.
+  const [scopes, setScopes] = useState<Record<string, SourceScope[]>>({});
   const [token, setToken] = useState('');
   const [label, setLabel] = useState('');
   const [saving, setSaving] = useState(false);
@@ -70,6 +73,18 @@ export function TaskSettings() {
   };
 
   const linkFor = (sourceId: string) => links.find((l) => l.sourceId === sourceId);
+
+  // Only for the sources a project is actually linked to, and only once: it's
+  // several round-trips (spaces, then folders) and nobody needs it for a source
+  // they aren't using here.
+  useEffect(() => {
+    for (const link of links) {
+      if (link.kind !== 'clickup' || scopes[link.sourceId]) continue;
+      invoke<SourceScope[]>('list_source_scopes', { sourceId: link.sourceId })
+        .then((found) => setScopes((prev) => ({ ...prev, [link.sourceId]: found })))
+        .catch(() => setScopes((prev) => ({ ...prev, [link.sourceId]: [] })));
+    }
+  }, [links]);
 
   const toggleLink = async (source: TaskSource) => {
     if (!projectId) return;
@@ -181,12 +196,23 @@ export function TaskSettings() {
                   </label>
                   {link && (
                     <>
-                      <input
-                        className={styles.inputSmall}
-                        placeholder={source.kind === 'github' ? "owner/repo — blank uses this project's remote" : 'list id — blank means everything assigned to you'}
-                        defaultValue={link.scopeId ?? ''}
-                        onBlur={(e) => updateLink(source, { scopeId: e.target.value.trim() })}
-                      />
+                      {source.kind === 'clickup' ? (
+                        <select className={styles.inputSmall} value={link.scopeId ?? ''} onChange={(e) => updateLink(source, { scopeId: e.target.value })}>
+                          <option value="">everything assigned to me</option>
+                          {(scopes[source.id] ?? []).map((scope) => (
+                            <option key={scope.id} value={scope.id}>
+                              {scope.path}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          className={styles.inputSmall}
+                          placeholder="owner/repo — blank uses this project's remote"
+                          defaultValue={link.scopeId ?? ''}
+                          onBlur={(e) => updateLink(source, { scopeId: e.target.value.trim() })}
+                        />
+                      )}
                       <input
                         className={styles.inputSmall}
                         placeholder={source.kind === 'github' ? 'issue-{key}-{slug}' : '{key}-{slug}'}

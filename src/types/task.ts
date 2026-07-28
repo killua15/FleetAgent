@@ -29,6 +29,14 @@ export interface TaskFetch {
   errors: string[];
 }
 
+/** Something a project can be pointed at inside a source — a ClickUp list.
+ * GitHub returns none: its scope is the project's own remote. */
+export interface SourceScope {
+  id: string;
+  /** `Space / Folder / List` — "Tasks" is a list name in four places. */
+  path: string;
+}
+
 /** A configured source. No token here, ever — it lives in the OS keychain. */
 export interface TaskSource {
   id: string;

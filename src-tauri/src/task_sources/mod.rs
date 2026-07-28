@@ -327,6 +327,33 @@ pub fn delete_task_source(db: tauri::State<DbConnection>, source_id: String) -> 
     Ok(())
 }
 
+/// What a project can be pointed at inside a source, so the settings screen
+/// offers a menu instead of asking for an id copied out of a URL.
+///
+/// GitHub returns nothing on purpose: its scope is a repo, and the project's
+/// own remote is right nearly always — a menu of every repo you can see would
+/// be a worse answer than the default.
+#[tauri::command]
+pub async fn list_source_scopes<R: tauri::Runtime>(app: tauri::AppHandle<R>, source_id: String) -> Result<Vec<clickup::Scope>, String> {
+    crate::blocking::run_blocking(move || {
+        use tauri::Manager;
+        let db = app.state::<DbConnection>();
+        let kind: String = {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            conn.query_row("SELECT kind FROM task_sources WHERE id = ?1", params![source_id], |row| row.get(0)).map_err(|e| e.to_string())?
+        };
+        match kind.as_str() {
+            "clickup" => {
+                let token = credential_for(&db, &source_id)?;
+                let config = config_for(&db, &source_id)?;
+                clickup::list_scopes(&token, &config)
+            }
+            _ => Ok(Vec::new()),
+        }
+    })
+    .await?
+}
+
 #[tauri::command]
 pub fn link_task_source(
     db: tauri::State<DbConnection>,

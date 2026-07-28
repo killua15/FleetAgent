@@ -237,6 +237,7 @@ pub fn run() {
             task_sources::link_task_source,
             task_sources::unlink_task_source,
             task_sources::list_task_source_links,
+            task_sources::list_source_scopes,
             task_sources::list_project_tasks,
             terminals::list_terminal_states,
             terminals::rename_terminal,
