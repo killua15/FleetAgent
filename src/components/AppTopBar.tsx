@@ -135,6 +135,11 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
             ⎇
           </Button>
         </IconTooltip>
+        <IconTooltip label="Tasks — your board, with a worktree at the end of every row">
+          <Button variant="outline" className={styles.iconBtn} style={{ color: 'var(--acc)' }} onClick={() => navigate('task-board')}>
+            ☰
+          </Button>
+        </IconTooltip>
         <div className={styles.iconBtnWrap}>
           <IconTooltip label="PR reviews — open PRs with new review comments">
             <Button variant="outline" className={styles.iconBtn} style={{ color: 'var(--amber)' }} onClick={() => navigate('pr-reviews')}>

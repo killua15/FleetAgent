@@ -152,7 +152,7 @@ pub fn list_scopes(token: &str, config: &serde_json::Value) -> Result<Vec<Scope>
         .unwrap_or_default();
 
     let mut scopes = Vec::new();
-    for team in teams {
+    for team in &teams {
         let spaces = get(&format!("{API}/team/{team}/space?archived=false"), token)?;
         for space in spaces.get("spaces").and_then(|s| s.as_array()).cloned().unwrap_or_default() {
             let Some(space_id) = space.get("id").and_then(value_as_id) else { continue };
@@ -172,6 +172,27 @@ pub fn list_scopes(token: &str, config: &serde_json::Value) -> Result<Vec<Scope>
             }
         }
     }
+
+    if scopes.is_empty() {
+        // Some workspaces return no spaces to a personal token even though its
+        // tasks come back fine — verified against a real one, and against a
+        // second client that saw the same nothing. So the lists are recovered
+        // from the tasks themselves, which is the one source that answers.
+        for team in &teams {
+            let body = get(&format!("{API}/team/{team}/task?include_closed=false&subtasks=true&page=0"), token)?;
+            for task in body.get("tasks").and_then(|t| t.as_array()).cloned().unwrap_or_default() {
+                let Some(list) = task.get("list") else { continue };
+                let Some(id) = list.get("id").and_then(value_as_id) else { continue };
+                if scopes.iter().any(|s: &Scope| s.id == id) {
+                    continue;
+                }
+                let name = list.get("name").and_then(|n| n.as_str()).unwrap_or("list").to_string();
+                scopes.push(Scope { id, path: name });
+            }
+        }
+        scopes.sort_by(|a, b| a.path.cmp(&b.path));
+    }
+
     Ok(scopes)
 }
 
@@ -275,6 +296,7 @@ pub(crate) fn parse_tasks_with_assignees(body: &serde_json::Value, source_id: &s
                 branch_hint: None,
                 source_id: source_id.to_string(),
                 source_kind: "clickup".to_string(),
+                container: task.get("list").and_then(|l| l.get("name")).and_then(|n| n.as_str()).map(str::to_string),
                 suggested_branch: String::new(),
             }, assignees))
         })

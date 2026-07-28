@@ -15,6 +15,9 @@ export interface BoardTask {
   branchHint: string | null;
   sourceId: string;
   sourceKind: string;
+  /** Where it lives — a ClickUp list, a GitHub repo. "Tests" means something
+   * different under *Viewer* than under *Orquestrador*. */
+  container: string | null;
   /** Already templated and made safe for `git branch` by the backend — the
    * panel prefills the row with it, and you can still edit it. */
   suggestedBranch: string;

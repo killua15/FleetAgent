@@ -49,12 +49,12 @@ pub fn fetch(link: &TaskSourceLink, project_path: &Path) -> Result<Vec<Task>, St
     }
 
     let raw = String::from_utf8_lossy(&output.stdout);
-    parse_issues(&raw, &link.source_id)
+    parse_issues(&raw, &link.source_id, &repo)
 }
 
 /// Split out from `fetch` so the shape `gh` returns can be tested without a
 /// network, a repo or a login.
-pub(crate) fn parse_issues(raw: &str, source_id: &str) -> Result<Vec<Task>, String> {
+pub(crate) fn parse_issues(raw: &str, source_id: &str, repo: &str) -> Result<Vec<Task>, String> {
     let parsed: Vec<serde_json::Value> = serde_json::from_str(raw.trim()).map_err(|e| format!("could not read what gh returned: {e}"))?;
     Ok(parsed
         .into_iter()
@@ -73,6 +73,7 @@ pub(crate) fn parse_issues(raw: &str, source_id: &str) -> Result<Vec<Task>, Stri
                 branch_hint: None,
                 source_id: source_id.to_string(),
                 source_kind: "github".to_string(),
+                container: Some(repo.to_string()),
                 suggested_branch: String::new(),
             })
         })
@@ -88,7 +89,7 @@ mod tests {
         let raw = r#"[
           {"number": 128, "title": "Fix the login redirect", "body": "It loops.", "url": "https://github.com/o/r/issues/128", "state": "OPEN"}
         ]"#;
-        let tasks = parse_issues(raw, "src1").unwrap();
+        let tasks = parse_issues(raw, "src1", "o/r").unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].key, "128");
         assert_eq!(tasks[0].description, "It loops.");
@@ -100,7 +101,7 @@ mod tests {
     #[test]
     fn an_issue_without_a_body_still_becomes_a_task() {
         let raw = r#"[{"number": 7, "title": "Bump deps", "body": null, "url": "https://github.com/o/r/issues/7", "state": "OPEN"}]"#;
-        let tasks = parse_issues(raw, "src1").unwrap();
+        let tasks = parse_issues(raw, "src1", "o/r").unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].description, "");
     }
@@ -109,6 +110,6 @@ mod tests {
     /// read as an empty list rather than an error.
     #[test]
     fn no_issues_is_not_an_error() {
-        assert!(parse_issues("[]", "src1").unwrap().is_empty());
+        assert!(parse_issues("[]", "src1", "o/r").unwrap().is_empty());
     }
 }

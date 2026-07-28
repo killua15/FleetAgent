@@ -15,6 +15,7 @@ export type ScreenName =
   | 'exec-run'
   | 'rotation-settings'
   | 'task-settings'
+  | 'task-board'
   | 'shared-memory'
   | 'git-panel'
   | 'files'

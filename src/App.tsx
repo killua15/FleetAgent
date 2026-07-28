@@ -11,6 +11,7 @@ import { AgentPanel } from './screens/AgentPanel';
 import { SplitView } from './screens/SplitView';
 import { GeneralSettings } from './screens/GeneralSettings';
 import { TaskSettings } from './screens/TaskSettings';
+import { TaskBoard } from './screens/TaskBoard';
 import { RotationSettings } from './screens/RotationSettings';
 import { SharedMemorySettings } from './screens/SharedMemorySettings';
 import { PrReviews } from './screens/PrReviews';
@@ -86,6 +87,8 @@ function Screens() {
       return <RotationSettings />;
     case 'task-settings':
       return <TaskSettings />;
+    case 'task-board':
+      return <TaskBoard />;
     case 'shared-memory':
       return <SharedMemorySettings />;
     case 'pr-reviews':

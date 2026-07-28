@@ -40,6 +40,10 @@ pub struct Task {
     pub branch_hint: Option<String>,
     pub source_id: String,
     pub source_kind: String,
+    /// Where the task lives — a ClickUp list, a GitHub repo. Shown in the board
+    /// because "Tests" as a title means something different under *Viewer* than
+    /// under *Orquestrador*, and both can be assigned to you at once.
+    pub container: Option<String>,
     /// What the branch would be called, filled from the link's template once
     /// the task is fetched. Computed here rather than in the panel so the
     /// templating and git's naming rules live in one place — the frontend
@@ -500,6 +504,7 @@ mod tests {
             branch_hint: None,
             source_id: "src1".to_string(),
             source_kind: "clickup".to_string(),
+            container: None,
             suggested_branch: String::new(),
         }
     }
