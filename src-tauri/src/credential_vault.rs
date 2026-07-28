@@ -26,6 +26,18 @@ pub fn get(credential_ref: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Whether the secret is actually readable *right now*.
+///
+/// The database row and the keychain item are separate facts, and they come
+/// apart: a keychain entry written by one build of an unsigned app is not
+/// always readable by the next one, and a user can delete it from Keychain
+/// Access at any time. Anything that reports "token stored" has to ask the
+/// keychain rather than trust the row, or it promises something that fails
+/// later somewhere with no obvious connection to this.
+pub fn has(credential_ref: &str) -> bool {
+    get(credential_ref).is_ok()
+}
+
 pub fn delete(credential_ref: &str) -> Result<(), String> {
     match entry(credential_ref)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),

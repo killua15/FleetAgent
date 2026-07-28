@@ -218,13 +218,20 @@ fn view_from_row(id: String, kind: String, label: String, credential_ref: Option
         id,
         kind,
         label,
-        has_credential: credential_ref.is_some(),
+        // Asked of the keychain, not of the row: they come apart, and a row
+        // that says "token stored" while the keychain has nothing sends you
+        // looking anywhere but at the token.
+        has_credential: credential_ref.as_deref().is_some_and(crate::credential_vault::has),
         config: serde_json::from_str(&config_json).unwrap_or(serde_json::Value::Object(Default::default())),
     }
 }
 
 #[tauri::command]
 pub fn list_task_sources(db: tauri::State<DbConnection>) -> Result<Vec<TaskSourceView>, String> {
+    all_sources(&db)
+}
+
+fn all_sources(db: &DbConnection) -> Result<Vec<TaskSourceView>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("SELECT id, kind, label, credential_ref, config_json FROM task_sources ORDER BY created_at")
@@ -426,9 +433,20 @@ pub async fn list_project_tasks<R: tauri::Runtime>(app: tauri::AppHandle<R>, pro
     crate::blocking::run_blocking(move || {
         use tauri::Manager;
         let db = app.state::<DbConnection>();
-        let links = links_for_project(&db, &project_id)?;
+        // A link is how a project *narrows* a source — to one list, or to a
+        // different branch shape. Not having one shouldn't mean seeing nothing:
+        // adding ClickUp in Settings and getting an empty board until you also
+        // tick a checkbox is a ritual, not a feature. So an unlinked project
+        // reads every configured source at its default scope.
+        let mut links = links_for_project(&db, &project_id)?;
         if links.is_empty() {
-            return Err("this project isn't wired to a task source yet".to_string());
+            links = all_sources(&db)?
+                .into_iter()
+                .map(|source| TaskSourceLink { source_id: source.id, kind: source.kind, label: source.label, scope_id: None, branch_template: None })
+                .collect();
+        }
+        if links.is_empty() {
+            return Err("no task source is configured yet — Settings → tasks".to_string());
         }
 
         let project_path: String = {
@@ -478,7 +496,11 @@ fn credential_for(db: &DbConnection, source_id: &str) -> Result<String, String> 
             .flatten()
     };
     let reference = reference.ok_or_else(|| "this source has no stored token — open its settings and add one".to_string())?;
-    crate::credential_vault::get(&reference)
+    crate::credential_vault::get(&reference).map_err(|e| {
+        // The raw keyring message ("No matching entry found in secure storage")
+        // names neither the source nor the fix, and it's the one people see.
+        format!("its token isn't readable from the keychain ({e}) — open Settings → tasks and enter it again")
+    })
 }
 
 fn config_for(db: &DbConnection, source_id: &str) -> Result<serde_json::Value, String> {

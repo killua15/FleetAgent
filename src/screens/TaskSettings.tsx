@@ -20,7 +20,10 @@ export function TaskSettings() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState('');
   const [links, setLinks] = useState<TaskSourceLink[]>([]);
-  const [adding, setAdding] = useState<TaskSourceKind | null>(null);
+  // One form for adding and for re-entering a token: with an `id` it updates
+  // that source in place, which is what keeps a project's links and its list
+  // choice alive when only the token needs replacing.
+  const [form, setForm] = useState<{ id: string | null; kind: TaskSourceKind } | null>(null);
   // Real lists, so the scope is a menu rather than an id copied out of a URL.
   // Keyed by source: two ClickUp accounts see different lists.
   const [scopes, setScopes] = useState<Record<string, SourceScope[]>>({});
@@ -42,17 +45,18 @@ export function TaskSettings() {
     invoke<TaskSourceLink[]>('list_task_source_links', { projectId }).then(setLinks).catch(() => setLinks([]));
   }, [projectId]);
 
-  const save = async (kind: TaskSourceKind) => {
+  const save = async () => {
+    if (!form) return;
     setSaving(true);
     try {
       await invoke<TaskSource>('save_task_source', {
-        id: null,
-        kind,
-        label: label.trim() || TASK_SOURCE_META[kind].name,
+        id: form.id,
+        kind: form.kind,
+        label: label.trim() || TASK_SOURCE_META[form.kind].name,
         token: token.trim() || null,
       });
       await loadSources();
-      setAdding(null);
+      setForm(null);
       setToken('');
       setLabel('');
     } catch (e) {
@@ -132,29 +136,50 @@ export function TaskSettings() {
                   and a token that's someone else's look identical until a
                   branch lands in the wrong place. */}
               {typeof source.config.login === 'string' && source.config.login && <span className={styles.sourceLogin}>as {source.config.login}</span>}
-              {source.hasCredential && <span className={styles.tokenTag}>token stored</span>}
+              {/* Asked of the keychain, not of the database row. The two come
+                  apart — a keychain entry written by one build of an unsigned
+                  app isn't always readable by the next — and a row claiming
+                  "token stored" while the fetch fails sends you looking
+                  anywhere but here. */}
+              {source.hasCredential ? (
+                <span className={styles.tokenTag}>token stored</span>
+              ) : (
+                TASK_SOURCE_META[source.kind]?.needsToken && <span className={styles.tokenMissing}>token unreadable — enter it again</span>
+              )}
               <span className={styles.spacer} />
+              {TASK_SOURCE_META[source.kind]?.needsToken && (
+                <button
+                  className={styles.removeLink}
+                  onClick={() => {
+                    setForm({ id: source.id, kind: source.kind });
+                    setLabel(source.label);
+                    setToken('');
+                  }}
+                >
+                  {source.hasCredential ? 'replace token' : 'enter token'}
+                </button>
+              )}
               <button className={styles.removeLink} onClick={() => remove(source)}>
                 remove
               </button>
             </div>
           ))}
 
-          {adding === null ? (
+          {form === null ? (
             <div className={styles.addRow}>
               {(Object.keys(TASK_SOURCE_META) as TaskSourceKind[]).map((kind) => (
-                <Button key={kind} size="sm" variant="outline" onClick={() => setAdding(kind)}>
+                <Button key={kind} size="sm" variant="outline" onClick={() => { setForm({ id: null, kind }); setLabel(''); setToken(''); }}>
                   + {TASK_SOURCE_META[kind].name}
                 </Button>
               ))}
             </div>
           ) : (
             <div className={styles.form}>
-              <span className={styles.formTitle}>{TASK_SOURCE_META[adding].name}</span>
-              <span className={styles.hint}>{TASK_SOURCE_META[adding].hint}</span>
+              <span className={styles.formTitle}>{TASK_SOURCE_META[form.kind].name}</span>
+              <span className={styles.hint}>{TASK_SOURCE_META[form.kind].hint}</span>
               <div className={styles.formRow}>
-                <input className={styles.input} placeholder={`name it — e.g. ${TASK_SOURCE_META[adding].name}`} value={label} onChange={(e) => setLabel(e.target.value)} />
-                {TASK_SOURCE_META[adding].needsToken && (
+                <input className={styles.input} placeholder={`name it — e.g. the account it belongs to`} value={label} onChange={(e) => setLabel(e.target.value)} />
+                {TASK_SOURCE_META[form.kind].needsToken && (
                   <input className={styles.input} type="password" placeholder="pk_..." value={token} onChange={(e) => setToken(e.target.value)} />
                 )}
               </div>
@@ -163,11 +188,11 @@ export function TaskSettings() {
                 saved — a wrong token otherwise comes back as an empty list, which looks exactly like having no work.
               </span>
               <div className={styles.formActions}>
-                <Button size="sm" variant="outline" onClick={() => setAdding(null)}>
+                <Button size="sm" variant="outline" onClick={() => setForm(null)}>
                   cancel
                 </Button>
-                <Button size="sm" disabled={saving} onClick={() => save(adding)}>
-                  {saving ? 'checking…' : 'Add source'}
+                <Button size="sm" disabled={saving} onClick={save}>
+                  {saving ? 'checking…' : form.id ? 'Save token' : 'Add source'}
                 </Button>
               </div>
             </div>

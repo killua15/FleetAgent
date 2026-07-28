@@ -6,7 +6,7 @@ import { Button } from '../components/ui/button';
 import { useNavigation } from '../nav/NavigationProvider';
 import { PROVIDER_META, type Account } from '../types/account';
 import type { Project } from '../types/session';
-import type { BoardTask, TaskFetch, TaskSourceLink } from '../types/task';
+import { TASK_SOURCE_META, type BoardTask, type TaskFetch, type TaskSource, type TaskSourceLink } from '../types/task';
 import type { TerminalInfo } from '../types/terminal';
 import styles from './TaskBoard.module.css';
 
@@ -25,6 +25,10 @@ export function TaskBoard() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [projectId, setProjectId] = useState('');
   const [links, setLinks] = useState<TaskSourceLink[]>([]);
+  // Every source configured in Settings, not only the ones this project narrows
+  // down. They're the tabs: one account per board — Technomar's ClickUp, the
+  // other org's GitHub — and each keeps its own credential.
+  const [sources, setSources] = useState<TaskSource[]>([]);
   const [board, setBoard] = useState<TaskFetch | null>(null);
   const [loading, setLoading] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<string>('all');
@@ -41,6 +45,7 @@ export function TaskBoard() {
         if (found.length === 1) setProjectId(found[0].id);
       }),
       invoke<Account[]>('list_accounts').then(setAccounts),
+      invoke<TaskSource[]>('list_task_sources').then(setSources),
     ]).catch((e) => toastError(String(e)));
   }, []);
 
@@ -54,9 +59,12 @@ export function TaskBoard() {
     invoke<TaskSourceLink[]>('list_task_source_links', { projectId })
       .then((found) => {
         setLinks(found);
-        if (found.length > 0) load(projectId);
+        load(projectId);
       })
-      .catch(() => setLinks([]));
+      .catch(() => {
+        setLinks([]);
+        load(projectId);
+      });
   }, [projectId]);
 
   const load = async (id: string) => {
@@ -64,7 +72,9 @@ export function TaskBoard() {
     try {
       setBoard(await invoke<TaskFetch>('list_project_tasks', { projectId: id }));
     } catch (e) {
-      toastError(String(e));
+      // Shown in the list, not as a toast: four stacked toasts saying the same
+      // thing is what a failed fetch looked like before, and none of them said
+      // which source it was.
       setBoard({ tasks: [], errors: [String(e)] });
     } finally {
       setLoading(false);
@@ -135,14 +145,16 @@ export function TaskBoard() {
         </Button>
       </div>
 
-      {projectId && links.length > 1 && (
+      {projectId && sources.length > 1 && (
         <div className={styles.tabs}>
           <button className={sourceFilter === 'all' ? styles.tabActive : styles.tab} onClick={() => setSourceFilter('all')}>
             all {board ? board.tasks.length : ''}
           </button>
-          {links.map((link) => (
-            <button key={link.sourceId} className={sourceFilter === link.sourceId ? styles.tabActive : styles.tab} onClick={() => setSourceFilter(link.sourceId)}>
-              {link.label} {board ? board.tasks.filter((t) => t.sourceId === link.sourceId).length : ''}
+          {sources.map((source) => (
+            <button key={source.id} className={sourceFilter === source.id ? styles.tabActive : styles.tab} onClick={() => setSourceFilter(source.id)}>
+              {source.label}
+              <span className={styles.tabKind}>{TASK_SOURCE_META[source.kind]?.name ?? source.kind}</span>
+              {board ? board.tasks.filter((t) => t.sourceId === source.id).length : ''}
             </button>
           ))}
         </div>
@@ -150,9 +162,9 @@ export function TaskBoard() {
 
       <div className={styles.list}>
         {!projectId && <span className={styles.empty}>Pick a project to see its board.</span>}
-        {projectId && links.length === 0 && (
+        {projectId && sources.length === 0 && (
           <span className={styles.empty}>
-            This project isn't wired to a board yet.{' '}
+            No board configured yet.{' '}
             <button className={styles.inlineLink} onClick={() => navigate('task-settings')}>
               Settings → tasks
             </button>
@@ -166,7 +178,9 @@ export function TaskBoard() {
           </span>
         ))}
         {board && shown.length === 0 && board.errors.length === 0 && !loading && (
-          <span className={styles.empty}>Nothing assigned to you in {links.map((l) => l.label).join(' or ')}.</span>
+          <span className={styles.empty}>
+            Nothing assigned to you in {(links.length > 0 ? links.map((l) => l.label) : sources.map((s) => s.label)).join(' or ')}.
+          </span>
         )}
 
         {shown.map((task) => {
@@ -176,6 +190,9 @@ export function TaskBoard() {
               <input type="checkbox" checked={isPicked} onChange={() => toggle(task)} onClick={(e) => e.stopPropagation()} />
               <span className={styles.key}>{task.key}</span>
               <span className={styles.taskTitle}>{task.title}</span>
+              {sourceFilter === 'all' && sources.length > 1 && (
+                <span className={styles.container}>{sources.find((s) => s.id === task.sourceId)?.label ?? task.sourceKind}</span>
+              )}
               {task.container && <span className={styles.container}>{task.container}</span>}
               {task.status && <span className={styles.status}>{task.status}</span>}
               <span className={styles.branch}>⑃ {task.suggestedBranch}</span>
