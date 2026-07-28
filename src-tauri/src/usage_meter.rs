@@ -534,6 +534,11 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         conn.execute_batch(crate::db::SCHEMA).unwrap();
+        // Mirrors `db::init`: schema then migrations. The unique index that
+        // makes recording idempotent is created by migration 12, so a test DB
+        // built from the schema alone would silently allow the duplicate this
+        // very test exists to catch.
+        crate::db::run_migrations(&conn).unwrap();
         conn.execute(
             "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, status, created_at, updated_at)
              VALUES ('acc1','claude','sub','Personal','personal','','','acc1','healthy','now','now')",

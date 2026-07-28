@@ -278,8 +278,11 @@ CREATE TABLE IF NOT EXISTS turn_usage (
   created_at            TEXT NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_turn_usage_message ON turn_usage(provider_message_id) WHERE provider_message_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_turn_usage_account ON turn_usage(account_id, created_at);
+-- The indexes for the columns above live in migration 12, not here. This file
+-- is applied to *existing* databases too, before any migration runs — so an
+-- index naming a column that only migration 12 adds fails on every launch of an
+-- older install, and takes the app down at startup. Nothing in here may
+-- reference anything a migration introduces.
 
 -- Which terminals were open when Hangar last closed, so they can be reopened
 -- on the next launch (and, when they carry a Claude session id, resumed).

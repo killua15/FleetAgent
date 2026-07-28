@@ -210,8 +210,12 @@ fn turn_usage_from_terminals(conn: &Connection) -> Result<(), String> {
         .query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='turn_usage'", [], |row| row.get::<_, String>(0))
         .map(|sql| sql.contains("provider_message_id"))
         .unwrap_or(false);
+    // The indexes are created below whichever path this takes: a fresh database
+    // gets the new shape from `schema.sql` and never rebuilds, so creating them
+    // only inside the rebuild would leave new installs without the unique index
+    // that stops a re-read from double-counting.
     if already {
-        return Ok(());
+        return ensure_turn_usage_indexes(conn);
     }
 
     // A modern ALTER ... RENAME rewrites *other* tables' foreign keys to follow
@@ -241,14 +245,21 @@ fn turn_usage_from_terminals(conn: &Connection) -> Result<(), String> {
                FROM turn_usage tu LEFT JOIN sessions s ON s.id = tu.session_id;
              DROP TABLE turn_usage;
              ALTER TABLE turn_usage_new RENAME TO turn_usage;
-             CREATE UNIQUE INDEX IF NOT EXISTS idx_turn_usage_message ON turn_usage(provider_message_id) WHERE provider_message_id IS NOT NULL;
-             CREATE INDEX IF NOT EXISTS idx_turn_usage_account ON turn_usage(account_id, created_at);
              COMMIT;",
         )
         .map_err(|e| format!("could not rebuild turn_usage: {e}"))
     })();
     let _ = conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA legacy_alter_table=OFF;");
-    result
+    result?;
+    ensure_turn_usage_indexes(conn)
+}
+
+fn ensure_turn_usage_indexes(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_turn_usage_message ON turn_usage(provider_message_id) WHERE provider_message_id IS NOT NULL;
+         CREATE INDEX IF NOT EXISTS idx_turn_usage_account ON turn_usage(account_id, created_at);",
+    )
+    .map_err(|e| format!("could not index turn_usage: {e}"))
 }
 
 /// Where task rows come from: a configured source, and which project each one
@@ -491,7 +502,7 @@ fn pull_requests_project_anchored(conn: &Connection) -> Result<(), String> {
 /// be the expected steady-state error, which meant a genuinely broken
 /// migration was indistinguishable from an already-applied one — and it gave
 /// no way to add a migration that isn't naturally idempotent.
-fn run_migrations(conn: &Connection) -> Result<(), String> {
+pub(crate) fn run_migrations(conn: &Connection) -> Result<(), String> {
     apply(conn, MIGRATIONS)
 }
 
@@ -889,6 +900,41 @@ mod tests {
     /// `sessions` table with the old `ON DELETE RESTRICT`, holding a real
     /// row for an account — then confirms migration + cascading delete
     /// both work, with no data loss for unrelated rows.
+    /// `schema.sql` is applied to **existing** databases too, before any
+    /// migration runs — so nothing in it may name a column a migration
+    /// introduces. An index on `turn_usage.provider_message_id` did, and every
+    /// launch of an older install aborted inside `setup()` with a panic across
+    /// the Objective-C boundary: the app died before drawing a window.
+    #[test]
+    fn schema_sql_applies_cleanly_to_a_database_that_predates_it() {
+        let conn = Connection::open_in_memory().unwrap();
+        // `turn_usage` exactly as it shipped before migration 12.
+        conn.execute_batch(
+            "CREATE TABLE turn_usage (
+               id                    TEXT PRIMARY KEY,
+               session_id            TEXT NOT NULL,
+               block_id              TEXT,
+               input_tokens          INTEGER NOT NULL,
+               output_tokens         INTEGER NOT NULL,
+               cache_read_tokens     INTEGER,
+               cache_creation_tokens INTEGER,
+               cost_usd              REAL,
+               created_at            TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+
+        conn.execute_batch(SCHEMA).expect("schema.sql must not fail against a database that predates it");
+        run_migrations(&conn).expect("migrations must carry that database forward");
+
+        // And the unique key that stops a re-read double-counting has to exist
+        // on this path too, not only on a fresh install.
+        let indexed: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_turn_usage_message'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(indexed, 1, "the dedupe index must exist after migrating an old database");
+    }
+
     #[test]
     fn migrates_old_restrict_schema_and_then_cascades_on_delete() {
         let conn = Connection::open_in_memory().unwrap();
