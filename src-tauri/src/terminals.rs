@@ -444,14 +444,21 @@ pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitComma
             // which is exactly what a terminal used to open with.
             _ => prompt_arg(),
         },
-        InitCommand::Resume => match spec.session {
-            crate::providers::SessionControl::MintableId { resume_flag, .. } => {
-                let uuid = session_uuid.ok_or("resuming a terminal needs the session id to resume")?;
+        InitCommand::Resume => match (spec.session, session_uuid) {
+            (crate::providers::SessionControl::MintableId { resume_flag, .. }, uuid) => {
+                let uuid = uuid.ok_or("resuming a terminal needs the session id to resume")?;
                 format!(" {resume_flag} {}{}", shell_quote(uuid), prompt_arg())
             }
-            // We never held an id for this CLI, so there's nothing to resume by
-            // name. Starting fresh is the honest outcome; resuming "the most
-            // recent session" would be a guess dressed as continuity.
+            // Codex names its own session, so the id can't be chosen up front —
+            // but it *records* it, and Hangar reads it back once the session
+            // exists (see `learn_assigned_session_id`). With that id this is a
+            // real resume, not a fresh start wearing the same panel.
+            (crate::providers::SessionControl::AssignedId { resume_subcommand }, Some(uuid)) => {
+                format!(" {resume_subcommand} {}{}", shell_quote(uuid), prompt_arg())
+            }
+            // Still nothing learned — the terminal never ran long enough to
+            // write a session. Starting fresh is the honest outcome; resuming
+            // "the most recent session" would be a guess dressed as continuity.
             _ => prompt_arg(),
         },
         // A login command takes no prompt or session — there's nothing to seed.
@@ -935,13 +942,36 @@ fn decide_restore_init<R: Runtime>(app: &AppHandle<R>, row: &PersistedTerminal) 
             .and_then(|db| db.0.lock().ok().and_then(|conn| load_account(&conn, account_id).ok()))
             .map(|a| a.config_dir_path);
         if let Some(config_dir) = config_dir {
-            if crate::handoff::transcript_exists(&config_dir, uuid) {
+            if session_is_resumable(app, account_id, &config_dir, uuid) {
                 return (Some(InitCommand::Resume), Some(uuid.clone()));
             }
         }
     }
     // Account known but nothing to resume — start a fresh session under it.
     (Some(InitCommand::Start), None)
+}
+
+/// Whether the CLI still has the conversation this id names.
+///
+/// Per provider, because "where the transcript lives" is per CLI: Claude keeps
+/// one file per session id under its config dir, Codex keeps rollouts under
+/// `sessions/`. Checking Claude's layout for a Codex id — which is what this
+/// used to do — always answers no, so a Codex terminal always came back as a
+/// fresh session even once its id was known.
+fn session_is_resumable<R: Runtime>(app: &AppHandle<R>, account_id: &str, config_dir: &str, session_uuid: &str) -> bool {
+    let provider = app
+        .try_state::<DbConnection>()
+        .and_then(|db| {
+            db.0.lock()
+                .ok()
+                .and_then(|conn| conn.query_row("SELECT provider FROM accounts WHERE id = ?1", rusqlite::params![account_id], |r| r.get::<_, String>(0)).ok())
+        })
+        .unwrap_or_else(|| "claude".to_string());
+
+    match crate::providers::spec(&provider).map(|s| s.session) {
+        Some(crate::providers::SessionControl::AssignedId { .. }) => crate::usage_meter::rollout_exists(config_dir, session_uuid),
+        _ => crate::handoff::transcript_exists(config_dir, session_uuid),
+    }
 }
 
 /// Every open terminal that carries an account, as `(target kind, target id,
@@ -1247,6 +1277,7 @@ pub fn tick_terminal_states<R: Runtime>(app: &AppHandle<R>) {
         // terminal's file on a timer to catch a change that happens a few times
         // an hour.
         record_terminal_usage(app, &info);
+        learn_assigned_session_id(app, &id, &info);
         emit_state(app, &id, TerminalState::Waiting, agent_title.clone());
         // A queued run finishes when its agent stops talking — the only
         // completion signal available from outside the CLI.
@@ -1314,6 +1345,52 @@ pub async fn refresh_all_quotas<R: Runtime>(app: AppHandle<R>) -> Result<usize, 
     .await
 }
 
+/// Learns the session id a CLI chose for itself, so the terminal can be
+/// resumed later.
+///
+/// Only for providers that assign their own — Claude's is minted by Hangar and
+/// known before the process starts. Codex has no flag to name a session, which
+/// is why its terminals came back empty after a relaunch: there was no id to
+/// resume by. It does record one, so this reads it back the first time the
+/// agent stops talking (the earliest moment the session file exists) and writes
+/// it where restore already looks.
+///
+/// Matched by working directory, not by "the newest session": under one Codex
+/// account with several terminals open, the newest belongs to whichever agent
+/// last spoke.
+fn learn_assigned_session_id<R: Runtime>(app: &AppHandle<R>, terminal_id: &str, info: &TerminalInfo) {
+    if info.session_uuid.is_some() {
+        return;
+    }
+    let Some(account_id) = info.account_id.as_deref() else { return };
+    let Some(db) = app.try_state::<DbConnection>() else { return };
+
+    let row: Option<(String, String)> = {
+        let Ok(conn) = db.0.lock() else { return };
+        conn.query_row("SELECT provider, config_dir_path FROM accounts WHERE id = ?1", rusqlite::params![account_id], |r| Ok((r.get(0)?, r.get(1)?))).ok()
+    };
+    let Some((provider, config_dir)) = row else { return };
+    if !matches!(crate::providers::spec(&provider).map(|s| s.session), Some(crate::providers::SessionControl::AssignedId { .. })) {
+        return;
+    }
+
+    let Some(session_id) = crate::usage_meter::assigned_session_id(&config_dir, &info.cwd) else { return };
+    if let Ok(conn) = db.0.lock() {
+        let _ = conn.execute("UPDATE open_terminals SET session_uuid = ?2 WHERE id = ?1", rusqlite::params![terminal_id, session_id]);
+    }
+
+    // The live handle too, so closing and reopening within this run resumes as
+    // well — not only a relaunch, which is the only path the table covers.
+    if let Some(registry) = app.try_state::<TerminalRegistry>() {
+        if let Ok(mut map) = registry.0.lock() {
+            if let Some(handle) = map.get_mut(terminal_id) {
+                handle.info.session_uuid = Some(session_id.clone());
+            }
+        }
+    }
+    log::info!("learned {provider} session {session_id} for terminal {terminal_id}");
+}
+
 /// Files what a terminal's last turn cost, from what the CLI already wrote.
 ///
 /// Only for terminals Hangar started with a session id of its own — without
@@ -1325,7 +1402,17 @@ fn record_terminal_usage<R: Runtime>(app: &AppHandle<R>, info: &TerminalInfo) {
 
     let config_dir: Option<String> = {
         let Ok(conn) = db.0.lock() else { return };
-        conn.query_row("SELECT config_dir FROM accounts WHERE id = ?1", rusqlite::params![account_id], |row| row.get(0)).ok()
+        match conn.query_row("SELECT config_dir_path FROM accounts WHERE id = ?1", rusqlite::params![account_id], |row| row.get(0)) {
+            Ok(dir) => Some(dir),
+            Err(e) => {
+                // Loud, because the previous version wrote `config_dir` — a
+                // column that doesn't exist — and `.ok()` turned that into
+                // "this account has no config dir". Usage recording looked
+                // implemented and recorded nothing for weeks.
+                log::warn!("usage: no config dir for account {account_id}: {e}");
+                None
+            }
+        }
     };
     let Some(config_dir) = config_dir else { return };
 
@@ -1895,6 +1982,45 @@ mod tests {
             return;
         };
         assert_eq!(command, "CLAUDE_CONFIG_DIR=/Users/killua/.claude-David claude");
+    }
+
+    /// Codex can't be told which session to start, but it can be told which to
+    /// resume — once Hangar has read back the id it chose. Without this a
+    /// relaunch reopened the panel on an empty conversation, which looked like
+    /// continuity right up until you scrolled.
+    #[test]
+    fn a_codex_terminal_resumes_by_the_id_it_assigned_itself() {
+        if !crate::providers::is_provider_available("codex") {
+            return; // same reasoning as the test below: the shape needs the CLI
+        }
+        let codex = AccountForTerminal {
+            provider: "codex".to_string(),
+            billing: "sub".to_string(),
+            config_dir_path: "/tmp/codex-home".to_string(),
+            name: "Codex".to_string(),
+        };
+        let line = account_command_line(&codex, InitCommand::Resume, Some("019fa0ee-92fa-7da0"), None).unwrap();
+        // Unquoted because a uuid needs no quoting — `shell_quote` only adds
+        // them where the shell would otherwise split the word.
+        assert!(line.contains("resume 019fa0ee-92fa-7da0"), "got: {line}");
+        assert!(line.starts_with("CODEX_HOME="), "and still isolated to this account: {line}");
+    }
+
+    /// Before the id is known there is nothing to resume by, and resuming "the
+    /// most recent session" would be a guess dressed as continuity.
+    #[test]
+    fn a_codex_terminal_with_no_learned_id_starts_fresh() {
+        if !crate::providers::is_provider_available("codex") {
+            return;
+        }
+        let codex = AccountForTerminal {
+            provider: "codex".to_string(),
+            billing: "sub".to_string(),
+            config_dir_path: "/tmp/cx".to_string(),
+            name: "Codex".to_string(),
+        };
+        let line = account_command_line(&codex, InitCommand::Resume, None, None).unwrap();
+        assert!(!line.contains("resume"), "got: {line}");
     }
 
     /// A login command never takes a prompt — there's no session to seed yet.

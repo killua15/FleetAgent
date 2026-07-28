@@ -184,3 +184,26 @@
   font: 500 11px var(--font-mono);
   color: var(--dim);
 }
+
+.updateRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.updateInput {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--txt);
+  font: 400 11.5px var(--font-ui);
+}
+
+.updateHint {
+  font: 400 10.5px var(--font-ui);
+  color: var(--dim);
+  line-height: 1.5;
+}

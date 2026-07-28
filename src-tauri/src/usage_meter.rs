@@ -119,10 +119,57 @@ pub fn codex_quota(codex_home: &str) -> Option<(Option<f64>, Option<f64>)> {
     found
 }
 
+/// The id Codex gave the session it ran in `cwd`, if there is one.
+///
+/// Codex has no flag to name a session at start — so unlike Claude, Hangar
+/// can't choose the id and has to read back the one the CLI assigned. It writes
+/// it into the rollout's `session_meta`, along with the working directory,
+/// which is what makes the match trustworthy: with six terminals open under one
+/// account, "the newest session" belongs to whichever agent last spoke, not to
+/// the one being asked about.
+pub fn assigned_session_id(codex_home: &str, cwd: &str) -> Option<String> {
+    let mut best: Option<(std::time::SystemTime, String)> = None;
+    for path in rollouts(std::path::Path::new(codex_home)) {
+        let Ok(modified) = std::fs::metadata(&path).and_then(|m| m.modified()) else { continue };
+        if best.as_ref().is_some_and(|(seen, _)| modified <= *seen) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        // `session_meta` is the first line, so this stops after it rather than
+        // parsing a transcript that can be megabytes.
+        let Some(meta) = text.lines().next().and_then(|line| serde_json::from_str::<Value>(line).ok()) else { continue };
+        let payload = meta.get("payload").unwrap_or(&meta);
+        if payload.get("cwd").and_then(|c| c.as_str()) != Some(cwd) {
+            continue;
+        }
+        let Some(id) = payload.get("id").or_else(|| payload.get("session_id")).and_then(|v| v.as_str()) else { continue };
+        best = Some((modified, id.to_string()));
+    }
+    best.map(|(_, id)| id)
+}
+
+/// Whether Codex still has this session on disk — the same question
+/// `handoff::transcript_exists` answers for Claude, against a different layout.
+/// The id is in the filename, so this costs a directory walk rather than a read.
+pub fn rollout_exists(codex_home: &str, session_id: &str) -> bool {
+    rollouts(std::path::Path::new(codex_home))
+        .iter()
+        .any(|path| path.file_name().is_some_and(|name| name.to_string_lossy().contains(session_id)))
+}
+
 /// Codex files sessions under `sessions/YYYY/MM/DD/`, so the newest one is
 /// found by walking rather than by listing a single directory.
 fn newest_rollout(codex_home: &std::path::Path) -> Option<std::path::PathBuf> {
-    let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    rollouts(codex_home)
+        .into_iter()
+        .filter_map(|path| std::fs::metadata(&path).and_then(|m| m.modified()).ok().map(|at| (at, path)))
+        .max_by_key(|(at, _)| *at)
+        .map(|(_, path)| path)
+}
+
+/// Every rollout file under a Codex home, at any depth.
+fn rollouts(codex_home: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
     let mut stack = vec![codex_home.join("sessions")];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
@@ -131,14 +178,11 @@ fn newest_rollout(codex_home: &std::path::Path) -> Option<std::path::PathBuf> {
             if path.is_dir() {
                 stack.push(path);
             } else if path.extension().is_some_and(|e| e == "jsonl") {
-                let modified = entry.metadata().and_then(|m| m.modified()).ok()?;
-                if best.as_ref().is_none_or(|(seen, _)| modified > *seen) {
-                    best = Some((modified, path));
-                }
+                found.push(path);
             }
         }
     }
-    best.map(|(_, path)| path)
+    found
 }
 
 pub fn parse_codex_usage(text: &str) -> Vec<CodexTurn> {
@@ -592,6 +636,34 @@ mod tests {
             at: None,
         };
         assert_eq!(estimate_cost_usd(&turn), Some(15.0));
+    }
+
+    /// Codex names its own sessions, so the id has to be read back — and the
+    /// match is by working directory, not by "newest". With several terminals
+    /// open under one account the newest rollout belongs to whichever agent
+    /// last spoke, which would resume the wrong conversation in the wrong repo.
+    #[test]
+    fn a_codex_session_is_matched_by_its_working_directory() {
+        let home = std::env::temp_dir().join(format!("hangar-test-codex-{}", Uuid::new_v4()));
+        let day = home.join("sessions/2026/07/28");
+        std::fs::create_dir_all(&day).unwrap();
+
+        let meta = |id: &str, cwd: &str| {
+            format!(r#"{{"type":"session_meta","payload":{{"id":"{id}","session_id":"{id}","cwd":"{cwd}"}}}}"#)
+        };
+        std::fs::write(day.join("rollout-a-1111.jsonl"), meta("1111", "/repos/alpha")).unwrap();
+        std::fs::write(day.join("rollout-b-2222.jsonl"), meta("2222", "/repos/beta")).unwrap();
+
+        let home = home.to_string_lossy().to_string();
+        assert_eq!(assigned_session_id(&home, "/repos/alpha").as_deref(), Some("1111"));
+        assert_eq!(assigned_session_id(&home, "/repos/beta").as_deref(), Some("2222"));
+        assert_eq!(assigned_session_id(&home, "/repos/never-used"), None, "no session for that directory is not the newest one");
+
+        // And restore has to be able to ask whether the id still exists.
+        assert!(rollout_exists(&home, "2222"));
+        assert!(!rollout_exists(&home, "9999"));
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// The exchange rate is measured from the user's own data, so a plan

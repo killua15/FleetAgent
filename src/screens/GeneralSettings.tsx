@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '../lib/invoke';
+import { toastError } from '../components/ErrorOverlay';
 import { SettingsTabs } from '../components/SettingsTabs';
 import { UsageBar } from '../components/UsageBar';
 import { PickConfigDirDialog } from '../components/PickConfigDirDialog';
@@ -292,6 +293,11 @@ export function GeneralSettings() {
         </section>
 
         <section className={styles.section}>
+          <span className={styles.sectionLabel}>UPDATES</span>
+          <UpdateAccessRow />
+        </section>
+
+        <section className={styles.section}>
           <span className={styles.sectionLabel}>EXPERIMENTAL</span>
           <div className={styles.notifList}>
             {/* "Hierarchy trees" is hidden for now — the agent-tree feature is
@@ -308,6 +314,63 @@ export function GeneralSettings() {
           </div>
         </section>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The token that lets this machine see updates.
+ *
+ * Hangar's releases are in a private repository, and GitHub serves nothing
+ * from one without authentication. The token goes to the OS keychain rather
+ * than into the binary: a copy of the app then carries no credential, and
+ * handing someone the app doesn't hand them read access to the repo.
+ */
+function UpdateAccessRow() {
+  const [stored, setStored] = useState(false);
+  const [token, setToken] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    invoke<boolean>('has_update_access').then(setStored).catch(() => setStored(false));
+  }, []);
+
+  const save = async (next: string | null) => {
+    setSaving(true);
+    try {
+      await invoke('set_update_access', { token: next });
+      setStored(Boolean(next));
+      setToken('');
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className={styles.notifList}>
+      <div className={styles.updateRow}>
+        <input
+          className={styles.updateInput}
+          type="password"
+          placeholder={stored ? '•••••••• stored — paste a new one to replace it' : 'GitHub token with read access to the releases repo'}
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+        />
+        <Button size="sm" disabled={saving || !token.trim()} onClick={() => save(token.trim())}>
+          {saving ? 'saving…' : 'Save'}
+        </Button>
+        {stored && (
+          <Button size="sm" variant="outline" disabled={saving} onClick={() => save(null)}>
+            remove
+          </Button>
+        )}
+      </div>
+      <span className={styles.updateHint}>
+        Stored in the macOS keychain, never in the app or the database. A fine-grained token with read-only <code>Contents</code> on the
+        releases repository is enough — nothing else. Without one, Hangar simply never finds an update.
+      </span>
     </div>
   );
 }
