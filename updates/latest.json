@@ -1,10 +1,10 @@
 {
-  "version": "0.1.1",
-  "notes": "Task board (ClickUp + GitHub Issues), per-turn usage metering, Codex resume, contrast pass, private update channel",
-  "pub_date": "2026-07-28T21:13:27.403117Z",
+  "version": "0.1.2",
+  "notes": "Check now button, so an update check reports what it found",
+  "pub_date": "2026-07-28T21:19:11.439003Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbFBESU5lUVZRMlpmUnQyZ0tmcDd4NjI5VnNhQXlFTCtTRTVnVVQ2WjU3TVA4ZG1JU3JCZmNTMDN4V2NnRjdoSnY3aTFoejN6STRscUdURlVld1ZpbVF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1MjczMjA3CWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKVFBYU0RZK0czWG1PYTYrMGVBTnRDdUQ5L2R4NklqQVJCdThaR3JQOHhQNWcreW9LZmpMbTFGNC9QZUhqcGY2bS9BYnFzcFFSNUx0d2o4TkdqaE9OQ1E9PQo=",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbEJTdVdQc2c3RG1Yc2Q2Wm1LNnBlT1lLNmpHQVJjME1xQkhPSjhOOFFaWWM4NlFFaWVrdFNLTDFTdlZaTlhoUWx0czRLUVBKMGhaZkl2cXZwKzlsZUFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1MjczNTUxCWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKd29tSTRzVnB0U3NlTTdLZ3NBWXR0TWorNEowSWMxbTdRV0xlMVpuS1ZNVHZhanJVYmlzNVpFdEwxV2gvNkFEN3BUcm5XN3FyV2hTNWFYZTBkSUlGQWc9PQo=",
       "url": "https://api.github.com/repos/killua15/FleetAgent/contents/updates/Hangar.app.tar.gz"
     }
   }
