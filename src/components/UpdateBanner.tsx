@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
+import { invoke } from '../lib/invoke';
 import { Button } from './ui/button';
 import styles from './UpdateBanner.module.css';
 
@@ -22,10 +23,16 @@ export function UpdateBanner() {
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
-    // Quietly: no network, an endpoint that isn't there yet, or a build with no
-    // updater configured are all normal, and none of them is worth a toast.
-    check()
+    // The releases live in a private repository, so the check carries a token
+    // — read from the OS keychain at this moment rather than compiled in, so
+    // the binary itself holds no credential and a copy of the app grants
+    // nobody anything. No token means no update, which is the right answer for
+    // a machine that was never set up for them.
+    invoke<Record<string, string> | null>('update_request_headers')
+      .then((headers) => check(headers ? { headers } : undefined))
       .then((found) => setUpdate(found))
+      // Quietly: no network, no token, or an endpoint that has no release yet
+      // are all normal, and none of them is worth a toast.
       .catch(() => {});
   }, []);
 

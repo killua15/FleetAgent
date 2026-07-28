@@ -19,6 +19,7 @@ mod run_queue;
 mod task_sources;
 mod terminals;
 mod turn_runner;
+mod update_access;
 mod usage_meter;
 mod usage_scraper;
 
@@ -269,6 +270,9 @@ pub fn run() {
             quota::list_account_quotas,
             usage_meter::list_account_spend,
             usage_meter::list_project_spend,
+            update_access::update_request_headers,
+            update_access::has_update_access,
+            update_access::set_update_access,
             terminals::refresh_all_quotas,
             quota::list_project_budgets,
             quota::get_project_budget,
