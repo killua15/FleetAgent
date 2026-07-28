@@ -98,6 +98,49 @@ pub struct CodexTurn {
     pub at: Option<String>,
 }
 
+/// Codex's own quota reading, taken from the last turn it wrote.
+///
+/// It maps to the same two windows Claude reports: `primary` is the short
+/// rolling one, `secondary` the long one. No PTY and no `/usage` — Codex has no
+/// such command, and it doesn't need one, because it records the API's
+/// rate-limit headers on every turn.
+pub fn codex_quota(codex_home: &str) -> Option<(Option<f64>, Option<f64>)> {
+    let newest = newest_rollout(std::path::Path::new(codex_home))?;
+    let text = std::fs::read_to_string(newest).ok()?;
+    // Last one wins: these are cumulative readings, and the most recent is the
+    // only one that describes now.
+    let mut found = None;
+    for line in text.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else { continue };
+        let Some(limits) = value.get("payload").and_then(|p| p.get("rate_limits")) else { continue };
+        let pct = |key: &str| limits.get(key).and_then(|w| w.get("used_percent")).and_then(|v| v.as_f64());
+        found = Some((pct("primary"), pct("secondary")));
+    }
+    found
+}
+
+/// Codex files sessions under `sessions/YYYY/MM/DD/`, so the newest one is
+/// found by walking rather than by listing a single directory.
+fn newest_rollout(codex_home: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    let mut stack = vec![codex_home.join("sessions")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "jsonl") {
+                let modified = entry.metadata().and_then(|m| m.modified()).ok()?;
+                if best.as_ref().is_none_or(|(seen, _)| modified > *seen) {
+                    best = Some((modified, path));
+                }
+            }
+        }
+    }
+    best.map(|(_, path)| path)
+}
+
 pub fn parse_codex_usage(text: &str) -> Vec<CodexTurn> {
     let mut turns = Vec::new();
     for line in text.lines() {
@@ -386,6 +429,63 @@ pub(crate) fn account_spend(conn: &rusqlite::Connection) -> Result<Vec<AccountSp
         });
     }
     Ok(out)
+}
+
+/// What one project spent on one account.
+///
+/// The pair is the unit, not either half: "this project cost $12" says nothing
+/// about which subscription is about to run out, and "this account is at 80%"
+/// says nothing about what to stop doing.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAccountSpend {
+    pub project_name: String,
+    pub account_id: String,
+    pub account_name: String,
+    pub provider: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub turns: i64,
+    pub cost_usd: f64,
+}
+
+/// Every project × account pair with spend in the last 7 days.
+#[tauri::command]
+pub fn list_project_spend(db: tauri::State<DbConnection>) -> Result<Vec<ProjectAccountSpend>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let since = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
+    let mut stmt = conn
+        .prepare(
+            "SELECT COALESCE(p.name, 'no project'), tu.account_id, COALESCE(a.name, '?'), COALESCE(a.provider, '?'),
+                    COALESCE(SUM(tu.input_tokens),0), COALESCE(SUM(tu.output_tokens),0), COALESCE(SUM(tu.cache_read_tokens),0),
+                    COUNT(*), COALESCE(SUM(tu.cost_usd),0.0)
+             FROM turn_usage tu
+             LEFT JOIN projects p ON p.id = tu.project_id
+             LEFT JOIN accounts a ON a.id = tu.account_id
+             WHERE tu.created_at >= ?1
+             GROUP BY tu.project_id, tu.account_id
+             ORDER BY 9 DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![since], |row| {
+            Ok(ProjectAccountSpend {
+                project_name: row.get(0)?,
+                account_id: row.get(1)?,
+                account_name: row.get(2)?,
+                provider: row.get(3)?,
+                input_tokens: row.get(4)?,
+                output_tokens: row.get(5)?,
+                cache_read_tokens: row.get(6)?,
+                turns: row.get(7)?,
+                cost_usd: row.get(8)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .collect();
+    Ok(rows)
 }
 
 fn project_breakdown(conn: &rusqlite::Connection, account_id: &str, since: &str) -> Vec<ProjectSpend> {

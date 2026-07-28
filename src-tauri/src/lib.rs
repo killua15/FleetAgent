@@ -250,6 +250,8 @@ pub fn run() {
             run_queue::cancel_queued_run,
             quota::list_account_quotas,
             usage_meter::list_account_spend,
+            usage_meter::list_project_spend,
+            terminals::refresh_all_quotas,
             quota::list_project_budgets,
             quota::get_project_budget,
             quota::set_project_budget,

@@ -13,6 +13,18 @@ interface TokenTotals {
   turns: number;
 }
 
+interface ProjectAccountSpend {
+  projectName: string;
+  accountId: string;
+  accountName: string;
+  provider: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  turns: number;
+  costUsd: number;
+}
+
 interface AccountSpend {
   accountId: string;
   accountName: string;
@@ -56,11 +68,31 @@ function Bar({ pct }: { pct: number }) {
  */
 export function UsageModal({ onClose }: { onClose: () => void }) {
   const [accounts, setAccounts] = useState<AccountSpend[] | null>(null);
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [rows, setRows] = useState<ProjectAccountSpend[]>([]);
+  const [reading, setReading] = useState(false);
 
-  useEffect(() => {
+  const load = () => {
     invoke<AccountSpend[]>('list_account_spend').then(setAccounts).catch((e) => toastError(String(e)));
-  }, []);
+    invoke<ProjectAccountSpend[]>('list_project_spend').then(setRows).catch(() => setRows([]));
+  };
+
+  useEffect(load, []);
+
+  // Explicit, because reading a Claude account's quota spawns a `claude` in a
+  // PTY and takes seconds — three of those firing on open would look like the
+  // app had hung. The background poller only samples accounts with a terminal
+  // open, which is why an idle account sits at "no reading" until you ask.
+  const readQuotas = async () => {
+    setReading(true);
+    try {
+      await invoke<number>('refresh_all_quotas');
+      load();
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setReading(false);
+    }
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -73,128 +105,110 @@ export function UsageModal({ onClose }: { onClose: () => void }) {
       <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
         <div className={styles.head}>
           <span className={styles.title}>Usage</span>
-          <span className={styles.subtitle}>this 5-hour window and the last 7 days, per account</span>
+          <span className={styles.subtitle}>quota per account, spend per project</span>
           <span className={styles.spacer} />
+          <Button size="sm" variant="outline" disabled={reading} onClick={readQuotas}>
+            {reading ? 'reading quotas…' : '↻ read quotas'}
+          </Button>
           <Button size="sm" variant="outline" onClick={onClose}>
             close
           </Button>
         </div>
 
         <div className={styles.body}>
+          <span className={styles.sectionTitle}>accounts</span>
           {!accounts && <span className={styles.dim}>reading…</span>}
           {accounts?.length === 0 && <span className={styles.dim}>No accounts yet.</span>}
 
           {accounts?.map((account) => {
             const subscription = account.billing === 'sub';
-            const open = expanded === account.accountId;
+            const noReading = account.sessionPct === null && account.weeklyPct === null;
             return (
               <div key={account.accountId} className={styles.account}>
-                <button className={styles.accountHead} onClick={() => setExpanded(open ? null : account.accountId)}>
-                  <span className={styles.name}>{account.accountName}</span>
-                  <span className={styles.provider}>{account.provider}</span>
+                <span className={styles.name}>{account.accountName}</span>
+                <span className={styles.provider}>{account.provider}</span>
 
-                  {subscription ? (
-                    <>
-                      {/* Quota leads: it's what actually stops you working. */}
-                      <span className={styles.window}>
-                        session
-                        {account.sessionPct === null ? <span className={styles.dim}>—</span> : <Bar pct={account.sessionPct} />}
-                        <span className={styles.pct}>{account.sessionPct === null ? 'no reading' : `${Math.round(account.sessionPct)}%`}</span>
-                      </span>
-                      <span className={styles.window}>
-                        week
-                        {account.weeklyPct === null ? <span className={styles.dim}>—</span> : <Bar pct={account.weeklyPct} />}
-                        <span className={styles.pct}>{account.weeklyPct === null ? 'no reading' : `${Math.round(account.weeklyPct)}%`}</span>
-                      </span>
-                    </>
-                  ) : (
+                {subscription ? (
+                  <>
+                    {/* Quota leads on a subscription: it's what stops you working. */}
                     <span className={styles.window}>
-                      <span className={styles.pct}>{money(account.week.costUsd)}</span>
-                      <span className={styles.dim}>billed this week</span>
+                      session
+                      <Bar pct={account.sessionPct ?? 0} />
+                      <span className={styles.pct}>{account.sessionPct === null ? '—' : `${Math.round(account.sessionPct)}%`}</span>
                     </span>
-                  )}
-
-                  {account.hoursLeft !== null && <span className={styles.hours}>~{account.hoursLeft.toFixed(1)} h left</span>}
-                  <span className={styles.chevron}>{open ? '▾' : '▸'}</span>
-                </button>
-
-                <div className={styles.totals}>
-                  <span className={styles.totalsLabel}>session</span>
-                  <span className={styles.tokens}>
-                    {compact(account.session.inputTokens)} in · {compact(account.session.outputTokens)} out · {account.session.turns} turns
+                    <span className={styles.window}>
+                      week
+                      <Bar pct={account.weeklyPct ?? 0} />
+                      <span className={styles.pct}>{account.weeklyPct === null ? '—' : `${Math.round(account.weeklyPct)}%`}</span>
+                    </span>
+                    {account.hoursLeft !== null && <span className={styles.hours}>~{account.hoursLeft.toFixed(1)} h left</span>}
+                  </>
+                ) : (
+                  <span className={styles.window}>
+                    <span className={styles.pct}>{money(account.week.costUsd)}</span>
+                    <span className={styles.dim}>billed this week</span>
                   </span>
-                  <span className={styles.spacer} />
-                  <span className={styles.cost}>
-                    {money(account.session.costUsd)}
-                    {subscription && <span className={styles.equivalent}> equivalent</span>}
-                  </span>
-                </div>
-
-                <div className={styles.totals}>
-                  <span className={styles.totalsLabel}>7 days</span>
-                  <span className={styles.tokens}>
-                    {compact(account.week.inputTokens)} in · {compact(account.week.outputTokens)} out · {account.week.turns} turns
-                  </span>
-                  <span className={styles.spacer} />
-                  <span className={styles.cost}>
-                    {money(account.week.costUsd)}
-                    {subscription && <span className={styles.equivalent}> equivalent</span>}
-                  </span>
-                </div>
-
-                {subscription && (
-                  <div className={styles.calibration}>
-                    {account.weekPctEquivalent !== null && account.calibration ? (
-                      <>
-                        ≈ <strong>{account.weekPctEquivalent.toFixed(1)}%</strong> of your weekly quota, measured at{' '}
-                        {account.calibration.pctPerDollar.toFixed(1)}% per $ from {account.calibration.spans} reading
-                        {account.calibration.spans === 1 ? '' : 's'} of your own
-                      </>
-                    ) : (
-                      // Said plainly, because an invented conversion would be
-                      // believed: nobody publishes how tokens map to a plan's
-                      // quota, so this waits for two readings in one window.
-                      <>calibrating — needs two quota readings in the same window before tokens can be expressed as %</>
-                    )}
-                  </div>
                 )}
 
-                {open && (
-                  <div className={styles.breakdown}>
-                    <div className={styles.column}>
-                      <span className={styles.columnTitle}>by project</span>
-                      {account.byProject.length === 0 && <span className={styles.dim}>nothing yet</span>}
-                      {account.byProject.map((row) => (
-                        <div key={row.projectName} className={styles.row}>
-                          <span className={styles.rowName}>{row.projectName}</span>
-                          <span className={styles.rowValue}>
-                            {money(row.costUsd)} · {row.turns}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                    <div className={styles.column}>
-                      <span className={styles.columnTitle}>by model</span>
-                      {account.byModel.length === 0 && <span className={styles.dim}>nothing yet</span>}
-                      {account.byModel.map((row) => (
-                        <div key={row.model} className={styles.row}>
-                          <span className={styles.rowName}>{row.model}</span>
-                          <span className={styles.rowValue}>
-                            {money(row.costUsd)} · {row.turns}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                <span className={styles.spacer} />
+                <span className={styles.cost}>
+                  {money(account.week.costUsd)}
+                  {subscription && <span className={styles.equivalent}> equivalent · 7d</span>}
+                </span>
+
+                {/* Said where it's read, not in a footnote: a dash with no
+                    explanation reads as "broken", and the fix is one button
+                    away at the top of this very modal. */}
+                {subscription && noReading && <span className={styles.note}>no quota reading yet — press “read quotas”</span>}
+                {subscription && !noReading && account.weekPctEquivalent !== null && account.calibration && (
+                  <span className={styles.note}>
+                    ≈ {account.weekPctEquivalent.toFixed(1)}% of the week, at {account.calibration.pctPerDollar.toFixed(1)}%/$ measured from{' '}
+                    {account.calibration.spans} of your own readings
+                  </span>
+                )}
+                {subscription && !noReading && account.weekPctEquivalent === null && (
+                  <span className={styles.note}>calibrating — needs two quota readings in one window to turn tokens into %</span>
                 )}
               </div>
             );
           })}
 
-          {accounts && accounts.every((a) => a.week.turns === 0) && (
+          <span className={styles.sectionTitle}>where it went · last 7 days</span>
+          {rows.length === 0 && (
             <span className={styles.dim}>
               No turns recorded yet. Numbers appear as each agent finishes a turn — Hangar reads what the CLI writes to its own transcript.
             </span>
+          )}
+
+          {rows.length > 0 && (
+            <div className={styles.table}>
+              <div className={styles.tableHead}>
+                <span className={styles.colProject}>project</span>
+                <span className={styles.colAccount}>account</span>
+                <span className={styles.colNum}>in</span>
+                <span className={styles.colNum}>out</span>
+                <span className={styles.colNum}>cache</span>
+                <span className={styles.colNum}>turns</span>
+                <span className={styles.colNum}>cost</span>
+              </div>
+              {/* One row per project *and* account, because that pair is the
+                  unit: "this project cost $12" doesn't say which subscription
+                  is about to run out, and "this account is at 80%" doesn't say
+                  what to stop doing. */}
+              {rows.map((row) => (
+                <div key={`${row.projectName}-${row.accountId}`} className={styles.tableRow}>
+                  <span className={styles.colProject}>{row.projectName}</span>
+                  <span className={styles.colAccount}>
+                    {row.accountName} <span className={styles.dim}>{row.provider}</span>
+                  </span>
+                  <span className={styles.colNum}>{compact(row.inputTokens)}</span>
+                  <span className={styles.colNum}>{compact(row.outputTokens)}</span>
+                  <span className={styles.colNum}>{compact(row.cacheReadTokens)}</span>
+                  <span className={styles.colNum}>{row.turns}</span>
+                  <span className={styles.colNum}>{money(row.costUsd)}</span>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       </div>

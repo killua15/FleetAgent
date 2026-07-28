@@ -1260,6 +1260,60 @@ pub fn tick_terminal_states<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// Reads every account's quota now, instead of waiting for the poller.
+///
+/// The poller only samples accounts that have a terminal open, every five
+/// minutes — which is right for keeping banners fresh and wrong for a screen
+/// you opened *to see the numbers*: three idle accounts show "no reading"
+/// forever. This is the explicit version, and it's a command rather than
+/// something the modal does on open because each Claude account costs a `claude`
+/// process in a PTY (~6s), and three of those firing silently would look like
+/// the app had hung.
+#[tauri::command]
+pub async fn refresh_all_quotas<R: Runtime>(app: AppHandle<R>) -> Result<usize, String> {
+    crate::blocking::run_blocking(move || {
+        let Some(db) = app.try_state::<DbConnection>() else { return 0 };
+        let accounts: Vec<(String, String, String)> = match db.0.lock() {
+            Ok(conn) => conn
+                .prepare("SELECT id, provider, config_dir_path FROM accounts WHERE billing = 'sub'")
+                .and_then(|mut stmt| {
+                    stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                        .map(|rows| rows.filter_map(Result::ok).collect::<Vec<_>>())
+                })
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+
+        let mut read = 0;
+        for (account_id, provider, config_dir) in accounts {
+            match provider.as_str() {
+                // Codex records the API's rate-limit headers on every turn, so
+                // its quota is already on disk — no process to spawn.
+                "codex" => {
+                    if let Some((session, weekly)) = crate::usage_meter::codex_quota(&config_dir) {
+                        if let Ok(conn) = db.0.lock() {
+                            if crate::quota::record_sample(&conn, &account_id, session, weekly, None).is_ok() {
+                                read += 1;
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    if refresh_account_status(&app, &account_id) {
+                        read += 1;
+                    } else {
+                        // `refresh_account_status` only reports *changes*, and a
+                        // reading that matched the last one is still a reading.
+                        read += usize::from(std::path::Path::new(&config_dir).is_dir());
+                    }
+                }
+            }
+        }
+        read
+    })
+    .await
+}
+
 /// Files what a terminal's last turn cost, from what the CLI already wrote.
 ///
 /// Only for terminals Hangar started with a session id of its own — without
