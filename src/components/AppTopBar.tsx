@@ -7,7 +7,8 @@ import type { ProjectPrInbox } from '../types/pullRequest';
 import { Button } from './ui/button';
 import { IconTooltip } from './ui/tooltip';
 import { Spinner } from './Spinner';
-import { AccountsIcon, BranchIcon, FilesIcon, HomeIcon, PullRequestIcon, SettingsIcon, TasksIcon, TerminalIcon } from './NavIcons';
+import { AccountsIcon, BranchIcon, FilesIcon, HomeIcon, PullRequestIcon, SettingsIcon, TasksIcon, TerminalIcon, UsageIcon } from './NavIcons';
+import { UsageModal } from './UsageModal';
 import { useAuth } from '../auth/AuthProvider';
 import styles from './AppTopBar.module.css';
 
@@ -85,6 +86,7 @@ function AccountButton() {
 export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; primaryAction?: ReactNode }) {
   const { navigate, current } = useNavigation();
   const [pendingPrComments, setPendingPrComments] = useState(0);
+  const [usageOpen, setUsageOpen] = useState(false);
   const inFlight = useInFlightCount();
   const showBusy = useDelayedBusy(inFlight, BUSY_INDICATOR_DELAY_MS);
 
@@ -135,6 +137,15 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
 
         <NavItem screen="git-panel" label="Git" icon={<BranchIcon />} />
         <NavItem screen="files" label="Files" icon={<FilesIcon />} />
+        {/* A modal, not a screen: it answers a question and hands you back to
+            what you were doing. Navigating away would close the terminals you
+            were watching while you checked. */}
+        <IconTooltip label="Usage — what each account has spent, this window and this week">
+          <button className={usageOpen ? styles.navItemActive : styles.navItem} onClick={() => setUsageOpen(true)}>
+            <UsageIcon />
+            <span className={styles.navLabel}>Usage</span>
+          </button>
+        </IconTooltip>
 
         <span className={styles.navRule} />
 
@@ -169,6 +180,7 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
       </Button>
       <AccountButton />
       {primaryAction}
+      {usageOpen && <UsageModal onClose={() => setUsageOpen(false)} />}
     </div>
   );
 }

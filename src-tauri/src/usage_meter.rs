@@ -189,6 +189,232 @@ pub fn estimate_cost_usd(turn: &TurnCost) -> Option<f64> {
     )
 }
 
+/// What one dollar of spend costs you, in percentage points of your weekly
+/// quota. **Measured, not assumed.**
+///
+/// Nobody publishes the formula that turns tokens into a subscription's quota,
+/// and it differs by plan. But we have both halves already: `/usage` gives the
+/// real percentage at known times, and `turn_usage` gives what was spent
+/// between them. The ratio is this account's own exchange rate.
+///
+/// Calibrated against the dollar equivalent rather than raw tokens on purpose:
+/// that folds four token prices into one number, so a week of cache-heavy
+/// turns and a week of output-heavy ones don't produce two different answers.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Calibration {
+    pub pct_per_dollar: f64,
+    /// How many (sample, sample) spans it rests on, so the UI can say "from
+    /// two readings" instead of implying certainty.
+    pub spans: usize,
+}
+
+/// Percentage points and dollars for one span between two readings.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Span {
+    pub pct_delta: f64,
+    pub dollars: f64,
+}
+
+/// The pure rule, so it's testable without a database or five hours of waiting.
+///
+/// Spans that crossed a window reset must never reach this: a drop from 90% to
+/// 4% is a new window, not 86 points of refund, and one of those would poison
+/// the rate into uselessness. `samples_since_reset` is what keeps them out.
+pub fn calibrate(spans: &[Span]) -> Option<Calibration> {
+    // Only spans where both halves moved. A span with spend but no percentage
+    // change is real (rounding), and one with percentage change but no
+    // recorded spend means work happened outside Hangar — including it would
+    // blame our turns for someone else's burn.
+    let usable: Vec<&Span> = spans.iter().filter(|s| s.dollars > 0.01 && s.pct_delta > 0.0).collect();
+    if usable.is_empty() {
+        return None;
+    }
+    // Totals rather than an average of ratios: a tiny span with a rounding-sized
+    // percentage move would otherwise carry the same weight as a full day.
+    let pct: f64 = usable.iter().map(|s| s.pct_delta).sum();
+    let dollars: f64 = usable.iter().map(|s| s.dollars).sum();
+    Some(Calibration { pct_per_dollar: pct / dollars, spans: usable.len() })
+}
+
+/// One account's spending, as the modal shows it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSpend {
+    pub account_id: String,
+    pub account_name: String,
+    pub provider: String,
+    /// `sub` or `key`. This decides which number leads: a subscription burns a
+    /// **percentage** and the money is a market equivalent nobody charges you;
+    /// a key-billed account burns **money** and has no percentage at all.
+    pub billing: String,
+    pub session_pct: Option<f64>,
+    pub weekly_pct: Option<f64>,
+    /// Hours until the weekly window runs out at the current rate.
+    pub hours_left: Option<f64>,
+    pub session: TokenTotals,
+    pub week: TokenTotals,
+    /// This account's measured %-per-dollar, when there's enough evidence.
+    pub calibration: Option<Calibration>,
+    /// The week's spend expressed in quota points, via `calibration` — the
+    /// number that means something on a subscription.
+    pub week_pct_equivalent: Option<f64>,
+    pub by_project: Vec<ProjectSpend>,
+    pub by_model: Vec<ModelSpend>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenTotals {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub cost_usd: f64,
+    pub turns: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSpend {
+    pub project_name: String,
+    pub cost_usd: f64,
+    pub turns: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSpend {
+    pub model: String,
+    pub cost_usd: f64,
+    pub turns: i64,
+}
+
+fn totals_since(conn: &rusqlite::Connection, account_id: &str, since: &str) -> TokenTotals {
+    conn.query_row(
+        "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
+                COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0),
+                COALESCE(SUM(cost_usd),0.0), COUNT(*)
+         FROM turn_usage WHERE account_id = ?1 AND created_at >= ?2",
+        params![account_id, since],
+        |row| {
+            Ok(TokenTotals {
+                input_tokens: row.get(0)?,
+                output_tokens: row.get(1)?,
+                cache_read_tokens: row.get(2)?,
+                cache_creation_tokens: row.get(3)?,
+                cost_usd: row.get(4)?,
+                turns: row.get(5)?,
+            })
+        },
+    )
+    .unwrap_or_default()
+}
+
+/// Pairs each `/usage` reading with what was spent since the previous one.
+///
+/// Only within one window: `samples_since_reset` drops everything before the
+/// last reset, so a span that straddles the boundary can't get in.
+fn spans_for(conn: &rusqlite::Connection, account_id: &str) -> Vec<Span> {
+    let Ok(samples) = crate::quota::weekly_samples(conn, account_id) else { return Vec::new() };
+    let samples = crate::quota::samples_since_reset(&samples);
+    samples
+        .windows(2)
+        .filter_map(|pair| {
+            let dollars: f64 = conn
+                .query_row(
+                    "SELECT COALESCE(SUM(cost_usd),0.0) FROM turn_usage
+                     WHERE account_id = ?1 AND created_at > ?2 AND created_at <= ?3",
+                    params![account_id, pair[0].sampled_at.to_rfc3339(), pair[1].sampled_at.to_rfc3339()],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0.0);
+            Some(Span { pct_delta: pair[1].pct - pair[0].pct, dollars })
+        })
+        .collect()
+}
+
+/// Every account's spending, for the usage modal.
+#[tauri::command]
+pub fn list_account_spend(db: tauri::State<DbConnection>) -> Result<Vec<AccountSpend>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    account_spend(&conn)
+}
+
+/// The command's body, over a plain connection so it's testable without a Tauri
+/// app — same split as `quota::account_quotas`.
+pub(crate) fn account_spend(conn: &rusqlite::Connection) -> Result<Vec<AccountSpend>, String> {
+    let quotas = crate::quota::account_quotas(conn)?;
+
+    let mut stmt = conn
+        .prepare("SELECT id, name, provider, billing FROM accounts ORDER BY name")
+        .map_err(|e| e.to_string())?;
+    let accounts: Vec<(String, String, String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .collect();
+    drop(stmt);
+
+    // The 5-hour window, not "today": it's the one that actually gates you, and
+    // it's what `/usage` reports next to the weekly figure.
+    let session_since = (chrono::Utc::now() - chrono::Duration::hours(5)).to_rfc3339();
+    let week_since = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
+
+    let mut out = Vec::new();
+    for (account_id, account_name, provider, billing) in accounts {
+        let quota = quotas.iter().find(|q| q.account_id == account_id);
+        let week = totals_since(conn, &account_id, &week_since);
+        let calibration = calibrate(&spans_for(conn, &account_id));
+
+        out.push(AccountSpend {
+            session_pct: quota.and_then(|q| q.session.as_ref()).map(|f| f.pct),
+            weekly_pct: quota.and_then(|q| q.weekly.as_ref()).map(|f| f.pct),
+            hours_left: quota.and_then(|q| q.weekly.as_ref()).and_then(|f| f.hours_left),
+            session: totals_since(conn, &account_id, &session_since),
+            // Only for subscriptions: on a key-billed account the money is the
+            // real number and a quota percentage doesn't exist to convert to.
+            week_pct_equivalent: calibration.as_ref().filter(|_| billing == "sub").map(|c| c.pct_per_dollar * week.cost_usd),
+            by_project: project_breakdown(conn, &account_id, &week_since),
+            by_model: model_breakdown(conn, &account_id, &week_since),
+            week,
+            calibration,
+            account_id,
+            account_name,
+            provider,
+            billing,
+        });
+    }
+    Ok(out)
+}
+
+fn project_breakdown(conn: &rusqlite::Connection, account_id: &str, since: &str) -> Vec<ProjectSpend> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT COALESCE(p.name, 'no project'), COALESCE(SUM(tu.cost_usd),0.0), COUNT(*)
+         FROM turn_usage tu LEFT JOIN projects p ON p.id = tu.project_id
+         WHERE tu.account_id = ?1 AND tu.created_at >= ?2
+         GROUP BY tu.project_id ORDER BY 2 DESC LIMIT 6",
+    ) else {
+        return Vec::new();
+    };
+    stmt.query_map(params![account_id, since], |row| Ok(ProjectSpend { project_name: row.get(0)?, cost_usd: row.get(1)?, turns: row.get(2)? }))
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default()
+}
+
+fn model_breakdown(conn: &rusqlite::Connection, account_id: &str, since: &str) -> Vec<ModelSpend> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT COALESCE(model, 'unknown'), COALESCE(SUM(cost_usd),0.0), COUNT(*)
+         FROM turn_usage WHERE account_id = ?1 AND created_at >= ?2
+         GROUP BY model ORDER BY 2 DESC LIMIT 6",
+    ) else {
+        return Vec::new();
+    };
+    stmt.query_map(params![account_id, since], |row| Ok(ModelSpend { model: row.get(0)?, cost_usd: row.get(1)?, turns: row.get(2)? }))
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,6 +492,95 @@ mod tests {
             at: None,
         };
         assert_eq!(estimate_cost_usd(&turn), Some(15.0));
+    }
+
+    /// The exchange rate is measured from the user's own data, so a plan
+    /// nobody published a formula for still gets an answer.
+    #[test]
+    fn the_percent_per_dollar_rate_is_measured_from_real_spans() {
+        let rate = calibrate(&[Span { pct_delta: 4.0, dollars: 2.0 }, Span { pct_delta: 6.0, dollars: 3.0 }]).unwrap();
+        assert_eq!(rate.pct_per_dollar, 2.0);
+        assert_eq!(rate.spans, 2);
+    }
+
+    /// Weighted by totals, not averaged across spans: otherwise a two-minute
+    /// span whose percentage moved by a rounding step counts as much as a
+    /// whole day of work, and the rate swings wildly between refreshes.
+    #[test]
+    fn a_tiny_span_does_not_weigh_as_much_as_a_long_one() {
+        let big = Span { pct_delta: 20.0, dollars: 10.0 }; // 2 %/$
+        let tiny = Span { pct_delta: 0.1, dollars: 0.02 }; // 5 %/$, noise
+        let rate = calibrate(&[big, tiny]).unwrap();
+        assert!(rate.pct_per_dollar < 2.1, "totals must dominate: got {}", rate.pct_per_dollar);
+    }
+
+    /// Percentage moving with nothing recorded means work happened outside
+    /// Hangar — another terminal, another machine. Counting it would blame our
+    /// turns for someone else's burn and inflate every future estimate.
+    #[test]
+    fn burn_with_no_recorded_spend_is_not_used_to_calibrate() {
+        assert_eq!(calibrate(&[Span { pct_delta: 30.0, dollars: 0.0 }]), None);
+    }
+
+    /// No evidence yet is a real state, and it has to read as "calibrating"
+    /// rather than as a number.
+    #[test]
+    fn nothing_to_learn_from_yields_no_rate() {
+        assert_eq!(calibrate(&[]), None);
+        assert_eq!(calibrate(&[Span { pct_delta: 0.0, dollars: 5.0 }]), None);
+    }
+
+    fn seeded_db() -> DbConnection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, status, created_at, updated_at)
+             VALUES ('acc1','claude','sub','Personal','personal','','','acc1','healthy','now','now')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO projects (id, name, path, created_at) VALUES ('proj1','Sim','/tmp/sim','now')", []).unwrap();
+        DbConnection(std::sync::Mutex::new(conn))
+    }
+
+    /// The whole point of the unique message id, end to end: reading the same
+    /// transcript twice — which happens on every restart, since the byte offset
+    /// lives in memory — must not charge the week twice.
+    #[test]
+    fn reading_the_same_transcript_twice_does_not_double_the_bill() {
+        let db = seeded_db();
+        let turns = parse_claude_usage(REAL_LINE);
+
+        assert_eq!(record_turns(&db, "acc1", Some("proj1"), None, &turns), 1);
+        assert_eq!(record_turns(&db, "acc1", Some("proj1"), None, &turns), 0, "the second read is already recorded");
+
+        let (rows, output): (i64, i64) = {
+            let conn = db.0.lock().unwrap();
+            conn.query_row("SELECT COUNT(*), COALESCE(SUM(output_tokens),0) FROM turn_usage", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap()
+        };
+        assert_eq!(rows, 1);
+        assert_eq!(output, 4095, "one turn's worth, not two");
+    }
+
+    /// A terminal opened on a project has no session row. That case is most of
+    /// the real work, and the table it writes to was built without it — a
+    /// `NOT NULL` session id would have rejected every one of these.
+    #[test]
+    fn a_terminal_with_no_session_still_records_what_it_spent() {
+        let db = seeded_db();
+        // `at: None` means "now": the sample line is a real one from a week
+        // ago, and the week window would legitimately exclude it.
+        let turns: Vec<TurnCost> = parse_claude_usage(REAL_LINE).into_iter().map(|t| TurnCost { at: None, ..t }).collect();
+        assert_eq!(record_turns(&db, "acc1", Some("proj1"), None, &turns), 1);
+
+        let conn = db.0.lock().unwrap();
+        let spend = account_spend(&conn).unwrap();
+        let personal = spend.iter().find(|a| a.account_id == "acc1").unwrap();
+        assert_eq!(personal.week.turns, 1);
+        assert_eq!(personal.week.output_tokens, 4095);
+        assert_eq!(personal.by_project.first().map(|p| p.project_name.as_str()), Some("Sim"));
+        assert_eq!(personal.by_model.first().map(|m| m.model.as_str()), Some("claude-sonnet-5"));
     }
 
     /// Codex reports a running total *and* the turn's own usage. Reading the

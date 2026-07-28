@@ -91,6 +91,16 @@ export function AccountsIcon() {
   );
 }
 
+/** A gauge: what's left, which is the question this answers. */
+export function UsageIcon() {
+  return (
+    <svg {...base} aria-hidden="true">
+      <path d="M2.5 11.5a6 6 0 1 1 11 0" />
+      <path d="M8 11.5 11 6.8" />
+    </svg>
+  );
+}
+
 export function SettingsIcon() {
   return (
     <svg {...base} aria-hidden="true">

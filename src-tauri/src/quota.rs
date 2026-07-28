@@ -154,6 +154,12 @@ fn load_samples(conn: &Connection, account_id: &str, column: &str) -> Result<Vec
     Ok(out)
 }
 
+/// The weekly `/usage` series for one account — what the usage meter
+/// calibrates against, so it doesn't need its own copy of this query.
+pub(crate) fn weekly_samples(conn: &Connection, account_id: &str) -> Result<Vec<UsageSample>, String> {
+    load_samples(conn, account_id, "weekly_pct")
+}
+
 pub(crate) fn account_quotas(conn: &Connection) -> Result<Vec<AccountQuota>, String> {
     let mut stmt = conn
         .prepare("SELECT id, name, status FROM accounts WHERE provider = 'claude' ORDER BY scope, name")
