@@ -117,6 +117,14 @@ const MIGRATIONS: &[Migration] = &[
         run: task_sources_tables,
         transactional: true,
     },
+    Migration {
+        version: 12,
+        name: "turn_usage_from_terminals",
+        run: turn_usage_from_terminals,
+        // Rebuilds a table with foreign keys of its own, so it toggles the
+        // PRAGMAs and runs its own transaction — same care as 4 and 9.
+        transactional: false,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -185,6 +193,62 @@ fn project_git_identity_table(conn: &Connection) -> Result<(), String> {
          );",
     )
     .map_err(|e| format!("could not create project_git_identity: {e}"))
+}
+
+/// Makes `turn_usage` able to record what a **terminal** spent.
+///
+/// It was built for headless turns, so `session_id` was NOT NULL — but a
+/// terminal opened on a project has no session row, and that is where the real
+/// work happens. It also had no idea which account paid, which is the only
+/// question anyone actually asks of it.
+///
+/// `provider_message_id` is the important one: the numbers come from re-reading
+/// a transcript the CLI is appending to, and without a unique key a restart
+/// would count yesterday's turns again and quietly double the week's spend.
+fn turn_usage_from_terminals(conn: &Connection) -> Result<(), String> {
+    let already: bool = conn
+        .query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='turn_usage'", [], |row| row.get::<_, String>(0))
+        .map(|sql| sql.contains("provider_message_id"))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    // A modern ALTER ... RENAME rewrites *other* tables' foreign keys to follow
+    // the rename, leaving them pointing at a table this is about to drop. Same
+    // trap migration 4 fell into.
+    let _ = conn.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;");
+    let result = (|| -> Result<(), String> {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE turn_usage_new (
+               id                    TEXT PRIMARY KEY,
+               session_id            TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+               account_id            TEXT REFERENCES accounts(id) ON DELETE CASCADE,
+               project_id            TEXT REFERENCES projects(id) ON DELETE SET NULL,
+               block_id              TEXT REFERENCES session_blocks(id) ON DELETE SET NULL,
+               model                 TEXT,
+               provider_message_id   TEXT,
+               input_tokens          INTEGER NOT NULL,
+               output_tokens         INTEGER NOT NULL,
+               cache_read_tokens     INTEGER,
+               cache_creation_tokens INTEGER,
+               cost_usd              REAL,
+               created_at            TEXT NOT NULL
+             );
+             INSERT INTO turn_usage_new (id, session_id, account_id, project_id, block_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, created_at)
+               SELECT tu.id, tu.session_id, s.account_id, s.project_id, tu.block_id, tu.input_tokens, tu.output_tokens, tu.cache_read_tokens, tu.cache_creation_tokens, tu.cost_usd, tu.created_at
+               FROM turn_usage tu LEFT JOIN sessions s ON s.id = tu.session_id;
+             DROP TABLE turn_usage;
+             ALTER TABLE turn_usage_new RENAME TO turn_usage;
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_turn_usage_message ON turn_usage(provider_message_id) WHERE provider_message_id IS NOT NULL;
+             CREATE INDEX IF NOT EXISTS idx_turn_usage_account ON turn_usage(account_id, created_at);
+             COMMIT;",
+        )
+        .map_err(|e| format!("could not rebuild turn_usage: {e}"))
+    })();
+    let _ = conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA legacy_alter_table=OFF;");
+    result
 }
 
 /// Where task rows come from: a configured source, and which project each one
@@ -577,7 +641,7 @@ fn repair_dangling_sessions_fk(conn: &Connection) {
         }
     }
 
-    let _ = conn.execute_batch("PRAGMA foreign_keys=ON;");
+    let _ = conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA legacy_alter_table=OFF;");
 }
 
 /// Early dev builds created `sessions.account_id` with `ON DELETE RESTRICT`,
@@ -604,7 +668,15 @@ fn migrate_sessions_account_fk_to_cascade(conn: &Connection) {
     // them — carry them over rather than silently dropping that data.
     // PRAGMAs are no-ops inside a transaction, so these run outside the
     // BEGIN/COMMIT that does the actual table rebuild.
-    let _ = conn.execute_batch("PRAGMA foreign_keys=OFF;");
+    //
+    // `legacy_alter_table` is not optional here, and its absence was a real
+    // latent bug: a modern `ALTER TABLE ... RENAME` rewrites *other* tables'
+    // foreign keys to follow the rename, so `turn_usage.session_id` came out
+    // pointing at `sessions_old_fk_migration` — a table this very statement is
+    // about to drop. Nothing noticed until deleting an account cascaded into
+    // `turn_usage` and hit "no such table". Migration 4 learned this the same
+    // way; this call site never got the fix.
+    let _ = conn.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;");
     let result = conn.execute_batch(
         "BEGIN TRANSACTION;
          ALTER TABLE sessions RENAME TO sessions_old_fk_migration;
@@ -639,7 +711,7 @@ fn migrate_sessions_account_fk_to_cascade(conn: &Connection) {
         log::error!("sessions FK migration failed, rolling back: {e}");
         let _ = conn.execute_batch("ROLLBACK;");
     }
-    let _ = conn.execute_batch("PRAGMA foreign_keys=ON;");
+    let _ = conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA legacy_alter_table=OFF;");
 }
 
 #[cfg(test)]

@@ -1236,12 +1236,17 @@ pub fn tick_terminal_states<R: Runtime>(app: &AppHandle<R>) {
             let Ok(mut act) = handle.activity.lock() else { continue };
             if act.state == TerminalState::Working && act.last_output.elapsed() >= QUIET_BEFORE_WAITING {
                 act.state = TerminalState::Waiting;
-                newly_waiting.push((id.clone(), handle.info.title.clone(), act.title.clone()));
+                newly_waiting.push((id.clone(), handle.info.title.clone(), act.title.clone(), handle.info.clone()));
             }
         }
     }
 
-    for (id, panel_title, agent_title) in newly_waiting {
+    for (id, panel_title, agent_title, info) in newly_waiting {
+        // The turn is over, so the transcript is complete — the one moment
+        // worth reading it. Polling for this would mean re-reading every open
+        // terminal's file on a timer to catch a change that happens a few times
+        // an hour.
+        record_terminal_usage(app, &info);
         emit_state(app, &id, TerminalState::Waiting, agent_title.clone());
         // A queued run finishes when its agent stops talking — the only
         // completion signal available from outside the CLI.
@@ -1252,6 +1257,47 @@ pub fn tick_terminal_states<R: Runtime>(app: &AppHandle<R>) {
             "Agent is waiting",
             &agent_title.unwrap_or_else(|| format!("{panel_title} finished its turn")),
         );
+    }
+}
+
+/// Files what a terminal's last turn cost, from what the CLI already wrote.
+///
+/// Only for terminals Hangar started with a session id of its own — without
+/// one there is no transcript to find, which is the case for a plain shell and
+/// for providers whose id we don't get to choose.
+fn record_terminal_usage<R: Runtime>(app: &AppHandle<R>, info: &TerminalInfo) {
+    let (Some(account_id), Some(session_uuid)) = (info.account_id.as_deref(), info.session_uuid.as_deref()) else { return };
+    let Some(db) = app.try_state::<DbConnection>() else { return };
+
+    let config_dir: Option<String> = {
+        let Ok(conn) = db.0.lock() else { return };
+        conn.query_row("SELECT config_dir FROM accounts WHERE id = ?1", rusqlite::params![account_id], |row| row.get(0)).ok()
+    };
+    let Some(config_dir) = config_dir else { return };
+
+    let turns = crate::usage_meter::read_claude_transcript(&config_dir, session_uuid);
+    if turns.is_empty() {
+        return;
+    }
+
+    // A terminal is opened against either a project or a session, and the
+    // column each id belongs in is different — putting a project id in
+    // `session_id` would trip the foreign key and silently drop the row.
+    let (project_id, session_id) = match info.kind {
+        TargetKind::Project => (Some(info.source_id.clone()), None),
+        TargetKind::Session => {
+            let project = db
+                .0
+                .lock()
+                .ok()
+                .and_then(|conn| conn.query_row("SELECT project_id FROM sessions WHERE id = ?1", rusqlite::params![info.source_id], |row| row.get(0)).ok());
+            (project, Some(info.source_id.clone()))
+        }
+    };
+
+    let written = crate::usage_meter::record_turns(&db, account_id, project_id.as_deref(), session_id.as_deref(), &turns);
+    if written > 0 {
+        log::info!("recorded {written} new turn(s) of usage for account {account_id}");
     }
 }
 

@@ -254,15 +254,32 @@ CREATE TABLE IF NOT EXISTS file_edits (
 
 CREATE TABLE IF NOT EXISTS turn_usage (
   id                    TEXT PRIMARY KEY,
-  session_id            TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  -- Nullable: a terminal opened on a project has no session row, and that's
+  -- where most of the real spending happens.
+  session_id            TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+  -- Who paid. The only question anyone actually asks of this table.
+  account_id            TEXT REFERENCES accounts(id) ON DELETE CASCADE,
+  project_id            TEXT REFERENCES projects(id) ON DELETE SET NULL,
   block_id              TEXT REFERENCES session_blocks(id) ON DELETE SET NULL,
+  model                 TEXT,
+  -- The CLI's own id for the message these numbers came from. Unique, because
+  -- the numbers are read by re-tailing a transcript the CLI keeps appending to:
+  -- without a key, a restart counts yesterday's turns again and silently
+  -- doubles the week.
+  provider_message_id   TEXT,
   input_tokens          INTEGER NOT NULL,
   output_tokens         INTEGER NOT NULL,
+  -- Kept apart from input because they are billed at different rates — an
+  -- order of magnitude apart — and a turn is routinely 28k cache-read against
+  -- 2 real input tokens. Folding them together would make every estimate wrong.
   cache_read_tokens     INTEGER,
   cache_creation_tokens INTEGER,
   cost_usd              REAL,
   created_at            TEXT NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_turn_usage_message ON turn_usage(provider_message_id) WHERE provider_message_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_turn_usage_account ON turn_usage(account_id, created_at);
 
 -- Which terminals were open when Hangar last closed, so they can be reopened
 -- on the next launch (and, when they carry a Claude session id, resumed).

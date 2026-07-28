@@ -19,6 +19,7 @@ mod run_queue;
 mod task_sources;
 mod terminals;
 mod turn_runner;
+mod usage_meter;
 mod usage_scraper;
 
 use db::DbConnection;
