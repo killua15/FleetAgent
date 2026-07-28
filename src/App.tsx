@@ -12,6 +12,12 @@ import { SplitView } from './screens/SplitView';
 import { GeneralSettings } from './screens/GeneralSettings';
 import { TaskSettings } from './screens/TaskSettings';
 import { TaskBoard } from './screens/TaskBoard';
+import { UpdateBanner } from './components/UpdateBanner';
+
+// Inline rather than a module: two rules that exist only to let the banner sit
+// above a screen that expects the full viewport height.
+const appShell = 'hangar-shell';
+const appBody = 'hangar-body';
 import { Changes } from './screens/Changes';
 import { RotationSettings } from './screens/RotationSettings';
 import { SharedMemorySettings } from './screens/SharedMemorySettings';
@@ -129,7 +135,15 @@ export default function App() {
           <AuthProvider>
             <NavigationProvider>
               <GlobalShortcuts />
-              <Screens />
+              {/* Above every screen and outside the router: an update is true
+                  wherever you happen to be, and it must not vanish because you
+                  navigated. */}
+              <div className={appShell}>
+                <UpdateBanner />
+                <div className={appBody}>
+                  <Screens />
+                </div>
+              </div>
             </NavigationProvider>
           </AuthProvider>
         </TooltipProvider>

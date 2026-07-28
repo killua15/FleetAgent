@@ -27,6 +27,11 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+# Updates that don't need Apple. The updater signs with its own keypair, so an
+# unsigned build still gets in-app updates — the Gatekeeper warning is paid
+# once, at the first install, instead of on every fix.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-log = "2"
 log = "0.4"

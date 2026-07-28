@@ -35,6 +35,15 @@
   --gemini: #7aa2ff;
   --geminiD: rgba(122, 162, 255, 0.13);
 
+  /* The one surface that never dissolves: popovers, palettes and modals.
+     It was defined only inside the glass theme, so in dark and light
+     `background: var(--overlay)` resolved to nothing and every one of them
+     rendered transparent — you could read the terminal straight through the
+     account switcher. Defined in all three themes now, which is what a token
+     used by seven files has to be. */
+  --overlay: #1b1c26;
+  --overlay-line: rgba(255, 255, 255, 0.12);
+
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
 
   --font-ui: 'IBM Plex Sans', system-ui, sans-serif;
@@ -70,6 +79,9 @@
 
   --gemini: #3f66d6;
   --geminiD: rgba(63, 102, 214, 0.1);
+
+  --overlay: #ffffff;
+  --overlay-line: rgba(30, 30, 60, 0.14);
 
   --shadow: 0 8px 28px rgba(30, 30, 60, 0.14);
 }
