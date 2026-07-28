@@ -435,6 +435,181 @@ pub async fn checkout_branch(path: String, branch: String, is_remote: bool) -> R
     crate::blocking::run_blocking(move || checkout_branch_impl(Path::new(&path), &branch, is_remote)).await?
 }
 
+/// What a worktree currently holds, split the way you actually act on it.
+///
+/// Two lists, deliberately not merged. **Uncommitted** answers "what is the
+/// agent doing to my repo right now" and changes second by second;
+/// **committed** answers "what did this task produce, is it ready to PR" and
+/// is the unit you review. Showing them as one list would mean a file that's
+/// both — edited now *and* changed earlier in the branch — silently loses one
+/// of its two states.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeChanges {
+    /// What the branch is measured against: its upstream when it has one, else
+    /// the project's default branch. The same one `ahead_behind_vs_upstream`
+    /// uses, so the card's ▲2 and this diff can never disagree.
+    pub base: String,
+    pub uncommitted: Vec<ChangedFile>,
+    pub committed: Vec<ChangedFile>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangedFile {
+    pub path: String,
+    pub status: FileStatus,
+    pub added: i64,
+    pub removed: i64,
+    /// True when the file is staged — shown, but not acted on: this view is
+    /// read-only, and a stage/discard button here is where one mis-click
+    /// destroys an agent's work with no undo.
+    pub staged: bool,
+}
+
+/// `git status --porcelain` plus `--numstat`, joined.
+///
+/// Two calls rather than one because `status` says *what* changed and
+/// `numstat` says *how much*, and no single porcelain command gives both.
+fn uncommitted_changes(cwd: &Path) -> Vec<ChangedFile> {
+    let status = git_capture(cwd, &["status", "--porcelain"]).unwrap_or_default();
+    let unstaged = numstat_map(&git_capture(cwd, &["diff", "--numstat"]).unwrap_or_default());
+    let staged = numstat_map(&git_capture(cwd, &["diff", "--cached", "--numstat"]).unwrap_or_default());
+
+    let mut files = Vec::new();
+    for line in status.lines() {
+        if line.len() < 4 {
+            continue;
+        }
+        let (codes, rest) = line.split_at(2);
+        // A rename reads `R  old -> new`; the new name is the one to show, same
+        // convention as everywhere else here.
+        let path = rest.trim().rsplit(" -> ").next().unwrap_or("").trim_matches('"').to_string();
+        if path.is_empty() {
+            continue;
+        }
+        let index = codes.chars().next().unwrap_or(' ');
+        let worktree = codes.chars().nth(1).unwrap_or(' ');
+        let status = match (index, worktree) {
+            ('?', _) => FileStatus::Untracked,
+            ('A', _) => FileStatus::Added,
+            (_, 'D') | ('D', _) => FileStatus::Deleted,
+            _ => FileStatus::Modified,
+        };
+        let (added, removed) = staged
+            .get(&path)
+            .or_else(|| unstaged.get(&path))
+            .copied()
+            // An untracked file has no diff to count: every line of it is new,
+            // and saying nothing would make a 400-line addition look like a
+            // rounding error next to a 2-line edit.
+            .unwrap_or_else(|| match status {
+                FileStatus::Untracked => (count_lines(&cwd.join(&path)), 0),
+                _ => (0, 0),
+            });
+        files.push(ChangedFile { path, status, added, removed, staged: index != ' ' && index != '?' });
+    }
+    files
+}
+
+fn count_lines(path: &Path) -> i64 {
+    // Capped: a checked-in 200 MB fixture shouldn't be read into memory to put
+    // a number next to its name.
+    match std::fs::metadata(path).map(|m| m.len()) {
+        Ok(size) if size < 2_000_000 => std::fs::read_to_string(path).map(|text| text.lines().count() as i64).unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn numstat_map(raw: &str) -> std::collections::BTreeMap<String, (i64, i64)> {
+    raw.lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let added = fields.next()?;
+            let removed = fields.next()?;
+            let path = fields.last()?.trim().to_string();
+            // Binary files come back as `-\t-\tpath`, which parses to zero and
+            // is the honest answer: there are no lines to count.
+            Some((path, (added.parse().unwrap_or(0), removed.parse().unwrap_or(0))))
+        })
+        .collect()
+}
+
+/// What this branch added on top of its base, `base...HEAD` — three dots, so
+/// commits that landed on the base *after* this branch started don't show up
+/// as if this branch had removed them.
+fn committed_changes(cwd: &Path, base: &str) -> Vec<ChangedFile> {
+    let range = format!("{base}...HEAD");
+    let numstat = numstat_map(&git_capture(cwd, &["diff", "--numstat", &range]).unwrap_or_default());
+    let name_status = git_capture(cwd, &["diff", "--name-status", &range]).unwrap_or_default();
+    parse_commit_file_changes(&name_status)
+        .into_iter()
+        .map(|change| {
+            let (added, removed) = numstat.get(&change.path).copied().unwrap_or((0, 0));
+            ChangedFile { path: change.path, status: change.status, added, removed, staged: false }
+        })
+        .collect()
+}
+
+fn resolve_base(cwd: &Path, requested: Option<String>) -> String {
+    if let Some(base) = requested.filter(|b| !b.trim().is_empty()) {
+        return base;
+    }
+    if let Ok(upstream) = git_capture(cwd, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]) {
+        if !upstream.is_empty() {
+            return upstream;
+        }
+    }
+    let default = detect_default_branch(cwd);
+    // A worktree sitting *on* the default branch has nothing to compare against
+    // itself; its upstream is the honest base.
+    if current_branch(cwd).as_deref() == Some(default.as_str()) {
+        return format!("origin/{default}");
+    }
+    default
+}
+
+#[tauri::command]
+pub async fn get_worktree_changes(path: String, base: Option<String>) -> Result<WorktreeChanges, String> {
+    crate::blocking::run_blocking(move || {
+        let cwd = Path::new(&path);
+        if !is_git_repo(cwd) && git_capture(cwd, &["rev-parse", "--git-dir"]).is_err() {
+            return Err(format!("{path} isn't a git worktree"));
+        }
+        let base = resolve_base(cwd, base);
+        Ok(WorktreeChanges { uncommitted: uncommitted_changes(cwd), committed: committed_changes(cwd, &base), base })
+    })
+    .await?
+}
+
+/// One file's before/after, for either list.
+///
+/// `committed` picks which question is being asked: the branch's version
+/// against the base, or the working copy against the last commit. The same
+/// file can legitimately appear in both with different content.
+#[tauri::command]
+pub async fn get_worktree_file_diff(path: String, file_path: String, base: Option<String>, committed: bool) -> Result<CommitFileDiff, String> {
+    crate::blocking::run_blocking(move || {
+        let cwd = Path::new(&path);
+        let base = resolve_base(cwd, base);
+        if committed {
+            return CommitFileDiff {
+                old_text: git_capture(cwd, &["show", &format!("{base}:{file_path}")]).unwrap_or_default(),
+                new_text: git_capture(cwd, &["show", &format!("HEAD:{file_path}")]).unwrap_or_default(),
+            };
+        }
+        CommitFileDiff {
+            // Empty for a file that didn't exist at HEAD — an untracked file —
+            // which is what the differ already reads as "all of this is new".
+            old_text: git_capture(cwd, &["show", &format!("HEAD:{file_path}")]).unwrap_or_default(),
+            // Straight off disk: this is the whole point of the uncommitted
+            // view, and `git show` can't see what was never committed.
+            new_text: std::fs::read_to_string(cwd.join(&file_path)).unwrap_or_default(),
+        }
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -445,6 +620,100 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("hangar-test-gitpanel-{label}-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// The two lists have to stay apart. A file edited *now* and a file this
+    /// branch changed *earlier* are different questions with different
+    /// answers, and one file can be in both at once — which is exactly the
+    /// case a single merged list would silently collapse.
+    #[test]
+    fn uncommitted_and_committed_changes_are_reported_separately() {
+        let (remote_dir, work_dir) = setup_repo_with_remote("changes");
+        git_capture(&work_dir, &["checkout", "-b", "feature"]).unwrap();
+
+        // Committed on the branch: one edit, one new file.
+        std::fs::write(work_dir.join("README.md"), "hello\nfrom the branch\n").unwrap();
+        std::fs::write(work_dir.join("added.txt"), "one\ntwo\n").unwrap();
+        git_capture(&work_dir, &["add", "-A"]).unwrap();
+        git_capture(&work_dir, &["commit", "-m", "branch work"]).unwrap();
+
+        // And then, uncommitted: the same file again, plus an untracked one.
+        std::fs::write(work_dir.join("README.md"), "hello\nfrom the branch\nand a live edit\n").unwrap();
+        std::fs::write(work_dir.join("scratch.txt"), "a\nb\nc\n").unwrap();
+
+        let changes = tauri::async_runtime::block_on(get_worktree_changes(
+            work_dir.to_string_lossy().to_string(),
+            Some("main".to_string()),
+        ))
+        .unwrap();
+
+        let uncommitted: Vec<&str> = changes.uncommitted.iter().map(|f| f.path.as_str()).collect();
+        assert!(uncommitted.contains(&"README.md"), "the live edit belongs here: {uncommitted:?}");
+        assert!(uncommitted.contains(&"scratch.txt"), "an untracked file is a change: {uncommitted:?}");
+
+        let committed: Vec<&str> = changes.committed.iter().map(|f| f.path.as_str()).collect();
+        assert!(committed.contains(&"added.txt"), "committed branch work: {committed:?}");
+        assert!(committed.contains(&"README.md"), "a file can be in both lists at once: {committed:?}");
+
+        let scratch = changes.uncommitted.iter().find(|f| f.path == "scratch.txt").unwrap();
+        assert_eq!(scratch.status, FileStatus::Untracked);
+        assert_eq!(scratch.added, 3, "an untracked file counts all its lines — otherwise a 400-line addition reads as nothing");
+
+        let _ = std::fs::remove_dir_all(&remote_dir);
+        let _ = std::fs::remove_dir_all(&work_dir);
+    }
+
+    /// `base...HEAD`, not `base..HEAD`. With two dots, every commit that
+    /// landed on the base after this branch started shows up as if the branch
+    /// had deleted it — which on a busy `dev` is most of the diff.
+    #[test]
+    fn commits_that_landed_on_the_base_later_are_not_counted_as_this_branch_s_work() {
+        let (remote_dir, work_dir) = setup_repo_with_remote("three-dot");
+        git_capture(&work_dir, &["checkout", "-b", "feature"]).unwrap();
+        std::fs::write(work_dir.join("mine.txt"), "mine\n").unwrap();
+        git_capture(&work_dir, &["add", "-A"]).unwrap();
+        git_capture(&work_dir, &["commit", "-m", "my work"]).unwrap();
+
+        // Meanwhile, someone else lands something on main.
+        git_capture(&work_dir, &["checkout", "main"]).unwrap();
+        std::fs::write(work_dir.join("theirs.txt"), "theirs\n").unwrap();
+        git_capture(&work_dir, &["add", "-A"]).unwrap();
+        git_capture(&work_dir, &["commit", "-m", "their work"]).unwrap();
+        git_capture(&work_dir, &["checkout", "feature"]).unwrap();
+
+        let changes = tauri::async_runtime::block_on(get_worktree_changes(
+            work_dir.to_string_lossy().to_string(),
+            Some("main".to_string()),
+        ))
+        .unwrap();
+
+        let committed: Vec<&str> = changes.committed.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(committed, vec!["mine.txt"], "only this branch's own work: {committed:?}");
+
+        let _ = std::fs::remove_dir_all(&remote_dir);
+        let _ = std::fs::remove_dir_all(&work_dir);
+    }
+
+    /// The uncommitted view reads the working copy off disk, because `git
+    /// show` cannot see what was never committed — the exact content the user
+    /// is asking about.
+    #[test]
+    fn an_uncommitted_diff_reads_the_file_from_disk() {
+        let (remote_dir, work_dir) = setup_repo_with_remote("disk-diff");
+        std::fs::write(work_dir.join("README.md"), "hello\nedited but not committed\n").unwrap();
+
+        let diff = tauri::async_runtime::block_on(get_worktree_file_diff(
+            work_dir.to_string_lossy().to_string(),
+            "README.md".to_string(),
+            Some("main".to_string()),
+            false,
+        ))
+        .unwrap();
+        assert!(diff.new_text.contains("edited but not committed"));
+        assert!(!diff.old_text.contains("edited but not committed"), "the old side is HEAD, not the disk");
+
+        let _ = std::fs::remove_dir_all(&remote_dir);
+        let _ = std::fs::remove_dir_all(&work_dir);
     }
 
     /// Real bare repo as `origin` + a real working clone with an initial

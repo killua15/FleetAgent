@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useNavigation } from '../nav/NavigationProvider';
 import { extractUrl, stripAnsi } from '../lib/ansi';
-import { PROVIDER_META, type Billing, type DiscoveredLogin, type NewAccount, type Provider, type Scope } from '../types/account';
+import { KEY_ONLY_PROVIDERS, LOGIN_EXPECTS_CODE, PROVIDER_META, type Billing, type DiscoveredLogin, type NewAccount, type Provider, type Scope } from '../types/account';
 import type { ApiKeyCheck, AuthStatus, LoginOutputEvent, LoginSession, ProviderAvailability } from '../types/login';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -15,16 +15,30 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import styles from './AddAccount.module.css';
 
 const STEP_LABELS = ['provider', 'billing', 'login', 'details'] as const;
-const PROVIDERS: Provider[] = ['claude', 'codex', 'gemini'];
+/** Derived from the metadata rather than listed again: a provider added to
+ * `PROVIDER_META` and forgotten here simply never appears in the wizard, which
+ * is how Kimi shipped invisible. */
+const PROVIDERS = Object.keys(PROVIDER_META) as Provider[];
 const STATUS_POLL_MS = 1500;
+/** Consecutive failed checks before giving up. Several, because the check
+ * spawns a CLI and one slow answer is not the same as a broken login. */
+const MAX_POLL_FAILURES = 5;
 
 export function AddAccount() {
   const { back } = useNavigation();
 
   const [availability, setAvailability] = useState<Record<string, boolean>>({});
   const [step, setStep] = useState(1);
-  const [provider, setProvider] = useState<Provider>('claude');
+  const [provider, setProviderState] = useState<Provider>('claude');
   const [billing, setBilling] = useState<Billing>('sub');
+  /** Picking a key-only provider settles the billing question, so it's answered
+   * here instead of leaving the wizard on a choice whose only option is
+   * hidden. */
+  const setProvider = (next: Provider) => {
+    setProviderState(next);
+    if (KEY_ONLY_PROVIDERS.includes(next)) setBilling('key');
+  };
+
   const [name, setName] = useState('');
   const [scope, setScope] = useState<Scope>('work');
   const [monthlyCap, setMonthlyCap] = useState('150');
@@ -97,16 +111,26 @@ export function AddAccount() {
     invoke<LoginSession>('begin_login', { provider, name: accountName })
       .then((session) => {
         setLoginSession(session);
+        // A single failed poll used to stop the loop for good, silently — so
+        // one transient error (a slow CLI, a status command that hiccups) left
+        // the wizard waiting forever for a state it had stopped looking for.
+        // Now it keeps looking, and gives up loudly rather than quietly.
+        let consecutiveFailures = 0;
         pollRef.current = window.setInterval(async () => {
           try {
             const status = await invoke<AuthStatus>('check_login_status', { loginId: session.loginId });
+            consecutiveFailures = 0;
+            setLoginError(null);
             if (status.loggedIn) {
               setLoggedIn(true);
               stopPolling();
             }
-          } catch {
-            // session may have been cancelled — stop quietly
-            stopPolling();
+          } catch (e) {
+            consecutiveFailures += 1;
+            if (consecutiveFailures >= MAX_POLL_FAILURES) {
+              stopPolling();
+              setLoginError(`Couldn't tell whether the login finished: ${e}`);
+            }
           }
         }, STATUS_POLL_MS);
       })
@@ -317,18 +341,25 @@ export function AddAccount() {
                 value={billing}
                 onValueChange={(value) => setBilling(value as Billing)}
               >
-                <Label className={`${styles.card2} ${billing === 'sub' ? styles.selected : ''}`}>
-                  <RadioGroupItem value="sub" className="sr-only" />
-                  <span className={styles.billingName}>Subscription</span>
-                  <span className={styles.billingDesc}>
-                    Login via browser/CLI. Hangar tracks the 5h session + weekly windows.
-                  </span>
-                </Label>
+                {/* Hidden rather than disabled for a key-only provider: an
+                    option you can see but never choose is a question the user
+                    has to answer and then discover was rhetorical. */}
+                {!KEY_ONLY_PROVIDERS.includes(provider) && (
+                  <Label className={`${styles.card2} ${billing === 'sub' ? styles.selected : ''}`}>
+                    <RadioGroupItem value="sub" className="sr-only" />
+                    <span className={styles.billingName}>Subscription</span>
+                    <span className={styles.billingDesc}>
+                      Login via browser/CLI. Hangar tracks the 5h session + weekly windows.
+                    </span>
+                  </Label>
+                )}
                 <Label className={`${styles.card2} ${billing === 'key' ? styles.selected : ''}`}>
                   <RadioGroupItem value="key" className="sr-only" />
                   <span className={styles.billingName}>API key</span>
                   <span className={styles.billingDesc}>
-                    Pay per token. Hangar tracks accumulated spend and enforces your cap.
+                    {KEY_ONLY_PROVIDERS.includes(provider)
+                      ? 'Kimi authenticates with a Moonshot API key — there is no subscription login. It runs through Claude Code against Moonshot’s Anthropic-compatible endpoint, so everything else works the same.'
+                      : 'Pay per token. Hangar tracks accumulated spend and enforces your cap.'}
                   </span>
                 </Label>
               </RadioGroup>
@@ -435,7 +466,15 @@ export function AddAccount() {
                   Open sign-in page ↗
                 </Button>
               )}
-              {!loggedIn && loginSession && (
+              {/* Only for a CLI that actually asks for one. Codex completes
+                  through the browser redirect, so a paste box there is a
+                  prompt for something that will never arrive. */}
+              {!loggedIn && loginSession && !LOGIN_EXPECTS_CODE.includes(provider) && (
+                <span className={styles.hint}>
+                  Finish signing in in your browser — this window picks it up on its own, nothing to paste here.
+                </span>
+              )}
+              {!loggedIn && loginSession && LOGIN_EXPECTS_CODE.includes(provider) && (
                 <div style={{ display: 'flex', gap: 8 }}>
                   <Input
                     className={styles.input}

@@ -188,11 +188,37 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<(), String> {
 /// project's local HEAD (not the remote default) so the subsession starts
 /// from whatever's already checked out, including uncommitted... no —
 /// worktrees only carry committed history, same as real `git worktree add`.
-fn create_linked_worktree(project_path: &str, worktree_dir: &Path, branch: &str) -> Result<(), String> {
+/// Cuts the worktree. `base` is the branch (or ref) the new one starts from;
+/// `None` means whatever the project has checked out.
+///
+/// Naming the base matters more than it looks: branching off whatever happened
+/// to be checked out means a worktree cut while you were on a half-finished
+/// feature silently inherits it, and the agent's diff then contains work that
+/// isn't its own.
+/// Checks an **existing** branch out into a worktree.
+///
+/// The failure worth handling is git refusing because that branch is already
+/// checked out somewhere — most likely the user's own main clone, precisely
+/// because they were working on it. Git's own message names the other path, so
+/// it's kept and prefixed rather than replaced with something vaguer.
+fn attach_linked_worktree(project_path: &str, worktree_dir: &Path, branch: &str) -> Result<(), String> {
     if let Some(parent) = worktree_dir.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    run_git(Path::new(project_path), &["worktree", "add", &worktree_dir.to_string_lossy(), "-b", branch])
+    run_git(Path::new(project_path), &["worktree", "add", &worktree_dir.to_string_lossy(), branch])
+        .map_err(|e| format!("could not check out `{branch}` in a worktree: {e}"))
+}
+
+fn create_linked_worktree(project_path: &str, worktree_dir: &Path, branch: &str, base: Option<&str>) -> Result<(), String> {
+    if let Some(parent) = worktree_dir.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let dir = worktree_dir.to_string_lossy().to_string();
+    let mut args = vec!["worktree", "add", &dir, "-b", branch];
+    if let Some(base) = base {
+        args.push(base);
+    }
+    run_git(Path::new(project_path), &args)
 }
 
 /// Recursively copies a project directory into an isolated folder, skipping
@@ -285,6 +311,74 @@ fn run_setup_command(worktree_dir: &Path, command: &str) -> Result<String, Strin
 /// `create_linked_worktree`/`init_fresh_git_repo`). `send_message` already
 /// prefers `worktree_path` over the project's own path as the turn's cwd
 /// once this session has one set.
+/// Everything the worktree machinery needs, decoupled from *who asked*.
+///
+/// Exists because a worktree stopped being an agent-only idea: the terminals
+/// create them too, and they have no parent session to hang off. The two callers
+/// differ only in where the project comes from and what a session row should say
+/// about model/effort/mode — everything below (the real `git worktree add`, the
+/// copy fallback for a non-repo, the `.env` copy, the gitignore safeguard, the
+/// setup command) is identical and must stay identical.
+pub(crate) struct WorktreeRequest {
+    pub project_id: String,
+    pub project_path: String,
+    pub default_setup_command: Option<String>,
+    /// The session this branches off, when there is one. `None` for a worktree
+    /// created straight from a project — which is what a terminal does.
+    pub parent_session_id: Option<String>,
+    pub name: String,
+    pub account_id: String,
+    pub model: String,
+    pub effort: String,
+    pub mode: String,
+    pub setup_command: Option<String>,
+    pub branch: WorktreeBranch,
+}
+
+/// Which branch a worktree ends up on.
+///
+/// Three cases and not one, because the three callers want genuinely different
+/// things and collapsing them is what made the task flow impossible:
+///
+/// - An agent subsession or a terminal wants a **namespaced** branch
+///   (`subsession/…`, `hangar/…`): deterministic, and it can't collide with a
+///   branch the user actually cares about.
+/// - Working a task wants the branch **named exactly** as the task — `T2`, not
+///   `hangar/t2` — because that name is what the PR, the CI and the rest of the
+///   team see. A namespace there would be Hangar putting itself in the middle
+///   of someone else's convention.
+/// - And sometimes the branch **already exists** and the point is to check it
+///   out, not to make another one.
+#[derive(Debug, Clone)]
+pub enum WorktreeBranch {
+    /// Check out a branch that already exists in this repo.
+    Existing(String),
+    /// Create `<prefix>/<slug(name)>`, off `base` or off whatever is checked
+    /// out when `base` is `None`.
+    Namespaced { name: String, prefix: &'static str, base: Option<String> },
+    /// Create a branch with exactly this name. For task branches, where the
+    /// name is not ours to decorate.
+    Exact { name: String, base: Option<String> },
+}
+
+impl WorktreeBranch {
+    /// The branch's final name — what `git branch` will report inside the
+    /// worktree.
+    pub fn resolved_name(&self) -> String {
+        match self {
+            WorktreeBranch::Existing(name) => name.clone(),
+            WorktreeBranch::Namespaced { name, prefix, .. } => format!("{prefix}/{}", slugify(name)),
+            WorktreeBranch::Exact { name, .. } => name.clone(),
+        }
+    }
+}
+
+/// What a terminal-created worktree records for the columns a terminal never
+/// reads: the CLI picks its own model and permission mode once it's running, so
+/// storing a guess here would be a second source of truth nobody consults.
+pub(crate) const TERMINAL_WORKTREE_EFFORT: &str = "high";
+pub(crate) const TERMINAL_WORKTREE_MODE: &str = "ask_edits";
+
 #[tauri::command]
 pub async fn create_subsession<R: tauri::Runtime>(app: AppHandle<R>, input: NewSubsession) -> Result<Session, String> {
     crate::blocking::run_blocking(move || {
@@ -314,29 +408,202 @@ pub async fn create_subsession<R: tauri::Runtime>(app: AppHandle<R>, input: NewS
             (project_id, project_path, default_setup_command)
         };
 
+        let session_id = create_worktree_session(
+            &app,
+            &db,
+            WorktreeRequest {
+                project_id,
+                project_path,
+                default_setup_command,
+                parent_session_id: Some(input.parent_session_id),
+                name: input.name.clone(),
+                account_id: input.account_id,
+                model: input.model,
+                effort: input.effort,
+                mode: input.mode,
+                setup_command: input.setup_command,
+                branch: WorktreeBranch::Namespaced { name: input.name.clone(), prefix: "subsession", base: None },
+            },
+        )?;
+
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT * FROM sessions WHERE id = ?1", params![session_id], row_to_session)
+            .map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+/// Cuts a worktree for a project with no session behind it, and returns the
+/// session id that owns it — what a terminal opens against.
+///
+/// The session row here is a container for the working directory, not an agent:
+/// nothing will run a headless turn on it. That's why model/effort/mode aren't
+/// asked for (see `TERMINAL_WORKTREE_*`).
+#[tauri::command]
+pub async fn create_worktree_for_project<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    project_id: String,
+    name: String,
+    account_id: String,
+    setup_command: Option<String>,
+    base_branch: Option<String>,
+) -> Result<Session, String> {
+    crate::blocking::run_blocking(move || {
+        let db = app.state::<DbConnection>();
+        let (project_path, default_setup_command, model) = {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            conn.query_row("SELECT id FROM accounts WHERE id = ?1", params![account_id], |row| row.get::<_, String>(0))
+                .map_err(|e| format!("account lookup failed: {e}"))?;
+            let (project_path, default_setup_command): (String, Option<String>) = conn
+                .query_row("SELECT path, default_setup_command FROM projects WHERE id = ?1", params![project_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
+                .map_err(|e| format!("project lookup failed: {e}"))?;
+            // Inherited from the project's newest session when there is one,
+            // purely so the row looks like its neighbours; empty otherwise.
+            let model: String = conn
+                .query_row(
+                    "SELECT model FROM sessions WHERE project_id = ?1 ORDER BY started_at DESC LIMIT 1",
+                    params![project_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or_default();
+            (project_path, default_setup_command, model)
+        };
+
+        // A worktree is a git object. Without a repo there is nothing to branch
+        // from, no base to choose, and no diff to review at the end — so this
+        // says so instead of quietly copying the folder into something that
+        // looks like a worktree and behaves like a photocopy.
+        if !project_is_git_repo(&project_path) {
+            return Err(format!(
+                "{project_path} isn't a git repository, so Hangar can't cut a worktree for it. Run `git init` there (and make one commit) first."
+            ));
+        }
+
+        let session_id = create_worktree_session(
+            &app,
+            &db,
+            WorktreeRequest {
+                project_id,
+                project_path,
+                default_setup_command,
+                parent_session_id: None,
+                name: name.clone(),
+                account_id,
+                model,
+                effort: TERMINAL_WORKTREE_EFFORT.to_string(),
+                mode: TERMINAL_WORKTREE_MODE.to_string(),
+                setup_command,
+                branch: WorktreeBranch::Namespaced { name: name.clone(), prefix: "hangar", base: base_branch },
+            },
+        )?;
+
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT * FROM sessions WHERE id = ?1", params![session_id], row_to_session)
+            .map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+/// Cuts a worktree on a branch chosen by the caller — the task flow's entry
+/// point, where the branch is the task's own name rather than something Hangar
+/// invents.
+///
+/// Shares everything below with the other two callers; only the branch decision
+/// differs, which is the whole reason `WorktreeBranch` exists.
+pub(crate) async fn create_worktree_on_branch<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    project_id: String,
+    branch: WorktreeBranch,
+    account_id: String,
+) -> Result<Session, String> {
+    let name = branch.resolved_name();
+    crate::blocking::run_blocking(move || {
+        let db = app.state::<DbConnection>();
+        let (project_path, default_setup_command, model) = {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            conn.query_row("SELECT id FROM accounts WHERE id = ?1", params![account_id], |row| row.get::<_, String>(0))
+                .map_err(|e| format!("account lookup failed: {e}"))?;
+            let (project_path, default_setup_command): (String, Option<String>) = conn
+                .query_row("SELECT path, default_setup_command FROM projects WHERE id = ?1", params![project_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
+                .map_err(|e| format!("project lookup failed: {e}"))?;
+            let model: String = conn
+                .query_row("SELECT model FROM sessions WHERE project_id = ?1 ORDER BY started_at DESC LIMIT 1", params![project_id], |row| row.get(0))
+                .unwrap_or_default();
+            (project_path, default_setup_command, model)
+        };
+
+        if !project_is_git_repo(&project_path) {
+            return Err(format!("{project_path} isn't a git repository, so Hangar can't cut a worktree for it."));
+        }
+
+        let session_id = create_worktree_session(
+            &app,
+            &db,
+            WorktreeRequest {
+                project_id,
+                project_path,
+                default_setup_command,
+                parent_session_id: None,
+                name,
+                account_id,
+                model,
+                effort: TERMINAL_WORKTREE_EFFORT.to_string(),
+                mode: TERMINAL_WORKTREE_MODE.to_string(),
+                setup_command: None,
+                branch,
+            },
+        )?;
+
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT * FROM sessions WHERE id = ?1", params![session_id], row_to_session)
+            .map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+/// The worktree creation itself — unchanged behaviour, just no longer tied to
+/// having a parent session.
+pub(crate) fn create_worktree_session<R: tauri::Runtime>(app: &AppHandle<R>, db: &DbConnection, input: WorktreeRequest) -> Result<String, String> {
+    {
+        let project_path = &input.project_path;
         let slug = slugify(&input.name);
-        let worktree_dir = unique_worktree_dir(&project_path, &slug);
-        let is_git = project_is_git_repo(&project_path);
-        let branch = format!("subsession/{slug}");
+        let worktree_dir = unique_worktree_dir(project_path, &slug);
+        let is_git = project_is_git_repo(project_path);
+        let branch = input.branch.resolved_name();
 
         let worktree_kind = if is_git {
-            create_linked_worktree(&project_path, &worktree_dir, &branch)?;
+            match &input.branch {
+                // Attaching, not creating: the branch is already there and the
+                // point is to work on it.
+                WorktreeBranch::Existing(name) => attach_linked_worktree(project_path, &worktree_dir, name)?,
+                WorktreeBranch::Namespaced { base, .. } | WorktreeBranch::Exact { base, .. } => {
+                    create_linked_worktree(project_path, &worktree_dir, &branch, base.as_deref())?
+                }
+            }
             "linked"
         } else {
-            copy_project_dir(Path::new(&project_path), &worktree_dir)?;
+            copy_project_dir(Path::new(project_path), &worktree_dir)?;
             init_fresh_git_repo(&worktree_dir);
             "copy"
         };
         let worktree_branch: Option<String> = if is_git { Some(branch) } else { None };
 
-        copy_env_files(&project_path, &worktree_dir);
-        ensure_worktree_dir_ignored(&project_path);
+        copy_env_files(project_path, &worktree_dir);
+        ensure_worktree_dir_ignored(project_path);
+        // Written into the worktree's own config, not just passed as
+        // environment: the agent runs `git commit` itself in here, in a process
+        // whose environment Hangar no longer controls once the shell is live.
+        crate::git_identity::apply_identity_to_worktree(app, &input.project_id, &worktree_dir);
 
-        let effective_setup_command = input.setup_command.clone().or(default_setup_command);
+        let effective_setup_command = input.setup_command.clone().or(input.default_setup_command.clone());
 
         let session_id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        let name = if input.name.trim().is_empty() { "untitled subsession".to_string() } else { input.name.trim().to_string() };
+        let name = if input.name.trim().is_empty() { "untitled worktree".to_string() } else { input.name.trim().to_string() };
         {
             let conn = db.0.lock().map_err(|e| e.to_string())?;
             conn.execute(
@@ -345,7 +612,7 @@ pub async fn create_subsession<R: tauri::Runtime>(app: AppHandle<R>, input: NewS
                 params![
                     session_id,
                     name,
-                    project_id,
+                    input.project_id,
                     input.parent_session_id,
                     worktree_dir.to_string_lossy().to_string(),
                     worktree_branch,
@@ -359,34 +626,32 @@ pub async fn create_subsession<R: tauri::Runtime>(app: AppHandle<R>, input: NewS
             )
             .map_err(|e| e.to_string())?;
             if let Some(cmd) = &input.setup_command {
-                let _ = conn.execute(
-                    "UPDATE projects SET default_setup_command = ?2 WHERE id = ?1",
-                    params![project_id, cmd],
-                );
+                let _ = conn.execute("UPDATE projects SET default_setup_command = ?2 WHERE id = ?1", params![input.project_id, cmd]);
             }
         }
 
-        let kind_label = if is_git { format!("linked worktree on branch `{}`", worktree_branch.as_deref().unwrap_or("")) } else { "copied folder with a fresh git init".to_string() };
-        process_manager::emit_block(&app, &session_id, "agent", &format!("↳ subsession created — {kind_label} at {}", worktree_dir.display()));
+        let kind_label = if is_git {
+            format!("linked worktree on branch `{}`", worktree_branch.as_deref().unwrap_or(""))
+        } else {
+            "copied folder with a fresh git init".to_string()
+        };
+        process_manager::emit_block(app, &session_id, "agent", &format!("↳ worktree created — {kind_label} at {}", worktree_dir.display()));
 
         if let Some(cmd) = &effective_setup_command {
-            process_manager::emit_block(&app, &session_id, "agent", &format!("⋯ running setup command `{cmd}`…"));
+            process_manager::emit_block(app, &session_id, "agent", &format!("⋯ running setup command `{cmd}`…"));
             match run_setup_command(&worktree_dir, cmd) {
                 Ok(out) => {
                     let text = if out.is_empty() { format!("setup command `{cmd}` finished") } else { format!("setup command `{cmd}`:\n{out}") };
-                    process_manager::emit_block(&app, &session_id, "agent", &text);
+                    process_manager::emit_block(app, &session_id, "agent", &text);
                 }
                 Err(e) => {
-                    process_manager::emit_block(&app, &session_id, "agent", &format!("setup command `{cmd}` failed: {e}"));
+                    process_manager::emit_block(app, &session_id, "agent", &format!("setup command `{cmd}` failed: {e}"));
                 }
             }
         }
 
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        conn.query_row("SELECT * FROM sessions WHERE id = ?1", params![session_id], row_to_session)
-            .map_err(|e| e.to_string())
-    })
-    .await?
+        Ok(session_id)
+    }
 }
 
 #[tauri::command]
@@ -902,6 +1167,28 @@ pub fn list_session_files(db: State<DbConnection>, session_id: String) -> Result
     Ok(tree)
 }
 
+/// Joins a caller-supplied relative path onto a root **and refuses to leave
+/// it**.
+///
+/// `Path::join` is not a safe primitive for this: given an absolute path it
+/// discards the base entirely (`join("/etc/passwd")` *is* `/etc/passwd`), and it
+/// happily keeps `..` components. That was fine while the only caller was
+/// AgentPanel's own tree, which only ever sends paths it generated itself — and
+/// it stops being fine the moment a general file screen makes the path an input.
+/// So the check lives here, once, instead of at each call site.
+///
+/// Both sides are canonicalized, so a symlink pointing out of the tree is caught
+/// too, not just a literal `../`.
+pub(crate) fn resolve_path_within(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let root = root.canonicalize().map_err(|e| format!("cannot resolve the working directory: {e}"))?;
+    let candidate = root.join(rel);
+    let resolved = candidate.canonicalize().map_err(|e| format!("cannot resolve {rel}: {e}"))?;
+    if !resolved.starts_with(&root) {
+        return Err(format!("{rel} is outside this project"));
+    }
+    Ok(resolved)
+}
+
 /// Reads a single file's current content within a session's working
 /// directory, for the read-only "File" view in AgentPanel's content panel.
 #[tauri::command]
@@ -909,7 +1196,119 @@ pub fn read_session_file(db: State<DbConnection>, session_id: String, path: Stri
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let cwd = resolve_session_cwd(&conn, &session_id)?;
     drop(conn);
-    std::fs::read_to_string(Path::new(&cwd).join(&path)).map_err(|e| e.to_string())
+    let file = resolve_path_within(Path::new(&cwd), &path)?;
+    std::fs::read_to_string(file).map_err(|e| e.to_string())
+}
+
+/// What a project's git already thinks about a branch you want to work on.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchAvailability {
+    pub branch: String,
+    /// Whether the branch exists locally at all.
+    pub exists: bool,
+    /// The worktree (or main checkout) that currently has it checked out.
+    /// `Some` means git will refuse to put it anywhere else.
+    pub checked_out_at: Option<String>,
+}
+
+/// Parses `git worktree list --porcelain` into (path, branch) pairs.
+///
+/// Pure, because the format is the whole risk: the porcelain output puts each
+/// worktree in a block of `worktree <path>` / `HEAD <sha>` / `branch
+/// refs/heads/<name>`, with detached ones simply missing the branch line — and
+/// a parser that assumed a fixed shape would silently mis-attribute branches.
+pub(crate) fn parse_worktree_list(output: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut path: Option<String> = None;
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("worktree ") {
+            path = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("branch ") {
+            let branch = rest.trim().strip_prefix("refs/heads/").unwrap_or(rest.trim()).to_string();
+            if let Some(path) = path.clone() {
+                out.push((path, branch));
+            }
+        }
+    }
+    out
+}
+
+/// Whether a branch can be checked out into a new worktree, and if not, why.
+///
+/// Asked *before* the user commits to a row rather than after they press
+/// launch: git refuses the same branch in two worktrees, and the place it's
+/// most likely already open is the user's own main clone — precisely because
+/// that's the branch they were working on.
+#[tauri::command]
+pub fn check_branch_availability(db: State<DbConnection>, project_id: String, branch: String) -> Result<BranchAvailability, String> {
+    let project_path: String = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT path FROM projects WHERE id = ?1", params![project_id], |row| row.get(0))
+            .map_err(|e| format!("project lookup failed: {e}"))?
+    };
+    let dir = Path::new(&project_path);
+    let exists = crate::commands::pull_requests::local_branch_exists(dir, &branch);
+    let checked_out_at = crate::commands::pull_requests::git_capture(dir, &["worktree", "list", "--porcelain"])
+        .ok()
+        .and_then(|out| parse_worktree_list(&out).into_iter().find(|(_, b)| *b == branch).map(|(path, _)| path));
+    Ok(BranchAvailability { branch, exists, checked_out_at })
+}
+
+/// The file tree of any target — a project or a session — for the Files screen.
+///
+/// Generalizes `list_session_files` the same way the terminals generalized their
+/// own target: the screen exists for projects, and a session is just the other
+/// kind of working directory. Statuses come from git when there is a repo.
+#[tauri::command]
+pub fn list_files(db: State<DbConnection>, target: crate::terminals::TerminalTarget) -> Result<Vec<FileTreeNode>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let (cwd, _) = crate::terminals::resolve_target_for_files(&conn, &target)?;
+    if !Path::new(&cwd).is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let is_git = project_is_git_repo(&cwd);
+    let statuses = if is_git { git_status_map(Path::new(&cwd)) } else { HashMap::new() };
+    drop(conn);
+
+    let mut tree = build_file_tree(Path::new(&cwd), "", &statuses)?;
+    if is_git {
+        for (path, status) in &statuses {
+            if *status == FileStatus::Deleted {
+                insert_deleted_path(&mut tree, path);
+            }
+        }
+    }
+    Ok(tree)
+}
+
+/// One file's current content plus, when git has one, the committed version it
+/// differs from — so the Files screen can show the diff without a second round
+/// trip and without the frontend having to know how to ask git.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileContents {
+    pub text: String,
+    /// `HEAD`'s version of the same path. `None` when the file is untracked,
+    /// brand new, or there's no repo — in which case there is nothing to diff
+    /// against, which the UI shows as "new file" rather than an empty diff.
+    pub head_text: Option<String>,
+}
+
+#[tauri::command]
+pub fn read_file(db: State<DbConnection>, target: crate::terminals::TerminalTarget, path: String) -> Result<FileContents, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let (cwd, _) = crate::terminals::resolve_target_for_files(&conn, &target)?;
+    drop(conn);
+
+    let root = Path::new(&cwd);
+    let file = resolve_path_within(root, &path)?;
+    let text = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
+    // `git show HEAD:<path>` fails for an untracked or newly added file, which
+    // isn't an error — there's simply no previous version.
+    let head_text = crate::commands::pull_requests::git_capture(root, &["show", &format!("HEAD:{path}")]).ok();
+    Ok(FileContents { text, head_text })
 }
 
 /// Scans this session's Claude Code config dir for other conversations
@@ -1157,7 +1556,7 @@ mod subsession_tests {
 
         let worktree_dir = project_dir.join(WORKTREES_DIR).join("worktrees").join("fix-bug");
         let branch = "subsession/fix-bug".to_string();
-        create_linked_worktree(project_dir.to_str().unwrap(), &worktree_dir, &branch)
+        create_linked_worktree(project_dir.to_str().unwrap(), &worktree_dir, &branch, None)
             .expect("creating a linked worktree in a real git repo should succeed");
 
         assert!(worktree_dir.join("README.md").is_file(), "worktree should have the parent's committed files");
@@ -1253,6 +1652,245 @@ mod subsession_tests {
     /// first manual scenario from the feature's plan (git project → linked
     /// worktree + branch appear, then both disappear on delete).
     #[test]
+    /// `git worktree list --porcelain` puts each worktree in a block, and a
+    /// detached one simply has no `branch` line. A parser that assumed a fixed
+    /// shape would attribute the previous worktree's branch to it.
+    #[test]
+    fn the_worktree_list_is_parsed_including_detached_entries() {
+        let output = "worktree /repo\nHEAD abc123\nbranch refs/heads/main\n\nworktree /repo/.hangar/worktrees/t2\nHEAD def456\nbranch refs/heads/T2\n\nworktree /repo/.hangar/worktrees/loose\nHEAD 999\ndetached\n";
+        let parsed = parse_worktree_list(output);
+        assert_eq!(parsed, vec![("/repo".to_string(), "main".to_string()), ("/repo/.hangar/worktrees/t2".to_string(), "T2".to_string())]);
+    }
+
+    /// The case that decides the whole task flow: a branch already checked out
+    /// somewhere — usually the user's own main clone, because that's the branch
+    /// they were working on — can't go into a second worktree, and the UI has
+    /// to know before the user commits to the row.
+    #[test]
+    fn a_branch_checked_out_elsewhere_is_reported_with_where() {
+        let project_dir = make_temp_dir("branch-availability");
+        run_git(&project_dir, &["init"]).unwrap();
+        std::fs::write(project_dir.join("README.md"), "hi").unwrap();
+        run_git(&project_dir, &["add", "-A"]).unwrap();
+        run_git(&project_dir, &["commit", "-m", "init"]).unwrap();
+        run_git(&project_dir, &["branch", "T2"]).unwrap();
+
+        let (app, _account, project_id) = setup_test_app_with_account_and_project(project_dir.to_str().unwrap());
+        let db = app.state::<DbConnection>();
+
+        // T2 exists and nobody holds it: free to take.
+        let free = check_branch_availability(db.clone(), project_id.clone(), "T2".to_string()).unwrap();
+        assert!(free.exists);
+        assert_eq!(free.checked_out_at, None);
+
+        // The branch the main clone is on cannot go anywhere else.
+        let current = check_branch_availability(db.clone(), project_id.clone(), "main".to_string())
+            .or_else(|_| check_branch_availability(db.clone(), project_id.clone(), "master".to_string()))
+            .unwrap();
+        assert!(current.checked_out_at.is_some(), "the checked-out branch must report where it's held");
+
+        // A name nobody has used yet is neither existing nor held — the
+        // "create it" case.
+        let fresh = check_branch_availability(db.clone(), project_id, "T7".to_string()).unwrap();
+        assert!(!fresh.exists);
+        assert_eq!(fresh.checked_out_at, None);
+
+        let _ = std::fs::remove_dir_all(&project_dir);
+    }
+
+    /// A task worktree carries the task's own branch name, not a namespaced
+    /// one: that name is what the PR and CI will show.
+    #[test]
+    fn a_task_worktree_checks_out_the_task_branch_verbatim() {
+        let project_dir = make_temp_dir("task-worktree");
+        run_git(&project_dir, &["init"]).unwrap();
+        std::fs::write(project_dir.join("README.md"), "hi").unwrap();
+        run_git(&project_dir, &["add", "-A"]).unwrap();
+        run_git(&project_dir, &["commit", "-m", "init"]).unwrap();
+        run_git(&project_dir, &["branch", "T2"]).unwrap();
+
+        let (app, account_id, project_id) = setup_test_app_with_account_and_project(project_dir.to_str().unwrap());
+
+        let session = tauri::async_runtime::block_on(create_worktree_on_branch(
+            app.handle().clone(),
+            project_id,
+            WorktreeBranch::Existing("T2".to_string()),
+            account_id,
+        ))
+        .expect("checking out an existing task branch must succeed");
+
+        assert_eq!(session.worktree_branch.as_deref(), Some("T2"), "no `hangar/` prefix — the branch is the task's");
+
+        let worktree = std::path::PathBuf::from(session.worktree_path.clone().unwrap());
+        let head = Command::new(providers::resolve_binary("git"))
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(&worktree)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "T2", "git inside the worktree must report the task's branch");
+
+        let _ = std::fs::remove_dir_all(&project_dir);
+    }
+
+    /// The hole this closes. `Path::join` with an absolute path discards the
+    /// base entirely and keeps `..` components, so before this the file reader
+    /// would happily serve `/etc/passwd` or `~/.ssh/id_rsa` to anyone who could
+    /// name them. It only ever got paths from Hangar's own tree; making the file
+    /// viewer general is what turns that into a real hole.
+    #[test]
+    fn a_path_outside_the_root_is_refused_however_it_is_written() {
+        let root = make_temp_dir("path-confinement");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs").as_path(), "fn main() {}").unwrap();
+        let secret = root.parent().unwrap().join("outside-secret.txt");
+        std::fs::write(&secret, "not yours").unwrap();
+
+        assert!(resolve_path_within(&root, "src/main.rs").is_ok(), "a real file inside the root must still be readable");
+
+        for escape in ["/etc/passwd", "../outside-secret.txt", "src/../../outside-secret.txt"] {
+            let err = resolve_path_within(&root, escape).unwrap_err();
+            assert!(err.contains("outside this project") || err.contains("cannot resolve"), "'{escape}' must be refused, got: {err}");
+        }
+
+        let _ = std::fs::remove_file(&secret);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A symlink is the version of this that a plain string check misses: the
+    /// path has no `..` in it at all, and still lands outside.
+    #[test]
+    fn a_symlink_pointing_out_of_the_root_is_refused_too() {
+        let root = make_temp_dir("path-confinement-symlink");
+        let secret = root.parent().unwrap().join("symlinked-secret.txt");
+        std::fs::write(&secret, "not yours").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&secret, root.join("looks-innocent.txt")).unwrap();
+
+        #[cfg(unix)]
+        {
+            let err = resolve_path_within(&root, "looks-innocent.txt").unwrap_err();
+            assert!(err.contains("outside this project"), "got: {err}");
+        }
+
+        let _ = std::fs::remove_file(&secret);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The terminal path: a worktree cut straight from a project, with no
+    /// session to branch off. Same machinery, no parent — which is exactly what
+    /// used to be impossible.
+    #[test]
+    fn create_worktree_for_project_needs_no_parent_session() {
+        let project_dir = make_temp_dir("e2e-worktree-no-parent");
+        run_git(&project_dir, &["init"]).unwrap();
+        std::fs::write(project_dir.join("README.md"), "hello").unwrap();
+        run_git(&project_dir, &["add", "-A"]).unwrap();
+        run_git(&project_dir, &["commit", "-m", "init"]).unwrap();
+
+        let (app, account_id, project_id) = setup_test_app_with_account_and_project(project_dir.to_str().unwrap());
+        let db = app.state::<DbConnection>();
+        // No session at all in this project — the case discovery used to skip
+        // and the subsession dialog could never reach.
+        db.0.lock().unwrap().execute("DELETE FROM sessions", []).unwrap();
+
+        let worktree = tauri::async_runtime::block_on(create_worktree_for_project(
+            app.handle().clone(),
+            project_id,
+            "Fix Billing".to_string(),
+            account_id,
+            None,
+            None,
+        ))
+        .expect("a project should be able to grow a worktree with no session behind it");
+
+        assert_eq!(worktree.parent_session_id, None, "there is no parent, and the row must not pretend otherwise");
+        assert_eq!(worktree.worktree_kind.as_deref(), Some("linked"));
+        assert_eq!(worktree.worktree_branch.as_deref(), Some("hangar/fix-billing"), "terminal worktrees live in their own branch namespace");
+        assert_eq!(worktree.effort, TERMINAL_WORKTREE_EFFORT);
+        assert_eq!(worktree.mode, TERMINAL_WORKTREE_MODE);
+
+        let worktree_path = worktree.worktree_path.clone().expect("a linked worktree must have a path");
+        assert!(std::path::Path::new(&worktree_path).join("README.md").is_file(), "the worktree must be checked out on the project's files");
+
+        // And a terminal opened against it lands in the worktree, not the project.
+        let resolved = crate::terminals::resolve_terminal_target(
+            db.clone(),
+            crate::terminals::TerminalTarget { kind: crate::terminals::TargetKind::Session, id: worktree.id.clone() },
+        )
+        .unwrap();
+        assert_eq!(resolved, worktree_path, "the terminal's cwd is the worktree");
+
+        tauri::async_runtime::block_on(delete_session(app.handle().clone(), worktree.id)).expect("delete_session should succeed");
+        assert!(!std::path::Path::new(&worktree_path).exists(), "deleting it must take the worktree directory with it");
+
+        let _ = std::fs::remove_dir_all(&project_dir);
+    }
+
+    /// A worktree is a git object. Without a repo there's nothing to branch
+    /// from, no base to choose and no diff to review at the end — so the
+    /// terminal path refuses instead of quietly copying the folder into
+    /// something that looks like a worktree and behaves like a photocopy.
+    /// (`create_subsession`, the agent path, still copies: not this change.)
+    #[test]
+    fn a_project_without_git_cannot_get_a_worktree_and_says_why() {
+        let project_dir = make_temp_dir("e2e-worktree-no-git");
+        std::fs::write(project_dir.join("notes.txt"), "no repo here").unwrap();
+
+        let (app, account_id, project_id) = setup_test_app_with_account_and_project(project_dir.to_str().unwrap());
+
+        let err = tauri::async_runtime::block_on(create_worktree_for_project(
+            app.handle().clone(),
+            project_id,
+            "scratch".to_string(),
+            account_id,
+            None,
+            None,
+        ))
+        .expect_err("a folder with no repo must be refused, not copied");
+
+        assert!(err.contains("isn't a git repository"), "the message has to say what's wrong: {err}");
+        assert!(err.contains("git init"), "and what to do about it: {err}");
+
+        let _ = std::fs::remove_dir_all(&project_dir);
+    }
+
+    /// Naming the base is the point of listing branches: a worktree cut off
+    /// whatever happened to be checked out inherits half-finished work, and the
+    /// agent's diff then contains changes that aren't its own.
+    #[test]
+    fn a_worktree_starts_from_the_base_branch_it_was_given() {
+        let project_dir = make_temp_dir("e2e-worktree-base");
+        run_git(&project_dir, &["init"]).unwrap();
+        std::fs::write(project_dir.join("README.md"), "on main").unwrap();
+        run_git(&project_dir, &["add", "-A"]).unwrap();
+        run_git(&project_dir, &["commit", "-m", "init"]).unwrap();
+        // A second branch with a file main doesn't have, then back to main.
+        run_git(&project_dir, &["checkout", "-b", "release"]).unwrap();
+        std::fs::write(project_dir.join("only-on-release.txt"), "release only").unwrap();
+        run_git(&project_dir, &["add", "-A"]).unwrap();
+        run_git(&project_dir, &["commit", "-m", "release work"]).unwrap();
+        let main = run_git(&project_dir, &["rev-parse", "--abbrev-ref", "HEAD"]).map(|_| ()).and(Ok::<(), String>(())).is_ok();
+        assert!(main);
+        run_git(&project_dir, &["checkout", "-"]).unwrap();
+
+        let (app, account_id, project_id) = setup_test_app_with_account_and_project(project_dir.to_str().unwrap());
+
+        let worktree = tauri::async_runtime::block_on(create_worktree_for_project(
+            app.handle().clone(),
+            project_id,
+            "from release".to_string(),
+            account_id,
+            None,
+            Some("release".to_string()),
+        ))
+        .expect("branching from an existing branch must succeed");
+
+        let path = std::path::PathBuf::from(worktree.worktree_path.clone().unwrap());
+        assert!(path.join("only-on-release.txt").is_file(), "the worktree must carry the base branch's content, not the checked-out branch's");
+
+        let _ = std::fs::remove_dir_all(&project_dir);
+    }
+
     fn create_subsession_end_to_end_for_a_real_git_project() {
         let project_dir = make_temp_dir("e2e-git-project");
         run_git(&project_dir, &["init"]).unwrap();

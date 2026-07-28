@@ -1,0 +1,100 @@
+name: Release
+
+# Tag-driven, not push-driven: a release is a deliberate act, and cutting one on
+# every merge to main would produce a wall of versions nobody asked for.
+#
+#   npm version patch && git push --follow-tags
+#
+# `workflow_dispatch` is there for the first run and for re-cutting a build when
+# the tag is fine but the run failed (a runner hiccup, an expired secret).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+# The job needs to create the release and upload assets to it.
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    strategy:
+      # One platform failing shouldn't withhold the others: a broken Linux
+      # bundle is not a reason to leave macOS users without a download.
+      fail-fast: false
+      matrix:
+        include:
+          # Two macOS bundles rather than one universal binary: Tauri's
+          # universal target builds both architectures anyway, and shipping them
+          # separately halves what an Apple Silicon user downloads.
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            label: macOS (Apple Silicon)
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            label: macOS (Intel)
+
+    runs-on: ${{ matrix.platform }}
+    name: ${{ matrix.label }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # `tauri-action` runs `beforeBuildCommand` (npm run build) itself, which
+      # typechecks and builds the frontend — the Rust crate resolves
+      # `frontendDist` at compile time and won't build without it.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signing and notarization are opt-in: without an Apple Developer
+          # account these secrets are absent, the build still produces a working
+          # .app/.dmg, and macOS shows a Gatekeeper warning on first open. That
+          # warning costs real installs, so this is worth setting up before any
+          # release meant for strangers — but it must not block cutting one now.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # The updater's own keypair — nothing to do with Apple. This is what
+          # lets an unsigned build still deliver updates the app will accept:
+          # Gatekeeper is paid once at the first install, not on every fix.
+          # Without these the bundle still builds; it just ships no update
+          # manifest, and installed copies stay where they are.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          args: --target ${{ matrix.target }}
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}-dev', github.run_number) }}
+          releaseName: Hangar ${{ github.ref_type == 'tag' && github.ref_name || 'dev build' }}
+          releaseBody: |
+            Mission control for your coding agents — parallel agent terminals, each in its own git
+            worktree, each under its own account, with rotation when one runs out of quota.
+
+            Download the build for your Mac: **Apple Silicon** (`aarch64`) or **Intel** (`x86_64`).
+
+            > Unsigned builds: macOS will say the app can't be verified. Right-click the app →
+            > Open → Open, once. This goes away when the release is signed and notarized.
+          # Draft, so a release is reviewed before the world sees it — and so a
+          # half-finished matrix (one arch uploaded, the other still building)
+          # is never briefly public as a complete release.
+          releaseDraft: true
+          prerelease: false

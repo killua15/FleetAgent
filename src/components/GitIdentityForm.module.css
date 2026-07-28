@@ -1,0 +1,138 @@
+/* Collapsed by default: most projects use the machine's default identity, and a
+   form permanently open for a question already answered is noise on every
+   project card. */
+.summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+
+.summary:hover {
+  border-color: var(--acc);
+}
+
+.summaryLabel {
+  flex: none;
+  font: 600 9px var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.summaryValue {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 11.5px var(--font-mono);
+  color: var(--txt);
+}
+
+.summaryEmpty {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 11px var(--font-ui);
+  color: var(--dim);
+}
+
+.tokenTag {
+  flex: none;
+  font: 500 9.5px var(--font-mono);
+  color: var(--grn);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--acc);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.title {
+  font: 500 12px var(--font-ui);
+  color: var(--txt);
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+}
+
+.field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font: 600 9px var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.input {
+  padding: 6px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--txt);
+  font: 400 11.5px var(--font-ui);
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--acc);
+}
+
+.hint {
+  font: 400 10.5px var(--font-ui);
+  color: var(--mut);
+  line-height: 1.5;
+}
+
+.hint code {
+  font: 500 10px var(--font-mono);
+  color: var(--teal);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.clearLink {
+  background: transparent;
+  border: none;
+  color: var(--red);
+  font: 500 11px var(--font-ui);
+  cursor: pointer;
+  padding: 0;
+}
+
+.clearLink:hover {
+  text-decoration: underline;
+}

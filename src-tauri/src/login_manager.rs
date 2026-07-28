@@ -1,4 +1,3 @@
-use crate::providers::claude;
 use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -90,15 +89,59 @@ fn account_config_dir<R: Runtime>(app: &AppHandle<R>, name: &str) -> Result<std:
     Ok(accounts.join(format!("{slug}-{suffix}")))
 }
 
+/// Answers the CLI's first-run question before it gets asked.
+///
+/// A config directory that has never run interactively opens on a theme
+/// picker — and since every account here gets its own directory, that menu is
+/// the first thing a new account shows, in the login PTY, in the first
+/// terminal, and in the quota scrape. It's not a preference anyone came here
+/// to express, and a user who has never seen Claude Code reads it as Hangar
+/// being broken.
+///
+/// The value written is exactly what the CLI writes itself when the menu is
+/// answered — verified by answering it in a scratch directory and reading the
+/// file back — so this isn't a guessed schema, it's the same file one step
+/// earlier. Merged rather than overwritten, and silent on failure: an
+/// unwritable settings file is a cosmetic problem, not a reason to refuse to
+/// add an account.
+fn seed_first_run_settings(config_dir: &std::path::Path) {
+    let path = config_dir.join("settings.json");
+    let mut settings: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    let Some(object) = settings.as_object_mut() else { return };
+    if object.contains_key("theme") {
+        return;
+    }
+    object.insert("theme".to_string(), serde_json::Value::String("dark".to_string()));
+    if let Ok(pretty) = serde_json::to_string_pretty(&settings) {
+        let _ = std::fs::write(&path, pretty);
+    }
+}
+
 /// Full parent environment plus an isolated `CLAUDE_CONFIG_DIR` and a sane
 /// `TERM`, so the CLI renders and can find its own helpers regardless of how
 /// Hangar itself was launched. `pub(crate)` so `usage_scraper` (another
 /// interactive-PTY consumer of the same CLI) can reuse it instead of
 /// duplicating the same env-assembly logic.
 pub(crate) fn login_env(config_dir: &str) -> Vec<(String, String)> {
+    login_env_for("claude", config_dir)
+}
+
+/// Full parent environment plus the isolation variable **this provider** uses,
+/// and a sane `TERM` so the CLI renders regardless of how Hangar was launched.
+///
+/// The variable is per-CLI and getting it wrong is worse than failing: a Codex
+/// login run with `CLAUDE_CONFIG_DIR` set would write into the shared
+/// `~/.codex`, and the account would look isolated while sharing credentials
+/// with every other one.
+pub(crate) fn login_env_for(provider: &str, config_dir: &str) -> Vec<(String, String)> {
+    let var = crate::providers::spec(provider).map(|s| s.config_dir_env).unwrap_or("CLAUDE_CONFIG_DIR");
     let mut env: Vec<(String, String)> = std::env::vars().collect();
-    env.retain(|(k, _)| k != "CLAUDE_CONFIG_DIR");
-    env.push(("CLAUDE_CONFIG_DIR".to_string(), config_dir.to_string()));
+    env.retain(|(k, _)| k != var);
+    env.push((var.to_string(), config_dir.to_string()));
     if !env.iter().any(|(k, _)| k == "TERM") {
         env.push(("TERM".to_string(), "xterm-256color".to_string()));
     }
@@ -114,18 +157,25 @@ pub(crate) fn login_env(config_dir: &str) -> Vec<(String, String)> {
 /// precisely because the directory can't be renamed afterwards without
 /// breaking the keychain token.
 pub fn begin_login(app: AppHandle, provider: String, name: String) -> Result<LoginSession, String> {
-    if provider != "claude" {
+    // Two different failures that used to be reported as the same one — and as
+    // the wrong one. Saying "its CLI isn't installed" to someone who has it
+    // installed sends them to fix a machine that isn't broken.
+    let Some(spec) = crate::providers::spec(&provider) else {
+        return Err(format!("Hangar doesn't know a provider called '{provider}'"));
+    };
+    let Some(login_args) = spec.login_args else {
         return Err(format!(
-            "'{provider}' login isn't wired yet — its CLI isn't installed on this machine"
+            "'{provider}' has no interactive login — it authenticates with an API key, so add it as a key-billed account instead"
         ));
-    }
+    };
     if !crate::providers::is_provider_available(&provider) {
-        return Err("the claude CLI wasn't found — install Claude Code first".to_string());
+        return Err(format!("the `{}` CLI wasn't found on this machine — install it first", spec.binary));
     }
 
     let login_id = Uuid::new_v4().to_string();
     let config_dir = account_config_dir(&app, &name)?;
     std::fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
+    seed_first_run_settings(&config_dir);
     let config_dir = config_dir.to_string_lossy().to_string();
 
     let pty = native_pty_system();
@@ -138,14 +188,14 @@ pub fn begin_login(app: AppHandle, provider: String, name: String) -> Result<Log
         })
         .map_err(|e| e.to_string())?;
 
-    let mut cmd = CommandBuilder::new(claude::binary());
-    for arg in claude::login_args() {
+    let mut cmd = CommandBuilder::new(crate::providers::resolve_binary(spec.binary));
+    for arg in login_args {
         cmd.arg(arg);
     }
     if let Ok(home) = std::env::var("HOME") {
         cmd.cwd(home);
     }
-    for (k, v) in login_env(&config_dir) {
+    for (k, v) in login_env_for(&provider, &config_dir) {
         cmd.env(k, v);
     }
 
@@ -220,12 +270,44 @@ pub fn send_login_input(app: &AppHandle, login_id: &str, mut data: String) -> Re
 
 /// Runs `claude auth status --json` scoped to a config dir and parses it.
 pub fn auth_status_for_dir(config_dir: &str) -> Result<AuthStatus, String> {
-    let mut env = login_env(config_dir);
-    // Never let an inherited ANTHROPIC_API_KEY mask the real login state.
-    env.retain(|(k, _)| k != "ANTHROPIC_API_KEY");
+    auth_status_for("claude", config_dir)
+}
 
-    let mut cmd = Command::new(claude::binary());
-    cmd.args(claude::auth_status_args());
+/// Asks **this provider's** CLI whether the config dir is logged in.
+///
+/// It used to run `claude auth status --json` no matter what, which is why a
+/// Codex login hung forever: the user authorised in the browser, Codex wrote
+/// its credentials, and Hangar then asked *Claude* about a directory Claude had
+/// never seen. It answered "logged out", correctly, and the wizard waited for a
+/// state that could never arrive.
+pub fn auth_status_for(provider: &str, config_dir: &str) -> Result<AuthStatus, String> {
+    let Some(spec) = crate::providers::spec(provider) else {
+        return Err(format!("Hangar doesn't know a provider called '{provider}'"));
+    };
+
+    // On disk before on the CLI: it's free, it can't time out, and it's what
+    // the credential actually *is* rather than a sentence about it.
+    if let Some(marker) = crate::providers::auth_marker_file(provider) {
+        if std::path::Path::new(config_dir).join(marker).is_file() {
+            return Ok(AuthStatus { logged_in: true, auth_method: "oauth".to_string(), email: None, subscription_type: None });
+        }
+    }
+
+    let args: Vec<&str> = match spec.auth_status {
+        crate::providers::AuthStatusProbe::Json(args) | crate::providers::AuthStatusProbe::Text { args, .. } => args.to_vec(),
+        // Nothing to ask: a key-billed provider is authenticated when it has a
+        // key, and the wizard validates that separately.
+        crate::providers::AuthStatusProbe::None => {
+            return Ok(AuthStatus { logged_in: false, auth_method: "key".to_string(), email: None, subscription_type: None })
+        }
+    };
+
+    let mut env = login_env_for(provider, config_dir);
+    // Never let an inherited key mask the real login state.
+    env.retain(|(k, _)| k != spec.key_env);
+
+    let mut cmd = Command::new(crate::providers::resolve_binary(spec.binary));
+    cmd.args(&args);
     cmd.env_clear();
     for (k, v) in env {
         cmd.env(k, v);
@@ -233,31 +315,43 @@ pub fn auth_status_for_dir(config_dir: &str) -> Result<AuthStatus, String> {
 
     let output = crate::process_timeout::run_with_timeout(cmd, crate::process_timeout::DEFAULT_TIMEOUT)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let value: serde_json::Value = serde_json::from_str(stdout.trim())
-        .map_err(|e| format!("could not parse auth status: {e} — got: {stdout}"))?;
 
-    Ok(AuthStatus {
-        logged_in: value.get("loggedIn").and_then(|v| v.as_bool()).unwrap_or(false),
-        auth_method: value
-            .get("authMethod")
-            .and_then(|v| v.as_str())
-            .unwrap_or("none")
-            .to_string(),
-        email: value.get("email").and_then(|v| v.as_str()).map(str::to_string),
-        subscription_type: value.get("subscriptionType").and_then(|v| v.as_str()).map(str::to_string),
-    })
+    match spec.auth_status {
+        crate::providers::AuthStatusProbe::Json(_) => {
+            let value: serde_json::Value = serde_json::from_str(stdout.trim())
+                .map_err(|e| format!("could not parse auth status: {e} — got: {stdout}"))?;
+            Ok(AuthStatus {
+                logged_in: value.get("loggedIn").and_then(|v| v.as_bool()).unwrap_or(false),
+                auth_method: value.get("authMethod").and_then(|v| v.as_str()).unwrap_or("none").to_string(),
+                email: value.get("email").and_then(|v| v.as_str()).map(str::to_string),
+                subscription_type: value.get("subscriptionType").and_then(|v| v.as_str()).map(str::to_string),
+            })
+        }
+        // Coarser by necessity: the CLI prints a sentence, so there's no email
+        // or plan to report and the UI shows the name the user typed rather
+        // than inventing detail it doesn't have.
+        crate::providers::AuthStatusProbe::Text { logged_marker, .. } => Ok(AuthStatus {
+            logged_in: stdout.contains(logged_marker),
+            auth_method: stdout.trim().to_string(),
+            email: None,
+            subscription_type: None,
+        }),
+        crate::providers::AuthStatusProbe::None => unreachable!("handled above"),
+    }
 }
 
 pub fn check_login_status(app: &AppHandle, login_id: &str) -> Result<AuthStatus, String> {
-    let config_dir = {
+    let (config_dir, provider) = {
         let state = app.state::<LoginRegistry>();
         let registry = state.0.lock().map_err(|e| e.to_string())?;
         registry
             .get(login_id)
-            .map(|p| p.config_dir.clone())
+            .map(|p| (p.config_dir.clone(), p.provider.clone()))
             .ok_or_else(|| "login session not found".to_string())?
     };
-    auth_status_for_dir(&config_dir)
+    // The provider comes off the login itself — asking the wrong CLI is the bug
+    // that made a completed Codex login look like it never happened.
+    auth_status_for(&provider, &config_dir)
 }
 
 pub fn cancel_login(app: &AppHandle, login_id: &str) -> Result<(), String> {
@@ -355,16 +449,65 @@ mod tests {
         let _ = std::fs::remove_dir_all(&first);
     }
 
+    /// The signal that doesn't depend on parsing a sentence: Codex writes
+    /// `auth.json` into its config dir, and every tool that switches Codex
+    /// accounts works by moving that file.
+    #[test]
+    fn a_codex_dir_with_credentials_reads_as_logged_in_without_spawning_anything() {
+        let dir = std::env::temp_dir().join(format!("hangar-test-codex-auth-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.to_str().unwrap();
+
+        // Empty dir: whatever the CLI says, it must not claim to be logged in.
+        let empty = auth_status_for("codex", path).expect("an empty codex home must still answer");
+        assert!(!empty.logged_in);
+
+        std::fs::write(dir.join("auth.json"), "{}").unwrap();
+        let filled = auth_status_for("codex", path).expect("the marker file alone is enough");
+        assert!(filled.logged_in, "a codex home holding auth.json is logged in");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Exercises the exact code path the app uses to check login state,
     /// against a real `claude` invocation (no mocking) and a scratch config
-    /// dir that has never been logged into — this is the same command used
-    /// by `check_account_auth`/AccountList, just without going through the
-    /// Tauri IPC layer we can't drive headlessly.
+    /// dir that has never been logged into.
     ///
     /// `#[ignore]` because it needs Claude Code actually installed: it's a
     /// genuinely valuable integration test on a dev machine, but on CI it
     /// would only ever assert that the runner has no `claude` binary. Run it
     /// with `cargo test -- --ignored`.
+    /// The theme menu is the first thing a brand-new account shows — in the
+    /// login PTY, in its first terminal, and in the quota scrape. Writing the
+    /// same value the CLI itself writes means nobody is ever asked.
+    #[test]
+    fn a_new_config_dir_is_seeded_so_the_theme_menu_never_appears() {
+        let dir = std::env::temp_dir().join(format!("hangar-test-seed-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        seed_first_run_settings(&dir);
+        let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(written.get("theme").and_then(|t| t.as_str()), Some("dark"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A directory that already has settings must keep them — this runs on a
+    /// path the user may have pointed at an existing Claude installation.
+    #[test]
+    fn seeding_never_overwrites_settings_that_are_already_there() {
+        let dir = std::env::temp_dir().join(format!("hangar-test-seed-keep-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("settings.json"), r#"{"theme":"light","model":"opus"}"#).unwrap();
+
+        seed_first_run_settings(&dir);
+        let kept: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(kept.get("theme").and_then(|t| t.as_str()), Some("light"), "a chosen theme is not ours to change");
+        assert_eq!(kept.get("model").and_then(|m| m.as_str()), Some("opus"), "and everything else has to survive");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     #[ignore = "requires a real `claude` CLI installed on the machine"]
     fn auth_status_for_dir_reports_logged_out_for_a_fresh_dir() {

@@ -1,4 +1,4 @@
-export type Provider = 'claude' | 'codex' | 'gemini';
+export type Provider = 'claude' | 'codex' | 'gemini' | 'kimi';
 export type Billing = 'sub' | 'key';
 export type Scope = 'work' | 'personal';
 export type AccountStatus = 'healthy' | 'cooling_down' | 'exhausted';
@@ -86,4 +86,67 @@ export const PROVIDER_META: Record<
     tintVar: 'var(--geminiD)',
     loginCmd: 'gemini auth',
   },
+  // Kimi runs *through* Claude Code, pointed at Moonshot's
+  // Anthropic-compatible endpoint — which is why it inherits session ids,
+  // resume and transcript transfer instead of needing its own adapter. It has
+  // no interactive login: the credential is a Moonshot API key.
+  kimi: {
+    name: 'Kimi',
+    cli: 'claude code → moonshot',
+    letter: 'K',
+    colorVar: 'var(--teal)',
+    tintVar: 'var(--tealD)',
+    loginCmd: '',
+  },
 };
+
+/** Providers that authenticate with an API key rather than an interactive
+ * login. The wizard has to skip the login step for these, and offering one
+ * would open a terminal running a command that doesn't exist. */
+export const KEY_ONLY_PROVIDERS: Provider[] = ['kimi'];
+
+/** Providers whose interactive login ends by asking for a code pasted back.
+ *
+ * Claude prints a URL and waits on stdin. Codex runs a loopback OAuth flow that
+ * finishes on its own when the browser redirects — showing it a paste box is
+ * asking for something that will never exist, which is exactly what made a
+ * completed Codex login look stuck. */
+export const LOGIN_EXPECTS_CODE: Provider[] = ['claude'];
+
+/** One quota window, forecast from the readings the usage poller has been
+ * taking all along. `hoursLeft` is null when nothing is being burned — a flat
+ * line means "not running out", not "runs out now". */
+export interface Forecast {
+  pct: number;
+  burnPerHour: number | null;
+  hoursLeft: number | null;
+  samples: number;
+}
+
+export interface AccountQuota {
+  accountId: string;
+  accountName: string;
+  status: AccountStatus;
+  /** The rolling 5-hour window — the one you recover from over lunch. */
+  session: Forecast | null;
+  /** The weekly window — the one you don't recover from, and so the only one
+   * worth planning around. */
+  weekly: Forecast | null;
+}
+
+export interface FanOutProjection {
+  accountId: string;
+  accountName: string;
+  hoursLeft: number | null;
+  limitingWindow: 'session' | 'weekly' | 'none';
+  exhausted: boolean;
+}
+
+/** "2 h 10 m", "45 m", or "—" when there's nothing to run out of. */
+export function formatHoursLeft(hours: number | null): string {
+  if (hours == null) return '—';
+  if (hours < 1) return `${Math.max(1, Math.round(hours * 60))} m`;
+  const h = Math.floor(hours);
+  const m = Math.round((hours - h) * 60);
+  return m === 0 ? `${h} h` : `${h} h ${m} m`;
+}

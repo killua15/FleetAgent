@@ -45,8 +45,8 @@
   overflow: auto;
   padding: 10px;
   border-radius: 10px;
-  border: 1px solid var(--line);
-  background: var(--panel);
+  border: 1px solid var(--overlay-line);
+  background: var(--overlay);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
   z-index: 40;
 }
@@ -166,4 +166,13 @@
 
 .manageLink:hover {
   text-decoration: underline;
+}
+
+/* Time left before this account's 5-hour window runs out. Muted, not alarming:
+   it informs the choice, it isn't a warning — the amber "out of quota" tag is
+   what a warning looks like. */
+.tagLeft {
+  flex: none;
+  font: 500 9.5px var(--font-mono);
+  color: var(--mut);
 }

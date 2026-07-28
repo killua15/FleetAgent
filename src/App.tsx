@@ -1,6 +1,8 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { ThemeProvider, useTheme } from './theme/ThemeProvider';
 import { NavigationProvider, useNavigation } from './nav/NavigationProvider';
+import { AuthProvider } from './auth/AuthProvider';
+import { JumpPalette } from './components/JumpPalette';
 import { Landing } from './screens/Landing';
 import { MainView } from './screens/MainView';
 import { AddAccount } from './screens/AddAccount';
@@ -8,10 +10,21 @@ import { AccountList } from './screens/AccountList';
 import { AgentPanel } from './screens/AgentPanel';
 import { SplitView } from './screens/SplitView';
 import { GeneralSettings } from './screens/GeneralSettings';
+import { TaskSettings } from './screens/TaskSettings';
+import { TaskBoard } from './screens/TaskBoard';
+import { UpdateBanner } from './components/UpdateBanner';
+
+// Inline rather than a module: two rules that exist only to let the banner sit
+// above a screen that expects the full viewport height.
+const appShell = 'hangar-shell';
+const appBody = 'hangar-body';
+import { Changes } from './screens/Changes';
 import { RotationSettings } from './screens/RotationSettings';
 import { SharedMemorySettings } from './screens/SharedMemorySettings';
 import { PrReviews } from './screens/PrReviews';
 import { GitPanel } from './screens/GitPanel';
+import { Files } from './screens/Files';
+import { Queue } from './screens/Queue';
 import { GitHistoryView } from './screens/GitHistoryView';
 import { TreeCanvas } from './screens/TreeCanvas';
 import { TreeColumns } from './screens/TreeColumns';
@@ -28,6 +41,8 @@ import './styles/global.css';
 function GlobalShortcuts() {
   const { toggleTheme } = useTheme();
   const { current, navigate } = useNavigation();
+  const [jumpOpen, setJumpOpen] = useState(false);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const meta = e.metaKey || e.ctrlKey;
@@ -37,12 +52,25 @@ function GlobalShortcuts() {
       } else if (meta && !e.shiftKey && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         if (current.screen !== 'command-palette') navigate('command-palette');
+      } else if (meta && !e.shiftKey && e.key.toLowerCase() === 'j') {
+        // ⌘J jumps to a running terminal from anywhere — including the Git
+        // panel or the file viewer, which is exactly when navigating home first
+        // and then hunting is most annoying.
+        e.preventDefault();
+        setJumpOpen((wasOpen) => !wasOpen);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [toggleTheme, navigate, current.screen]);
-  return null;
+
+  return (
+    <JumpPalette
+      open={jumpOpen}
+      onClose={() => setJumpOpen(false)}
+      onJump={(id) => navigate('terminals', { focusTerminalId: id })}
+    />
+  );
 }
 
 function Screens() {
@@ -64,12 +92,22 @@ function Screens() {
       return <GeneralSettings />;
     case 'rotation-settings':
       return <RotationSettings />;
+    case 'task-settings':
+      return <TaskSettings />;
+    case 'task-board':
+      return <TaskBoard />;
     case 'shared-memory':
       return <SharedMemorySettings />;
     case 'pr-reviews':
       return <PrReviews />;
     case 'git-panel':
       return <GitPanel />;
+    case 'files':
+      return <Files />;
+    case 'queue':
+      return <Queue />;
+    case 'changes':
+      return <Changes />;
     case 'git-history':
       return <GitHistoryView />;
     case 'tree-canvas':
@@ -94,10 +132,20 @@ export default function App() {
     <AppErrorOverlay>
       <ThemeProvider>
         <TooltipProvider>
-          <NavigationProvider>
-            <GlobalShortcuts />
-            <Screens />
-          </NavigationProvider>
+          <AuthProvider>
+            <NavigationProvider>
+              <GlobalShortcuts />
+              {/* Above every screen and outside the router: an update is true
+                  wherever you happen to be, and it must not vanish because you
+                  navigated. */}
+              <div className={appShell}>
+                <UpdateBanner />
+                <div className={appBody}>
+                  <Screens />
+                </div>
+              </div>
+            </NavigationProvider>
+          </AuthProvider>
         </TooltipProvider>
       </ThemeProvider>
     </AppErrorOverlay>

@@ -18,9 +18,20 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `macos-private-api` is what `macOSPrivateApi` in tauri.conf.json requires, and
+# it's what makes a genuinely transparent window with vibrancy possible on macOS.
+# The name is literal: it uses private Apple APIs, so a build with this feature
+# cannot be published on the Mac App Store. Hangar ships as a DMG / GitHub
+# release, so that trade is already made — but it's the reason this can't be
+# turned on casually.
+tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+# Updates that don't need Apple. The updater signs with its own keypair, so an
+# unsigned build still gets in-app updates — the Gatekeeper warning is paid
+# once, at the first install, instead of on every fix.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-log = "2"
 log = "0.4"
@@ -29,9 +40,29 @@ serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
-keyring = "3"
 portable-pty = "0.9"
 base64 = "0.22"
+# The first outgoing HTTP from Rust (ClickUp). `rustls` rather than the system
+# TLS stack so the build doesn't depend on whichever OpenSSL the machine has,
+# and `blocking` because every other outbound call here already runs inside
+# `blocking::run_blocking`.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+
+# keyring 3 puts every platform backend behind a feature, and with none of them
+# enabled it silently falls back to an **in-memory** store: writes succeed, reads
+# succeed in the same run, and every secret is gone at the next launch. That is
+# what shipped — API keys, per-project git tokens and task-source tokens all
+# forgot themselves on restart, and the symptom ("No matching entry found in
+# secure storage") pointed at the keychain, which had never been written to.
+# See `credential_vault::secrets_survive_the_process` for the guard.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service"] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

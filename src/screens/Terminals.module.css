@@ -176,7 +176,7 @@
   gap: 8px;
   padding: 6px 8px;
   border-radius: 7px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--overlay-line);
   background: var(--panel);
   color: var(--mut);
   font: 400 11.5px var(--font-ui);
@@ -210,8 +210,8 @@
   margin: 10px;
   padding: 12px 14px;
   border-radius: 10px;
-  border: 1px solid var(--line);
-  background: var(--panel);
+  border: 1px solid var(--overlay-line);
+  background: var(--overlay);
   max-height: 40vh;
   overflow: auto;
 }
@@ -513,6 +513,127 @@
   color: var(--amber);
 }
 
+/* A project row plus its "new worktree" affordance: one click opens the
+   terminal in the project itself, the other cuts it a branch first. */
+.projectRowWrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.projectRowWrap .pickerRow {
+  flex: 1;
+  min-width: 0;
+}
+
+.worktreeLink {
+  flex: none;
+  padding: 4px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--teal);
+  font: 500 11px var(--font-ui);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.worktreeLink:hover {
+  border-color: var(--teal);
+  background: var(--tealD);
+}
+
+.worktreeForm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 2px;
+}
+
+.worktreeInput {
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--txt);
+  font: 400 12px var(--font-ui);
+}
+
+.worktreeInput:focus {
+  outline: none;
+  border-color: var(--acc);
+}
+
+.worktreeHint {
+  font: 400 11px var(--font-ui);
+  color: var(--mut);
+  line-height: 1.5;
+}
+
+.worktreeHint code {
+  font: 500 10.5px var(--font-mono);
+  color: var(--teal);
+}
+
+.worktreeActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Fan-out: the prompt on top, one row per branch below. */
+.fanTop {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.fanPrompt {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--txt);
+  font: 400 12px var(--font-ui);
+  line-height: 1.5;
+}
+
+.fanPrompt:focus {
+  outline: none;
+  border-color: var(--acc);
+}
+
+.fanBranchIcon {
+  flex: none;
+  color: var(--teal);
+  font-size: 12px;
+}
+
+.fanBranchInput {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--txt);
+  font: 400 11.5px var(--font-ui);
+}
+
+.fanBranchInput:focus {
+  outline: none;
+  border-color: var(--acc);
+}
+
+.fanNote {
+  font: 400 10.5px var(--font-ui);
+  color: var(--dim);
+  margin-right: 4px;
+}
+
 .accountBadge {
   flex: none;
   padding: 1px 7px;
@@ -521,4 +642,375 @@
   color: var(--acc);
   font: 500 10.5px var(--font-ui);
   white-space: nowrap;
+}
+
+/* Agent state, as a dot in each panel header. Colour alone carries the state;
+   the pulse is reserved for "working" so a still screen means nothing is
+   running — the opposite would make a busy grid impossible to read. */
+.stateDot,
+.stateDotPulse {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.stateDotPulse {
+  animation: statePulse 1.6s ease-in-out infinite;
+}
+
+@keyframes statePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* Respect the OS setting: a pulsing dot per panel is exactly the kind of
+   motion people turn this on to avoid. */
+@media (prefers-reduced-motion: reduce) {
+  .stateDotPulse { animation: none; }
+}
+
+.agentTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 10.5px var(--font-ui);
+  color: var(--mut);
+}
+
+/* The fan-out's projected cost. Informative, not a warning: the amber row above
+   it is for things that will actually fail. */
+.fanForecast {
+  font: 400 11px var(--font-ui);
+  color: var(--mut);
+}
+
+.fanForecast strong {
+  color: var(--txt);
+  font-weight: 500;
+}
+
+/* The fleet sidebar: every terminal, grouped by project, sorted by who needs
+   you. Replaces a rail that only listed minimized ones — which made "more
+   panels than fit" a problem to be warned about rather than navigated. */
+.sidebar {
+  width: 260px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 8px;
+  border-right: 1px solid var(--line);
+  background: var(--bg2);
+  overflow: auto;
+}
+
+.sideHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.sideWaiting {
+  font: 500 10px var(--font-mono);
+  color: var(--amber);
+}
+
+.sideFilter {
+  margin: 2px 6px 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--txt);
+  font: 400 11px var(--font-ui);
+}
+
+.sideFilter:focus {
+  outline: none;
+  border-color: var(--acc);
+}
+
+.sideGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 8px;
+}
+
+.sideGroupTitle {
+  font: 600 9px var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+  padding: 4px 6px 3px;
+}
+
+.sideRow,
+.sideRowActive {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+}
+
+.sideRow:hover,
+.sideRowActive {
+  background: var(--panel2);
+}
+
+.sideRowActive {
+  border-color: var(--acc);
+}
+
+.sideRowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 4px 6px 7px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sideName,
+.sideNameAttention {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 11.5px var(--font-ui);
+  color: var(--mut);
+}
+
+/* Attention as weight, not as a badge — a count you have to interpret is worse
+   than a shape you can scan. */
+.sideNameAttention {
+  font-weight: 600;
+  color: var(--txt);
+}
+
+.sideAgentTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 10px var(--font-mono);
+  color: var(--dim);
+}
+
+.sideIconBtn {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--dim);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.sideIconBtn:hover {
+  background: var(--panel);
+  color: var(--txt);
+}
+
+.renameInput {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 5px;
+  border-radius: 5px;
+  border: 1px solid var(--acc);
+  background: var(--panel);
+  color: var(--txt);
+  font: 400 11.5px var(--font-ui);
+}
+
+.renameInput:focus {
+  outline: none;
+}
+
+/* Where the sidebar just sent you. Brief and quiet — it answers "which one did
+   I click" without becoming a second selection model. */
+.cardFocused {
+  composes: card;
+  border-color: var(--acc);
+}
+
+/* One control for the sidebar, in one place, that never moves.
+   The previous design had two — a chevron inside the sidebar to close it and a
+   strip at the window edge to reopen it — so the control you needed depended on
+   the state you were in and neither stayed put long enough to learn. */
+.sidebarToggle {
+  flex: none;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* A pane with its left column filled or empty: the icon reports the current
+   state rather than the action, so its meaning doesn't invert on every click. */
+.sidebarGlyphOn,
+.sidebarGlyphOff {
+  display: block;
+  width: 14px;
+  height: 11px;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+}
+
+.sidebarGlyphOn {
+  border-left-width: 5px;
+  color: var(--acc);
+}
+
+.sidebarGlyphOff {
+  color: var(--dim);
+}
+
+/* What a row's name turns into. The field says "attempt-1"; without this
+   nothing on screen says that's about to become a branch, off the base picked
+   at the top — which is exactly the question the layout was raising. */
+.fanBranchPreview {
+  flex: none;
+  font: 400 10px var(--font-ui);
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.fanBranchPreview code {
+  font: 500 10px var(--font-mono);
+  color: var(--teal);
+}
+
+.fanBranchInputBad {
+  composes: fanBranchInput;
+  border-color: var(--amber);
+}
+
+/* A task row carries more than a fan-out row — branch, base, account and its
+   own prompt — so it wraps instead of squeezing everything onto one line. */
+.taskRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.taskBase {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 400 10.5px var(--font-ui);
+  color: var(--dim);
+}
+
+.taskBaseSelect {
+  padding: 3px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--txt);
+  font: 400 10.5px var(--font-ui);
+}
+
+.taskBlocked {
+  font: 500 10.5px var(--font-ui);
+  color: var(--amber);
+}
+
+.taskPrompt {
+  flex: 1;
+  min-width: 180px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--txt);
+  font: 400 11px var(--font-ui);
+}
+
+.taskPrompt:focus,
+.taskBaseSelect:focus {
+  outline: none;
+  border-color: var(--acc);
+}
+
+/* Tasks read off a board. A scroll cap rather than a full list: this sits
+   inside a picker, and a 50-issue board must not push the rows that actually
+   launch something off the screen. */
+.boardList {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 210px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--overlay);
+}
+
+.boardTask {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+
+.boardTask:hover {
+  background: var(--accD);
+}
+
+/* Already on the list below. Still shown — its absence would read as "the
+   fetch missed it" — but inert, because adding it twice would cut two
+   worktrees for one task and then fight over the branch. */
+.boardTaskTaken {
+  composes: boardTask;
+  opacity: 0.4;
+  cursor: default;
+}
+
+.boardKey {
+  flex: none;
+  font: 500 10.5px var(--font-mono);
+  color: var(--acc);
+}
+
+.boardTitle {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 11.5px var(--font-ui);
+}
+
+.boardStatus {
+  flex: none;
+  font: 400 10px var(--font-ui);
+  color: var(--dim);
+}
+
+.boardBranch {
+  flex: none;
+  font: 400 10px var(--font-mono);
+  color: var(--dim);
 }

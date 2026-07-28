@@ -20,8 +20,19 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use uuid::Uuid;
 
 pub(crate) fn git_capture(cwd: &Path, args: &[&str]) -> Result<String, String> {
+    git_capture_with_env(cwd, args, &[])
+}
+
+/// `git_capture` with extra environment — the project's identity and push
+/// credential (see `git_identity`). Separate rather than a default because most
+/// git calls here are reads that don't need either, and threading a keychain
+/// lookup through `rev-parse` would be a cost paid on every call for nothing.
+pub(crate) fn git_capture_with_env(cwd: &Path, args: &[&str], env: &[(String, String)]) -> Result<String, String> {
     let mut cmd = Command::new(providers::resolve_binary("git"));
     cmd.args(args).current_dir(cwd);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
     let output = crate::process_timeout::run_with_timeout(cmd, crate::process_timeout::DEFAULT_TIMEOUT)
         .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
     if !output.status.success() {
@@ -34,7 +45,7 @@ pub(crate) fn git_capture(cwd: &Path, args: &[&str]) -> Result<String, String> {
 /// (dead network, an interactive re-auth prompt) would otherwise block
 /// whichever `run_blocking` thread called it forever, see
 /// `process_timeout` for why that matters.
-fn gh_output(cwd: Option<&Path>, args: &[&str]) -> Result<std::process::Output, String> {
+pub(crate) fn gh_output(cwd: Option<&Path>, args: &[&str]) -> Result<std::process::Output, String> {
     let mut cmd = Command::new(providers::resolve_binary("gh"));
     cmd.args(args);
     if let Some(dir) = cwd {
@@ -45,7 +56,7 @@ fn gh_output(cwd: Option<&Path>, args: &[&str]) -> Result<std::process::Output, 
 
 /// Clear, actionable error instead of letting a bare `gh pr create` failure
 /// (missing binary or expired login) surface as a cryptic exit-code message.
-fn gh_available_and_authed() -> Result<(), String> {
+pub(crate) fn gh_available_and_authed() -> Result<(), String> {
     let gh_path = providers::resolve_binary("gh");
     if gh_path == "gh" {
         return Err("the GitHub CLI (gh) isn't installed — install it from https://cli.github.com and run `gh auth login`".to_string());
@@ -83,7 +94,7 @@ pub(crate) fn detect_default_branch(cwd: &Path) -> String {
 /// elsewhere" check) is deliberately the more conservative question: if the
 /// ref exists at all, `resolve_session_for_pr_branch` leaves it alone
 /// rather than guessing whether it's safe to reuse or move.
-fn local_branch_exists(cwd: &Path, branch: &str) -> bool {
+pub(crate) fn local_branch_exists(cwd: &Path, branch: &str) -> bool {
     Command::new(providers::resolve_binary("git"))
         .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
         .current_dir(cwd)
@@ -223,7 +234,7 @@ fn fetch_pull_request_by_id(db: &DbConnection, pr_id: &str) -> Result<Option<Pul
 /// (no stage/commit UI exists yet, so this is a single blanket commit);
 /// pushes to `origin`. Returns `(branch, base)`. Pure git, no `gh` calls, so
 /// it's testable against a real local remote without touching GitHub.
-fn prepare_branch_for_pr(cwd: &Path, session_name: &str) -> Result<(String, String), String> {
+fn prepare_branch_for_pr(cwd: &Path, session_name: &str, git_env: &[(String, String)]) -> Result<(String, String), String> {
     let base = detect_default_branch(cwd);
     let current_branch = git_capture(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     let branch = if current_branch == base || current_branch == "HEAD" {
@@ -237,10 +248,13 @@ fn prepare_branch_for_pr(cwd: &Path, session_name: &str) -> Result<(String, Stri
     let status = git_capture(cwd, &["status", "--porcelain"])?;
     if !status.trim().is_empty() {
         git_capture(cwd, &["add", "-A"])?;
-        git_capture(cwd, &["commit", "-m", &format!("Changes from Hangar session: {session_name}")])?;
+        // The two calls that must not use the machine's default identity: a
+        // commit records who wrote it, forever, and a push has to authenticate
+        // as whoever owns that repo.
+        git_capture_with_env(cwd, &["commit", "-m", &format!("Changes from Hangar session: {session_name}")], git_env)?;
     }
 
-    git_capture(cwd, &["push", "-u", "origin", &branch])?;
+    git_capture_with_env(cwd, &["push", "-u", "origin", &branch], git_env)?;
     Ok((branch, base))
 }
 
@@ -332,7 +346,15 @@ pub async fn create_pull_request<R: Runtime>(app: AppHandle<R>, session_id: Stri
             return Err(format!("working directory {cwd} does not exist"));
         }
 
-        let (branch, base) = prepare_branch_for_pr(cwd_path, &session_name)?;
+        // The project's own identity and credential, if it has one — otherwise
+        // the machine's default, which is the pre-existing behaviour.
+        let project_id_for_git: String = {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            conn.query_row("SELECT project_id FROM sessions WHERE id = ?1", params![session_id], |row| row.get(0))
+                .map_err(|e| format!("session lookup failed: {e}"))?
+        };
+        let git_env = crate::git_identity::git_env_for_project(&app, &project_id_for_git);
+        let (branch, base) = prepare_branch_for_pr(cwd_path, &session_name, &git_env)?;
 
         let (owner, repo) = detect_repo_owner_and_name(cwd_path)?;
         let (default_title, body) = generate_pr_title_and_body(cwd_path, &base, &branch, &session_name)?;
@@ -413,93 +435,241 @@ struct RawPrComment {
     line: Option<i64>,
 }
 
-/// Normalizes `gh pr view --json comments,reviews`'s two differently-shaped
-/// arrays into one list, sorted oldest-first, dropping review submissions
-/// with no comment text (a bare "approve"/"request changes" with nothing to
-/// act on). Each entry already carries GitHub's own `id` by default (no
-/// extra `--json` field needed — it's part of gh's fixed shape for both
-/// arrays). Neither shape carries file/line context — that's only on inline
-/// diff comments, parsed separately by `parse_inline_comments_json`.
-fn parse_pr_comments_json(json: &Value) -> Vec<RawPrComment> {
+/// The PR fields every GraphQL query here asks for, as a fragment shared by
+/// the repo-wide and single-PR queries so the two can never drift.
+///
+/// **The `id` choices are a compatibility contract, not a preference.**
+/// `external_id` values already in the database came from `gh pr view --json
+/// comments,reviews` (GraphQL node ids like `PRR_kwDO…`, verified identical to
+/// what `id` returns here) and from the REST inline-comments endpoint (numeric
+/// ids). So: `id` for comments and reviews, `databaseId` for review-thread
+/// comments. Getting this wrong wouldn't fail loudly — it would make every
+/// comment ever seen look new and flood the inbox on the first pass.
+const PR_FIELDS_FRAGMENT: &str = r#"
+fragment prFields on PullRequest {
+  number url title createdAt updatedAt state
+  author { login }
+  assignees(first: 10) { nodes { login } }
+  headRefName baseRefName
+  comments(last: 50) { nodes { id body createdAt author { login } } }
+  reviews(last: 50) { nodes { id body submittedAt author { login } } }
+  reviewThreads(last: 50) { nodes { comments(first: 20) { nodes { databaseId body createdAt path line originalLine author { login } } } } }
+}"#;
+
+/// Everything one poll pass needs about one repo, in a single round trip: the
+/// open PRs with their comments, who the viewer is, and which PRs GitHub
+/// itself says are waiting on the viewer's review.
+///
+/// This replaces a fan-out that cost, per pass: two `gh` calls per repo plus
+/// one to three per tracked PR (a state probe, a comments fetch, and a REST
+/// call for inline comments), each a process spawn of ~0.5-0.9s. Measured on
+/// this machine: 11-21 processes and 10-20 seconds became one 0.4-0.8s call per
+/// repo. `viewer { login }` also folds in what used to be a separate
+/// `gh api user` per PR.
+#[derive(Debug, Clone, PartialEq)]
+struct RepoPrSnapshot {
+    /// The `gh`-authenticated user, or `None` when GitHub didn't say — see
+    /// `classify_pr` for why that isn't treated as "everything is mine".
+    viewer_login: Option<String>,
+    review_requested: HashSet<i64>,
+    prs: Vec<SnapshotPr>,
+}
+
+/// One open PR as GitHub returned it, with its comments already normalized.
+#[derive(Debug, Clone, PartialEq)]
+struct SnapshotPr {
+    number: i64,
+    url: String,
+    title: Option<String>,
+    created_at: String,
+    updated_at: String,
+    /// `open` / `closed` / `merged`, lowercased to match the `state` column.
+    state: String,
+    author_login: Option<String>,
+    assignees: Vec<String>,
+    head_branch: Option<String>,
+    base_branch: Option<String>,
+    comments: Vec<RawPrComment>,
+}
+
+/// What `check_pr_comments_with` needs to judge one PR, from either source:
+/// a repo-wide snapshot (the poller) or a single-PR query (the per-session
+/// "check now"). Splitting this out is what lets one repo query serve every
+/// tracked PR in it instead of one query each.
+#[derive(Debug, Clone, PartialEq)]
+struct PrFacts {
+    state: String,
+    updated_at: String,
+    comments: Vec<RawPrComment>,
+    viewer_login: Option<String>,
+}
+
+/// Pulls the three comment sources out of one PR's GraphQL node and merges
+/// them into one list, oldest first.
+///
+/// Same rules as the two REST parsers this replaces: bodyless reviews (a bare
+/// "approve" with nothing to act on) are dropped, and an inline comment's
+/// `line` falls back to `originalLine`, which is what GitHub leaves once the
+/// commented line has scrolled out of the current diff.
+fn parse_graphql_pr_comments(pr: &Value) -> Vec<RawPrComment> {
     let mut out = Vec::new();
-    if let Some(comments) = json.get("comments").and_then(|v| v.as_array()) {
-        for c in comments {
+
+    let mut push_simple = |nodes: Option<&Vec<Value>>, date_field: &str| {
+        for c in nodes.into_iter().flatten() {
             let body = c.get("body").and_then(|v| v.as_str()).unwrap_or("").to_string();
             if body.trim().is_empty() {
                 continue;
             }
-            let external_id = c.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let author = c.pointer("/author/login").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-            let created_at = c.get("createdAt").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            out.push(RawPrComment { external_id, author, body, created_at, path: None, line: None });
+            out.push(RawPrComment {
+                external_id: c.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                author: c.pointer("/author/login").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
+                body,
+                created_at: c.get(date_field).and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                path: None,
+                line: None,
+            });
         }
-    }
-    if let Some(reviews) = json.get("reviews").and_then(|v| v.as_array()) {
-        for r in reviews {
-            let body = r.get("body").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            if body.trim().is_empty() {
-                continue;
-            }
-            let external_id = r.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let author = r.pointer("/author/login").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-            let created_at = r.get("submittedAt").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            out.push(RawPrComment { external_id, author, body, created_at, path: None, line: None });
-        }
-    }
-    out.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-    out
-}
+    };
+    push_simple(pr.pointer("/comments/nodes").and_then(|v| v.as_array()), "createdAt");
+    push_simple(pr.pointer("/reviews/nodes").and_then(|v| v.as_array()), "submittedAt");
 
-/// Normalizes `gh api repos/{owner}/{repo}/pulls/{n}/comments`'s array of
-/// inline diff comments — the review comments a plain `gh pr view
-/// --json comments,reviews` can't see at all, since GitHub keeps line-level
-/// feedback in a separate REST resource from the PR's own comments/reviews.
-/// Uses `original_line` as a fallback for `line` since GitHub nulls out
-/// `line` once the commented line has scrolled out of the current diff.
-fn parse_inline_comments_json(json: &Value) -> Vec<RawPrComment> {
-    let mut out = Vec::new();
-    if let Some(comments) = json.as_array() {
-        for c in comments {
+    for thread in pr.pointer("/reviewThreads/nodes").and_then(|v| v.as_array()).into_iter().flatten() {
+        for c in thread.pointer("/comments/nodes").and_then(|v| v.as_array()).into_iter().flatten() {
             let body = c.get("body").and_then(|v| v.as_str()).unwrap_or("").to_string();
             if body.trim().is_empty() {
                 continue;
             }
-            let external_id = c.get("id").and_then(|v| v.as_i64()).map(|n| n.to_string()).unwrap_or_default();
-            let author = c.pointer("/user/login").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-            let created_at = c.get("created_at").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let path = c.get("path").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let line = c.get("line").and_then(|v| v.as_i64()).or_else(|| c.get("original_line").and_then(|v| v.as_i64()));
-            out.push(RawPrComment { external_id, author, body, created_at, path, line });
+            out.push(RawPrComment {
+                // `databaseId`, not `id`: this is the source whose ids were
+                // persisted as REST numerics.
+                external_id: c.get("databaseId").and_then(|v| v.as_i64()).map(|n| n.to_string()).unwrap_or_default(),
+                author: c.pointer("/author/login").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
+                body,
+                created_at: c.get("createdAt").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                path: c.get("path").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                line: c.get("line").and_then(|v| v.as_i64()).or_else(|| c.get("originalLine").and_then(|v| v.as_i64())),
+            });
         }
     }
+
     out.sort_by(|a, b| a.created_at.cmp(&b.created_at));
     out
 }
 
-/// Real `gh api` call for inline diff comments on one PR — the counterpart
-/// to `gh pr view --json comments,reviews` that actually sees file/line
-/// feedback (e.g. a review left only as inline comments, with no top-level
-/// summary body, which `parse_pr_comments_json` would otherwise drop
-/// entirely). `--paginate` merges multi-page results into one JSON array.
-fn fetch_inline_review_comments(repo: &str, pr_number: i64) -> Result<Vec<RawPrComment>, String> {
-    let output = gh_output(None, &["api", &format!("repos/{repo}/pulls/{pr_number}/comments"), "--paginate"])?;
+fn parse_graphql_pr(pr: &Value) -> Option<SnapshotPr> {
+    Some(SnapshotPr {
+        number: pr.get("number").and_then(|v| v.as_i64())?,
+        url: pr.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        title: pr.get("title").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        created_at: pr.get("createdAt").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        updated_at: pr.get("updatedAt").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        state: pr.get("state").and_then(|v| v.as_str()).unwrap_or("OPEN").to_lowercase(),
+        author_login: pr.pointer("/author/login").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        assignees: pr
+            .pointer("/assignees/nodes")
+            .and_then(|v| v.as_array())
+            .map(|list| list.iter().filter_map(|a| a.get("login").and_then(|v| v.as_str()).map(|s| s.to_string())).collect())
+            .unwrap_or_default(),
+        head_branch: pr.get("headRefName").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        base_branch: pr.get("baseRefName").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        comments: parse_graphql_pr_comments(pr),
+    })
+}
+
+/// Parses the repo-wide query's response. Pure, so the whole shape of a poll
+/// pass is testable against a fixture instead of a live repo.
+fn parse_repo_snapshot(json: &Value) -> RepoPrSnapshot {
+    RepoPrSnapshot {
+        viewer_login: json.pointer("/data/viewer/login").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        review_requested: json
+            .pointer("/data/reviewRequested/nodes")
+            .and_then(|v| v.as_array())
+            .map(|rows| rows.iter().filter_map(|r| r.get("number").and_then(|v| v.as_i64())).collect())
+            .unwrap_or_default(),
+        prs: json
+            .pointer("/data/repository/pullRequests/nodes")
+            .and_then(|v| v.as_array())
+            .map(|nodes| nodes.iter().filter_map(parse_graphql_pr).collect())
+            .unwrap_or_default(),
+    }
+}
+
+/// One round trip for one repo. `limit` caps the open PRs pulled in — see
+/// `DISCOVERY_PR_LIMIT`.
+fn fetch_repo_pr_snapshot(owner: &str, repo: &str, limit: usize) -> Result<RepoPrSnapshot, String> {
+    let query = format!(
+        r#"query($owner:String!, $name:String!, $limit:Int!, $search:String!) {{
+  viewer {{ login }}
+  repository(owner:$owner, name:$name) {{
+    pullRequests(states: OPEN, first: $limit, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ ...prFields }} }}
+  }}
+  reviewRequested: search(query: $search, type: ISSUE, first: 100) {{ nodes {{ ... on PullRequest {{ number }} }} }}
+}}{PR_FIELDS_FRAGMENT}"#
+    );
+    let search = format!("repo:{owner}/{repo} is:pr is:open review-requested:@me");
+    let limit = limit.to_string();
+    let output = gh_output(
+        None,
+        &[
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={query}"),
+            "-F",
+            &format!("owner={owner}"),
+            "-F",
+            &format!("name={repo}"),
+            "-F",
+            &format!("limit={limit}"),
+            "-f",
+            &format!("search={search}"),
+        ],
+    )?;
     if !output.status.success() {
-        return Err(format!("gh api pulls/comments failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        return Err(format!("gh api graphql failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
     }
     let json: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
-    Ok(parse_inline_comments_json(&json))
+    Ok(parse_repo_snapshot(&json))
 }
 
-/// The `gh`-authenticated user's own login, so their own follow-up comments
-/// on a PR Hangar opened never show up as "review feedback to act on" — best
-/// effort, `None` (no filtering) if `gh api user` fails for any reason.
-fn fetch_gh_login() -> Option<String> {
-    let output = gh_output(None, &["api", "user", "--jq", ".login"]).ok()?;
+/// One PR, for the paths that don't have a repo snapshot to hand: the
+/// per-session "check now", and the poller resolving a tracked PR that has
+/// dropped off the open list (merged or closed — the repo query only returns
+/// open ones, so absence is the signal but not the reason).
+fn fetch_single_pr_facts(pr: &PullRequestInfo) -> Result<PrFacts, String> {
+    let query = format!(
+        r#"query($owner:String!, $name:String!, $number:Int!) {{
+  viewer {{ login }}
+  repository(owner:$owner, name:$name) {{ pullRequest(number:$number) {{ ...prFields }} }}
+}}{PR_FIELDS_FRAGMENT}"#
+    );
+    let output = gh_output(
+        None,
+        &[
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={query}"),
+            "-F",
+            &format!("owner={}", pr.repo_owner),
+            "-F",
+            &format!("name={}", pr.repo_name),
+            "-F",
+            &format!("number={}", pr.number),
+        ],
+    )?;
     if !output.status.success() {
-        return None;
+        return Err(format!("gh api graphql failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
     }
-    let login = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!login.is_empty()).then_some(login)
+    let json: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+    let node = json.pointer("/data/repository/pullRequest").ok_or_else(|| "gh returned no pull request".to_string())?;
+    let parsed = parse_graphql_pr(node).ok_or_else(|| "gh returned a pull request with no number".to_string())?;
+    Ok(PrFacts {
+        state: parsed.state,
+        updated_at: parsed.updated_at,
+        comments: parsed.comments,
+        viewer_login: json.pointer("/data/viewer/login").and_then(|v| v.as_str()).map(|s| s.to_string()),
+    })
 }
 
 /// Of everything fetched, keep only comments that are (a) not already
@@ -512,44 +682,6 @@ fn select_new_comments_from_others(all: Vec<RawPrComment>, already_tracked: &Has
         .filter(|c| !already_tracked.contains(&c.external_id))
         .filter(|c| self_login != Some(c.author.as_str()))
         .collect()
-}
-
-/// Cheap freshness probe — just state + GitHub's own `updatedAt`, no comment
-/// bodies at all. `check_pr_comments_for` runs this first so a PR with
-/// nothing new (the common case once a project's been checked a few times)
-/// costs one small `gh` call instead of a full `gh pr view --json
-/// comments,reviews` plus a separate REST call for inline comments.
-fn fetch_pr_state_and_updated_at(pr: &PullRequestInfo) -> Result<(String, String), String> {
-    let repo = format!("{}/{}", pr.repo_owner, pr.repo_name);
-    let output = gh_output(None, &["pr", "view", &pr.number.to_string(), "--repo", &repo, "--json", "state,updatedAt"])?;
-    if !output.status.success() {
-        return Err(format!("gh pr view failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
-    }
-    let json: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
-    let state = json.get("state").and_then(|v| v.as_str()).unwrap_or("OPEN").to_lowercase();
-    let updated_at = json.get("updatedAt").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    Ok((state, updated_at))
-}
-
-/// Real `gh` fetch for one PR — general comments/reviews plus inline diff
-/// comments, combined into one list. Only called once the cheap probe above
-/// has decided something might actually be new.
-fn fetch_pr_comments(pr: &PullRequestInfo) -> Result<Vec<RawPrComment>, String> {
-    let repo = format!("{}/{}", pr.repo_owner, pr.repo_name);
-    let output = gh_output(None, &["pr", "view", &pr.number.to_string(), "--repo", &repo, "--json", "comments,reviews"])?;
-    if !output.status.success() {
-        return Err(format!("gh pr view failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
-    }
-    let json: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
-
-    // General comments/reviews plus inline diff comments — two separate `gh`
-    // resources GitHub keeps apart, combined here so the rest of this
-    // function (dedup, self-filter, persistence) treats them identically. A
-    // PR with an inline-only review (no top-level summary text) would
-    // otherwise show nothing at all.
-    let mut all_comments = parse_pr_comments_json(&json);
-    all_comments.extend(fetch_inline_review_comments(&repo, pr.number)?);
-    Ok(all_comments)
 }
 
 /// What a check should do next, decided purely from the cheap probe's result
@@ -594,11 +726,6 @@ fn check_pr_comments_impl(db: &DbConnection, session_id: &str) -> Result<Vec<PrC
     check_pr_comments_for(db, pr)
 }
 
-fn check_pr_comments_for_pr_id(db: &DbConnection, pr_id: &str) -> Result<Vec<PrComment>, String> {
-    let pr = fetch_pull_request_by_id(db, pr_id)?.ok_or_else(|| "no such PR".to_string())?;
-    check_pr_comments_for(db, pr)
-}
-
 /// Checks one PR for new comments. A `gh` failure (permissions, SSO, rate
 /// limit) is captured into `pull_requests.last_check_error` and surfaced via
 /// `list_pr_review_inbox` — NOT propagated as an `Err` here, since that would
@@ -612,14 +739,31 @@ fn check_pr_comments_for_pr_id(db: &DbConnection, pr_id: &str) -> Result<Vec<PrC
 /// everything else stays in the database until the user explicitly
 /// sends/dismisses a comment, or the PR itself gets merged.
 fn check_pr_comments_for(db: &DbConnection, pr: PullRequestInfo) -> Result<Vec<PrComment>, String> {
-    let (state, updated_at) = match fetch_pr_state_and_updated_at(&pr) {
-        Ok(result) => result,
+    let facts = fetch_single_pr_facts(&pr);
+    check_pr_comments_with(db, pr, facts)
+}
+
+/// `check_pr_comments_for`'s body, with the fetch already done.
+///
+/// The split is the whole point of the GraphQL move: the poller gets every
+/// tracked PR's facts out of **one** query per repo and calls this directly,
+/// while the per-session "check now" still fetches its own. Same state machine,
+/// same persistence, same error handling either way.
+///
+/// Note that the comment fetch is no longer separate from the freshness probe —
+/// one query returns both, so `NothingChanged` now saves the *parsing and
+/// writing*, not a second round trip. The check stays because it's what keeps
+/// `last_seen_updated_at` meaningful and avoids pointless writes.
+fn check_pr_comments_with(db: &DbConnection, pr: PullRequestInfo, facts: Result<PrFacts, String>) -> Result<Vec<PrComment>, String> {
+    let facts = match facts {
+        Ok(facts) => facts,
         Err(e) => {
             let conn = db.0.lock().map_err(|e| e.to_string())?;
             conn.execute("UPDATE pull_requests SET last_check_error = ?2 WHERE id = ?1", params![pr.id, e]).map_err(|e| e.to_string())?;
             return Ok(vec![]);
         }
     };
+    let PrFacts { state, updated_at, comments: all_comments, viewer_login: self_login } = facts;
 
     match decide_check_outcome(&state, &updated_at, pr.last_seen_updated_at.as_deref()) {
         CheckOutcome::Cleanup => {
@@ -644,17 +788,6 @@ fn check_pr_comments_for(db: &DbConnection, pr: PullRequestInfo) -> Result<Vec<P
         }
         CheckOutcome::NeedsFullFetch => {}
     }
-
-    let all_comments = match fetch_pr_comments(&pr) {
-        Ok(comments) => comments,
-        Err(e) => {
-            let conn = db.0.lock().map_err(|e| e.to_string())?;
-            conn.execute("UPDATE pull_requests SET last_check_error = ?2 WHERE id = ?1", params![pr.id, e]).map_err(|e| e.to_string())?;
-            return Ok(vec![]);
-        }
-    };
-
-    let self_login = fetch_gh_login();
 
     let mut persisted = Vec::new();
     {
@@ -855,9 +988,10 @@ fn resolve_session_for_pr_branch<R: Runtime>(app: &AppHandle<R>, db: &DbConnecti
     let legacy_review_branch = format!("fleet/pr-{}-review", pr.number);
 
     if let Some(session_id) = &pr.session_id {
-        if anchor_worktree_branch.as_deref() == Some(head_branch.as_str())
+        if (anchor_worktree_branch.as_deref() == Some(head_branch.as_str())
             || anchor_worktree_branch.as_deref() == Some(local_review_branch.as_str())
-            || anchor_worktree_branch.as_deref() == Some(legacy_review_branch.as_str())
+            || anchor_worktree_branch.as_deref() == Some(legacy_review_branch.as_str()))
+            && session_worktree_is_on_disk(db, session_id)
         {
             return Ok(session_id.clone());
         }
@@ -868,18 +1002,40 @@ fn resolve_session_for_pr_branch<R: Runtime>(app: &AppHandle<R>, db: &DbConnecti
         // A previous "Send to agent" for this same PR could have landed on
         // any of the names, depending on whether there was a conflict at the
         // time and whether it ran before or after the rename — check all.
-        if let Some(existing) = conn
-            .query_row(
-                "SELECT id FROM sessions WHERE project_id = ?1 AND worktree_branch IN (?2, ?3, ?4) ORDER BY started_at DESC LIMIT 1",
-                params![project_id, head_branch, local_review_branch, legacy_review_branch],
-                |row| row.get::<_, String>(0),
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, worktree_path FROM sessions WHERE project_id = ?1 AND worktree_branch IN (?2, ?3, ?4) ORDER BY started_at DESC",
             )
-            .optional()
+            .map_err(|e| e.to_string())?;
+        let candidates: Vec<(String, Option<String>)> = stmt
+            .query_map(params![project_id, head_branch, local_review_branch, legacy_review_branch], |row| Ok((row.get(0)?, row.get(1)?)))
             .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+        drop(stmt);
+        drop(conn);
+
+        // A row can outlive its directory — the user deletes the worktree by
+        // hand, or from the Git panel, and the session stays behind. Reusing it
+        // hands back a session whose cwd doesn't exist, which is what produced
+        // "…/worktrees/pr-103 no longer exists on disk" at the moment the
+        // terminal tried to open.
+        // Same rule as the anchor check above, deliberately: a session with no
+        // worktree runs in the project root, which exists by definition; one
+        // with a path has to still have it.
+        if let Some((existing, _)) = candidates
+            .into_iter()
+            .find(|(_, path)| path.as_deref().is_none_or(|p| Path::new(p).is_dir()))
         {
             return Ok(existing);
         }
     }
+
+    // Git keeps its own registry of worktrees, and a directory deleted outside
+    // git stays in it — so `worktree add` on that same path fails with "already
+    // registered" until it's pruned. Pruning here is what makes recovering from
+    // a hand-deleted worktree work at all.
+    let _ = git_capture(Path::new(&project_path), &["worktree", "prune"]);
 
     let worktree_dir = unique_worktree_dir(&project_path, &format!("pr-{}", pr.number));
     let project_dir = Path::new(&project_path);
@@ -889,26 +1045,65 @@ fn resolve_session_for_pr_branch<R: Runtime>(app: &AppHandle<R>, db: &DbConnecti
     // `git status` the first time this runs.
     ensure_worktree_dir_ignored(&project_path);
 
-    // Fetching into a *remote-tracking* ref (no local branch name involved)
-    // is never blocked by anything being checked out — only creating/moving
-    // a local branch ref is. Prefer checking the worktree out on the PR's
-    // own branch name when nothing local already claims that name anywhere
-    // in the repo; only fall back to the Hangar-owned name when there'd be
-    // an actual conflict, so the common case shows the PR's real branch
-    // instead of always inventing one.
+    // Fetching into a *remote-tracking* ref (no local branch name involved) is
+    // never blocked by anything being checked out — only creating or moving a
+    // local branch ref is.
     git_capture(project_dir, &["fetch", "origin", &head_branch])?;
     if let Some(parent) = worktree_dir.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let chosen_branch = if local_branch_exists(project_dir, &head_branch) { local_review_branch.clone() } else { head_branch.clone() };
-    git_capture(
-        project_dir,
-        &["worktree", "add", "-b", &chosen_branch, &worktree_dir.to_string_lossy(), &format!("origin/{head_branch}")],
-    )?;
-    // Track the real remote branch explicitly (rather than relying on
-    // whatever `-b ... origin/<head_branch>` inferred) so a plain
-    // `git push` from inside this worktree updates the actual PR either way.
-    git_capture(&worktree_dir, &["branch", "--set-upstream-to", &format!("origin/{head_branch}"), &chosen_branch])?;
+
+    // Three cases, and getting the first two confused is what put review
+    // worktrees on `hangar/pr-N-review` when they could have been on the PR's
+    // own branch — so commits landed somewhere GitHub Desktop reported as a
+    // different branch than the PR.
+    //
+    // A branch merely *existing* locally is no obstacle: `git worktree add
+    // <dir> <branch>` checks it out happily. What git refuses is the same
+    // branch checked out in two places at once, which is a much narrower
+    // condition and the only one worth inventing a name for.
+    let checked_out: Vec<String> = git_capture(project_dir, &["worktree", "list", "--porcelain"])
+        .ok()
+        .map(|out| crate::commands::sessions::parse_worktree_list(&out).into_iter().map(|(_, branch)| branch).collect())
+        .unwrap_or_default();
+    let checked_out_elsewhere = checked_out.iter().any(|branch| branch == &head_branch);
+
+    // The fallback name outlives the worktree it was cut for: delete the
+    // directory and `hangar/pr-103-review` is still a branch, so the next
+    // attempt used to die on "a branch named … already exists". Existing is
+    // fine — we attach to it below. Only *checked out somewhere else* forces a
+    // new name, and it's the same rule as for the PR's own branch.
+    let mut chosen_branch = if checked_out_elsewhere { local_review_branch.clone() } else { head_branch.clone() };
+    let mut suffix = 2;
+    while checked_out.iter().any(|branch| branch == &chosen_branch) {
+        chosen_branch = format!("{local_review_branch}-{suffix}");
+        suffix += 1;
+    }
+    let dir = worktree_dir.to_string_lossy().to_string();
+
+    if local_branch_exists(project_dir, &chosen_branch) {
+        // The branch is right there and free — attach to it. Its upstream is
+        // whatever it already had, deliberately: for the PR's own branch that's
+        // the user's setting, and a review branch we created already points at
+        // the PR.
+        git_capture(project_dir, &["worktree", "add", &dir, &chosen_branch])?;
+    } else {
+        // Doesn't exist here yet: cut it from the remote.
+        git_capture(project_dir, &["worktree", "add", "-b", &chosen_branch, &dir, &format!("origin/{head_branch}")])?;
+    }
+
+    if chosen_branch != head_branch {
+        // Track the real remote branch explicitly rather than relying on what
+        // `-b … origin/<head>` inferred, so a plain `git push` from inside this
+        // worktree updates the actual PR — which is the whole point when the
+        // branch had to be renamed.
+        git_capture(&worktree_dir, &["branch", "--set-upstream-to", &format!("origin/{head_branch}"), &chosen_branch])?;
+        // A reused review branch can be behind the PR by however many commits
+        // landed since. Fast-forward only: if it has commits of its own the
+        // merge refuses and we leave it exactly as it was, because losing
+        // someone's review commits is far worse than opening on a stale tree.
+        let _ = git_capture(&worktree_dir, &["merge", "--ff-only", &format!("origin/{head_branch}")]);
+    }
 
     let new_session_id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
@@ -941,6 +1136,27 @@ fn resolve_session_for_pr_branch<R: Runtime>(app: &AppHandle<R>, db: &DbConnecti
     );
 
     Ok(new_session_id)
+}
+
+/// Whether a session's worktree is still on disk.
+///
+/// The row and the directory are separate facts: deleting a worktree by hand,
+/// or from the Git panel, leaves the session behind. Anything that reuses a
+/// session has to ask, or it returns one whose working directory doesn't exist.
+fn session_worktree_is_on_disk(db: &DbConnection, session_id: &str) -> bool {
+    let Ok(conn) = db.0.lock() else { return false };
+    let path: Option<String> = conn
+        .query_row("SELECT worktree_path FROM sessions WHERE id = ?1", params![session_id], |row| row.get(0))
+        .optional()
+        .ok()
+        .flatten()
+        .flatten();
+    match path {
+        Some(path) => Path::new(&path).is_dir(),
+        // No worktree at all means the session runs in the project root, which
+        // exists by definition.
+        None => true,
+    }
 }
 
 /// The account a PR's work should run under: the one the user picked, else the
@@ -1041,6 +1257,15 @@ pub async fn send_pr_comments_to_terminal(
         let target_session_id = resolve_session_for_pr_branch(&app, &db, &pr, &account_id)?;
 
         let prompt = to_single_line(&format_pr_comments_prompt(&comments));
+
+        // Already working there: type into it instead of opening a second
+        // terminal on the same worktree, where two agents would edit the same
+        // files without knowing about each other.
+        if let Some(existing) = crate::terminals::terminal_for_session(&app, &target_session_id) {
+            crate::terminals::send_line_to_terminal(&app, &existing.id, &prompt)?;
+            mark_comments_resolved(&db, &comment_ids, "sent")?;
+            return Ok(existing);
+        }
         let info = crate::terminals::open_terminal(
             app.clone(),
             crate::terminals::TerminalTarget { kind: crate::terminals::TargetKind::Session, id: target_session_id },
@@ -1092,13 +1317,19 @@ pub async fn open_pr_review_terminal(app: AppHandle, pr_id: String, account_id: 
         let account_id = account_for_pr(&db, &pr, Some(account_id))?;
         let target_session_id = resolve_session_for_pr_branch(&app, &db, &pr, &account_id)?;
 
+        let prompt = to_single_line(&format_pr_review_prompt(&pr));
+        if let Some(existing) = crate::terminals::terminal_for_session(&app, &target_session_id) {
+            crate::terminals::send_line_to_terminal(&app, &existing.id, &prompt)?;
+            return Ok(existing);
+        }
+
         crate::terminals::open_terminal(
             app.clone(),
             crate::terminals::TerminalTarget { kind: crate::terminals::TargetKind::Session, id: target_session_id },
             Some(account_id),
             Some(crate::terminals::InitCommand::Start),
             None, // let Hangar mint the session id
-            Some(to_single_line(&format_pr_review_prompt(&pr))),
+            Some(prompt),
             cols,
             rows,
         )
@@ -1250,45 +1481,26 @@ pub async fn check_all_open_prs_now(app: AppHandle) -> Result<(), String> {
     .await
 }
 
-/// Finds open PRs authored by the logged-in `gh` user on one project's repo
-/// that Hangar doesn't know about yet (created outside Hangar's own "Create
-/// PR" button — by hand, or by an agent running `gh` directly inside a
-/// turn) and starts tracking them, so the review inbox isn't limited to PRs
-/// Hangar itself opened. Anchored to the project's most recently started
-/// session purely as an FK/"open session" target — not necessarily the
-/// session that actually produced the PR's branch. Silently no-ops for a
-/// project with no git remote or no session yet; errors are the caller's to
-/// log, not surface, since this runs opportunistically alongside a real
-/// check, not as a user-facing action of its own.
-fn discover_open_prs_for_project(db: &DbConnection, project_id: &str, project_path: &str, self_login: Option<&str>) -> Result<(), String> {
-    let cwd = Path::new(project_path);
-    let (owner, repo) = detect_repo_owner_and_name(cwd)?;
-    let repo_full = format!("{owner}/{repo}");
-    let limit = DISCOVERY_PR_LIMIT.to_string();
-    let output = gh_output(
-        None,
-        &["pr", "list", "--repo", &repo_full, "--state", "open", "--limit", &limit, "--json", "number,url,createdAt,headRefName,baseRefName,title,author,assignees"],
-    )?;
-    if !output.status.success() {
-        return Err(format!("gh pr list failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
-    }
-    let list: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
-    let prs = list.as_array().cloned().unwrap_or_default();
-    if prs.is_empty() {
+/// Records every open PR on one project's repo — yours, the ones waiting on
+/// your review, and the rest — from a snapshot already fetched for that repo.
+///
+/// Takes the snapshot rather than fetching: the same round trip also feeds the
+/// comment check, so one query per repo serves the whole pass. A discovered PR
+/// gets no session (only a PR Hangar opened itself carries the session that
+/// produced it), and errors are the caller's to log, not surface, since this
+/// runs opportunistically alongside a real check.
+fn record_open_prs_for_project(db: &DbConnection, project_id: &str, owner: &str, repo: &str, snapshot: &RepoPrSnapshot) -> Result<(), String> {
+    if snapshot.prs.is_empty() {
         return Ok(());
     }
-    let review_requested = fetch_review_requested_numbers(&repo_full)?;
-    let still_open: Vec<i64> = prs.iter().filter_map(|pr| pr.get("number").and_then(|v| v.as_i64())).collect();
+    let self_login = snapshot.viewer_login.as_deref();
+    let still_open: Vec<i64> = snapshot.prs.iter().map(|pr| pr.number).collect();
 
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    prune_closed_foreign_prs(&conn, &owner, &repo, &still_open)?;
-    for pr in prs {
-        let Some(number) = pr.get("number").and_then(|v| v.as_i64()) else { continue };
-        let author = pr.get("author").and_then(|a| a.get("login")).and_then(|v| v.as_str()).map(|s| s.to_string());
-        let relation = classify_pr(author.as_deref(), self_login, review_requested.contains(&number), assignee_logins(&pr).iter().any(|a| Some(a.as_str()) == self_login));
-        let title = pr.get("title").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let head_branch = pr.get("headRefName").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let base_branch = pr.get("baseRefName").and_then(|v| v.as_str()).map(|s| s.to_string());
+    prune_closed_foreign_prs(&conn, owner, repo, &still_open)?;
+    for pr in &snapshot.prs {
+        let assigned_to_me = pr.assignees.iter().any(|a| Some(a.as_str()) == self_login);
+        let relation = classify_pr(pr.author_login.as_deref(), self_login, snapshot.review_requested.contains(&pr.number), assigned_to_me);
 
         // Everything except `relation` is written once at discovery, but the
         // relation is re-evaluated every pass: being asked to review a PR that
@@ -1298,21 +1510,30 @@ fn discover_open_prs_for_project(db: &DbConnection, project_id: &str, project_pa
             .execute(
                 "UPDATE pull_requests SET relation = ?4, author_login = ?5, title = ?6, head_branch = COALESCE(?7, head_branch), base_branch = COALESCE(?8, base_branch)
                  WHERE repo_owner = ?1 AND repo_name = ?2 AND number = ?3",
-                params![owner, repo, number, relation, author, title, head_branch, base_branch],
+                params![owner, repo, pr.number, relation, pr.author_login, pr.title, pr.head_branch, pr.base_branch],
             )
             .map_err(|e| e.to_string())?;
         if updated > 0 {
             continue;
         }
 
-        let url = pr.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let created_at = pr.get("createdAt").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        // No session: a discovered PR belongs to the project, and only a PR
-        // Hangar opened itself carries the session that produced it.
         conn.execute(
             "INSERT INTO pull_requests (id, project_id, session_id, repo_owner, repo_name, number, url, state, created_at, head_branch, base_branch, title, author_login, relation)
              VALUES (?1,?2,NULL,?3,?4,?5,?6,'open',?7,?8,?9,?10,?11,?12)",
-            params![Uuid::new_v4().to_string(), project_id, owner, repo, number, url, created_at, head_branch, base_branch, title, author, relation],
+            params![
+                Uuid::new_v4().to_string(),
+                project_id,
+                owner,
+                repo,
+                pr.number,
+                pr.url,
+                pr.created_at,
+                pr.head_branch,
+                pr.base_branch,
+                pr.title,
+                pr.author_login,
+                relation
+            ],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -1349,26 +1570,6 @@ fn prune_closed_foreign_prs(conn: &rusqlite::Connection, owner: &str, repo: &str
 /// is deciding what to look at next. `gh`'s own default is 30.
 const DISCOVERY_PR_LIMIT: usize = 50;
 
-/// The PR numbers on this repo where my review is requested — asked as a
-/// *search* rather than read off each PR's `reviewRequests`, because GitHub
-/// resolves team-based requests there and Hangar has no cheap way to know which
-/// teams the user belongs to.
-fn fetch_review_requested_numbers(repo_full: &str) -> Result<HashSet<i64>, String> {
-    let output = gh_output(None, &["pr", "list", "--repo", repo_full, "--state", "open", "--search", "review-requested:@me", "--json", "number"])?;
-    if !output.status.success() {
-        return Err(format!("gh pr list --search review-requested failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
-    }
-    let json: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
-    Ok(json.as_array().map(|rows| rows.iter().filter_map(|r| r.get("number").and_then(|v| v.as_i64())).collect()).unwrap_or_default())
-}
-
-fn assignee_logins(pr: &Value) -> Vec<String> {
-    pr.get("assignees")
-        .and_then(|v| v.as_array())
-        .map(|list| list.iter().filter_map(|a| a.get("login").and_then(|v| v.as_str()).map(|s| s.to_string())).collect())
-        .unwrap_or_default()
-}
-
 /// What an open PR is to the logged-in user. Pure, because this is the rule the
 /// whole three-tab split rests on and it should be readable without a `gh` call.
 ///
@@ -1386,68 +1587,92 @@ fn classify_pr(author: Option<&str>, self_login: Option<&str>, review_requested:
     }
 }
 
-/// Runs discovery for every project Hangar knows about — best-effort, a
-/// project with no git remote or a `gh` error just gets skipped and logged.
-fn discover_open_prs_for_all_projects(db: &DbConnection) {
+/// Every tracked open PR that belongs to one repo, with its own row id — what
+/// lets a repo's single snapshot be matched against what Hangar already knows.
+///
+/// **Only `mine`**, and that's the line that keeps this affordable. On someone
+/// else's PR the comments are other people reviewing *their* code, not a queue
+/// of yours; and since discovery brings in every open PR of every project's
+/// repo, checking them all would mean parsing and writing dozens of PRs' comment
+/// histories every five minutes to badge things nobody asked to be notified
+/// about.
+fn tracked_open_prs_for_repo(conn: &rusqlite::Connection, owner: &str, repo: &str) -> Vec<(String, i64)> {
+    let Ok(mut stmt) =
+        conn.prepare("SELECT id, number FROM pull_requests WHERE repo_owner = ?1 AND repo_name = ?2 AND state = 'open' AND relation = 'mine'")
+    else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map(params![owner, repo], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
+}
+
+/// Background poller (see `lib.rs`'s `.setup()`) — **one GraphQL round trip per
+/// repo** that does discovery and the comment check together, then emits an
+/// event for any PR with new comments and fires the opt-in notification. Never
+/// sends anything to an agent by itself.
+///
+/// This is the shape the whole pass was rebuilt around. It used to cost two `gh`
+/// calls per repo plus one to three per tracked PR, each a process spawn:
+/// measured on this machine, 11-21 processes and 10-20 seconds for three
+/// projects. Now it's one 0.4-0.8s call per repo.
+pub fn poll_all_open_prs<R: Runtime>(app: &AppHandle<R>) {
+    let Some(db) = app.try_state::<DbConnection>() else { return };
     let projects: Vec<(String, String)> = {
         let Ok(conn) = db.0.lock() else { return };
         let Ok(mut stmt) = conn.prepare("SELECT id, path FROM projects") else { return };
         let Ok(rows) = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))) else { return };
         rows.filter_map(Result::ok).collect()
     };
-    // Once per pass, not once per project: it's the same answer for all of them.
-    let self_login = fetch_gh_login();
+
     for (project_id, project_path) in projects {
-        if let Err(e) = discover_open_prs_for_project(db, &project_id, &project_path, self_login.as_deref()) {
-            log::error!("discover_open_prs_for_project({project_id}): {e}");
-        }
-    }
-}
-
-/// Background poller (see `lib.rs`'s `.setup()`) — checks every open PR,
-/// and for any with new comments, emits an event the UI can toast/badge on
-/// and fires the opt-in macOS notification. Never sends anything to an
-/// agent by itself.
-/// The PRs one poll pass actually checks for new comments.
-///
-/// By PR id, not session_id — a session can have several open PRs, and keying
-/// this by session_id would silently check only one of them, forever.
-///
-/// **Only `mine`**, and that's the line that keeps this affordable. On someone
-/// else's PR the comments are other people reviewing *their* code, not a queue
-/// of yours; and now that discovery brings in every open PR of every project's
-/// repo, checking them all would be a `gh` call per PR per pass — dozens, every
-/// five minutes, to badge things nobody asked to be notified about.
-fn open_prs_to_check(conn: &rusqlite::Connection) -> Vec<(String, Option<String>)> {
-    let Ok(mut stmt) = conn.prepare("SELECT id, session_id FROM pull_requests WHERE state = 'open' AND relation = 'mine' ORDER BY created_at") else {
-        return Vec::new();
-    };
-    let Ok(rows) = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))) else {
-        return Vec::new();
-    };
-    rows.filter_map(Result::ok).collect()
-}
-
-pub fn poll_all_open_prs<R: Runtime>(app: &AppHandle<R>) {
-    let Some(db) = app.try_state::<DbConnection>() else { return };
-    discover_open_prs_for_all_projects(&db);
-    let prs = {
-        let Ok(conn) = db.0.lock() else { return };
-        open_prs_to_check(&conn)
-    };
-    for (pr_id, session_id) in prs {
-        match check_pr_comments_for_pr_id(&db, &pr_id) {
-            Ok(comments) if !comments.is_empty() => {
-                let _ = app.emit("pr-comments-found", serde_json::json!({ "sessionId": session_id, "comments": comments }));
-                crate::notifications::notify_if_enabled(
-                    app,
-                    |s| s.notify_pr_comments,
-                    "New PR comments",
-                    &format!("{} new comment(s) on a PR Hangar opened", comments.len()),
-                );
+        let Ok((owner, repo)) = detect_repo_owner_and_name(Path::new(&project_path)) else {
+            continue; // no git remote — nothing to discover, and not an error
+        };
+        let snapshot = match fetch_repo_pr_snapshot(&owner, &repo, DISCOVERY_PR_LIMIT) {
+            Ok(snapshot) => snapshot,
+            Err(e) => {
+                log::error!("poll_all_open_prs: snapshot failed for {owner}/{repo}: {e}");
+                continue;
             }
-            Ok(_) => {}
-            Err(e) => log::error!("poll_all_open_prs: check failed for PR {pr_id}: {e}"),
+        };
+        if let Err(e) = record_open_prs_for_project(&db, &project_id, &owner, &repo, &snapshot) {
+            log::error!("poll_all_open_prs: recording {owner}/{repo}'s PRs failed: {e}");
+        }
+
+        let tracked = {
+            let Ok(conn) = db.0.lock() else { return };
+            tracked_open_prs_for_repo(&conn, &owner, &repo)
+        };
+        for (pr_id, number) in tracked {
+            let Ok(Some(pr)) = fetch_pull_request_by_id(&db, &pr_id) else { continue };
+            let session_id = pr.session_id.clone();
+            // A tracked PR missing from a snapshot of *open* PRs has been merged
+            // or closed, and the snapshot can't say which — that one gets its
+            // own query, which is rare and is what resolves it exactly.
+            let facts = match snapshot.prs.iter().find(|p| p.number == number) {
+                Some(found) => Ok(PrFacts {
+                    state: found.state.clone(),
+                    updated_at: found.updated_at.clone(),
+                    comments: found.comments.clone(),
+                    viewer_login: snapshot.viewer_login.clone(),
+                }),
+                None => fetch_single_pr_facts(&pr),
+            };
+            match check_pr_comments_with(&db, pr, facts) {
+                Ok(comments) if !comments.is_empty() => {
+                    let _ = app.emit("pr-comments-found", serde_json::json!({ "sessionId": session_id, "comments": comments }));
+                    crate::notifications::notify_if_enabled(
+                        app,
+                        |s| s.notify_pr_comments,
+                        "New PR comments",
+                        &format!("{} new comment(s) on a PR Hangar opened", comments.len()),
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => log::error!("poll_all_open_prs: check failed for PR {pr_id}: {e}"),
+            }
         }
     }
 }
@@ -1544,45 +1769,111 @@ mod tests {
         assert!(line.contains("Please address these."));
     }
 
-    #[test]
-    fn parse_pr_comments_json_normalizes_comments_and_reviews_and_drops_empty_bodies() {
-        let json: Value = serde_json::from_str(
+    // -- the one-query-per-repo snapshot ------------------------------------
+
+    /// A response in the exact shape the real query returns (verified against
+    /// `cli/cli` before this was written): one PR with all three comment
+    /// sources, an empty-bodied approval, and an inline comment whose `line`
+    /// GitHub has nulled out.
+    fn snapshot_json() -> Value {
+        serde_json::from_str(
             r#"{
-                "comments": [
-                    {"author": {"login": "alice"}, "body": "please fix the typo", "createdAt": "2026-01-01T00:00:00Z"}
-                ],
-                "reviews": [
-                    {"author": {"login": "bob"}, "body": "", "submittedAt": "2026-01-01T00:01:00Z", "state": "APPROVED"},
-                    {"author": {"login": "carol"}, "body": "one more thing", "submittedAt": "2026-01-01T00:02:00Z", "state": "COMMENTED"}
-                ]
+              "data": {
+                "viewer": {"login": "killua15"},
+                "repository": {"pullRequests": {"nodes": [
+                  {
+                    "number": 128, "url": "https://github.com/killua15/Hangar/pull/128",
+                    "title": "Fix billing rounding", "createdAt": "2026-01-01T00:00:00Z",
+                    "updatedAt": "2026-01-02T00:00:00Z", "state": "OPEN",
+                    "author": {"login": "alice"},
+                    "assignees": {"nodes": [{"login": "killua15"}]},
+                    "headRefName": "feat/billing", "baseRefName": "main",
+                    "comments": {"nodes": [
+                      {"id": "IC_kwDOaaa", "body": "please fix the typo", "createdAt": "2026-01-01T00:00:00Z", "author": {"login": "alice"}}
+                    ]},
+                    "reviews": {"nodes": [
+                      {"id": "PRR_kwDObbb", "body": "", "submittedAt": "2026-01-01T00:01:00Z", "author": {"login": "bob"}},
+                      {"id": "PRR_kwDOccc", "body": "one more thing", "submittedAt": "2026-01-01T00:02:00Z", "author": {"login": "carol"}}
+                    ]},
+                    "reviewThreads": {"nodes": [
+                      {"comments": {"nodes": [
+                        {"databaseId": 4772643945, "body": "this lookup can return null", "createdAt": "2026-01-01T00:03:00Z", "path": "src/billing.rs", "line": 40, "originalLine": 40, "author": {"login": "dave"}},
+                        {"databaseId": 4772643946, "body": "and a null check here", "createdAt": "2026-01-01T00:04:00Z", "path": "src/billing.rs", "line": null, "originalLine": 62, "author": {"login": "dave"}}
+                      ]}}
+                    ]}
+                  }
+                ]}},
+                "reviewRequested": {"nodes": [{"number": 128}]}
+              }
             }"#,
         )
-        .unwrap();
-        let comments = parse_pr_comments_json(&json);
-        assert_eq!(comments.len(), 2, "the empty-body approval must be dropped");
-        assert_eq!(comments[0].author, "alice");
-        assert_eq!(comments[1].author, "carol");
+        .unwrap()
+    }
+
+    #[test]
+    fn the_snapshot_carries_the_viewer_the_review_requests_and_the_prs() {
+        let snapshot = parse_repo_snapshot(&snapshot_json());
+        assert_eq!(snapshot.viewer_login.as_deref(), Some("killua15"), "the viewer comes free in the same query — no separate `gh api user`");
+        assert!(snapshot.review_requested.contains(&128));
+        assert_eq!(snapshot.prs.len(), 1);
+
+        let pr = &snapshot.prs[0];
+        assert_eq!(pr.number, 128);
+        assert_eq!(pr.state, "open", "GitHub says OPEN; the column stores lowercase");
+        assert_eq!(pr.author_login.as_deref(), Some("alice"));
+        assert_eq!(pr.assignees, vec!["killua15".to_string()]);
+        assert_eq!(pr.base_branch.as_deref(), Some("main"));
+    }
+
+    /// The three comment sources GitHub keeps apart arrive merged, oldest
+    /// first, with bodyless reviews dropped — the same contract the two REST
+    /// parsers used to provide between them.
+    #[test]
+    fn one_query_returns_all_three_comment_sources_merged_and_ordered() {
+        let snapshot = parse_repo_snapshot(&snapshot_json());
+        let comments = &snapshot.prs[0].comments;
+
+        assert_eq!(comments.len(), 4, "1 comment + 1 review with a body + 2 thread comments; the empty approval is dropped");
+        let authors: Vec<&str> = comments.iter().map(|c| c.author.as_str()).collect();
+        assert_eq!(authors, vec!["alice", "carol", "dave", "dave"], "oldest first");
+
+        assert_eq!(comments[2].path.as_deref(), Some("src/billing.rs"));
+        assert_eq!(comments[2].line, Some(40));
+        assert_eq!(comments[3].line, Some(62), "must fall back to originalLine once GitHub nulls out line");
+    }
+
+    /// **The migration hazard.** `external_id` is how dedup works, and rows
+    /// already in the database were written from `gh pr view --json
+    /// comments,reviews` (GraphQL node ids) and from the REST inline endpoint
+    /// (numeric ids). If GraphQL's field choice produced different strings,
+    /// every comment ever seen would look new and the inbox would flood on the
+    /// first pass. Verified against real API responses: `gh pr view`'s
+    /// `reviews[].id` is byte-identical to GraphQL's `id`.
+    #[test]
+    fn comment_ids_keep_the_shape_already_persisted_so_nothing_looks_new() {
+        let snapshot = parse_repo_snapshot(&snapshot_json());
+        let ids: Vec<&str> = snapshot.prs[0].comments.iter().map(|c| c.external_id.as_str()).collect();
+
+        assert_eq!(ids[0], "IC_kwDOaaa", "issue comments keep the node id");
+        assert_eq!(ids[1], "PRR_kwDOccc", "reviews keep the node id");
+        assert_eq!(ids[2], "4772643945", "inline comments keep the REST numeric id, via databaseId");
+        assert_eq!(ids[3], "4772643946");
+    }
+
+    /// A repo with nothing open must parse to an empty snapshot rather than
+    /// failing — that's the steady state of most projects.
+    #[test]
+    fn an_empty_repo_parses_to_an_empty_snapshot() {
+        let json: Value =
+            serde_json::from_str(r#"{"data":{"viewer":{"login":"killua15"},"repository":{"pullRequests":{"nodes":[]}},"reviewRequested":{"nodes":[]}}}"#).unwrap();
+        let snapshot = parse_repo_snapshot(&json);
+        assert!(snapshot.prs.is_empty());
+        assert!(snapshot.review_requested.is_empty());
+        assert_eq!(snapshot.viewer_login.as_deref(), Some("killua15"));
     }
 
     fn raw(external_id: &str, author: &str, body: &str, created_at: &str) -> RawPrComment {
         RawPrComment { external_id: external_id.to_string(), author: author.to_string(), body: body.to_string(), created_at: created_at.to_string(), path: None, line: None }
-    }
-
-    #[test]
-    fn parse_inline_comments_json_extracts_file_and_line_and_drops_empty_bodies() {
-        let json: Value = serde_json::from_str(
-            r#"[
-                {"user": {"login": "cmoura2"}, "body": "this lookup can return null", "created_at": "2026-01-01T00:00:00Z", "path": "BridgeRepository.cs", "line": 40},
-                {"user": {"login": "cmoura2"}, "body": "", "created_at": "2026-01-01T00:01:00Z", "path": "BridgeRepository.cs", "line": 55},
-                {"user": {"login": "cmoura2"}, "body": "consider a null check here too", "created_at": "2026-01-01T00:02:00Z", "path": "BridgeRepository.cs", "line": null, "original_line": 62}
-            ]"#,
-        )
-        .unwrap();
-        let comments = parse_inline_comments_json(&json);
-        assert_eq!(comments.len(), 2, "the empty-body comment must be dropped");
-        assert_eq!(comments[0].path.as_deref(), Some("BridgeRepository.cs"));
-        assert_eq!(comments[0].line, Some(40));
-        assert_eq!(comments[1].line, Some(62), "must fall back to original_line when line is null");
     }
 
     #[test]
@@ -1921,7 +2212,7 @@ mod tests {
         insert_someone_elses_pr(&db, "proj1", "pr3", 3, "bob", "other");
 
         let conn = db.0.lock().unwrap();
-        let checked: Vec<String> = open_prs_to_check(&conn).into_iter().map(|(id, _)| id).collect();
+        let checked: Vec<String> = tracked_open_prs_for_repo(&conn, "killua15", "Hangar").into_iter().map(|(id, _)| id).collect();
         assert_eq!(checked, vec!["pr1".to_string()]);
     }
 
@@ -2130,6 +2421,75 @@ mod tests {
         let _ = std::fs::remove_dir_all(&work_dir);
     }
 
+    /// The failure a user hit twice in a row: the worktree directory was gone,
+    /// the session row wasn't, and "Send to terminal" handed back a session
+    /// whose working directory didn't exist — so the terminal refused with
+    /// "…/worktrees/pr-103 no longer exists on disk".
+    ///
+    /// The row and the directory are separate facts, and only one of them is
+    /// deleted when someone removes a worktree by hand.
+    #[test]
+    fn a_session_whose_worktree_was_deleted_is_not_reused() {
+        let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
+        {
+            let conn = db.0.lock().unwrap();
+            // A session pointing at a directory that doesn't exist — exactly
+            // what's left behind after deleting a worktree from the Git panel.
+            conn.execute("UPDATE sessions SET worktree_path = '/nope/gone/pr-103' WHERE id = 'session-pr1'", []).unwrap();
+        }
+        assert!(!session_worktree_is_on_disk(&db, "session-pr1"), "a missing directory must not count as a usable worktree");
+
+        // And a session with no worktree at all runs in the project root, which
+        // exists by definition — that one is still fine to reuse.
+        {
+            let conn = db.0.lock().unwrap();
+            conn.execute("UPDATE sessions SET worktree_path = NULL WHERE id = 'session-pr1'", []).unwrap();
+        }
+        assert!(session_worktree_is_on_disk(&db, "session-pr1"));
+    }
+
+    /// The regression a user hit: "Send to terminal" on PR #103 produced a
+    /// worktree on `hangar/pr-103-review` even though the PR's own branch was
+    /// sitting right there, unused — so commits went to a branch GitHub Desktop
+    /// reported as something other than the PR.
+    ///
+    /// The cause was testing "does this branch exist locally" when the thing
+    /// git actually refuses is "is it checked out somewhere else".
+    #[test]
+    fn a_pr_worktree_checks_out_the_prs_own_branch_when_it_exists_and_is_free() {
+        let (remote_dir, work_dir) = setup_real_repo_with_remote("pr-branch-reuse");
+        git_capture(&work_dir, &["checkout", "-b", "feat/pr-branch"]).unwrap();
+        std::fs::write(work_dir.join("pr_file.txt"), "from the PR").unwrap();
+        git_capture(&work_dir, &["add", "-A"]).unwrap();
+        git_capture(&work_dir, &["commit", "-m", "pr commit"]).unwrap();
+        git_capture(&work_dir, &["push", "-u", "origin", "feat/pr-branch"]).unwrap();
+        // Back to main, but *leave the branch in place* — the state the bug
+        // needed, and the ordinary state after fetching a colleague's PR.
+        git_capture(&work_dir, &["checkout", "main"]).unwrap();
+
+        let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
+        {
+            let conn = db.0.lock().unwrap();
+            conn.execute("UPDATE projects SET path = ?1 WHERE id = 'proj1'", params![work_dir.to_string_lossy().to_string()]).unwrap();
+            conn.execute("UPDATE pull_requests SET head_branch = 'feat/pr-branch' WHERE id = 'pr1'", []).unwrap();
+        }
+        let pr = fetch_pull_request_by_id(&db, "pr1").unwrap().unwrap();
+
+        let app = tauri::test::mock_app();
+        app.manage(db);
+        let db_state = app.state::<DbConnection>();
+        let session_id = resolve_session_for_pr_branch(app.handle(), &db_state, &pr, "acc1").expect("an existing, free branch must just be checked out");
+
+        let branch: String = {
+            let conn = db_state.0.lock().unwrap();
+            conn.query_row("SELECT worktree_branch FROM sessions WHERE id = ?1", params![session_id], |row| row.get(0)).unwrap()
+        };
+        assert_eq!(branch, "feat/pr-branch", "the worktree belongs on the PR's branch, not on a name Hangar made up");
+
+        let _ = std::fs::remove_dir_all(&remote_dir);
+        let _ = std::fs::remove_dir_all(&work_dir);
+    }
+
     /// The exact bug reported live: the PR's real branch is already checked
     /// out *somewhere* (here, a second worktree of the same repo — in
     /// practice this was the user's own separate clone of the project,
@@ -2183,6 +2543,71 @@ mod tests {
         let _ = std::fs::remove_dir_all(&work_dir);
     }
 
+    /// The second half of the deleted-worktree bug, and the one that actually
+    /// bit: pruning the registry lets `worktree add` reuse the *path*, but the
+    /// review *branch* is still there — deleting a directory doesn't delete a
+    /// ref. So the retry died on "a branch named 'hangar/pr-1-review' already
+    /// exists", forever, with no way out from the UI.
+    ///
+    /// Confirms it now attaches to the leftover branch instead of trying to
+    /// create it, and fast-forwards it to whatever the PR has gained since.
+    #[test]
+    fn resolve_session_for_pr_branch_reuses_a_leftover_review_branch_whose_worktree_is_gone() {
+        let (remote_dir, work_dir) = setup_real_repo_with_remote("resolve-session-leftover-branch");
+        git_capture(&work_dir, &["checkout", "-b", "feat/pr-branch"]).unwrap();
+        std::fs::write(work_dir.join("pr_file.txt"), "hello from the PR branch").unwrap();
+        git_capture(&work_dir, &["add", "-A"]).unwrap();
+        git_capture(&work_dir, &["commit", "-m", "pr commit"]).unwrap();
+        git_capture(&work_dir, &["push", "-u", "origin", "feat/pr-branch"]).unwrap();
+        // The PR's own branch stays checked out here — the real situation, where
+        // the user has the project itself open on it — which is what forces the
+        // fallback name in the first place.
+
+        // A previous review worktree existed and its directory was deleted by
+        // hand. Git's registry gets pruned; the branch does not.
+        let stale = make_temp_dir("resolve-session-leftover-branch-stale");
+        std::fs::remove_dir(&stale).unwrap();
+        git_capture(&work_dir, &["worktree", "add", "-b", "hangar/pr-1-review", &stale.to_string_lossy(), "origin/feat/pr-branch"]).unwrap();
+        std::fs::remove_dir_all(&stale).unwrap();
+
+        // …and the PR moved on afterwards.
+        std::fs::write(work_dir.join("pr_file.txt"), "a later commit on the PR").unwrap();
+        git_capture(&work_dir, &["add", "-A"]).unwrap();
+        git_capture(&work_dir, &["commit", "-m", "later pr commit"]).unwrap();
+        git_capture(&work_dir, &["push", "origin", "feat/pr-branch"]).unwrap();
+
+        let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
+        {
+            let conn = db.0.lock().unwrap();
+            conn.execute("UPDATE projects SET path = ?1 WHERE id = 'proj1'", params![work_dir.to_string_lossy().to_string()]).unwrap();
+            conn.execute("UPDATE pull_requests SET head_branch = 'feat/pr-branch' WHERE id = 'pr1'", []).unwrap();
+        }
+        let pr = fetch_pull_request_by_id(&db, "pr1").unwrap().unwrap();
+
+        let app = tauri::test::mock_app();
+        app.manage(db);
+        let db_state = app.state::<DbConnection>();
+        let new_session_id = resolve_session_for_pr_branch(app.handle(), &db_state, &pr, "acc1")
+            .expect("must succeed even though hangar/pr-1-review is left over from a deleted worktree");
+
+        let (branch, path): (String, String) = {
+            let conn = db_state.0.lock().unwrap();
+            conn.query_row("SELECT worktree_branch, worktree_path FROM sessions WHERE id = ?1", params![new_session_id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap()
+        };
+        assert_eq!(branch, "hangar/pr-1-review", "the leftover branch must be reused, not renamed around");
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&path).join("pr_file.txt")).unwrap(),
+            "a later commit on the PR",
+            "a reused review branch must be fast-forwarded to the PR's current tip"
+        );
+
+        let _ = std::fs::remove_dir_all(&remote_dir);
+        let _ = std::fs::remove_dir_all(&work_dir);
+    }
+
     fn make_temp_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("hangar-test-pr-{label}-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -2224,7 +2649,7 @@ mod tests {
         let (remote_dir, work_dir) = setup_real_repo_with_remote("new-branch");
         std::fs::write(work_dir.join("feature.txt"), "new stuff").unwrap();
 
-        let (branch, base) = prepare_branch_for_pr(&work_dir, "My Cool Session").expect("prepare_branch_for_pr should succeed");
+        let (branch, base) = prepare_branch_for_pr(&work_dir, "My Cool Session", &[]).expect("prepare_branch_for_pr should succeed");
         assert_eq!(base, "main");
         assert_eq!(branch, "hangar/my-cool-session");
 
@@ -2252,7 +2677,7 @@ mod tests {
         assert_eq!(git_capture(&work_dir, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap(), "HEAD", "must actually be detached for this test to mean anything");
         std::fs::write(work_dir.join("scratch.txt"), "detached head content").unwrap();
 
-        let (branch, base) = prepare_branch_for_pr(&work_dir, "Detached Session").expect("prepare_branch_for_pr must handle a detached HEAD, not try to push it literally");
+        let (branch, base) = prepare_branch_for_pr(&work_dir, "Detached Session", &[]).expect("prepare_branch_for_pr must handle a detached HEAD, not try to push it literally");
         assert_eq!(base, "main");
         assert_eq!(branch, "hangar/detached-session");
 
@@ -2269,7 +2694,7 @@ mod tests {
         git_capture(&work_dir, &["checkout", "-b", "already-working-here"]).unwrap();
         std::fs::write(work_dir.join("more.txt"), "more stuff").unwrap();
 
-        let (branch, base) = prepare_branch_for_pr(&work_dir, "irrelevant name").expect("prepare_branch_for_pr should succeed");
+        let (branch, base) = prepare_branch_for_pr(&work_dir, "irrelevant name", &[]).expect("prepare_branch_for_pr should succeed");
         assert_eq!(base, "main");
         assert_eq!(branch, "already-working-here", "must not create a new branch when already off base");
 
@@ -2285,7 +2710,7 @@ mod tests {
         let (remote_dir, work_dir) = setup_real_repo_with_remote("clean-tree");
         git_capture(&work_dir, &["checkout", "-b", "already-clean"]).unwrap();
         // No uncommitted changes at all.
-        let (branch, _base) = prepare_branch_for_pr(&work_dir, "irrelevant").expect("prepare_branch_for_pr should succeed even with nothing to commit");
+        let (branch, _base) = prepare_branch_for_pr(&work_dir, "irrelevant", &[]).expect("prepare_branch_for_pr should succeed even with nothing to commit");
         assert_eq!(branch, "already-clean");
 
         let _ = std::fs::remove_dir_all(&remote_dir);

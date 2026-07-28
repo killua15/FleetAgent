@@ -53,6 +53,27 @@ Tests marked `#[ignore]` spawn the real `claude` CLI — run them with `cargo te
 | `src-tauri/src/db/schema.sql` | The schema, applied idempotently on startup |
 | `src-tauri/tests/fixtures/` | Real captured CLI output used by the parser tests — recorded data, not to be edited |
 
+## License
+
+**GNU AGPL-3.0** — see [LICENSE](LICENSE). Copyright © 2026 David Lopez.
+
+Free to use, study, change and share. The one obligation that matters: if you distribute a modified
+version, or **run one as a network service**, you have to offer its source under the same terms.
+
+The choice is deliberate. Hangar's edge is that no other agent orchestrator manages accounts —
+isolation per account, rotation on exhaustion, the conversation surviving the switch. Every
+comparable tool is MIT or Apache-2.0, which would let any of them fold that work into a closed or
+permissive product without giving anything back. The AGPL doesn't stop anyone from *using* Hangar; it
+stops that.
+
+Two consequences worth knowing up front:
+
+- **A hosted Hangar would have to publish its source** (AGPL §13). A separate team dashboard that
+  merely talks to the same database is not a derivative work and isn't covered — but hosting the app
+  itself is.
+- **Only the copyright holder can relicense.** Contributions are welcome; if this ever needs
+  dual-licensing, that conversation has to happen with contributors rather than around them.
+
 ## Note on the rename
 
 This project was called **Fleet** until July 2026. The rename is complete, with two deliberate

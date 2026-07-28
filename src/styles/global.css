@@ -124,3 +124,21 @@ button {
     @apply font-sans;
   }
 }
+/* The banner sits above the active screen, and every screen is written to fill
+   the viewport — so the shell owns the height and the body gets what's left,
+   instead of the screens overflowing by the banner's height. */
+.hangar-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.hangar-body {
+  flex: 1;
+  min-height: 0;
+}
+
+.hangar-body > * {
+  height: 100%;
+}

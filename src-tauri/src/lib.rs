@@ -1,8 +1,10 @@
 mod app_data;
+mod auth;
 mod blocking;
 mod commands;
 mod credential_vault;
 mod db;
+mod git_identity;
 mod handoff;
 mod login_manager;
 mod models;
@@ -11,9 +13,13 @@ mod permission_bridge;
 mod process_manager;
 mod process_timeout;
 mod providers;
+mod quota;
 mod rotation;
+mod run_queue;
+mod task_sources;
 mod terminals;
 mod turn_runner;
+mod usage_meter;
 mod usage_scraper;
 
 use db::DbConnection;
@@ -43,6 +49,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         // File + stdout logging. `eprintln!` was invisible in a bundled
         // `.app` (stderr goes nowhere), which made the app's signature
@@ -64,7 +72,23 @@ pub fn run() {
             // `db::init` creates the directory, so a later call would find a
             // fresh empty one and skip the migration.
             app_data::migrate(&app.handle());
-            let conn = db::init(&app.handle());
+            let conn = match db::init(&app.handle()) {
+                Ok(conn) => conn,
+                Err(e) => {
+                    // A dialog and a log line, then out — rather than the
+                    // crash reporter, which tells the user nothing and tells
+                    // us nothing either.
+                    log::error!("database unavailable: {e}");
+                    tauri_plugin_dialog::DialogExt::dialog(app.handle())
+                        .message(format!(
+                            "Hangar can't open its database.\n\n{e}\n\nThe log is in ~/Library/Logs/com.killua.hangar/hangar.log"
+                        ))
+                        .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                        .title("Hangar")
+                        .blocking_show();
+                    std::process::exit(1);
+                }
+            };
             app.manage(DbConnection(Mutex::new(conn)));
             app.manage(ProcessRegistry::new());
             app.manage(LoginRegistry::new());
@@ -99,9 +123,22 @@ pub fn run() {
             // a terminal and be told an account is out of quota when it isn't.
             // The startup pass is also cheap in the common case: with no
             // terminals open yet it does the cooldown recovery and no scraping.
+            // One-second tick that turns "no output for a while" into a state
+            // change. Cheap by construction — it walks the open terminals and
+            // touches nothing else — and it's what lets the app tell you an
+            // agent finished instead of making you notice.
+            let state_handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                terminals::tick_terminal_states(&state_handle);
+            });
+
             let usage_handle = app.handle().clone();
             std::thread::spawn(move || loop {
                 terminals::poll_account_usage(&usage_handle);
+                // Right after sampling, because that's the only moment the
+                // answer to "does any account have room" can have changed.
+                run_queue::tick_queue(&usage_handle);
                 std::thread::sleep(std::time::Duration::from_secs(300));
             });
 
@@ -186,6 +223,8 @@ pub fn run() {
             commands::git_panel::get_commit_files,
             commands::git_panel::get_commit_file_diff,
             commands::git_panel::checkout_branch,
+            commands::git_panel::get_worktree_changes,
+            commands::git_panel::get_worktree_file_diff,
             commands::agent_nodes::list_agent_nodes,
             commands::agent_nodes::create_agent_node,
             commands::agent_nodes::update_agent_node,
@@ -204,6 +243,41 @@ pub fn run() {
             rotation::suggest_terminal_account,
             rotation::list_terminal_rotation_accounts,
             commands::pull_requests::open_pr_review_terminal,
+            commands::sessions::create_worktree_for_project,
+            commands::sessions::list_files,
+            commands::sessions::read_file,
+            terminals::fan_out_prompt,
+            terminals::open_task_worktrees,
+            commands::sessions::check_branch_availability,
+            git_identity::get_project_git_identity,
+            git_identity::set_project_git_identity,
+            git_identity::clear_project_git_identity,
+            task_sources::list_task_sources,
+            task_sources::save_task_source,
+            task_sources::delete_task_source,
+            task_sources::link_task_source,
+            task_sources::unlink_task_source,
+            task_sources::list_task_source_links,
+            task_sources::list_source_scopes,
+            task_sources::list_project_tasks,
+            task_sources::list_source_tasks,
+            terminals::list_terminal_states,
+            terminals::rename_terminal,
+            run_queue::enqueue_run,
+            run_queue::list_queued_runs,
+            run_queue::cancel_queued_run,
+            quota::list_account_quotas,
+            usage_meter::list_account_spend,
+            usage_meter::list_project_spend,
+            terminals::refresh_all_quotas,
+            quota::list_project_budgets,
+            quota::get_project_budget,
+            quota::set_project_budget,
+            quota::project_fan_out,
+            auth::start_oauth_callback,
+            auth::store_refresh_token,
+            auth::load_refresh_token,
+            auth::clear_refresh_token,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

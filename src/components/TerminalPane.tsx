@@ -1,10 +1,12 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Channel } from '@tauri-apps/api/core';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { invoke } from '../lib/invoke';
+import { toastError } from './ErrorOverlay';
 import { useTheme } from '../theme/ThemeProvider';
 import type { TerminalChunk } from '../types/terminal';
+import styles from './TerminalPane.module.css';
 import '@xterm/xterm/css/xterm.css';
 
 /** Raw PTY bytes arrive base64-encoded (see `types/terminal.ts`); xterm.js
@@ -22,6 +24,8 @@ function decodeChunk(base64: string): Uint8Array {
 function themeFromTokens(): Record<string, string> {
   const css = getComputedStyle(document.documentElement);
   const token = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback;
+  // In glass, `--panel` is already an rgba tint, so xterm composites over the
+  // window's own translucency and the desktop shows through the terminal too.
   return {
     background: token('--panel', '#171822'),
     foreground: token('--txt', '#e8e8f2'),
@@ -45,6 +49,8 @@ function themeFromTokens(): Record<string, string> {
  * so navigating away and back replays the scrollback and reconnects to the
  * same still-running process rather than starting a new one. */
 export function TerminalPane({ terminalId, className }: { terminalId: string; className?: string }) {
+  const [dropping, setDropping] = useState(false);
+  const [saving, setSaving] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
   const { resolvedTheme } = useTheme();
   const termRef = useRef<Terminal | null>(null);
@@ -58,6 +64,10 @@ export function TerminalPane({ terminalId, className }: { terminalId: string; cl
       fontSize: 12,
       theme: themeFromTokens(),
       cursorBlink: true,
+      // Without this xterm paints an opaque background regardless of the theme
+      // colour, and the terminals — the largest surface in the app — would be
+      // the one place the glass stops.
+      allowTransparency: true,
       // Matches the backend's own scrollback cap — keeping far more here than
       // Rust can replay would only be visible until the first remount.
       scrollback: 5000,
@@ -101,8 +111,27 @@ export function TerminalPane({ terminalId, className }: { terminalId: string; cl
         if (!disposed) term.write('\r\n\x1b[31mThis terminal is no longer available.\x1b[0m\r\n');
       });
 
-    const dataSub = term.onData((data) => {
+    const send = (data: string) => {
       invoke('write_terminal', { id: terminalId, data }).catch(() => {});
+    };
+
+    const dataSub = term.onData(send);
+
+    // Shift+Enter (and Option+Enter) as a newline instead of a send.
+    //
+    // In a real terminal both send exactly what Enter sends, which is why
+    // Claude Code ships `/terminal-setup` to reconfigure iTerm2 and VS Code to
+    // emit `ESC CR` instead. Here the terminal is ours, so there's nothing to
+    // ask the user to configure — we emit it directly.
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown' || event.key !== 'Enter') return true;
+      if (!event.shiftKey && !event.altKey) return true;
+      // Ctrl+Enter and Cmd+Enter mean other things in some CLIs; only claim
+      // the two combinations that conventionally mean "newline".
+      if (event.ctrlKey || event.metaKey) return true;
+      event.preventDefault();
+      send('\x1b\r');
+      return false;
     });
 
     // The PTY has to be told the real size or anything full-screen (`vim`,
@@ -129,5 +158,69 @@ export function TerminalPane({ terminalId, className }: { terminalId: string; cl
     if (termRef.current) termRef.current.options.theme = themeFromTokens();
   }, [resolvedTheme]);
 
-  return <div ref={hostRef} className={className} />;
+  /** Dropping a file writes its *path* into the terminal, which is what a CLI
+   * expects — the same thing iTerm does, and the reason dragging a screenshot
+   * into an agent works there and did nothing here.
+   *
+   * `preventDefault` on dragover is not optional: without it the webview
+   * navigates to the dropped image and the user loses the whole app. */
+  const onDrop = async (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDropping(false);
+
+    const files = Array.from(event.dataTransfer.files);
+    if (files.length === 0) {
+      // Dragged text (a path from another app, a URL) — insert it as typed.
+      const text = event.dataTransfer.getData('text/plain');
+      if (text) invoke('write_terminal', { id: terminalId, data: text }).catch(() => {});
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const paths: string[] = [];
+      for (const file of files) {
+        // A directory arrives as a File with no type and no readable body;
+        // saying so beats writing a path the agent can't read.
+        if (file.size === 0 && file.type === '') {
+          toastError(`${file.name} looks like a folder — drop a file instead`);
+          continue;
+        }
+        const data = Array.from(new Uint8Array(await file.arrayBuffer()));
+        // The attachments dir is namespaced by id; a terminal id works as well
+        // as a session id and keeps one terminal's drops together.
+        const path = await invoke<string>('save_attachment', { sessionId: terminalId, fileName: file.name, data });
+        paths.push(path);
+      }
+      if (paths.length > 0) {
+        // Quoted: a screenshot filename on macOS has spaces in it.
+        invoke('write_terminal', { id: terminalId, data: paths.map((p) => `'${p.replace(/'/g, "'\\''")}' `).join('') }).catch(() => {});
+      }
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Wrapper rather than putting these on the host itself: xterm.js owns the
+  // host's children, and hanging a badge inside it means competing with a
+  // library for the same DOM.
+  return (
+    <div
+      className={`${styles.wrap} ${className ?? ''}`}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDropping(true);
+      }}
+      onDragLeave={() => setDropping(false)}
+      onDrop={onDrop}
+      data-dropping={dropping || undefined}
+    >
+      <div ref={hostRef} className={styles.host} />
+      {/* Copying a 4 MB screenshot isn't instant, and a pane that doesn't
+          react to a drop looks broken. */}
+      {saving && <span className={styles.dropBadge}>saving…</span>}
+    </div>
+  );
 }

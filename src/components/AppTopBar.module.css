@@ -25,8 +25,88 @@
 
 .icons {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  gap: 2px;
   margin-left: 10px;
+  min-width: 0;
+}
+
+/* Separates work / inspect / configure. A hairline rather than a gap: a gap
+   alone reads as "these didn't fit", a rule reads as a decision. */
+.navRule {
+  width: 1px;
+  height: 16px;
+  margin: 0 7px;
+  background: var(--line);
+  flex: none;
+}
+
+.navItem,
+.navItemActive,
+.navBtn,
+.navBtnActive {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dim);
+  font: 400 11.5px var(--font-ui);
+  white-space: nowrap;
+  cursor: pointer;
+  position: relative;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+
+.navBtn,
+.navBtnActive {
+  padding: 0 6px;
+}
+
+.navItem:hover,
+.navBtn:hover {
+  color: var(--txt);
+  background: var(--panel);
+}
+
+/* The only coloured item on the bar, and it means one thing: you are here. */
+.navItemActive,
+.navBtnActive {
+  color: var(--acc);
+  background: var(--accD);
+  border-color: color-mix(in srgb, var(--acc) 35%, transparent);
+}
+
+.navLabel {
+  font: 500 11.5px var(--font-ui);
+}
+
+/* Narrow windows drop the labels rather than pushing the terminal actions off
+   the bar — the icons still carry their tooltips. */
+@media (max-width: 1180px) {
+  .navLabel {
+    display: none;
+  }
+
+  .navItem,
+  .navItemActive {
+    padding: 0 6px;
+  }
+}
+
+.navBadge {
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--amber);
+  color: #1a1300;
+  font: 700 9.5px var(--font-mono);
+  display: grid;
+  place-items: center;
 }
 
 .iconBtn {

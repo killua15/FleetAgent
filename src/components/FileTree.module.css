@@ -1,0 +1,59 @@
+.treeRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 10px 3px 6px;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font: 400 11px var(--font-mono);
+  color: var(--txt);
+}
+
+.treeRow:hover {
+  background: var(--panel2);
+}
+
+.treeChevron {
+  flex: none;
+  width: 12px;
+  text-align: center;
+  color: var(--dim);
+  font-size: 9px;
+}
+
+.indentGuide {
+  flex: none;
+  width: 12px;
+  align-self: stretch;
+  border-left: 1px solid var(--line);
+}
+
+.fileIconBadge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  font: 700 7.5px var(--font-mono);
+  letter-spacing: -0.02em;
+}
+
+.treeName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}

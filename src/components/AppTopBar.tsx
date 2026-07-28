@@ -2,12 +2,34 @@ import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke, useInFlightCount } from '../lib/invoke';
-import { useNavigation } from '../nav/NavigationProvider';
+import { useNavigation, type ScreenName } from '../nav/NavigationProvider';
 import type { ProjectPrInbox } from '../types/pullRequest';
 import { Button } from './ui/button';
 import { IconTooltip } from './ui/tooltip';
 import { Spinner } from './Spinner';
+import { AccountsIcon, BranchIcon, FilesIcon, HomeIcon, PullRequestIcon, SettingsIcon, TasksIcon, TerminalIcon, UsageIcon } from './NavIcons';
+import { UsageModal } from './UsageModal';
+import { useAuth } from '../auth/AuthProvider';
 import styles from './AppTopBar.module.css';
+
+/** One destination: icon, label, active state, optional count.
+ *
+ * The label is the whole point of the redesign — an icon row you have to learn
+ * by trial is one you re-learn every time. And the active one is the *only*
+ * coloured item, so colour finally answers "where am I" instead of decorating:
+ * before, green meant both Terminals and Queue, and purple meant both Accounts
+ * and Tasks. */
+function NavItem({ screen, label, icon, badge = 0 }: { screen: ScreenName; label: string; icon: ReactNode; badge?: number }) {
+  const { current, navigate } = useNavigation();
+  const active = current.screen === screen;
+  return (
+    <button className={active ? styles.navItemActive : styles.navItem} onClick={() => navigate(screen)} aria-current={active ? 'page' : undefined}>
+      {icon}
+      <span className={styles.navLabel}>{label}</span>
+      {badge > 0 && <span className={styles.navBadge}>{badge > 99 ? '99+' : badge}</span>}
+    </button>
+  );
+}
 
 function countPendingPrComments(inbox: ProjectPrInbox[]): number {
   return inbox.reduce((sum, p) => sum + p.entries.reduce((s, e) => s + e.comments.length, 0), 0);
@@ -34,9 +56,37 @@ function useDelayedBusy(count: number, delayMs: number): boolean {
   return busy;
 }
 
-export function AppTopBar({ primaryAction }: { primaryAction?: ReactNode }) {
+/** Hangar's own account, at the far end of the bar.
+ *
+ * Signed out it's an invitation, not a wall — everything in the app works
+ * without it. Signed in it's how you reach backup and the team plan. */
+function AccountButton() {
+  const { email, entitlement, signingIn, error, signIn, signOut } = useAuth();
+
+  if (!email) {
+    return (
+      <IconTooltip label={error ? `Sign-in failed: ${error}` : 'Sign in to back up your setup across machines — everything else works signed out'}>
+        <Button variant="outline" size="sm" disabled={signingIn} onClick={signIn} style={error ? { color: 'var(--amber)' } : undefined}>
+          {signingIn ? <Spinner label="signing in…" /> : 'Sign in'}
+        </Button>
+      </IconTooltip>
+    );
+  }
+
+  return (
+    <IconTooltip label={`Signed in as ${email}${entitlement ? ` · ${entitlement.plan}` : ''} — click to sign out`}>
+      <Button variant="outline" size="sm" onClick={signOut}>
+        {email.split('@')[0]}
+        {entitlement && entitlement.plan !== 'free' && <span style={{ marginLeft: 6, color: 'var(--grn)' }}>{entitlement.plan}</span>}
+      </Button>
+    </IconTooltip>
+  );
+}
+
+export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; primaryAction?: ReactNode }) {
   const { navigate, current } = useNavigation();
   const [pendingPrComments, setPendingPrComments] = useState(0);
+  const [usageOpen, setUsageOpen] = useState(false);
   const inFlight = useInFlightCount();
   const showBusy = useDelayedBusy(inFlight, BUSY_INDICATOR_DELAY_MS);
 
@@ -54,6 +104,10 @@ export function AppTopBar({ primaryAction }: { primaryAction?: ReactNode }) {
 
   return (
     <div className={styles.bar}>
+      {/* A screen's own layout controls belong at the far left, ahead of the
+       * wordmark — the place every editor puts them, and more importantly a
+       * place that doesn't move when the thing they control disappears. */}
+      {leading}
       <span className={styles.wordmark}>⌥ hangar</span>
       <span className={styles.version}>v0.1</span>
       {showBusy && (
@@ -61,52 +115,60 @@ export function AppTopBar({ primaryAction }: { primaryAction?: ReactNode }) {
           <Spinner label="working…" />
         </span>
       )}
-      <div className={styles.icons}>
-        {/* Terminals is the home now, so it needs no "back home" affordance;
-         * every other screen on this bar does. Jumps straight there rather
-         * than using `back()`, same reasoning as SettingsTabs: unwinding one
-         * history entry usually lands on another screen of the same feature. */}
+      <nav className={styles.icons}>
+        {/* Home first and alone: it's the only one that isn't a destination so
+         * much as a way back. Hidden on Terminals, which *is* home. */}
         {current.screen !== 'terminals' && (
           <IconTooltip label="Back to terminals">
-            <Button variant="outline" className={styles.iconBtn} style={{ color: 'var(--mut)' }} onClick={() => navigate('terminals')}>
-              ⌂
-            </Button>
+            <button className={styles.navBtn} onClick={() => navigate('terminals')}>
+              <HomeIcon />
+            </button>
           </IconTooltip>
         )}
-        {/* Accounts used to be reachable only from MainView's sidebar; with
-         * MainView retired as the home, the top bar carries the entry. */}
+
+        {/* Grouped by what you're doing, with a rule between groups, because a
+         * flat row of nine gives no clue that "Git" and "Settings" are
+         * different kinds of thing. Work first — it's what you're here for. */}
+        <NavItem screen="terminals" label="Terminals" icon={<TerminalIcon />} />
+        <NavItem screen="task-board" label="Tasks" icon={<TasksIcon />} />
+        <NavItem screen="pr-reviews" label="PRs" icon={<PullRequestIcon />} badge={pendingPrComments} />
+
+        <span className={styles.navRule} />
+
+        <NavItem screen="git-panel" label="Git" icon={<BranchIcon />} />
+        <NavItem screen="files" label="Files" icon={<FilesIcon />} />
+        {/* A modal, not a screen: it answers a question and hands you back to
+            what you were doing. Navigating away would close the terminals you
+            were watching while you checked. */}
+        <IconTooltip label="Usage — what each account has spent, this window and this week">
+          <button className={usageOpen ? styles.navItemActive : styles.navItem} onClick={() => setUsageOpen(true)}>
+            <UsageIcon />
+            <span className={styles.navLabel}>Usage</span>
+          </button>
+        </IconTooltip>
+
+        <span className={styles.navRule} />
+
+        {/* Icon-only: a person and a gear are the two symbols nobody needs
+         * taught, and they're the two you press least. */}
         <IconTooltip label="Accounts — add one or point it at a login">
-          <Button variant="outline" className={styles.iconBtn} style={{ color: 'var(--acc)' }} onClick={() => navigate('account-list')}>
-            ◐
-          </Button>
+          <button className={current.screen === 'account-list' ? styles.navBtnActive : styles.navBtn} onClick={() => navigate('account-list')}>
+            <AccountsIcon />
+          </button>
         </IconTooltip>
-        {/* Hierarchy trees is hidden for now — the whole agent-tree feature is
-         * parked while its design is reconsidered. Re-adding this entry (and
-         * the Settings toggle) is all it takes to bring it back. */}
-        <IconTooltip label="Terminals — open a Claude Code shell in a project">
-          <Button variant="outline" className={styles.iconBtn} style={{ color: 'var(--grn)' }} onClick={() => navigate('terminals')}>
-            ⌗
-          </Button>
-        </IconTooltip>
-        <IconTooltip label="Git — repos and worktrees overview">
-          <Button variant="outline" className={styles.iconBtn} style={{ color: 'var(--teal)' }} onClick={() => navigate('git-panel')}>
-            ⎇
-          </Button>
-        </IconTooltip>
-        <div className={styles.iconBtnWrap}>
-          <IconTooltip label="PR reviews — open PRs with new review comments">
-            <Button variant="outline" className={styles.iconBtn} style={{ color: 'var(--amber)' }} onClick={() => navigate('pr-reviews')}>
-              💬
-            </Button>
-          </IconTooltip>
-          {pendingPrComments > 0 && <span className={styles.iconBadge}>{pendingPrComments > 99 ? '99+' : pendingPrComments}</span>}
-        </div>
         <IconTooltip label="Settings">
-          <Button variant="outline" className={styles.iconBtn} style={{ color: 'var(--mut)' }} onClick={() => navigate('general-settings')}>
-            ⚙
-          </Button>
+          <button
+            className={current.screen.endsWith('-settings') ? styles.navBtnActive : styles.navBtn}
+            onClick={() => navigate('general-settings')}
+          >
+            <SettingsIcon />
+          </button>
         </IconTooltip>
-      </div>
+        {/* The Queue screen is hidden: nothing reaches it now that this entry
+         * is gone. The screen, `queued_runs`, and the background `tick_queue`
+         * poller are all untouched and still work — restoring the feature is
+         * putting a NavItem for `queue` back here. */}
+      </nav>
       <span className={styles.spacer} />
       <Button
         variant="outline"
@@ -116,7 +178,9 @@ export function AppTopBar({ primaryAction }: { primaryAction?: ReactNode }) {
       >
         search sessions… <span className={styles.kbd}>⌘K</span>
       </Button>
+      <AccountButton />
       {primaryAction}
+      {usageOpen && <UsageModal onClose={() => setUsageOpen(false)} />}
     </div>
   );
 }

@@ -16,12 +16,14 @@
         "width": 1440,
         "height": 880,
         "minWidth": 1024,
-        "minHeight": 640
+        "minHeight": 640,
+        "transparent": true
       }
     ],
     "security": {
       "csp": null
-    }
+    },
+    "macOSPrivateApi": true
   },
   "bundle": {
     "active": true,
@@ -32,6 +34,18 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk0NkFDRDQxQzJERDNCNjEKUldSaE85M0NRYzFxbEFSTlQrWkRUVEJuZitRYkNjQlBqM01kajB2WEw0OFcvaHZ2Z2hCK09yU0wK",
+      "endpoints": [
+        "https://github.com/killua15/FleetAgent/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

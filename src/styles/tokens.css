@@ -8,9 +8,13 @@
   --line: #262838;
   --line2: #3a3d58;
 
-  --txt: #e8e8f2;
-  --mut: #9a9ab0;
-  --dim: #61627a;
+  /* A three-step ramp, and every step clears 4.5:1 against the *lightest*
+     surface (--panel2), not just against --bg. The old --dim (#61627a) sat at
+     2.78:1 there — below even the 3:1 floor — and it is the colour of nearly
+     every label, hint, path and table figure in the app. */
+  --txt: #e8e8f2; /* 13.6:1 on --panel2 */
+  --mut: #b4b4c8; /*  8.1:1 */
+  --dim: #8a8ba3; /*  5.0:1 */
 
   --acc: #b48cff;
   --accD: rgba(180, 140, 255, 0.13);
@@ -30,6 +34,15 @@
   /* Gemini identity color — hardcoded (not tokenized) in the mockups; promoted to a token here. */
   --gemini: #7aa2ff;
   --geminiD: rgba(122, 162, 255, 0.13);
+
+  /* The one surface that never dissolves: popovers, palettes and modals.
+     It was defined only inside the glass theme, so in dark and light
+     `background: var(--overlay)` resolved to nothing and every one of them
+     rendered transparent — you could read the terminal straight through the
+     account switcher. Defined in all three themes now, which is what a token
+     used by seven files has to be. */
+  --overlay: #1b1c26;
+  --overlay-line: rgba(255, 255, 255, 0.12);
 
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
 
@@ -67,6 +80,9 @@
   --gemini: #3f66d6;
   --geminiD: rgba(63, 102, 214, 0.1);
 
+  --overlay: #ffffff;
+  --overlay-line: rgba(30, 30, 60, 0.14);
+
   --shadow: 0 8px 28px rgba(30, 30, 60, 0.14);
 }
 
@@ -75,16 +91,31 @@
  * flat color, so panels read as translucent layers over --bg rather than
  * opaque cards. Deliberately subtle — this is a tint, not frosted blur. */
 :root[data-theme='glass'] {
-  --bg: #0e0f14;
-  --bg2: rgba(255, 255, 255, 0.03);
-  --panel: rgba(255, 255, 255, 0.05);
-  --panel2: rgba(255, 255, 255, 0.07);
-  --line: rgba(255, 255, 255, 0.08);
-  --line2: rgba(255, 255, 255, 0.14);
+  /* The window itself is transparent (see tauri.conf.json), so this tint *is*
+     the glass: dark enough to read text on, thin enough to see through. It was
+     previously an opaque `#0e0f14`, which meant "glass" was a white wash over a
+     solid background rather than actual transparency. */
+  --bg: rgba(14, 15, 20, var(--glass-alpha));
+  --bg2: rgba(18, 19, 26, calc(var(--glass-alpha) * 0.94));
+  /* Surfaces are *more* opaque than the window, not less — which is the
+     opposite of what this used to do (0.85 and 0.95 of an already-thin alpha).
+     The transparency belongs to the window; a card that text sits on has to be
+     a knowable background, because behind it can be a white desktop, and
+     secondary text over that measured 1.3:1 — invisible. Panels at 0.94 put it
+     back above 5:1 while the empty parts of the window stay see-through. */
+  --panel: rgba(23, 24, 34, 0.94);
+  --panel2: rgba(29, 30, 42, 0.94);
+  /* 8% white vanished over a bright backdrop, so table and card borders
+     disappeared exactly when the layout needed them most. */
+  --line: rgba(255, 255, 255, 0.16);
+  --line2: rgba(255, 255, 255, 0.26);
 
+  /* A step lighter than the dark theme's: even on a 0.94 surface the backdrop
+     still lifts the effective background, and this is the theme where it can
+     be anything. */
   --txt: #e8e8f2;
-  --mut: #9a9ab0;
-  --dim: #61627a;
+  --mut: #c2c2d4;
+  --dim: #9a9bb4;
 
   --acc: #b48cff;
   --accD: rgba(180, 140, 255, 0.13);
@@ -105,4 +136,24 @@
   --geminiD: rgba(122, 162, 255, 0.13);
 
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+
+  /* How much of the desktop shows through. Two values, because a window you're
+     typing in and a window you glanced away from want different answers: the
+     first has to be readable, the second only has to be identifiable. The
+     unfocused one is user-set (Settings → Appearance) and lands here as an
+     inline style on :root. */
+  --glass-tint: 0.72;
+  --glass-tint-unfocused: 0.38;
+  --glass-alpha: var(--glass-tint);
+
+  /* The one surface that never dissolves. */
+  --overlay: #1b1c26;
+  --overlay-line: rgba(255, 255, 255, 0.12);
+}
+
+/* Away from the app, the window fades to whatever the user chose — enough to
+   see the wallpaper and your other windows through it, still enough to find
+   Hangar at a glance. */
+:root[data-theme='glass'][data-window-focused='false'] {
+  --glass-alpha: var(--glass-tint-unfocused);
 }

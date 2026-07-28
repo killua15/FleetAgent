@@ -28,9 +28,15 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State};
 
 const CACHE_TTL: Duration = Duration::from_secs(300);
-const STARTUP_WAIT: Duration = Duration::from_millis(800);
-const IDLE_TIMEOUT: Duration = Duration::from_millis(700);
-const MAX_TOTAL_WAIT: Duration = Duration::from_secs(6);
+/// How quiet the terminal has to go before we accept that the CLI has finished
+/// booting and will hear a slash command. Generous because a real config dir
+/// loads MCP servers and plugins first, and typing into that is typing into
+/// nothing.
+const SETTLE_BEFORE_ASKING: Duration = Duration::from_millis(1200);
+const IDLE_TIMEOUT: Duration = Duration::from_millis(900);
+/// Six seconds used to be the cap and it wasn't enough for a cold start with
+/// MCP servers — the scrape returned the welcome banner and no numbers.
+const MAX_TOTAL_WAIT: Duration = Duration::from_secs(25);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -145,9 +151,17 @@ fn fetch_usage_text(config_dir: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
 
     let mut cmd = CommandBuilder::new(claude::binary());
-    if let Ok(home) = std::env::var("HOME") {
-        cmd.cwd(home);
-    }
+    // Flat text, no borders, no animations. It exists for screen readers and
+    // it's exactly what a parser wants: the decorated TUI redraws the same
+    // numbers inside box characters that move between frames.
+    cmd.arg("--ax-screen-reader");
+    // Starting in `$HOME` made Claude Code ask "is this a folder you trust?"
+    // and sit there — the scrape timed out on a security question nobody was
+    // there to answer. Answering it for the user would silently grant read,
+    // edit and execute over their entire home directory, which is not a
+    // decision a background quota check gets to make. So we start in a folder
+    // this account *already* trusts, which the CLI records itself.
+    cmd.cwd(trusted_workspace(config_dir).unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".to_string())));
     for (k, v) in login_env(config_dir) {
         cmd.env(k, v);
     }
@@ -157,10 +171,6 @@ fn fetch_usage_text(config_dir: &str) -> Result<String, String> {
 
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-
-    std::thread::sleep(STARTUP_WAIT);
-    writer.write_all(b"/usage\n").map_err(|e| e.to_string())?;
-    writer.flush().map_err(|e| e.to_string())?;
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || {
@@ -179,10 +189,13 @@ fn fetch_usage_text(config_dir: &str) -> Result<String, String> {
     });
 
     let mut collected = Vec::new();
-    let overall_deadline = Instant::now() + MAX_TOTAL_WAIT;
+    let deadline = Instant::now() + MAX_TOTAL_WAIT;
     let mut last_byte_at = Instant::now();
+    let mut asked = false;
+    let mut dismissed_onboarding = false;
+
     loop {
-        if Instant::now() >= overall_deadline {
+        if Instant::now() >= deadline {
             break;
         }
         match rx.recv_timeout(Duration::from_millis(150)) {
@@ -190,17 +203,87 @@ fn fetch_usage_text(config_dir: &str) -> Result<String, String> {
                 collected.extend_from_slice(&chunk);
                 last_byte_at = Instant::now();
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if !collected.is_empty() && last_byte_at.elapsed() >= IDLE_TIMEOUT {
-                    break;
-                }
-            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+
+        let seen = strip_ansi(&String::from_utf8_lossy(&collected)).to_lowercase();
+
+        // A config dir that has never run interactively opens on the theme
+        // picker, and this is where the old scraper died: it typed `/usage`
+        // into that menu, got nothing back, and reported "no reading" forever.
+        // Every per-account directory Hangar creates starts in exactly that
+        // state. Enter accepts whatever is already highlighted.
+        if !dismissed_onboarding && seen.contains("enter selection") {
+            // It wants a *number*, not Enter — which is why a bare carriage
+            // return left the CLI sitting on the menu until the timeout. The
+            // option already highlighted is the one to send, so this accepts
+            // the default rather than choosing on the user's behalf.
+            let answer = selected_option(&seen).unwrap_or(1);
+            let _ = writer.write_all(format!("{answer}\r").as_bytes());
+            let _ = writer.flush();
+            dismissed_onboarding = true;
+            last_byte_at = Instant::now();
+            continue;
+        }
+
+        // Wait for the prompt to settle before typing: a slash command sent
+        // while the CLI is still booting (MCP servers, plugins) lands nowhere.
+        if !asked && last_byte_at.elapsed() >= SETTLE_BEFORE_ASKING && !collected.is_empty() {
+            let _ = writer.write_all(b"/usage\r");
+            let _ = writer.flush();
+            asked = true;
+            last_byte_at = Instant::now();
+            continue;
+        }
+
+        // Not logged in: the CLI asks how you'd like to sign in. Timing out on
+        // that for 25 seconds and reporting "no reading" hides the one thing
+        // the user needs to hear.
+        if seen.contains("select login method") {
+            let _ = child.kill();
+            return Err("this account isn't logged in — open it in Accounts and sign in".to_string());
+        }
+
+        if asked {
+            // The answer is here the moment both windows have a number; no
+            // point burning the rest of the timeout on redraws.
+            if seen.matches("% used").count() >= 2 {
+                break;
+            }
+            if last_byte_at.elapsed() >= IDLE_TIMEOUT && seen.contains("% used") {
+                break;
+            }
         }
     }
 
     let _ = child.kill();
     Ok(strip_ansi(&String::from_utf8_lossy(&collected)))
+}
+
+/// A directory this config dir has already accepted the trust prompt for.
+///
+/// Claude Code keeps that in `<config_dir>/.claude.json`, so this asks the CLI
+/// what it already trusts rather than granting anything new.
+fn trusted_workspace(config_dir: &str) -> Option<String> {
+    let raw = std::fs::read_to_string(std::path::Path::new(config_dir).join(".claude.json")).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    parsed
+        .get("projects")?
+        .as_object()?
+        .iter()
+        .find(|(path, settings)| {
+            settings.get("hasTrustDialogAccepted").and_then(|v| v.as_bool()).unwrap_or(false) && std::path::Path::new(path).is_dir()
+        })
+        .map(|(path, _)| path.clone())
+}
+
+/// The number of the option a menu already has highlighted, from a line like
+/// `2. (selected) Dark mode`.
+fn selected_option(text: &str) -> Option<u32> {
+    text.lines()
+        .find(|line| line.contains("(selected)"))
+        .and_then(|line| line.trim().split('.').next()?.trim().parse().ok())
 }
 
 /// At or above this on the 5-hour session window or the weekly window, the
@@ -332,5 +415,59 @@ mod tests {
         assert_eq!(session, None);
         assert_eq!(weekly, None);
         assert_eq!(context, None);
+    }
+}
+
+#[cfg(test)]
+mod real_output_tests {
+    use super::*;
+
+    /// Captured verbatim from `claude --ax-screen-reader` v2.1.220. The
+    /// duplicated `17% 17%` is real — the TUI repaints the figure — and the
+    /// parser has to take the first rather than the last, or a mid-repaint
+    /// frame becomes the reading.
+    const REAL: &str = "Current session\n17% 17% used\nResets 6:40pm (America/Sao_Paulo)\nCurrent week (all models)\n58% 57% used\nResets Jul 31 at 9pm";
+
+    #[test]
+    fn the_real_screen_reader_output_parses() {
+        let (session, weekly, _) = parse_usage_text(REAL);
+        assert_eq!(session, Some(17.0));
+        assert_eq!(weekly, Some(58.0), "`Current week (all models)` has to route to the weekly window");
+    }
+
+    /// The theme menu wants a *number*; a bare Enter left the CLI sitting on
+    /// it until the timeout, which is why every account read "no reading".
+    #[test]
+    fn the_highlighted_menu_option_is_the_one_answered() {
+        let menu = "1. Auto (match terminal)\n2. (selected) Dark mode\n3. Light mode\nEnter selection [1-7], or Escape to cancel:";
+        assert_eq!(selected_option(menu), Some(2));
+    }
+
+    /// A menu with nothing marked must not guess: the caller falls back to 1,
+    /// and inventing a different number here would pick an option at random.
+    #[test]
+    fn a_menu_with_no_selection_yields_nothing() {
+        assert_eq!(selected_option("1. one\n2. two\nEnter selection [1-2]:"), None);
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+
+    /// Runs the real scraper against a real config dir and prints what came
+    /// back. `#[ignore]` because it spawns `claude` and needs a logged-in
+    /// account — but it's the only way to find out *why* a scrape returns
+    /// nothing, which is a question static tests can't answer.
+    ///
+    /// `cargo test -- --ignored --nocapture live_scrape`
+    #[test]
+    #[ignore = "spawns a real `claude` and needs a logged-in config dir"]
+    fn live_scrape_prints_what_usage_returned() {
+        let dir = std::env::var("HANGAR_TEST_CONFIG_DIR").unwrap_or_else(|_| format!("{}/.claude", std::env::var("HOME").unwrap()));
+        let text = fetch_usage_text(&dir).expect("the scrape itself must not error");
+        println!("--- {} bytes captured from {dir} ---", text.len());
+        println!("{text}");
+        println!("--- parsed: {:?} ---", parse_usage_text(&text));
     }
 }

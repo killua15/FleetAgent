@@ -1,0 +1,24 @@
+.host {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  background: var(--bg);
+}
+
+/* CodeMirror sizes itself to its content by default; the pane owns the height
+   here so the file scrolls inside it instead of stretching the page. */
+.host :global(.cm-editor) {
+  height: 100%;
+  font: 400 12px var(--font-mono);
+}
+
+.host :global(.cm-scroller) {
+  overflow: auto;
+}
+
+.host :global(.cm-gutters) {
+  background: var(--bg2);
+  border-right: 1px solid var(--line);
+  color: var(--dim);
+}

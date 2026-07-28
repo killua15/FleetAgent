@@ -39,7 +39,7 @@ import { UsageBar } from '../components/UsageBar';
 import { severityOfBlock, type Severity } from '../lib/blockSeverity';
 import { diffLines, diffStats, type DiffLine } from '../lib/diffLines';
 import { fileIcon } from '../lib/fileIcon';
-import { FILE_STATUS_COLOR, FILE_STATUS_LABEL } from '../lib/fileStatus';
+import { FileTreeRows } from '../components/FileTree';
 import { languageFor } from '../lib/language';
 import { countSessionSubtree } from '../lib/sessionTree';
 import {
@@ -1358,71 +1358,6 @@ export function AgentPanelBody({
         )}
       </div>
     </div>
-  );
-}
-
-function FileTreeRows({
-  nodes,
-  selectedPath,
-  collapsedPaths,
-  onToggleCollapsed,
-  onSelectFile,
-  depth = 0,
-}: {
-  nodes: FileTreeNode[];
-  selectedPath: string | null;
-  collapsedPaths: Set<string>;
-  onToggleCollapsed: (path: string) => void;
-  onSelectFile: (path: string) => void;
-  depth?: number;
-}) {
-  return (
-    <>
-      {nodes.map((node) => {
-        const isCollapsed = node.isDir && collapsedPaths.has(node.path);
-        const icon = node.isDir ? null : fileIcon(node.name);
-        return (
-          <div key={node.path}>
-            <button
-              type="button"
-              className={styles.treeRow}
-              onClick={() => (node.isDir ? onToggleCollapsed(node.path) : onSelectFile(node.path))}
-              title={node.status ? `${node.path} — ${FILE_STATUS_LABEL[node.status]}` : node.path}
-              style={{ background: selectedPath === node.path ? 'var(--panel2)' : 'none' }}
-            >
-              {Array.from({ length: depth }).map((_, i) => (
-                <span key={i} className={styles.indentGuide} />
-              ))}
-              {node.isDir ? (
-                <span className={styles.treeChevron}>{isCollapsed ? '▸' : '▾'}</span>
-              ) : (
-                <span className={styles.fileIconBadge} style={{ color: icon!.color }}>
-                  {icon!.letter}
-                </span>
-              )}
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, color: node.isDir ? 'var(--mut)' : 'var(--txt)' }}>
-                {node.name}
-              </span>
-              {!node.isDir && node.status && (
-                <span
-                  style={{ width: 6, height: 6, borderRadius: '50%', flex: 'none', background: FILE_STATUS_COLOR[node.status] }}
-                />
-              )}
-            </button>
-            {node.isDir && !isCollapsed && node.children.length > 0 && (
-              <FileTreeRows
-                nodes={node.children}
-                selectedPath={selectedPath}
-                collapsedPaths={collapsedPaths}
-                onToggleCollapsed={onToggleCollapsed}
-                onSelectFile={onSelectFile}
-                depth={depth + 1}
-              />
-            )}
-          </div>
-        );
-      })}
-    </>
   );
 }
 

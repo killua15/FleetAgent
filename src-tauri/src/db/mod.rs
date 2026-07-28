@@ -6,24 +6,27 @@ pub struct DbConnection(pub Mutex<Connection>);
 
 pub(crate) const SCHEMA: &str = include_str!("schema.sql");
 
-pub fn init(app: &AppHandle) -> Connection {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .expect("resolve app data dir");
-    std::fs::create_dir_all(&dir).expect("create app data dir");
+/// Opens the database, applies the schema, and migrates it forward.
+///
+/// Returns an error rather than panicking. It used to panic, and the failure
+/// mode was as bad as it gets: a `SIGABRT` inside the Objective-C launch
+/// notification, before any window existed. The user sees a crash reporter and
+/// nothing else — no message, no log pointer, no way to tell "your database is
+/// from a newer version" apart from "your disk is full".
+///
+/// Still refuses to start on a half-applied migration: every command past this
+/// point assumes the schema it was written against, and limping along in a
+/// shape nothing expects corrupts data instead of failing.
+pub fn init(app: &AppHandle) -> Result<Connection, String> {
+    let dir = app.path().app_data_dir().map_err(|e| format!("could not resolve the app data directory: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     let db_path = dir.join(crate::app_data::DB_FILE);
 
-    let conn = Connection::open(db_path).expect("open sqlite database");
-    conn.execute_batch("PRAGMA foreign_keys = ON;")
-        .expect("enable foreign keys");
-    conn.execute_batch(SCHEMA).expect("apply schema");
-    // A half-applied migration is not something to limp along with — every
-    // command past this point assumes the schema it was written against.
-    // Fail loudly, with the log line already written, rather than starting up
-    // into a shape nothing else expects.
-    run_migrations(&conn).expect("apply database migrations");
-    conn
+    let conn = Connection::open(&db_path).map_err(|e| format!("could not open {}: {e}", db_path.display()))?;
+    conn.execute_batch("PRAGMA foreign_keys = ON;").map_err(|e| format!("could not enable foreign keys: {e}"))?;
+    conn.execute_batch(SCHEMA).map_err(|e| format!("could not apply the schema: {e}"))?;
+    run_migrations(&conn)?;
+    Ok(conn)
 }
 
 /// One numbered, recorded schema change. `version` is what gets written to
@@ -71,6 +74,58 @@ const MIGRATIONS: &[Migration] = &[
         // Rebuilds a table other tables reference, so it has to toggle
         // `PRAGMA foreign_keys` — a no-op inside a transaction. It runs its
         // own BEGIN/COMMIT instead.
+        transactional: false,
+    },
+    Migration {
+        version: 5,
+        name: "account_usage_samples",
+        run: account_usage_samples_table,
+        transactional: true,
+    },
+    Migration {
+        version: 6,
+        name: "open_terminals_display_name",
+        run: open_terminals_display_name,
+        transactional: true,
+    },
+    Migration {
+        version: 7,
+        name: "queued_runs",
+        run: queued_runs_table,
+        transactional: true,
+    },
+    Migration {
+        version: 8,
+        name: "quota_budgets_and_team_accounts",
+        run: quota_budgets_and_team_accounts,
+        transactional: true,
+    },
+    Migration {
+        version: 9,
+        name: "allow_kimi_provider",
+        run: allow_kimi_provider,
+        // Rebuilds tables other tables reference, so it toggles PRAGMAs and
+        // runs its own transaction.
+        transactional: false,
+    },
+    Migration {
+        version: 10,
+        name: "project_git_identity",
+        run: project_git_identity_table,
+        transactional: true,
+    },
+    Migration {
+        version: 11,
+        name: "task_sources",
+        run: task_sources_tables,
+        transactional: true,
+    },
+    Migration {
+        version: 12,
+        name: "turn_usage_from_terminals",
+        run: turn_usage_from_terminals,
+        // Rebuilds a table with foreign keys of its own, so it toggles the
+        // PRAGMAs and runs its own transaction — same care as 4 and 9.
         transactional: false,
     },
 ];
@@ -125,6 +180,245 @@ fn open_terminals_table(conn: &Connection) -> Result<(), String> {
          );",
     )
     .map_err(|e| format!("could not create open_terminals: {e}"))
+}
+
+/// Per-project git identity and credential reference. Same shape `schema.sql`
+/// declares for a fresh database.
+fn project_git_identity_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS project_git_identity (
+           project_id     TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+           user_name      TEXT,
+           user_email     TEXT,
+           auth_user      TEXT,
+           credential_ref TEXT,
+           updated_at     TEXT NOT NULL
+         );",
+    )
+    .map_err(|e| format!("could not create project_git_identity: {e}"))
+}
+
+/// Makes `turn_usage` able to record what a **terminal** spent.
+///
+/// It was built for headless turns, so `session_id` was NOT NULL — but a
+/// terminal opened on a project has no session row, and that is where the real
+/// work happens. It also had no idea which account paid, which is the only
+/// question anyone actually asks of it.
+///
+/// `provider_message_id` is the important one: the numbers come from re-reading
+/// a transcript the CLI is appending to, and without a unique key a restart
+/// would count yesterday's turns again and quietly double the week's spend.
+fn turn_usage_from_terminals(conn: &Connection) -> Result<(), String> {
+    let already: bool = conn
+        .query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='turn_usage'", [], |row| row.get::<_, String>(0))
+        .map(|sql| sql.contains("provider_message_id"))
+        .unwrap_or(false);
+    // The indexes are created below whichever path this takes: a fresh database
+    // gets the new shape from `schema.sql` and never rebuilds, so creating them
+    // only inside the rebuild would leave new installs without the unique index
+    // that stops a re-read from double-counting.
+    if already {
+        return ensure_turn_usage_indexes(conn);
+    }
+
+    // A modern ALTER ... RENAME rewrites *other* tables' foreign keys to follow
+    // the rename, leaving them pointing at a table this is about to drop. Same
+    // trap migration 4 fell into.
+    let _ = conn.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;");
+    let result = (|| -> Result<(), String> {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE turn_usage_new (
+               id                    TEXT PRIMARY KEY,
+               session_id            TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+               account_id            TEXT REFERENCES accounts(id) ON DELETE CASCADE,
+               project_id            TEXT REFERENCES projects(id) ON DELETE SET NULL,
+               block_id              TEXT REFERENCES session_blocks(id) ON DELETE SET NULL,
+               model                 TEXT,
+               provider_message_id   TEXT,
+               input_tokens          INTEGER NOT NULL,
+               output_tokens         INTEGER NOT NULL,
+               cache_read_tokens     INTEGER,
+               cache_creation_tokens INTEGER,
+               cost_usd              REAL,
+               created_at            TEXT NOT NULL
+             );
+             INSERT INTO turn_usage_new (id, session_id, account_id, project_id, block_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, created_at)
+               SELECT tu.id, tu.session_id, s.account_id, s.project_id, tu.block_id, tu.input_tokens, tu.output_tokens, tu.cache_read_tokens, tu.cache_creation_tokens, tu.cost_usd, tu.created_at
+               FROM turn_usage tu LEFT JOIN sessions s ON s.id = tu.session_id;
+             DROP TABLE turn_usage;
+             ALTER TABLE turn_usage_new RENAME TO turn_usage;
+             COMMIT;",
+        )
+        .map_err(|e| format!("could not rebuild turn_usage: {e}"))
+    })();
+    let _ = conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA legacy_alter_table=OFF;");
+    result?;
+    ensure_turn_usage_indexes(conn)
+}
+
+fn ensure_turn_usage_indexes(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_turn_usage_message ON turn_usage(provider_message_id) WHERE provider_message_id IS NOT NULL;
+         CREATE INDEX IF NOT EXISTS idx_turn_usage_account ON turn_usage(account_id, created_at);",
+    )
+    .map_err(|e| format!("could not index turn_usage: {e}"))
+}
+
+/// Where task rows come from: a configured source, and which project each one
+/// feeds. See `schema.sql` for why the per-tool detail lives in `config_json`
+/// instead of a column per tool.
+fn task_sources_tables(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS task_sources (
+           id             TEXT PRIMARY KEY,
+           kind           TEXT NOT NULL CHECK (kind IN ('github', 'clickup')),
+           label          TEXT NOT NULL,
+           credential_ref TEXT,
+           config_json    TEXT NOT NULL DEFAULT '{}',
+           created_at     TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS task_source_links (
+           project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+           source_id       TEXT NOT NULL REFERENCES task_sources(id) ON DELETE CASCADE,
+           scope_id        TEXT,
+           branch_template TEXT,
+           PRIMARY KEY (project_id, source_id)
+         );",
+    )
+    .map_err(|e| format!("could not create the task source tables: {e}"))
+}
+
+/// Adds `kimi` to the providers an account may have.
+///
+/// It's a `CHECK` constraint, and SQLite can't alter one — the only way is the
+/// 12-step rebuild. Same `legacy_alter_table` care as migration 4: `sessions`
+/// and several other tables reference `accounts`, and a modern rename would
+/// rewrite their foreign keys to follow it and leave them pointing at a table
+/// that's about to be dropped.
+fn allow_kimi_provider(conn: &Connection) -> Result<(), String> {
+    let already: bool = conn
+        .query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='accounts'", [], |row| row.get::<_, String>(0))
+        .map(|sql| sql.contains("'kimi'"))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let _ = conn.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;");
+    let result = conn.execute_batch(
+        "BEGIN TRANSACTION;
+         ALTER TABLE accounts RENAME TO accounts_old_provider_migration;
+         CREATE TABLE accounts (
+           id               TEXT PRIMARY KEY,
+           provider         TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini','kimi')),
+           billing          TEXT NOT NULL CHECK (billing IN ('sub','key')),
+           name             TEXT NOT NULL,
+           scope            TEXT NOT NULL CHECK (scope IN ('work','personal')),
+           plan_label       TEXT NOT NULL DEFAULT '',
+           config_dir_path  TEXT NOT NULL,
+           credential_ref   TEXT NOT NULL,
+           monthly_cap      REAL,
+           status           TEXT NOT NULL DEFAULT 'healthy' CHECK (status IN ('healthy','cooling_down','exhausted')),
+           created_at       TEXT NOT NULL,
+           updated_at       TEXT NOT NULL,
+           exhausted_at     TEXT,
+           team_account_id  TEXT
+         );
+         INSERT INTO accounts SELECT id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, monthly_cap, status, created_at, updated_at, exhausted_at, team_account_id
+           FROM accounts_old_provider_migration;
+         DROP TABLE accounts_old_provider_migration;
+
+         ALTER TABLE rotation_policies RENAME TO rotation_policies_old_provider_migration;
+         CREATE TABLE rotation_policies (
+           project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+           provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini','kimi')),
+           policy     TEXT NOT NULL DEFAULT 'manual' CHECK (policy IN ('auto','round_robin','manual')),
+           PRIMARY KEY (project_id, provider)
+         );
+         INSERT INTO rotation_policies SELECT project_id, provider, policy FROM rotation_policies_old_provider_migration;
+         DROP TABLE rotation_policies_old_provider_migration;
+         COMMIT;",
+    );
+    let outcome = match result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            Err(format!("could not widen the provider constraint: {e}"))
+        }
+    };
+    let _ = conn.execute_batch("PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;");
+    outcome
+}
+
+/// Per-project spending caps, and the link from a local account to its row in
+/// a shared team pool. Both are additive; neither changes existing behaviour
+/// until something is configured.
+fn quota_budgets_and_team_accounts(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS quota_budgets (
+           project_id  TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+           weekly_pct  REAL NOT NULL CHECK (weekly_pct > 0 AND weekly_pct <= 100),
+           updated_at  TEXT NOT NULL
+         );",
+    )
+    .map_err(|e| format!("could not create quota_budgets: {e}"))?;
+    if !has_column(conn, "accounts", "team_account_id")? {
+        conn.execute_batch("ALTER TABLE accounts ADD COLUMN team_account_id TEXT;")
+            .map_err(|e| format!("could not add accounts.team_account_id: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Work that waits for quota instead of failing against it. Same shape
+/// `schema.sql` declares for a fresh database.
+fn queued_runs_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS queued_runs (
+           id           TEXT PRIMARY KEY,
+           project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+           prompt       TEXT NOT NULL,
+           branch_name  TEXT NOT NULL,
+           account_id   TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+           state        TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','running','done','failed','cancelled')),
+           terminal_id  TEXT,
+           session_id   TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+           attempts     INTEGER NOT NULL DEFAULT 0,
+           last_error   TEXT,
+           created_at   TEXT NOT NULL,
+           started_at   TEXT,
+           finished_at  TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_queued_runs_state ON queued_runs(state, created_at);",
+    )
+    .map_err(|e| format!("could not create queued_runs: {e}"))
+}
+
+/// Lets a panel carry a name the user typed. Needed once terminals are listed
+/// in a sidebar: two panels on the same project read identically there.
+fn open_terminals_display_name(conn: &Connection) -> Result<(), String> {
+    if has_column(conn, "open_terminals", "display_name")? {
+        return Ok(());
+    }
+    conn.execute_batch("ALTER TABLE open_terminals ADD COLUMN display_name TEXT;")
+        .map_err(|e| format!("could not add open_terminals.display_name: {e}"))
+}
+
+/// Keeps the `/usage` readings the poller was already taking. Same shape
+/// `schema.sql` declares for a fresh database.
+fn account_usage_samples_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS account_usage_samples (
+           id           TEXT PRIMARY KEY,
+           account_id   TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+           session_pct  REAL,
+           weekly_pct   REAL,
+           context_pct  REAL,
+           sampled_at   TEXT NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_account_usage_samples ON account_usage_samples(account_id, sampled_at);",
+    )
+    .map_err(|e| format!("could not create account_usage_samples: {e}"))
 }
 
 /// Re-anchors `pull_requests` on the project instead of a session, so a PR
@@ -211,7 +505,7 @@ fn pull_requests_project_anchored(conn: &Connection) -> Result<(), String> {
 /// be the expected steady-state error, which meant a genuinely broken
 /// migration was indistinguishable from an already-applied one — and it gave
 /// no way to add a migration that isn't naturally idempotent.
-fn run_migrations(conn: &Connection) -> Result<(), String> {
+pub(crate) fn run_migrations(conn: &Connection) -> Result<(), String> {
     apply(conn, MIGRATIONS)
 }
 
@@ -361,7 +655,7 @@ fn repair_dangling_sessions_fk(conn: &Connection) {
         }
     }
 
-    let _ = conn.execute_batch("PRAGMA foreign_keys=ON;");
+    let _ = conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA legacy_alter_table=OFF;");
 }
 
 /// Early dev builds created `sessions.account_id` with `ON DELETE RESTRICT`,
@@ -388,7 +682,15 @@ fn migrate_sessions_account_fk_to_cascade(conn: &Connection) {
     // them — carry them over rather than silently dropping that data.
     // PRAGMAs are no-ops inside a transaction, so these run outside the
     // BEGIN/COMMIT that does the actual table rebuild.
-    let _ = conn.execute_batch("PRAGMA foreign_keys=OFF;");
+    //
+    // `legacy_alter_table` is not optional here, and its absence was a real
+    // latent bug: a modern `ALTER TABLE ... RENAME` rewrites *other* tables'
+    // foreign keys to follow the rename, so `turn_usage.session_id` came out
+    // pointing at `sessions_old_fk_migration` — a table this very statement is
+    // about to drop. Nothing noticed until deleting an account cascaded into
+    // `turn_usage` and hit "no such table". Migration 4 learned this the same
+    // way; this call site never got the fix.
+    let _ = conn.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;");
     let result = conn.execute_batch(
         "BEGIN TRANSACTION;
          ALTER TABLE sessions RENAME TO sessions_old_fk_migration;
@@ -423,7 +725,7 @@ fn migrate_sessions_account_fk_to_cascade(conn: &Connection) {
         log::error!("sessions FK migration failed, rolling back: {e}");
         let _ = conn.execute_batch("ROLLBACK;");
     }
-    let _ = conn.execute_batch("PRAGMA foreign_keys=ON;");
+    let _ = conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA legacy_alter_table=OFF;");
 }
 
 #[cfg(test)]
@@ -601,6 +903,41 @@ mod tests {
     /// `sessions` table with the old `ON DELETE RESTRICT`, holding a real
     /// row for an account — then confirms migration + cascading delete
     /// both work, with no data loss for unrelated rows.
+    /// `schema.sql` is applied to **existing** databases too, before any
+    /// migration runs — so nothing in it may name a column a migration
+    /// introduces. An index on `turn_usage.provider_message_id` did, and every
+    /// launch of an older install aborted inside `setup()` with a panic across
+    /// the Objective-C boundary: the app died before drawing a window.
+    #[test]
+    fn schema_sql_applies_cleanly_to_a_database_that_predates_it() {
+        let conn = Connection::open_in_memory().unwrap();
+        // `turn_usage` exactly as it shipped before migration 12.
+        conn.execute_batch(
+            "CREATE TABLE turn_usage (
+               id                    TEXT PRIMARY KEY,
+               session_id            TEXT NOT NULL,
+               block_id              TEXT,
+               input_tokens          INTEGER NOT NULL,
+               output_tokens         INTEGER NOT NULL,
+               cache_read_tokens     INTEGER,
+               cache_creation_tokens INTEGER,
+               cost_usd              REAL,
+               created_at            TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+
+        conn.execute_batch(SCHEMA).expect("schema.sql must not fail against a database that predates it");
+        run_migrations(&conn).expect("migrations must carry that database forward");
+
+        // And the unique key that stops a re-read double-counting has to exist
+        // on this path too, not only on a fresh install.
+        let indexed: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_turn_usage_message'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(indexed, 1, "the dedupe index must exist after migrating an old database");
+    }
+
     #[test]
     fn migrates_old_restrict_schema_and_then_cascades_on_delete() {
         let conn = Connection::open_in_memory().unwrap();
@@ -759,6 +1096,38 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(texts, vec!["hello".to_string(), "world".to_string()], "pre-existing block must survive the repair");
+    }
+
+    /// Widening a CHECK means rebuilding the table, and `accounts` is
+    /// referenced by half the schema — the migration has to leave every one of
+    /// those foreign keys pointing at a table that exists, which is the trap
+    /// this file already paid for once.
+    #[test]
+    fn kimi_becomes_a_valid_provider_without_breaking_what_references_accounts() {
+        let conn = fresh_db();
+        run_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, status, created_at, updated_at)
+             VALUES ('k1','kimi','key','Kimi','personal','','','k1','healthy','now','now')",
+            [],
+        )
+        .expect("kimi must be a valid provider after the migration");
+
+        conn.execute("INSERT INTO projects (id, name, path, created_at) VALUES ('p1','P','/tmp','now')", []).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, name, project_id, account_id, model, effort, mode, status, started_at)
+             VALUES ('s1','s','p1','k1','','high','ask_edits','waiting','now')",
+            [],
+        )
+        .expect("a session referencing the rebuilt accounts table must still insert");
+
+        conn.execute("INSERT INTO rotation_policies (project_id, provider, policy) VALUES ('p1','kimi','auto')", [])
+            .expect("rotation policies were rebuilt too, or a kimi pool couldn't have a policy");
+
+        // And deleting the account still cascades, which is what the FK is for.
+        conn.execute("DELETE FROM accounts WHERE id = 'k1'", []).unwrap();
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0, "ON DELETE CASCADE must survive the rebuild");
     }
 
     /// A database on the pre-migration-4 shape: `pull_requests` anchored to a

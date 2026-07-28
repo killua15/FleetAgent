@@ -11,6 +11,7 @@ import styles from './SettingsTabs.module.css';
 const TABS: Array<{ screen: ScreenName; label: string }> = [
   { screen: 'general-settings', label: 'general' },
   { screen: 'rotation-settings', label: 'rotation' },
+  { screen: 'task-settings', label: 'tasks' },
 ];
 
 interface SettingsTabsProps {

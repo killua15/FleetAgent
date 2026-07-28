@@ -119,6 +119,67 @@ pub struct TerminalInfo {
     /// — so it can be resumed or copied to another account later. `None` for a
     /// plain shell, a login, or a non-claude terminal.
     pub session_uuid: Option<String>,
+    /// A name the user typed for this panel, which wins over `title` in the UI.
+    /// `None` until they rename it.
+    pub display_name: Option<String>,
+}
+
+/// What a terminal's agent is doing, as far as Hangar can tell from the
+/// outside.
+///
+/// This is the thing the app was missing: with six terminals open, knowing
+/// which one needs you meant reading six panes. Every comparable tool has some
+/// form of it (Orca's state dots, herdr's "status detection"), and it's the
+/// foundation for notifying, sorting and summarising — none of which can exist
+/// without a state to observe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalState {
+    /// Producing output right now.
+    Working,
+    /// Quiet after having worked — the agent has almost certainly finished its
+    /// turn and is waiting for you.
+    Waiting,
+    /// Nothing has happened yet, or the shell is just sitting at a prompt.
+    Idle,
+    /// The process is gone.
+    Exited,
+}
+
+/// How long a terminal must stay quiet before "working" becomes "waiting".
+///
+/// Deliberately generous. An agent thinking between tool calls can go quiet for
+/// several seconds, and a state that flickers back and forth is worse than no
+/// state at all — it trains you to ignore the dot.
+const QUIET_BEFORE_WAITING: Duration = Duration::from_secs(4);
+
+/// Terminal-title escape sequences: `ESC ] 0 ; text BEL` and the `2` variant,
+/// either terminated by BEL (0x07) or ST (`ESC \`).
+///
+/// Parsed straight out of the PTY stream rather than asked for: it needs no
+/// hook, no configuration of the user's Claude Code, and works for any CLI that
+/// sets a title. Claude Code's status line is the richest source of this, but
+/// nothing here depends on it being present.
+fn parse_osc_title(chunk: &[u8]) -> Option<String> {
+    let mut i = 0;
+    let mut found = None;
+    while i + 3 < chunk.len() {
+        if chunk[i] == 0x1b && chunk[i + 1] == b']' && (chunk[i + 2] == b'0' || chunk[i + 2] == b'2') && chunk[i + 3] == b';' {
+            let start = i + 4;
+            let mut end = start;
+            while end < chunk.len() && chunk[end] != 0x07 && !(chunk[end] == 0x1b && end + 1 < chunk.len() && chunk[end + 1] == b'\\') {
+                end += 1;
+            }
+            if end < chunk.len() {
+                // Later titles win: one read can carry several updates, and the
+                // last one is the current state of the world.
+                found = Some(String::from_utf8_lossy(&chunk[start..end]).trim().to_string());
+                i = end;
+            }
+        }
+        i += 1;
+    }
+    found.filter(|t| !t.is_empty())
 }
 
 /// One chunk of terminal output on its way to the frontend.
@@ -143,7 +204,29 @@ struct TerminalHandle {
     /// `None` while nobody is. The reader thread keeps filling `scrollback`
     /// either way, so a background terminal never loses output.
     sink: Arc<Mutex<Option<Channel<TerminalChunk>>>>,
+    /// Live state, written by the reader thread and by the watcher that ages
+    /// `Working` into `Waiting`. Shared rather than stored on `info` because
+    /// both of those run outside any command.
+    activity: Arc<Mutex<Activity>>,
     info: TerminalInfo,
+}
+
+/// The observable part of a terminal: when it last spoke, what it called
+/// itself, and what that adds up to.
+#[derive(Debug, Clone)]
+struct Activity {
+    state: TerminalState,
+    last_output: Instant,
+    /// The last title the program set, when it sets one — Claude Code's status
+    /// line puts the current task here, which is a far better label for a panel
+    /// than the project name.
+    title: Option<String>,
+}
+
+impl Activity {
+    fn new() -> Self {
+        Activity { state: TerminalState::Idle, last_output: Instant::now(), title: None }
+    }
 }
 
 pub struct TerminalRegistry(pub Mutex<HashMap<String, TerminalHandle>>);
@@ -230,6 +313,12 @@ fn merge_env(base: Vec<(String, String)>, account_vars: &[(String, String)], sco
     if !env.iter().any(|(k, _)| k == "TERM") {
         env.push(("TERM".to_string(), "xterm-256color".to_string()));
     }
+    // Real terminal emulators set this; a GUI app's inherited environment does
+    // not. Without it a CLI that checks for truecolour falls back to 256, which
+    // is a visible downgrade for anything that draws its own interface.
+    if !env.iter().any(|(k, _)| k == "COLORTERM") {
+        env.push(("COLORTERM".to_string(), "truecolor".to_string()));
+    }
     env
 }
 
@@ -270,7 +359,15 @@ fn account_key_env(account: &AccountForTerminal, account_id: &str) -> Result<Vec
         return Ok(Vec::new());
     }
     let key = crate::credential_vault::get(account_id)?;
-    Ok(vec![("ANTHROPIC_API_KEY".to_string(), key)])
+    // Which variable carries the key is the provider's business: Anthropic
+    // reads `ANTHROPIC_API_KEY`, Moonshot is reached through Claude Code's
+    // `ANTHROPIC_AUTH_TOKEN`, and Codex wants `OPENAI_API_KEY`.
+    let var = crate::providers::spec(&account.provider).map(|s| s.key_env).unwrap_or("ANTHROPIC_API_KEY");
+    let mut env = vec![(var.to_string(), key)];
+    for (k, v) in crate::providers::spec(&account.provider).map(|s| s.extra_env).unwrap_or(&[]) {
+        env.push((k.to_string(), v.to_string()));
+    }
+    Ok(env)
 }
 
 /// Wraps a value in single quotes for the shell, escaping any single quotes
@@ -320,17 +417,16 @@ fn shell_quote(value: &str) -> String {
 /// A prompt with newlines would trip zsh's PS2 continuation prompt inside the
 /// quotes, so callers pass a single-line prompt.
 pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitCommand, session_uuid: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
-    if account.provider != "claude" {
-        // No `env_for_account` equivalent exists for these, so nothing would
-        // actually scope the CLI to this account. Refusing beats opening a
-        // shell that looks isolated and isn't.
-        return Err(format!("Hangar can't run a '{}' CLI as a specific account yet", account.provider));
-    }
-    let binary = crate::providers::provider_binary(&account.provider).ok_or_else(|| format!("unknown provider '{}'", account.provider))?;
+    let spec = crate::providers::spec(&account.provider).ok_or_else(|| format!("unknown provider '{}'", account.provider))?;
+    let binary = spec.binary;
     if !crate::providers::is_provider_available(&account.provider) {
-        return Err(format!("the {binary} CLI isn't installed on this machine"));
+        return Err(format!("the `{binary}` CLI isn't installed on this machine"));
     }
     let config = shell_quote(&account.config_dir_path);
+    // Fixed environment the provider always needs — for Kimi, pointing Claude
+    // Code at Moonshot's Anthropic-compatible endpoint. Rendered into the
+    // command line so what the picker previews is literally what runs.
+    let extra: String = spec.extra_env.iter().map(|(k, v)| format!("{k}={} ", shell_quote(v))).collect();
     // The trailing prompt, if any — a positional first message. Shared by Start
     // and Resume (both open an interactive session that can carry one).
     let prompt_arg = || match prompt.map(str::trim).filter(|p| !p.is_empty()) {
@@ -338,21 +434,33 @@ pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitComma
         None => String::new(),
     };
     let args = match init {
-        // Hangar owns the id so it can locate this exact transcript later. A
-        // caller with no uuid still gets a plain `claude` (backwards-safe), but
-        // the real flows always supply one.
-        InitCommand::Start => match session_uuid {
-            Some(uuid) => format!(" --session-id {}{}", shell_quote(uuid), prompt_arg()),
-            None => prompt_arg(),
+        InitCommand::Start => match (spec.session, session_uuid) {
+            // Hangar owns the id so it can locate this exact transcript later.
+            (crate::providers::SessionControl::MintableId { start_flag, .. }, Some(uuid)) => {
+                format!(" {start_flag} {}{}", shell_quote(uuid), prompt_arg())
+            }
+            // Codex assigns its own id and has no flag to name one — passing
+            // Claude's would be `error: unexpected argument '--session-id'`,
+            // which is exactly what a terminal used to open with.
+            _ => prompt_arg(),
         },
-        InitCommand::Resume => {
-            let uuid = session_uuid.ok_or("resuming a terminal needs the session id to resume")?;
-            format!(" --resume {}{}", shell_quote(uuid), prompt_arg())
-        }
+        InitCommand::Resume => match spec.session {
+            crate::providers::SessionControl::MintableId { resume_flag, .. } => {
+                let uuid = session_uuid.ok_or("resuming a terminal needs the session id to resume")?;
+                format!(" {resume_flag} {}{}", shell_quote(uuid), prompt_arg())
+            }
+            // We never held an id for this CLI, so there's nothing to resume by
+            // name. Starting fresh is the honest outcome; resuming "the most
+            // recent session" would be a guess dressed as continuity.
+            _ => prompt_arg(),
+        },
         // A login command takes no prompt or session — there's nothing to seed.
-        InitCommand::Login => format!(" {}", crate::providers::claude::login_args().join(" ")),
+        InitCommand::Login => match spec.login_args {
+            Some(login) => format!(" {}", login.join(" ")),
+            None => return Err(format!("'{}' authenticates with an API key — there's no login to run", account.provider)),
+        },
     };
-    Ok(format!("CLAUDE_CONFIG_DIR={config} {binary}{args}"))
+    Ok(format!("{}={config} {extra}{binary}{args}", spec.config_dir_env))
 }
 
 /// The full script a terminal runs: change directory first, then the account's
@@ -372,6 +480,14 @@ pub(crate) fn terminal_script(cwd: &str, account: &AccountForTerminal, init: Ini
 /// Resolves a target to the directory its terminal should start in, plus the
 /// title to show. A session with a worktree resolves to the worktree — that
 /// is the case this whole feature exists for.
+/// `resolve_target` for callers outside this module — the Files screen resolves
+/// a project or a session to a working directory by exactly the same rules a
+/// terminal does, and two implementations of "where does this target live" would
+/// drift apart the first time a worktree moved.
+pub(crate) fn resolve_target_for_files(conn: &rusqlite::Connection, target: &TerminalTarget) -> Result<(String, String), String> {
+    resolve_target(conn, target)
+}
+
 fn resolve_target(conn: &rusqlite::Connection, target: &TerminalTarget) -> Result<(String, String), String> {
     match target.kind {
         TargetKind::Project => conn
@@ -428,9 +544,17 @@ pub fn open_terminal<R: Runtime>(
     // Hangar owns the conversation id for an account-scoped `Start`: use the one
     // the caller supplied (a restore/transfer resuming a known id) or mint a
     // fresh one. `Resume` must carry its id; `Login` and plain shells have none.
+    let mintable = account
+        .as_ref()
+        .and_then(|a| crate::providers::spec(&a.provider))
+        .is_some_and(|s| matches!(s.session, crate::providers::SessionControl::MintableId { .. }));
     let session_uuid = match (&account, init) {
-        (Some(_), Some(InitCommand::Start)) => Some(session_uuid.unwrap_or_else(|| Uuid::new_v4().to_string())),
-        (Some(_), Some(InitCommand::Resume)) => Some(session_uuid.ok_or("resuming a terminal needs a session id")?),
+        // Only for a CLI that lets Hangar choose the id. Minting one for Codex
+        // would record a conversation id nothing can address — and every
+        // feature that reads `session_uuid` (the switcher's "this carries your
+        // conversation", restore's `--resume`) would be promising on it.
+        (Some(_), Some(InitCommand::Start)) if mintable => Some(session_uuid.unwrap_or_else(|| Uuid::new_v4().to_string())),
+        (Some(_), Some(InitCommand::Resume)) if mintable => Some(session_uuid.ok_or("resuming a terminal needs a session id")?),
         _ => None,
     };
 
@@ -444,10 +568,28 @@ pub fn open_terminal<R: Runtime>(
         (None, Some(_)) => return Err("choose an account before picking a command to run".to_string()),
         _ => None,
     };
-    let account_vars = match (&account, &account_id) {
+    let mut account_vars = match (&account, &account_id) {
         (Some(account), Some(id)) => account_key_env(account, id)?,
         _ => Vec::new(),
     };
+    // The project's git identity and push credential go into the PTY too, not
+    // just into Hangar's own git calls: the process that runs `git push` most
+    // often here is the agent, in a shell whose environment can't be changed
+    // once it's live.
+    {
+        let db = app.state::<DbConnection>();
+        let project_id = {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            let kind = match target.kind {
+                TargetKind::Project => "project",
+                TargetKind::Session => "session",
+            };
+            crate::rotation::project_of_terminal(&conn, kind, &target.id).ok()
+        };
+        if let Some(project_id) = project_id {
+            account_vars.extend(crate::git_identity::git_env_for_project(&app, &project_id));
+        }
+    }
     let account_name = account.as_ref().map(|a| a.name.clone());
 
     let pty = native_pty_system();
@@ -480,15 +622,21 @@ pub fn open_terminal<R: Runtime>(
         account_name,
         account_id: account_id.clone(),
         session_uuid,
+        // A fresh terminal has no name of its own; `restore_terminals` puts back
+        // the one the user typed before, via `rename_terminal`.
+        display_name: None,
     };
 
     let scrollback = Arc::new(Mutex::new(VecDeque::new()));
     let sink: Arc<Mutex<Option<Channel<TerminalChunk>>>> = Arc::new(Mutex::new(None));
+    let activity = Arc::new(Mutex::new(Activity::new()));
 
     {
         let scrollback = scrollback.clone();
         let sink = sink.clone();
+        let activity = activity.clone();
         let id = id.clone();
+        let app_for_reader = app.clone();
         std::thread::spawn(move || {
             let mut buf = vec![0u8; READ_CHUNK_BYTES];
             loop {
@@ -498,6 +646,19 @@ pub fn open_terminal<R: Runtime>(
                         let chunk = &buf[..n];
                         if let Ok(mut buffer) = scrollback.lock() {
                             push_scrollback(&mut buffer, chunk);
+                        }
+                        // Output means the agent is doing something. The title,
+                        // when there is one, comes from the same bytes — no
+                        // extra channel, no hook, no configuration.
+                        if let Ok(mut act) = activity.lock() {
+                            act.last_output = Instant::now();
+                            if let Some(title) = parse_osc_title(chunk) {
+                                act.title = Some(title);
+                            }
+                            if act.state != TerminalState::Working {
+                                act.state = TerminalState::Working;
+                                emit_state(&app_for_reader, &id, TerminalState::Working, act.title.clone());
+                            }
                         }
                         if let Ok(sink) = sink.lock() {
                             if let Some(channel) = sink.as_ref() {
@@ -509,6 +670,10 @@ pub fn open_terminal<R: Runtime>(
                     Err(_) => break,
                 }
             }
+            if let Ok(mut act) = activity.lock() {
+                act.state = TerminalState::Exited;
+            }
+            emit_state(&app_for_reader, &id, TerminalState::Exited, None);
             log::info!("terminal {id}: pty closed");
         });
     }
@@ -555,7 +720,7 @@ pub fn open_terminal<R: Runtime>(
         .0
         .lock()
         .map_err(|e| e.to_string())?
-        .insert(id.clone(), TerminalHandle { master: pair.master, writer, child, scrollback, sink, info: info.clone() });
+        .insert(id.clone(), TerminalHandle { master: pair.master, writer, child, scrollback, sink, activity, info: info.clone() });
 
     // Mirror the terminal to disk so it can be reopened next launch. Only a
     // registered terminal is persisted, so this can't outlive the shell.
@@ -584,9 +749,9 @@ fn persist_terminal<R: Runtime>(app: &AppHandle<R>, info: &TerminalInfo) {
         TargetKind::Session => "session",
     };
     if let Err(e) = conn.execute(
-        "INSERT OR REPLACE INTO open_terminals (id, target_kind, source_id, account_id, session_uuid, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![info.id, kind, info.source_id, info.account_id, info.session_uuid, chrono::Utc::now().to_rfc3339()],
+        "INSERT OR REPLACE INTO open_terminals (id, target_kind, source_id, account_id, session_uuid, display_name, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![info.id, kind, info.source_id, info.account_id, info.session_uuid, info.display_name, chrono::Utc::now().to_rfc3339()],
     ) {
         log::warn!("persist_terminal: {e}");
     }
@@ -690,6 +855,7 @@ struct PersistedTerminal {
     source_id: String,
     account_id: Option<String>,
     session_uuid: Option<String>,
+    display_name: Option<String>,
 }
 
 /// Reopens the terminals that were open when Hangar last closed — the first
@@ -717,11 +883,11 @@ pub fn restore_terminals<R: Runtime>(app: AppHandle<R>, cols: u16, rows: u16) ->
         let db = app.state::<DbConnection>();
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT target_kind, source_id, account_id, session_uuid FROM open_terminals ORDER BY created_at ASC")
+            .prepare("SELECT target_kind, source_id, account_id, session_uuid, display_name FROM open_terminals ORDER BY created_at ASC")
             .map_err(|e| e.to_string())?;
         let collected: Vec<PersistedTerminal> = stmt
             .query_map([], |r| {
-                Ok(PersistedTerminal { target_kind: r.get(0)?, source_id: r.get(1)?, account_id: r.get(2)?, session_uuid: r.get(3)? })
+                Ok(PersistedTerminal { target_kind: r.get(0)?, source_id: r.get(1)?, account_id: r.get(2)?, session_uuid: r.get(3)?, display_name: r.get(4)? })
             })
             .map_err(|e| e.to_string())?
             .filter_map(Result::ok)
@@ -740,7 +906,16 @@ pub fn restore_terminals<R: Runtime>(app: AppHandle<R>, cols: u16, rows: u16) ->
         let (init, session_uuid) = decide_restore_init(&app, &row);
         let target = TerminalTarget { kind, id: row.source_id.clone() };
         match open_terminal(app.clone(), target, row.account_id.clone(), init, session_uuid, None, cols, rows) {
-            Ok(info) => restored.push(info),
+            Ok(mut info) => {
+                // The name the user gave this panel is part of what "restore"
+                // means — without it, three panels on one project come back
+                // indistinguishable.
+                if let Some(name) = row.display_name.clone() {
+                    let _ = rename_terminal(app.clone(), info.id.clone(), name.clone());
+                    info.display_name = Some(name);
+                }
+                restored.push(info);
+            }
             Err(e) => log::info!("restore: skipping terminal for {} ({}): {e}", row.target_kind, row.source_id),
         }
     }
@@ -888,6 +1063,388 @@ fn reopen_with_account_inner<R: Runtime>(app: AppHandle<R>, id: String, account_
     Ok(info)
 }
 
+/// One branch of a fan-out: a worktree name and the account that works in it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FanOutBranch {
+    pub name: String,
+    pub account_id: String,
+}
+
+/// Sends **one prompt to N agents, each in its own worktree under its own
+/// account**, and returns the terminals.
+///
+/// This is the gesture other ADEs made popular, with the part that makes it
+/// sustainable: N branches means N accounts, so a fan-out of five spends five
+/// quotas instead of burning one five times as fast. Hangar can do that because
+/// each account already has its own config dir; a tool with one globally-active
+/// account cannot, no matter how many worktrees it cuts.
+///
+/// `base_branch` is the branch every worktree starts from, chosen in the picker
+/// from the project's real branches — a fan-out that silently inherited
+/// whatever was checked out would put half-finished work in every agent's diff.
+///
+/// Serial, not parallel, for the same two reasons the multi-terminal picker is:
+/// accounts sharing a config dir must not race, and N CLIs spawning at once
+/// stampedes the machine. A branch that fails is reported and the rest continue —
+/// losing four worktrees because the fifth name collided would be absurd.
+#[tauri::command]
+pub async fn fan_out_prompt<R: Runtime>(
+    app: AppHandle<R>,
+    project_id: String,
+    branches: Vec<FanOutBranch>,
+    prompt: String,
+    base_branch: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> Result<Vec<TerminalInfo>, String> {
+    if branches.is_empty() {
+        return Err("a fan-out needs at least one branch".to_string());
+    }
+    if prompt.trim().is_empty() {
+        return Err("a fan-out needs a prompt — that's the whole point of sending it to several agents".to_string());
+    }
+
+    let mut opened = Vec::new();
+    let mut failures = Vec::new();
+    for branch in branches {
+        let session = crate::commands::sessions::create_worktree_for_project(app.clone(), project_id.clone(), branch.name.clone(), branch.account_id.clone(), None, base_branch.clone()).await;
+        let session = match session {
+            Ok(session) => session,
+            Err(e) => {
+                failures.push(format!("{}: {e}", branch.name));
+                continue;
+            }
+        };
+        let target = TerminalTarget { kind: TargetKind::Session, id: session.id };
+        match open_terminal(
+            app.clone(),
+            target,
+            Some(branch.account_id),
+            Some(InitCommand::Start),
+            None, // Hangar mints the session id
+            Some(prompt.clone()),
+            cols,
+            rows,
+        ) {
+            Ok(info) => opened.push(info),
+            Err(e) => failures.push(format!("{}: {e}", branch.name)),
+        }
+    }
+
+    if opened.is_empty() {
+        return Err(format!("no branch of the fan-out could start — {}", failures.join("; ")));
+    }
+    if !failures.is_empty() {
+        // Partial success is the honest outcome: the user has working terminals
+        // and deserves to know which branches didn't make it.
+        log::warn!("fan_out_prompt: {} of the branches failed — {}", failures.len(), failures.join("; "));
+    }
+    Ok(opened)
+}
+
+/// Renames a panel. Persisted, because a name that vanishes on restart is worse
+/// than no name: you'd have to re-derive which of three panels on the same
+/// project was the one doing the migration.
+#[tauri::command]
+pub fn rename_terminal<R: Runtime>(app: AppHandle<R>, id: String, name: String) -> Result<(), String> {
+    let trimmed = name.trim().to_string();
+    // Empty means "go back to the project's own name", not "call it nothing".
+    let display_name = (!trimmed.is_empty()).then_some(trimmed);
+    {
+        let registry = app.state::<TerminalRegistry>();
+        let mut map = registry.0.lock().map_err(|e| e.to_string())?;
+        let handle = map.get_mut(&id).ok_or_else(|| format!("no terminal with id {id}"))?;
+        handle.info.display_name = display_name.clone();
+    }
+    let Some(db) = app.try_state::<DbConnection>() else { return Ok(()) };
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE open_terminals SET display_name = ?2 WHERE id = ?1", rusqlite::params![id, display_name])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// An open terminal already working in this session, if there is one.
+///
+/// Two agents in one worktree edit the same files with no idea the other
+/// exists, so anything that "sends work to a terminal" should find the one
+/// that's already there before opening a second.
+pub(crate) fn terminal_for_session<R: Runtime>(app: &AppHandle<R>, session_id: &str) -> Option<TerminalInfo> {
+    let registry = app.try_state::<TerminalRegistry>()?;
+    let map = registry.0.lock().ok()?;
+    map.values()
+        .find(|handle| handle.info.kind == TargetKind::Session && handle.info.source_id == session_id)
+        .map(|handle| handle.info.clone())
+}
+
+/// Types a line into a terminal that's already open, as if the user had.
+pub(crate) fn send_line_to_terminal<R: Runtime>(app: &AppHandle<R>, id: &str, line: &str) -> Result<(), String> {
+    write_terminal(app.clone(), id.to_string(), format!("{line}\n"))
+}
+
+/// One terminal's live state, for the UI.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalActivity {
+    pub id: String,
+    pub state: TerminalState,
+    /// Whatever the program last set as the terminal title — for Claude Code
+    /// that's its status line, which says what it's actually doing.
+    pub title: Option<String>,
+}
+
+fn emit_state<R: Runtime>(app: &AppHandle<R>, id: &str, state: TerminalState, title: Option<String>) {
+    let _ = app.emit("terminal-state", TerminalActivity { id: id.to_string(), state, title });
+}
+
+/// Every open terminal's state, for the first render. After that the UI follows
+/// `terminal-state` events rather than polling.
+#[tauri::command]
+pub fn list_terminal_states<R: Runtime>(app: AppHandle<R>) -> Result<Vec<TerminalActivity>, String> {
+    let registry = app.state::<TerminalRegistry>();
+    let map = registry.0.lock().map_err(|e| e.to_string())?;
+    Ok(map
+        .iter()
+        .map(|(id, handle)| {
+            let (state, title) = handle
+                .activity
+                .lock()
+                .map(|a| (a.state, a.title.clone()))
+                .unwrap_or((TerminalState::Idle, None));
+            TerminalActivity { id: id.clone(), state, title }
+        })
+        .collect())
+}
+
+/// Ages `Working` into `Waiting` once a terminal has been quiet long enough,
+/// and tells the user when it happens.
+///
+/// A separate pass rather than a timer per terminal: the reader thread can only
+/// react to bytes arriving, and the interesting transition is precisely the
+/// absence of them. One tick over the registry costs nothing and scales to as
+/// many panels as anyone will open.
+///
+/// The notification is the payoff of the whole feature — it's what makes five
+/// agents in parallel something you can walk away from instead of something you
+/// have to supervise.
+pub fn tick_terminal_states<R: Runtime>(app: &AppHandle<R>) {
+    let Some(registry) = app.try_state::<TerminalRegistry>() else { return };
+    let mut newly_waiting = Vec::new();
+    {
+        let Ok(map) = registry.0.lock() else { return };
+        for (id, handle) in map.iter() {
+            let Ok(mut act) = handle.activity.lock() else { continue };
+            if act.state == TerminalState::Working && act.last_output.elapsed() >= QUIET_BEFORE_WAITING {
+                act.state = TerminalState::Waiting;
+                newly_waiting.push((id.clone(), handle.info.title.clone(), act.title.clone(), handle.info.clone()));
+            }
+        }
+    }
+
+    for (id, panel_title, agent_title, info) in newly_waiting {
+        // The turn is over, so the transcript is complete — the one moment
+        // worth reading it. Polling for this would mean re-reading every open
+        // terminal's file on a timer to catch a change that happens a few times
+        // an hour.
+        record_terminal_usage(app, &info);
+        emit_state(app, &id, TerminalState::Waiting, agent_title.clone());
+        // A queued run finishes when its agent stops talking — the only
+        // completion signal available from outside the CLI.
+        crate::run_queue::note_terminal_waiting(app, &id);
+        crate::notifications::notify_if_enabled(
+            app,
+            |s| s.notify_session_waiting,
+            "Agent is waiting",
+            &agent_title.unwrap_or_else(|| format!("{panel_title} finished its turn")),
+        );
+    }
+}
+
+/// Reads every account's quota now, instead of waiting for the poller.
+///
+/// The poller only samples accounts that have a terminal open, every five
+/// minutes — which is right for keeping banners fresh and wrong for a screen
+/// you opened *to see the numbers*: three idle accounts show "no reading"
+/// forever. This is the explicit version, and it's a command rather than
+/// something the modal does on open because each Claude account costs a `claude`
+/// process in a PTY (~6s), and three of those firing silently would look like
+/// the app had hung.
+#[tauri::command]
+pub async fn refresh_all_quotas<R: Runtime>(app: AppHandle<R>) -> Result<usize, String> {
+    crate::blocking::run_blocking(move || {
+        let Some(db) = app.try_state::<DbConnection>() else { return 0 };
+        let accounts: Vec<(String, String, String)> = match db.0.lock() {
+            Ok(conn) => conn
+                .prepare("SELECT id, provider, config_dir_path FROM accounts WHERE billing = 'sub'")
+                .and_then(|mut stmt| {
+                    stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                        .map(|rows| rows.filter_map(Result::ok).collect::<Vec<_>>())
+                })
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+
+        let mut read = 0;
+        for (account_id, provider, config_dir) in accounts {
+            match provider.as_str() {
+                // Codex records the API's rate-limit headers on every turn, so
+                // its quota is already on disk — no process to spawn.
+                "codex" => {
+                    if let Some((session, weekly)) = crate::usage_meter::codex_quota(&config_dir) {
+                        if let Ok(conn) = db.0.lock() {
+                            if crate::quota::record_sample(&conn, &account_id, session, weekly, None).is_ok() {
+                                read += 1;
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    if refresh_account_status(&app, &account_id) {
+                        read += 1;
+                    } else {
+                        // `refresh_account_status` only reports *changes*, and a
+                        // reading that matched the last one is still a reading.
+                        read += usize::from(std::path::Path::new(&config_dir).is_dir());
+                    }
+                }
+            }
+        }
+        read
+    })
+    .await
+}
+
+/// Files what a terminal's last turn cost, from what the CLI already wrote.
+///
+/// Only for terminals Hangar started with a session id of its own — without
+/// one there is no transcript to find, which is the case for a plain shell and
+/// for providers whose id we don't get to choose.
+fn record_terminal_usage<R: Runtime>(app: &AppHandle<R>, info: &TerminalInfo) {
+    let (Some(account_id), Some(session_uuid)) = (info.account_id.as_deref(), info.session_uuid.as_deref()) else { return };
+    let Some(db) = app.try_state::<DbConnection>() else { return };
+
+    let config_dir: Option<String> = {
+        let Ok(conn) = db.0.lock() else { return };
+        conn.query_row("SELECT config_dir FROM accounts WHERE id = ?1", rusqlite::params![account_id], |row| row.get(0)).ok()
+    };
+    let Some(config_dir) = config_dir else { return };
+
+    let turns = crate::usage_meter::read_claude_transcript(&config_dir, session_uuid);
+    if turns.is_empty() {
+        return;
+    }
+
+    // A terminal is opened against either a project or a session, and the
+    // column each id belongs in is different — putting a project id in
+    // `session_id` would trip the foreign key and silently drop the row.
+    let (project_id, session_id) = match info.kind {
+        TargetKind::Project => (Some(info.source_id.clone()), None),
+        TargetKind::Session => {
+            let project = db
+                .0
+                .lock()
+                .ok()
+                .and_then(|conn| conn.query_row("SELECT project_id FROM sessions WHERE id = ?1", rusqlite::params![info.source_id], |row| row.get(0)).ok());
+            (project, Some(info.source_id.clone()))
+        }
+    };
+
+    let written = crate::usage_meter::record_turns(&db, account_id, project_id.as_deref(), session_id.as_deref(), &turns);
+    if written > 0 {
+        log::info!("recorded {written} new turn(s) of usage for account {account_id}");
+    }
+}
+
+/// One task being picked up: its branch, who works it, and what to tell them.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskWorktree {
+    /// The branch this task lives on. Used **verbatim** — no namespace — because
+    /// it's the name the PR, the CI and the rest of the team already know.
+    pub branch: String,
+    /// True when the branch doesn't exist yet and has to be cut.
+    pub create: bool,
+    /// Only for a branch being created, and **per row**: unlike a fan-out,
+    /// where a shared base is what makes the comparison mean anything, two
+    /// tasks are unrelated work and can perfectly well start from different
+    /// places.
+    pub base_branch: Option<String>,
+    pub account_id: String,
+    /// What to hand the agent. Optional: sometimes you just want the worktree
+    /// open and will type it yourself.
+    pub prompt: Option<String>,
+    /// The task this row came from, when it came from a board rather than
+    /// being typed. Its body can't ride in `prompt` — that's a single-line
+    /// shell argument — so it's written into the worktree and the prompt
+    /// becomes a one-line pointer at it. See `task_sources::write_task_brief`.
+    pub task: Option<crate::task_sources::Task>,
+}
+
+/// Opens one worktree and one agent per task, in parallel.
+///
+/// The opposite gesture to `fan_out_prompt`, and worth stating because the two
+/// look alike in the UI: a fan-out is N attempts at **one** job that you compare
+/// and then throw all but one away; this is N **different** jobs that you keep.
+/// Which is why the base branch is per row here and shared there, and why the
+/// branch name is used verbatim instead of being namespaced.
+///
+/// Serial for the same reasons as everything else that spawns CLIs: accounts
+/// sharing a config dir must not race, and N of them starting at once stampedes
+/// the machine. A task that fails is reported; the rest continue.
+#[tauri::command]
+pub async fn open_task_worktrees<R: Runtime>(
+    app: AppHandle<R>,
+    project_id: String,
+    tasks: Vec<TaskWorktree>,
+    cols: u16,
+    rows: u16,
+) -> Result<Vec<TerminalInfo>, String> {
+    if tasks.is_empty() {
+        return Err("pick at least one task".to_string());
+    }
+
+    let mut opened = Vec::new();
+    let mut failures = Vec::new();
+    for task in tasks {
+        let branch = if task.create {
+            crate::commands::sessions::WorktreeBranch::Exact { name: task.branch.clone(), base: task.base_branch.clone() }
+        } else {
+            crate::commands::sessions::WorktreeBranch::Existing(task.branch.clone())
+        };
+
+        let session = crate::commands::sessions::create_worktree_on_branch(app.clone(), project_id.clone(), branch, task.account_id.clone()).await;
+        let session = match session {
+            Ok(session) => session,
+            Err(e) => {
+                failures.push(format!("{}: {e}", task.branch));
+                continue;
+            }
+        };
+
+        // An explicit prompt wins: a row the user typed over is a row they
+        // meant. Otherwise the brief goes to disk and the prompt points at it.
+        let prompt = match (task.prompt.filter(|p| !p.trim().is_empty()), task.task.as_ref(), session.worktree_path.as_deref()) {
+            (Some(typed), _, _) => Some(typed),
+            (None, Some(brief), Some(worktree)) => Some(crate::task_sources::write_task_brief(std::path::Path::new(worktree), brief)),
+            _ => None,
+        };
+
+        let target = TerminalTarget { kind: TargetKind::Session, id: session.id };
+        match open_terminal(app.clone(), target, Some(task.account_id), Some(InitCommand::Start), None, prompt, cols, rows) {
+            Ok(info) => opened.push(info),
+            Err(e) => failures.push(format!("{}: {e}", task.branch)),
+        }
+    }
+
+    if opened.is_empty() {
+        return Err(format!("no task could be opened — {}", failures.join("; ")));
+    }
+    if !failures.is_empty() {
+        log::warn!("open_task_worktrees: {} task(s) failed — {}", failures.len(), failures.join("; "));
+    }
+    Ok(opened)
+}
+
 /// Kills every shell on app exit — a PTY child outlives its parent happily,
 /// so without this quitting Hangar leaves a login shell per terminal running
 /// forever. Called from `lib.rs`'s `shutdown_children`.
@@ -976,6 +1533,14 @@ fn refresh_account_status<R: Runtime>(app: &AppHandle<R>, account_id: &str) -> b
             return false;
         }
     };
+    // Keep the reading. The scrape already happened; throwing it away is what
+    // made "how fast am I burning" unanswerable for the life of the project.
+    if let Ok(conn) = db.0.lock() {
+        if let Err(e) = crate::quota::record_sample(&conn, account_id, stats.session_pct, stats.weekly_pct, stats.context_pct) {
+            log::warn!("usage check: couldn't record the sample for account {account_id}: {e}");
+        }
+    }
+
     let exhausted = crate::usage_scraper::is_exhausted(&stats);
     let desired = if exhausted { "exhausted" } else { "healthy" };
     if desired == current_status {
@@ -1380,8 +1945,87 @@ mod tests {
             config_dir_path: "/tmp/cx".to_string(),
             name: "Codex".to_string(),
         };
-        let err = account_command_line(&codex, InitCommand::Start, None, None).unwrap_err();
-        assert!(err.contains("codex"), "got: {err}");
+        let result = account_command_line(&codex, InitCommand::Start, None, None);
+
+        // Branching on availability rather than assuming: this asserts the
+        // command's *shape*, and the shape only exists on a machine that has
+        // the CLI. The alternative — assuming codex is installed — is a test
+        // that passes here and fails in CI for a reason unrelated to the code.
+        if crate::providers::is_provider_available("codex") {
+            let line = result.expect("codex is installed here, so it must produce a command");
+            assert!(line.starts_with("CODEX_HOME=/tmp/cx "), "codex isolates with its own variable, not Claude's: {line}");
+            assert!(!line.contains("CLAUDE_CONFIG_DIR"), "using Claude's variable would write into the shared ~/.codex: {line}");
+        } else {
+            let err = result.unwrap_err();
+            assert!(err.contains("codex") && err.contains("isn't installed"), "an absent CLI must say so plainly: {err}");
+        }
+    }
+
+    /// The bug a user hit in a real terminal: `codex --session-id <uuid>` →
+    /// `error: unexpected argument '--session-id' found`. Verified against the
+    /// installed CLI: Codex has no flag to name a session, so Hangar must not
+    /// pass Claude's.
+    #[test]
+    fn a_codex_terminal_carries_no_session_flag_because_codex_has_none() {
+        let codex = AccountForTerminal {
+            provider: "codex".to_string(),
+            billing: "sub".to_string(),
+            config_dir_path: "/tmp/cx".to_string(),
+            name: "Codex".to_string(),
+        };
+        if !crate::providers::is_provider_available("codex") {
+            return;
+        }
+
+        let start = account_command_line(&codex, InitCommand::Start, Some("some-uuid"), None).unwrap();
+        assert!(!start.contains("--session-id"), "codex rejects that flag outright: {start}");
+        assert!(start.trim_end().ends_with("codex"), "a plain start is just the binary: {start}");
+
+        // A prompt still rides along — `codex [PROMPT]` is positional.
+        let with_prompt = account_command_line(&codex, InitCommand::Start, None, Some("fix the tests")).unwrap();
+        assert!(with_prompt.contains("'fix the tests'"), "got: {with_prompt}");
+
+        // And a resume we have no id for degrades to a fresh start rather than
+        // guessing at "the most recent session", which would be a guess dressed
+        // up as continuity.
+        let resumed = account_command_line(&codex, InitCommand::Resume, None, None).unwrap();
+        assert!(!resumed.contains("--resume"), "got: {resumed}");
+    }
+
+    /// Kimi is Claude Code pointed at Moonshot's Anthropic-compatible endpoint,
+    /// which is why it inherits every feature built for Claude rather than
+    /// needing an adapter. The base URL has to be on the command line for that
+    /// to be true — and visible there, so the picker's preview isn't a fiction.
+    #[test]
+    fn a_kimi_account_runs_claude_against_moonshot() {
+        let kimi = AccountForTerminal {
+            provider: "kimi".to_string(),
+            billing: "key".to_string(),
+            config_dir_path: "/tmp/kimi".to_string(),
+            name: "Kimi".to_string(),
+        };
+        let result = account_command_line(&kimi, InitCommand::Start, None, None);
+        if crate::providers::is_provider_available("kimi") {
+            let line = result.expect("kimi runs through claude, which is installed here");
+            assert!(line.contains("ANTHROPIC_BASE_URL=https://api.moonshot.ai/anthropic"), "got: {line}");
+            assert!(line.contains(" claude"), "the binary is claude, not a kimi CLI: {line}");
+        } else {
+            assert!(result.is_err());
+        }
+    }
+
+    /// An API-key provider has no interactive login, and offering one would
+    /// open a terminal that runs a command that doesn't exist.
+    #[test]
+    fn a_key_only_provider_refuses_a_login_command() {
+        let kimi = AccountForTerminal {
+            provider: "kimi".to_string(),
+            billing: "key".to_string(),
+            config_dir_path: "/tmp/kimi".to_string(),
+            name: "Kimi".to_string(),
+        };
+        let err = account_command_line(&kimi, InitCommand::Login, None, None).unwrap_err();
+        assert!(err.contains("API key"), "the message has to explain why there's no login: {err}");
     }
 
     #[test]
@@ -1525,6 +2169,63 @@ mod tests {
 
         close_terminal(handle, info.id).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- agent state ---------------------------------------------------------
+
+    #[test]
+    fn a_title_is_read_from_either_osc_form() {
+        // BEL-terminated, the common one.
+        assert_eq!(parse_osc_title(b"\x1b]0;fixing the rounding\x07").as_deref(), Some("fixing the rounding"));
+        // ST-terminated (ESC \), which some programs prefer.
+        assert_eq!(parse_osc_title(b"\x1b]2;running tests\x1b\\").as_deref(), Some("running tests"));
+    }
+
+    /// Titles arrive mixed into ordinary output, often several in one read —
+    /// the last one is the current state of the world.
+    #[test]
+    fn the_last_title_in_a_chunk_wins_and_surrounding_output_is_ignored() {
+        let chunk = b"some output\x1b]0;first\x07more output\x1b]0;second\x07trailing";
+        assert_eq!(parse_osc_title(chunk).as_deref(), Some("second"));
+    }
+
+    /// A sequence split across two reads must not produce half a title. The
+    /// next chunk carries a complete one anyway, so dropping the fragment is
+    /// right; inventing a truncated title would put garbage in the UI.
+    #[test]
+    fn an_unterminated_sequence_yields_nothing() {
+        assert_eq!(parse_osc_title(b"\x1b]0;half a tit"), None);
+        assert_eq!(parse_osc_title(b"plain output with no escapes at all"), None);
+        assert_eq!(parse_osc_title(b"\x1b]0;\x07"), None, "an empty title is not a title");
+    }
+
+    /// Other OSC commands share the prefix — 4 is a palette change, 8 is a
+    /// hyperlink. Reading those as titles would fill the panel header with
+    /// colour codes.
+    #[test]
+    fn other_osc_commands_are_not_mistaken_for_titles() {
+        assert_eq!(parse_osc_title(b"\x1b]4;1;rgb:00/00/00\x07"), None);
+        assert_eq!(parse_osc_title(b"\x1b]8;;https://example.com\x07"), None);
+    }
+
+    /// A fan-out with nothing to fan is a mistake, not an empty success: it
+    /// would cut zero worktrees and report victory.
+    #[test]
+    fn a_fan_out_needs_at_least_one_branch() {
+        let app = tauri::test::mock_app();
+        let err = tauri::async_runtime::block_on(fan_out_prompt(app.handle().clone(), "proj1".to_string(), vec![], "do the thing".to_string(), None, 80, 24)).unwrap_err();
+        assert!(err.contains("at least one branch"), "got: {err}");
+    }
+
+    /// And a fan-out with no prompt is the same mistake from the other side —
+    /// N worktrees with nothing to work on. Checked before anything is created,
+    /// so a blank prompt can't leave real branches behind.
+    #[test]
+    fn a_fan_out_needs_a_prompt() {
+        let app = tauri::test::mock_app();
+        let branches = vec![FanOutBranch { name: "one".to_string(), account_id: "sub1".to_string() }];
+        let err = tauri::async_runtime::block_on(fan_out_prompt(app.handle().clone(), "proj1".to_string(), branches, "   ".to_string(), None, 80, 24)).unwrap_err();
+        assert!(err.contains("needs a prompt"), "got: {err}");
     }
 
     /// A directory, a project pointing at it, and two accounts — the setup the
@@ -1680,8 +2381,13 @@ mod tests {
 
         let old = open_terminal(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp2".into() }, Some("sub1".to_string()), None, None, None, 80, 24).unwrap();
 
-        let err = reopen_with_account_inner(handle.clone(), old.id.clone(), "cx1".to_string(), Some(InitCommand::Start), None, 80, 24).unwrap_err();
-        assert!(err.contains("codex"), "the failure has to say what couldn't run; got: {err}");
+        // An account that doesn't exist, rather than one whose CLI is missing:
+        // the invariant under test is the rollback, and tying it to which CLIs
+        // happen to be installed made it pass here and fail elsewhere — which
+        // is exactly what happened once codex started working.
+        let err = reopen_with_account_inner(handle.clone(), old.id.clone(), "no-such-account".to_string(), Some(InitCommand::Start), None, 80, 24)
+            .unwrap_err();
+        assert!(!err.is_empty(), "a reopen that can't start has to say something");
 
         let live = list_terminals(handle.clone()).unwrap();
         assert_eq!(live.len(), 1, "a failed reopen must not leave the user with no terminal at all");
@@ -1710,6 +2416,7 @@ mod tests {
             account_name: None,
             account_id: account_id.map(str::to_string),
             session_uuid: session_uuid.map(str::to_string),
+            display_name: None,
         }
     }
 
@@ -1761,7 +2468,7 @@ mod tests {
     fn restore_starts_a_plain_shell_when_there_was_no_account() {
         let app = tauri::test::mock_app();
         app.manage(crate::db::DbConnection(Mutex::new(seed())));
-        let row = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: None, session_uuid: None };
+        let row = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: None, session_uuid: None, display_name: None };
         assert_eq!(decide_restore_init(app.handle(), &row), (None, None));
     }
 
@@ -1785,11 +2492,11 @@ mod tests {
         let handle = app.handle();
 
         // Transcript present → resume that exact session.
-        let with = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: Some("accR".into()), session_uuid: Some(uuid.into()) };
+        let with = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: Some("accR".into()), session_uuid: Some(uuid.into()), display_name: None };
         assert_eq!(decide_restore_init(handle, &with), (Some(InitCommand::Resume), Some(uuid.to_string())));
 
         // Same account, a session id with no transcript on disk → fresh start.
-        let without = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: Some("accR".into()), session_uuid: Some("no-such-uuid".into()) };
+        let without = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: Some("accR".into()), session_uuid: Some("no-such-uuid".into()), display_name: None };
         assert_eq!(decide_restore_init(handle, &without), (Some(InitCommand::Start), None));
 
         let _ = std::fs::remove_dir_all(&cfg);

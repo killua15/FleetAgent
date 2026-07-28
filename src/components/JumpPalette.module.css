@@ -1,0 +1,109 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 14vh;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.panel {
+  width: min(620px, 90vw);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  border: 1px solid var(--overlay-line);
+  background: var(--overlay);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.input {
+  flex: none;
+  padding: 14px 16px;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--txt);
+  font: 400 14px var(--font-ui);
+}
+
+.input:focus {
+  outline: none;
+}
+
+.results {
+  overflow: auto;
+  padding: 6px;
+}
+
+.row,
+.rowActive {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+
+.rowActive {
+  background: var(--panel2);
+  border-color: var(--acc);
+}
+
+.dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.name,
+.nameAttention {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 12.5px var(--font-ui);
+  color: var(--txt);
+}
+
+.nameAttention {
+  font-weight: 600;
+}
+
+.agentTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 11px var(--font-mono);
+  color: var(--dim);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.account {
+  flex: none;
+  font: 500 10px var(--font-ui);
+  color: var(--acc);
+}
+
+.empty {
+  display: block;
+  padding: 14px;
+  font: 400 12px var(--font-ui);
+  color: var(--dim);
+}

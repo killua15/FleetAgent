@@ -2,7 +2,7 @@
 
 CREATE TABLE IF NOT EXISTS accounts (
   id               TEXT PRIMARY KEY,
-  provider         TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini')),
+  provider         TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini','kimi')),
   billing          TEXT NOT NULL CHECK (billing IN ('sub','key')),
   name             TEXT NOT NULL,
   scope            TEXT NOT NULL CHECK (scope IN ('work','personal')),
@@ -19,7 +19,12 @@ CREATE TABLE IF NOT EXISTS accounts (
   -- however long ago that edit was. NULL whenever the account isn't benched —
   -- and also on a flag inherited from before this column existed, whose age is
   -- unknowable and which recovery therefore treats as expired.
-  exhausted_at     TEXT
+  exhausted_at     TEXT,
+  -- This account's row in a shared team pool, when the user has joined one.
+  -- The pool never holds credentials: it records that the account exists and
+  -- who is using it right now, so two people don't spend the same subscription
+  -- at once. NULL for a purely local account, which is all of them by default.
+  team_account_id  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -42,7 +47,7 @@ CREATE TABLE IF NOT EXISTS project_allowed_accounts (
 
 CREATE TABLE IF NOT EXISTS rotation_policies (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini','kimi')),
   policy     TEXT NOT NULL DEFAULT 'manual' CHECK (policy IN ('auto','round_robin','manual')),
   PRIMARY KEY (project_id, provider)
 );
@@ -249,15 +254,35 @@ CREATE TABLE IF NOT EXISTS file_edits (
 
 CREATE TABLE IF NOT EXISTS turn_usage (
   id                    TEXT PRIMARY KEY,
-  session_id            TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  -- Nullable: a terminal opened on a project has no session row, and that's
+  -- where most of the real spending happens.
+  session_id            TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+  -- Who paid. The only question anyone actually asks of this table.
+  account_id            TEXT REFERENCES accounts(id) ON DELETE CASCADE,
+  project_id            TEXT REFERENCES projects(id) ON DELETE SET NULL,
   block_id              TEXT REFERENCES session_blocks(id) ON DELETE SET NULL,
+  model                 TEXT,
+  -- The CLI's own id for the message these numbers came from. Unique, because
+  -- the numbers are read by re-tailing a transcript the CLI keeps appending to:
+  -- without a key, a restart counts yesterday's turns again and silently
+  -- doubles the week.
+  provider_message_id   TEXT,
   input_tokens          INTEGER NOT NULL,
   output_tokens         INTEGER NOT NULL,
+  -- Kept apart from input because they are billed at different rates — an
+  -- order of magnitude apart — and a turn is routinely 28k cache-read against
+  -- 2 real input tokens. Folding them together would make every estimate wrong.
   cache_read_tokens     INTEGER,
   cache_creation_tokens INTEGER,
   cost_usd              REAL,
   created_at            TEXT NOT NULL
 );
+
+-- The indexes for the columns above live in migration 12, not here. This file
+-- is applied to *existing* databases too, before any migration runs — so an
+-- index naming a column that only migration 12 adds fails on every launch of an
+-- older install, and takes the app down at startup. Nothing in here may
+-- reference anything a migration introduces.
 
 -- Which terminals were open when Hangar last closed, so they can be reopened
 -- on the next launch (and, when they carry a Claude session id, resumed).
@@ -273,6 +298,10 @@ CREATE TABLE IF NOT EXISTS open_terminals (
   source_id    TEXT NOT NULL,
   account_id   TEXT,
   session_uuid TEXT,
+  -- A name the user typed for this panel, overriding the project or session
+  -- name. Two terminals on the same project are otherwise indistinguishable in
+  -- a list, which is exactly when a sidebar makes them worth naming.
+  display_name TEXT,
   created_at   TEXT NOT NULL
 );
 
@@ -290,3 +319,131 @@ CREATE INDEX IF NOT EXISTS idx_file_edits_session ON file_edits(session_id);
 CREATE INDEX IF NOT EXISTS idx_turn_usage_session ON turn_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_pull_requests_session ON pull_requests(session_id);
 CREATE INDEX IF NOT EXISTS idx_pr_review_comments_pr ON pr_review_comments(pull_request_id);
+
+-- Every `/usage` reading the poller takes, kept instead of thrown away.
+--
+-- The poller has always scraped the real 5h/weekly/context percentages every
+-- five minutes and cached them in memory, where each sample overwrote the last
+-- and the whole history died with the process. One number tells you where you
+-- are; a series tells you how fast you're burning and when you'll run out —
+-- which is the thing no other agent orchestrator can compute, because none of
+-- them models accounts at all.
+--
+-- Cheap by construction: one row per account per five minutes, only for
+-- accounts with a terminal open.
+CREATE TABLE IF NOT EXISTS account_usage_samples (
+  id           TEXT PRIMARY KEY,
+  account_id   TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  -- All three are nullable: `/usage` is a TUI-only built-in and its output is
+  -- parsed leniently, so a reading can legitimately be partial.
+  session_pct  REAL,
+  weekly_pct   REAL,
+  context_pct  REAL,
+  sampled_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_usage_samples ON account_usage_samples(account_id, sampled_at);
+
+-- Work waiting for quota instead of failing against it.
+--
+-- The loudest documented complaint about Claude Code is hitting the usage limit
+-- mid-task and losing the session. Every tool in this category, including this
+-- one until now, lets you walk into that wall. A queued run waits for an
+-- account with headroom and starts itself when one appears.
+--
+-- `branch_name` is NOT NULL on purpose: unattended work always gets its own
+-- worktree. A prompt that runs at 3am while you sleep does not touch your main
+-- checkout, and that isn't a preference to configure.
+CREATE TABLE IF NOT EXISTS queued_runs (
+  id           TEXT PRIMARY KEY,
+  project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  prompt       TEXT NOT NULL,
+  branch_name  TEXT NOT NULL,
+  -- A specific account, or NULL for "any the project is allowed to use".
+  account_id   TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+  state        TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','running','done','failed','cancelled')),
+  -- The terminal and worktree session this run took over once it started.
+  terminal_id  TEXT,
+  session_id   TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+  attempts     INTEGER NOT NULL DEFAULT 0,
+  last_error   TEXT,
+  created_at   TEXT NOT NULL,
+  started_at   TEXT,
+  finished_at  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_queued_runs_state ON queued_runs(state, created_at);
+
+-- Caps on how much of the quota pool one project may spend.
+--
+-- Attribution is honest about its limits: usage is sampled per *account*, so
+-- when two projects share an account at the same time, splitting the burn
+-- between them is an estimate and the UI says so. With team leases the same
+-- number becomes exact, because a lease records precisely who held which
+-- account between which times.
+--
+-- Enforcement blocks *new* work only. A run already in flight is never killed:
+-- stopping an agent mid-edit leaves a worktree in a state nobody asked for.
+CREATE TABLE IF NOT EXISTS quota_budgets (
+  project_id  TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  -- Share of the weekly pool this project may spend, 1-100. The weekly window
+  -- is the one worth budgeting: the 5-hour one refills over lunch.
+  weekly_pct  REAL NOT NULL CHECK (weekly_pct > 0 AND weekly_pct <= 100),
+  updated_at  TEXT NOT NULL
+);
+
+-- Which git identity and credential a project's repo needs.
+--
+-- The default on the machine is one person; a repo belonging to another account
+-- needs another. Until this existed, Hangar committed with whatever
+-- `git config --global user.name` said — silently, and into permanent history.
+--
+-- `credential_ref` points at the OS keychain, never at a token stored here. And
+-- the token is never written into `.git/config` or the remote URL either: that
+-- is the easy way, and it leaves the secret in the repo, in `git remote -v`, and
+-- in every error message that quotes the URL.
+CREATE TABLE IF NOT EXISTS project_git_identity (
+  project_id     TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  user_name      TEXT,
+  user_email     TEXT,
+  -- Username for HTTPS auth (often the GitHub login).
+  auth_user      TEXT,
+  -- Keychain key holding the token/password. NULL when only the identity is set.
+  credential_ref TEXT,
+  updated_at     TEXT NOT NULL
+);
+
+-- Where the rows in the ☰ Tasks panel come from.
+--
+-- Hangar doesn't need to know what ClickUp is; it needs rows. So each adapter
+-- normalises its tool into the same small task shape and everything downstream
+-- — branch, worktree, prompt — is source-agnostic.
+--
+-- `config_json` is the per-tool dumping ground (a ClickUp team id, a Jira
+-- domain) and it is what keeps this from growing a column per tool. Same rule
+-- as everywhere else: `credential_ref` points at the OS keychain, and the token
+-- itself is never stored here.
+CREATE TABLE IF NOT EXISTS task_sources (
+  id             TEXT PRIMARY KEY,
+  kind           TEXT NOT NULL CHECK (kind IN ('github', 'clickup')),
+  label          TEXT NOT NULL,
+  -- NULL for GitHub: it borrows the `gh` CLI's own login rather than holding a
+  -- credential of its own.
+  credential_ref TEXT,
+  config_json    TEXT NOT NULL DEFAULT '{}',
+  created_at     TEXT NOT NULL
+);
+
+-- Which source feeds which project, and how its branches get named.
+--
+-- `scope_id` is deliberately opaque: a ClickUp list id, a GitHub repo, a Jira
+-- board. Each hierarchy is different and none of them is modelled here — the
+-- adapter resolves its own and hands back a string.
+CREATE TABLE IF NOT EXISTS task_source_links (
+  project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_id       TEXT NOT NULL REFERENCES task_sources(id) ON DELETE CASCADE,
+  scope_id        TEXT,
+  -- NULL means the source's own default (see `task_sources::branch_name`).
+  branch_template TEXT,
+  PRIMARY KEY (project_id, source_id)
+);
