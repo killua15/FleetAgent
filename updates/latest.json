@@ -1,10 +1,10 @@
 {
-  "version": "0.1.3",
-  "notes": "Updater permission fix \u2014 updates work from this version on",
-  "pub_date": "2026-07-28T21:25:25.414206Z",
+  "version": "0.1.4",
+  "notes": "Test release \u2014 if this bar reached you, the update channel works end to end",
+  "pub_date": "2026-07-28T21:30:14.429538Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbEZ3Zmg1a25mc3F3eS9tYTh4WWJ6eU0rS2ZNWkwxL3B4S2poSEtTUkkxaHlxYmhCRUpWTnZlck9XSFdQMnRlRjdlUHR4ZWx4SkkxWDVkRnVzN3FrMXdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1MjczOTI1CWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKdE1aNXMrVUZMdDBCMWVyM1d2d0ZSVHV1M0ZQV1BxRm1MajRDMFdMbGRtNXpoN1NzdkpMTXZBUStobDRmSlBPTEtxTmwyeW8wc1lqdVI0cEdCaU9WQXc9PQo=",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbERnSVBaUzViYTU5VTJvUHFSdGFyQUtRUzAxbURZM1JMQXBCUCt4VHpvV0Z2Sis1T2FNd0NoOGNyQThUVDdUVzJSY0REdWh4Q0VHUmdncTBDc1VsZ3dJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1Mjc0MjE0CWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKN3hSRVBBajMrTWdtYitwZFZBcWJvNUpnM3FubmlocXAvNWhSaFd3SzZSYWUwWkxRRXBKYjRXc2RocVZwK0x3b2hNdm5wYjhKc2k0UWJ6YitBQ0JWREE9PQo=",
       "url": "https://api.github.com/repos/killua15/FleetAgent/contents/updates/Hangar.app.tar.gz"
     }
   }
