@@ -136,6 +136,7 @@ export function GitPanel() {
                 onPull={() => runAction(selected.projectPath, 'pull', 'git_pull')}
                 onPush={() => runAction(selected.projectPath, 'push', 'git_push')}
                 onHistory={() => navigate('git-history', { path: selected.projectPath, label: selected.projectName })}
+                onChanges={() => navigate('changes', { path: selected.projectPath, label: selected.projectName })}
               />
 
               {/* Right under the repo it applies to: which identity commits
@@ -154,6 +155,7 @@ export function GitPanel() {
                   onPull={() => runAction(wt.path, 'pull', 'git_pull')}
                   onPush={() => runAction(wt.path, 'push', 'git_push')}
                   onHistory={() => navigate('git-history', { path: wt.path, label: wt.sessionName })}
+                  onChanges={() => navigate('changes', { path: wt.path, label: wt.sessionName })}
                   onOpenSession={() => navigate('agent-panel', { sessionId: wt.sessionId })}
                   onOpenPr={wt.linkedPr ? () => openUrl(wt.linkedPr!.url) : undefined}
                   onOpenComments={wt.linkedPr ? () => setOpenCommentsForPr(wt.linkedPr!.id) : undefined}
@@ -200,6 +202,7 @@ function GitActions({
   onPull,
   onPush,
   onHistory,
+  onChanges,
 }: {
   path: string;
   busy: BusyKey | null;
@@ -207,6 +210,7 @@ function GitActions({
   onPull: () => void;
   onPush: () => void;
   onHistory: () => void;
+  onChanges: () => void;
 }) {
   const isBusy = (verb: 'fetch' | 'pull' | 'push') => busy === `${path}:${verb}`;
   const anyBusy = busy?.startsWith(`${path}:`) ?? false;
@@ -220,6 +224,11 @@ function GitActions({
       </Button>
       <Button size="sm" variant="outline" disabled={anyBusy} onClick={onPush}>
         {isBusy('push') ? <Spinner label="pushing…" /> : 'Push'}
+      </Button>
+      {/* Next to History on purpose: History is what already happened, Changes
+          is what's happening — the same question at two distances. */}
+      <Button size="sm" variant="outline" onClick={onChanges}>
+        Changes
       </Button>
       <Button size="sm" variant="outline" onClick={onHistory}>
         History
@@ -247,6 +256,7 @@ function RepoCard({
   onPull,
   onPush,
   onHistory,
+  onChanges,
 }: {
   title: string;
   subtitle: string;
@@ -260,6 +270,7 @@ function RepoCard({
   onPull: () => void;
   onPush: () => void;
   onHistory: () => void;
+  onChanges: () => void;
 }) {
   return (
     <div className={styles.repoCard}>
@@ -271,7 +282,7 @@ function RepoCard({
         <AheadBehind ahead={ahead} behind={behind} />
         {dirty && <span className={styles.dirtyDot} title="Uncommitted changes" />}
       </div>
-      <GitActions path={path} busy={busy} onFetch={onFetch} onPull={onPull} onPush={onPush} onHistory={onHistory} />
+      <GitActions path={path} busy={busy} onFetch={onFetch} onPull={onPull} onPush={onPush} onHistory={onHistory} onChanges={onChanges} />
     </div>
   );
 }
@@ -284,6 +295,7 @@ function WorktreeCard({
   onPull,
   onPush,
   onHistory,
+  onChanges,
   onOpenSession,
   onOpenPr,
   onOpenComments,
@@ -295,6 +307,7 @@ function WorktreeCard({
   onPull: () => void;
   onPush: () => void;
   onHistory: () => void;
+  onChanges: () => void;
   onOpenSession: () => void;
   onOpenPr?: () => void;
   onOpenComments?: () => void;
@@ -325,7 +338,7 @@ function WorktreeCard({
         <AheadBehind ahead={worktree.ahead} behind={worktree.behind} />
         {worktree.dirty && <span className={styles.dirtyDot} title="Uncommitted changes" />}
       </div>
-      <GitActions path={worktree.path} busy={busy} onFetch={onFetch} onPull={onPull} onPush={onPush} onHistory={onHistory} />
+      <GitActions path={worktree.path} busy={busy} onFetch={onFetch} onPull={onPull} onPush={onPush} onHistory={onHistory} onChanges={onChanges} />
     </div>
   );
 }

@@ -21,6 +21,7 @@ export type ScreenName =
   | 'files'
   | 'queue'
   | 'git-history'
+  | 'changes'
   | 'pr-modal'
   | 'pr-reviews'
   | 'general-settings'

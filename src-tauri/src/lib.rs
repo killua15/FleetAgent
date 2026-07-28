@@ -204,6 +204,8 @@ pub fn run() {
             commands::git_panel::get_commit_files,
             commands::git_panel::get_commit_file_diff,
             commands::git_panel::checkout_branch,
+            commands::git_panel::get_worktree_changes,
+            commands::git_panel::get_worktree_file_diff,
             commands::agent_nodes::list_agent_nodes,
             commands::agent_nodes::create_agent_node,
             commands::agent_nodes::update_agent_node,

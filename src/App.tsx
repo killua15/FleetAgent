@@ -12,6 +12,7 @@ import { SplitView } from './screens/SplitView';
 import { GeneralSettings } from './screens/GeneralSettings';
 import { TaskSettings } from './screens/TaskSettings';
 import { TaskBoard } from './screens/TaskBoard';
+import { Changes } from './screens/Changes';
 import { RotationSettings } from './screens/RotationSettings';
 import { SharedMemorySettings } from './screens/SharedMemorySettings';
 import { PrReviews } from './screens/PrReviews';
@@ -99,6 +100,8 @@ function Screens() {
       return <Files />;
     case 'queue':
       return <Queue />;
+    case 'changes':
+      return <Changes />;
     case 'git-history':
       return <GitHistoryView />;
     case 'tree-canvas':
