@@ -89,6 +89,38 @@ fn account_config_dir<R: Runtime>(app: &AppHandle<R>, name: &str) -> Result<std:
     Ok(accounts.join(format!("{slug}-{suffix}")))
 }
 
+/// Answers the CLI's first-run question before it gets asked.
+///
+/// A config directory that has never run interactively opens on a theme
+/// picker — and since every account here gets its own directory, that menu is
+/// the first thing a new account shows, in the login PTY, in the first
+/// terminal, and in the quota scrape. It's not a preference anyone came here
+/// to express, and a user who has never seen Claude Code reads it as Hangar
+/// being broken.
+///
+/// The value written is exactly what the CLI writes itself when the menu is
+/// answered — verified by answering it in a scratch directory and reading the
+/// file back — so this isn't a guessed schema, it's the same file one step
+/// earlier. Merged rather than overwritten, and silent on failure: an
+/// unwritable settings file is a cosmetic problem, not a reason to refuse to
+/// add an account.
+fn seed_first_run_settings(config_dir: &std::path::Path) {
+    let path = config_dir.join("settings.json");
+    let mut settings: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    let Some(object) = settings.as_object_mut() else { return };
+    if object.contains_key("theme") {
+        return;
+    }
+    object.insert("theme".to_string(), serde_json::Value::String("dark".to_string()));
+    if let Ok(pretty) = serde_json::to_string_pretty(&settings) {
+        let _ = std::fs::write(&path, pretty);
+    }
+}
+
 /// Full parent environment plus an isolated `CLAUDE_CONFIG_DIR` and a sane
 /// `TERM`, so the CLI renders and can find its own helpers regardless of how
 /// Hangar itself was launched. `pub(crate)` so `usage_scraper` (another
@@ -143,6 +175,7 @@ pub fn begin_login(app: AppHandle, provider: String, name: String) -> Result<Log
     let login_id = Uuid::new_v4().to_string();
     let config_dir = account_config_dir(&app, &name)?;
     std::fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
+    seed_first_run_settings(&config_dir);
     let config_dir = config_dir.to_string_lossy().to_string();
 
     let pty = native_pty_system();
@@ -444,6 +477,37 @@ mod tests {
     /// genuinely valuable integration test on a dev machine, but on CI it
     /// would only ever assert that the runner has no `claude` binary. Run it
     /// with `cargo test -- --ignored`.
+    /// The theme menu is the first thing a brand-new account shows — in the
+    /// login PTY, in its first terminal, and in the quota scrape. Writing the
+    /// same value the CLI itself writes means nobody is ever asked.
+    #[test]
+    fn a_new_config_dir_is_seeded_so_the_theme_menu_never_appears() {
+        let dir = std::env::temp_dir().join(format!("hangar-test-seed-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        seed_first_run_settings(&dir);
+        let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(written.get("theme").and_then(|t| t.as_str()), Some("dark"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A directory that already has settings must keep them — this runs on a
+    /// path the user may have pointed at an existing Claude installation.
+    #[test]
+    fn seeding_never_overwrites_settings_that_are_already_there() {
+        let dir = std::env::temp_dir().join(format!("hangar-test-seed-keep-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("settings.json"), r#"{"theme":"light","model":"opus"}"#).unwrap();
+
+        seed_first_run_settings(&dir);
+        let kept: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(kept.get("theme").and_then(|t| t.as_str()), Some("light"), "a chosen theme is not ours to change");
+        assert_eq!(kept.get("model").and_then(|m| m.as_str()), Some("opus"), "and everything else has to survive");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     #[ignore = "requires a real `claude` CLI installed on the machine"]
     fn auth_status_for_dir_reports_logged_out_for_a_fresh_dir() {

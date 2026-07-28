@@ -6,24 +6,27 @@ pub struct DbConnection(pub Mutex<Connection>);
 
 pub(crate) const SCHEMA: &str = include_str!("schema.sql");
 
-pub fn init(app: &AppHandle) -> Connection {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .expect("resolve app data dir");
-    std::fs::create_dir_all(&dir).expect("create app data dir");
+/// Opens the database, applies the schema, and migrates it forward.
+///
+/// Returns an error rather than panicking. It used to panic, and the failure
+/// mode was as bad as it gets: a `SIGABRT` inside the Objective-C launch
+/// notification, before any window existed. The user sees a crash reporter and
+/// nothing else — no message, no log pointer, no way to tell "your database is
+/// from a newer version" apart from "your disk is full".
+///
+/// Still refuses to start on a half-applied migration: every command past this
+/// point assumes the schema it was written against, and limping along in a
+/// shape nothing expects corrupts data instead of failing.
+pub fn init(app: &AppHandle) -> Result<Connection, String> {
+    let dir = app.path().app_data_dir().map_err(|e| format!("could not resolve the app data directory: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     let db_path = dir.join(crate::app_data::DB_FILE);
 
-    let conn = Connection::open(db_path).expect("open sqlite database");
-    conn.execute_batch("PRAGMA foreign_keys = ON;")
-        .expect("enable foreign keys");
-    conn.execute_batch(SCHEMA).expect("apply schema");
-    // A half-applied migration is not something to limp along with — every
-    // command past this point assumes the schema it was written against.
-    // Fail loudly, with the log line already written, rather than starting up
-    // into a shape nothing else expects.
-    run_migrations(&conn).expect("apply database migrations");
-    conn
+    let conn = Connection::open(&db_path).map_err(|e| format!("could not open {}: {e}", db_path.display()))?;
+    conn.execute_batch("PRAGMA foreign_keys = ON;").map_err(|e| format!("could not enable foreign keys: {e}"))?;
+    conn.execute_batch(SCHEMA).map_err(|e| format!("could not apply the schema: {e}"))?;
+    run_migrations(&conn)?;
+    Ok(conn)
 }
 
 /// One numbered, recorded schema change. `version` is what gets written to

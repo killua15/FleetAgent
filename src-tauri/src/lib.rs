@@ -70,7 +70,23 @@ pub fn run() {
             // `db::init` creates the directory, so a later call would find a
             // fresh empty one and skip the migration.
             app_data::migrate(&app.handle());
-            let conn = db::init(&app.handle());
+            let conn = match db::init(&app.handle()) {
+                Ok(conn) => conn,
+                Err(e) => {
+                    // A dialog and a log line, then out — rather than the
+                    // crash reporter, which tells the user nothing and tells
+                    // us nothing either.
+                    log::error!("database unavailable: {e}");
+                    tauri_plugin_dialog::DialogExt::dialog(app.handle())
+                        .message(format!(
+                            "Hangar can't open its database.\n\n{e}\n\nThe log is in ~/Library/Logs/com.killua.hangar/hangar.log"
+                        ))
+                        .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                        .title("Hangar")
+                        .blocking_show();
+                    std::process::exit(1);
+                }
+            };
             app.manage(DbConnection(Mutex::new(conn)));
             app.manage(ProcessRegistry::new());
             app.manage(LoginRegistry::new());
