@@ -91,14 +91,12 @@
 .sectionHint {
   font: 400 9.5px var(--font-ui);
   color: var(--dim);
-  opacity: 0.7;
 }
 
 .sectionEmpty {
   padding: 3px 6px;
   font: 400 10.5px var(--font-ui);
   color: var(--dim);
-  opacity: 0.6;
 }
 
 .counts {
