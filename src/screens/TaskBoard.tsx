@@ -8,6 +8,7 @@ import { PROVIDER_META, type Account } from '../types/account';
 import type { Project } from '../types/session';
 import { TASK_SOURCE_META, type BoardTask, type TaskFetch, type TaskSource } from '../types/task';
 import type { TerminalInfo } from '../types/terminal';
+import { bySource as tasksBySource, containerOptions, filterTasks, statusOptions } from '../lib/taskFilters';
 import styles from './TaskBoard.module.css';
 
 /**
@@ -101,12 +102,15 @@ export function TaskBoard() {
   // statuses are per-space and made up by whoever set the board up
   // ("verificar", "pronto para teste"), so anything hardcoded would be wrong
   // for everyone but the person who wrote it.
-  const bySource = all.filter((t) => sourceFilter === 'all' || t.sourceId === sourceFilter);
-  const boards = [...new Set(bySource.map((t) => t.container).filter((c): c is string => Boolean(c)))].sort();
-  const statuses = [...new Set(bySource.map((t) => t.status).filter((s): s is string => Boolean(s)))].sort();
-  const shown = bySource.filter(
-    (t) => (boardFilter === 'all' || t.container === boardFilter) && (statusFilter === 'all' || t.status === statusFilter),
-  );
+  // In `lib/taskFilters` rather than here: this is the screen's only real
+  // decision, and it has edge cases — a task with no list, a source with
+  // nothing, options that must come from the data because ClickUp statuses are
+  // invented per space — that deserve tests more than a render does.
+  const filters = { sourceId: sourceFilter, container: boardFilter, status: statusFilter };
+  const bySource = tasksBySource(all, sourceFilter);
+  const boards = containerOptions(all, sourceFilter);
+  const statuses = statusOptions(all, sourceFilter);
+  const shown = filterTasks(all, filters);
 
   const send = async () => {
     if (!accountId || !projectId || chosen.length === 0) return;

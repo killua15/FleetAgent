@@ -33,6 +33,12 @@ jobs:
       - name: Typecheck frontend
         run: npx tsc --noEmit
 
+      # Node environment, no jsdom: everything under test is a pure decision —
+      # a diff, a lane layout, a filter, a threshold — so the whole suite runs
+      # in well under a second and nobody has a reason to skip it.
+      - name: Test frontend
+        run: npm test
+
       # Must come before the Rust job: `tauri-build` resolves `frontendDist`
       # (../dist) at compile time, so the Rust crate won't build against a
       # tree that has never had the frontend built.

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { invoke } from '../lib/invoke';
 import { toastError } from './ErrorOverlay';
 import { Button } from './ui/button';
+import { compactTokens, money } from '../lib/formatUsage';
 import styles from './UsageModal.module.css';
 
 interface TokenTotals {
@@ -42,9 +43,7 @@ interface AccountSpend {
   byModel: { model: string; costUsd: number; turns: number }[];
 }
 
-const compact = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${Math.round(n / 1000)}K` : String(n));
-
-const money = (n: number) => (n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(3)}`);
+const compact = compactTokens;
 
 function Bar({ pct }: { pct: number }) {
   // Amber past 70, red past 90 — the same thresholds the queue uses to decide
