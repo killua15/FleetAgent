@@ -1,4 +1,6 @@
 use keyring::Entry;
+use std::collections::BTreeMap;
+use std::sync::Mutex;
 
 /// Keychain service name. Renamed with the product; no migration from the
 /// pre-rename `com.killua.fleet` service is needed or included — that service
@@ -15,15 +17,44 @@ fn entry(credential_ref: &str) -> Result<Entry, String> {
 }
 
 pub fn store(credential_ref: &str, secret: &str) -> Result<(), String> {
-    entry(credential_ref)?
-        .set_password(secret)
-        .map_err(|e| e.to_string())
+    forget(credential_ref);
+    entry(credential_ref)?.set_password(secret).map_err(|e| e.to_string())
 }
 
+/// Secrets already read this run.
+///
+/// macOS asks for the login password the first time an app touches a keychain
+/// item, and the app touches some of them constantly — the update token on
+/// every check, a task source's on every board load. One read per launch
+/// instead of one per action is the difference between a prompt you answer
+/// once and a prompt that feels like the app is broken.
+///
+/// In memory only, and only for what was successfully read: it is the same
+/// secret that is about to be handed to a subprocess anyway, and it dies with
+/// the process.
+static CACHE: Mutex<Option<BTreeMap<String, String>>> = Mutex::new(None);
+
 pub fn get(credential_ref: &str) -> Result<String, String> {
-    entry(credential_ref)?
-        .get_password()
-        .map_err(|e| e.to_string())
+    if let Ok(cache) = CACHE.lock() {
+        if let Some(hit) = cache.as_ref().and_then(|map| map.get(credential_ref)) {
+            return Ok(hit.clone());
+        }
+    }
+    let secret = entry(credential_ref)?.get_password().map_err(|e| e.to_string())?;
+    if let Ok(mut cache) = CACHE.lock() {
+        cache.get_or_insert_with(BTreeMap::new).insert(credential_ref.to_string(), secret.clone());
+    }
+    Ok(secret)
+}
+
+/// Drops a cached secret, so a replaced or removed one is never served from
+/// memory after the keychain has moved on.
+fn forget(credential_ref: &str) {
+    if let Ok(mut cache) = CACHE.lock() {
+        if let Some(map) = cache.as_mut() {
+            map.remove(credential_ref);
+        }
+    }
 }
 
 /// Whether the secret is actually readable *right now*.
@@ -39,6 +70,7 @@ pub fn has(credential_ref: &str) -> bool {
 }
 
 pub fn delete(credential_ref: &str) -> Result<(), String> {
+    forget(credential_ref);
     match entry(credential_ref)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(e.to_string()),
@@ -48,6 +80,22 @@ pub fn delete(credential_ref: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A replaced secret must not keep serving the old one from memory — the
+    /// cache exists to stop repeated password prompts, not to outlive the
+    /// keychain it mirrors.
+    #[test]
+    fn replacing_a_secret_invalidates_what_was_cached() {
+        let key = format!("hangar-test-cache-{}", uuid::Uuid::new_v4());
+        store(&key, "first").unwrap();
+        assert_eq!(get(&key).unwrap(), "first");
+
+        store(&key, "second").unwrap();
+        assert_eq!(get(&key).unwrap(), "second", "the cache has to yield to the newer value");
+
+        delete(&key).unwrap();
+        assert!(get(&key).is_err(), "and a deleted secret must not be served from memory either");
+    }
 
     /// The one thing a vault has to do, and the one thing no in-process test
     /// can check by itself: **the secret has to outlive the process**.
