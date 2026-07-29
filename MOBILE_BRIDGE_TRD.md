@@ -224,6 +224,7 @@ reconexiones y a cerrar la app. Se cambia llamando otra vez.
 
 ### `session-output`: lo que se manda en vez de bytes
 
+
 En vez del flujo del PTY, el puente manda lo que Hangar ya extrae del transcript:
 
 ```jsonc
@@ -231,13 +232,10 @@ En vez del flujo del PTY, el puente manda lo que Hangar ya extrae del transcript
   "text": "…", "files": ["src/x.rs"], "at": "…" }
 ```
 
-Y para cuando de verdad haga falta lo crudo, un comando acotado y a petición:
-
-```jsonc
-{ "name": "bridge_scrollback", "args": { "terminalId": "…", "lines": 200 } }
-```
-
-Máximo 500 líneas, recortado por el escritorio. Nunca un flujo.
+**No hay comando de scrollback.** Se consideró uno acotado y se descartó (§12.4):
+el volcado del terminal puede contener lo que el agente imprimió, claves
+incluidas, y el móvil no tiene por qué verlo para hacer su trabajo. Lo crudo se
+queda en el Mac.
 
 ---
 
@@ -336,16 +334,63 @@ Hangar. Ese es el objetivo del documento.
 
 ---
 
-## 12 · Preguntas abiertas
+## 12 · Decisiones tomadas
 
-1. **Múltiples Macs.** ¿Un móvil puede estar emparejado con dos ordenadores? El
-   canal por máquina lo permite; la interfaz tendría que elegir. Propuesta: sí en
-   el contrato, y en la app hasta la fase 5.
-2. **Rotación de clave.** No hay mecanismo. Propuesta: revocar y volver a
-   emparejar; construir rotación cuando exista una razón, no antes.
-3. **Dos móviles dirigiendo la misma terminal.** El contrato no lo impide. ¿Hace
-   falta bloqueo, o gana el último? Propuesta: gana el último y se muestra quién,
-   que es lo que hace un terminal compartido.
-4. **`bridge_scrollback` y secretos.** El scrollback puede contener lo que el
-   agente imprimió, incluidas claves. Va cifrado, pero queda en la caché del
-   móvil. ¿Se guarda o solo se muestra? Propuesta: solo en memoria.
+1. **Múltiples Macs: sí**, y en la interfaz, no solo en el contrato. El canal es
+   por máquina; la app elige cuál. Requiere un **nombre legible por máquina**
+   configurable en Hangar — `machine_id` es un UUID y nadie distingue dos UUIDs.
+2. **Rotación de clave: no.** Revocar y volver a emparejar cubre el caso real
+   (móvil perdido, dispositivo vendido) en treinta segundos. Rotación sin una
+   amenaza concreta es criptografía por deporte.
+3. **Dos dispositivos en la misma terminal: no se permite.** Dirigir una terminal
+   toma un turno exclusivo; un segundo dispositivo la ve pero no puede escribir.
+   El turno caduca por inactividad (propuesta: 5 min) porque si no, un móvil sin
+   batería deja la terminal bloqueada para siempre.
+4. **Nada de scrollback al móvil.** Se descarta `bridge_scrollback`: el
+   contenido crudo se queda en el Mac. El móvil recibe **estado y eventos**
+   (turno terminado, mensaje del agente, fichero tocado), nunca el volcado del
+   terminal.
+5. **Sin notificaciones push.** Se descarta la Edge Function, y con ella el push:
+   APNs y FCM exigen una credencial de servidor, y no hay dónde ponerla sin
+   distribuirla. **Consecuencia, dicha claramente**: la app no te avisa; la
+   consultas. Ver §13.
+6. **iOS y Android** desde el principio.
+7. **Precio: sin decidir.** Primero funcionando para uso propio.
+
+---
+
+## 13 · Modo yolo: lo que sustituye a las notificaciones
+
+Sin push, el caso *"el agente lleva veinte minutos esperando un sí"* no se puede
+avisar. La respuesta no es notificar mejor: es **quitar la pregunta**.
+
+Una terminal en modo `yolo` no pide permiso, así que no hay nada que aprobar
+desde el móvil y no hace falta que nada te despierte. Eso convierte la app de
+*"reaccionar a interrupciones"* a *"consultar cuando quieras"*, que es lo que
+un cliente sin push puede sostener honestamente.
+
+Hangar ya tiene los cuatro modos (`plan`, `ask_edits`, `auto_edit`, `yolo`) en el
+modelo de sesión. Lo que falta es poder fijarlo **por terminal, desde el Mac**, y
+que se note en la interfaz cuál está desatendida — porque una terminal en yolo es
+una que ejecuta sin preguntar, y eso tiene que verse.
+
+**Riesgo que hay que asumir en voz alta**: yolo es exactamente el modo en el que
+un agente puede borrar algo. Que sea la pieza que sostiene el diseño móvil
+significa que la seguridad pasa a apoyarse en el worktree aislado y en git, no en
+la aprobación humana.
+
+---
+
+## 14 · Preguntas abiertas
+
+1. **Yolo: ¿al arrancar o a mitad?** Un flag al lanzar el CLI es fiable; cambiarlo
+   con la terminal viva significa mandarle pulsaciones (shift+tab en Claude Code),
+   que funciona pero es teclear a ciegas. ¿Por terminal al abrirla, por proyecto
+   por defecto, o las dos?
+2. **Sin push, ¿cómo te enteras?** Al abrir la app ves el estado. ¿Basta, o
+   quieres al menos un contador en el icono — que también necesita push?
+3. **Repositorio de Flutter**: nombre, y dónde viven los ficheros dorados del
+   contrato. Propuesta: la verdad está en el repo de Hangar y el móvil los copia
+   en CI, para que solo haya un sitio donde cambiarlos.
+4. **Nombre de máquina**: hace falta uno legible y editable en Hangar para que la
+   app distinga dos Macs.
