@@ -342,10 +342,13 @@ Hangar. Ese es el objetivo del documento.
 2. **Rotación de clave: no.** Revocar y volver a emparejar cubre el caso real
    (móvil perdido, dispositivo vendido) en treinta segundos. Rotación sin una
    amenaza concreta es criptografía por deporte.
-3. **Dos dispositivos en la misma terminal: no se permite.** Dirigir una terminal
-   toma un turno exclusivo; un segundo dispositivo la ve pero no puede escribir.
-   El turno caduca por inactividad (propuesta: 5 min) porque si no, un móvil sin
-   batería deja la terminal bloqueada para siempre.
+3. **Un solo dispositivo móvil, varios Macs.** Emparejar un teléfono nuevo
+   **expulsa al anterior**. Eso elimina de raíz la contención por una terminal:
+   no hay dos que puedan escribir, así que no hace falta turno exclusivo ni
+   caducidad ni liberar nada. El dispositivo expulsado recibe un motivo
+   (`E_DEVICE_REPLACED`) y lo dice — no se queda fallando en silencio.
+   El teléfono guarda **una clave por Mac**: los emparejamientos son
+   independientes y perder uno no toca a los demás.
 4. **Nada de scrollback al móvil.** Se descarta `bridge_scrollback`: el
    contenido crudo se queda en el Mac. El móvil recibe **estado y eventos**
    (turno terminado, mensaje del agente, fichero tocado), nunca el volcado del
@@ -368,6 +371,15 @@ Hangar. Ese es el objetivo del documento.
 10. **La selección se ve en el Mac.** Cuando un dispositivo selecciona una
     terminal, Hangar lo muestra en ese panel. Un agente dirigido desde otro sitio
     no puede parecer igual que uno que nadie está tocando.
+11. **El modo es global**, un solo ajuste en Hangar para toda la máquina.
+    Consecuencia registrada: con `yolo` activado, **todas** las terminales de ese
+    Mac ejecutan sin preguntar, incluida la del repositorio que más te importa.
+    El aislamiento pasa a ser responsabilidad del worktree y de git.
+12. **Con el Mac dormido, un prompt se rechaza**, no se encola. Ejecutarlo tres
+    horas después sobre un árbol que ha cambiado es peor que no haberlo mandado.
+13. **Autenticación**: el login con Google de la Fase 5, con políticas que solo
+    dejan entrar a los canales del propio usuario. **El puente depende de esa
+    fase**, que el usuario desbloqueará creando el cliente OAuth.
 
 ---
 
@@ -403,28 +415,22 @@ La selección es estado del dispositivo y viaja en las dos direcciones:
 ```
 
 - Hangar marca ese panel con **qué dispositivo lo tiene** (`iPhone de David`).
-- Es el mismo turno exclusivo de §12.3: seleccionar para dirigir lo toma; un
-  segundo dispositivo ve la terminal pero no escribe.
+- No hay disputa posible: solo hay un teléfono emparejado (§12.3), así que
+  seleccionar es marcar, no bloquear.
 - Seleccionar una terminal **minimizada no la restaura**: minimizar es una
   decisión del escritorio y el móvil no la revoca. Se marca, y ya.
 - Al desconectarse el dispositivo, la marca desaparece y el turno se libera.
 
 ---
 
-## 15 · Preguntas abiertas
+## 15 · Lo que queda por decidir
 
-1. **Autenticación con Supabase.** El canal de Realtime necesita que alguien esté
-   autenticado. Lo natural es reutilizar el login con Google de la Fase 5 y una
-   política que solo deje entrar a los canales del propio usuario. **Eso hace que
-   el puente dependa de la Fase 5**, que hoy está bloqueada en crear el cliente
-   OAuth en Google Cloud. Alternativa peor: clave anónima y confiar en que el
-   nombre del canal no se adivine — el contenido seguiría cifrado, pero
-   cualquiera podría inundar el canal.
-2. **Prompt con el Mac dormido.** ¿Se rechaza o se encola? Propuesta: se rechaza
-   con un error claro. Un prompt que se ejecuta tres horas después, sobre un
-   árbol que ha cambiado, es peor que no haberlo mandado.
-3. **Granularidad del modo.** ¿Por proyecto (defecto) y por terminal (excepción),
-   o solo una de las dos?
-4. **Ficheros dorados sin estorbar.** Propuesta: se generan desde los tests que
-   ya existen, a `contract/fixtures/`, y el CI falla si el fichero cambia sin que
-   nadie lo haya mirado. Ni carpeta que mantener a mano ni CI más lento.
+Nada que bloquee la Fase 0. Lo que sigue abierto es de la app, no del contrato:
+
+1. **Nombre del repositorio de Flutter**, y cómo copia los ficheros dorados en su
+   CI desde el repositorio de Hangar, que es la verdad.
+2. **Qué enseña la app en la pantalla de una terminal**, dado que no hay
+   scrollback: mensajes del agente, acciones, estado y poco más.
+3. **Qué pasa si el usuario expulsa su propio teléfono** desde el Mac estando en
+   la calle. Propuesta: se puede volver a emparejar con el QR, que es justo lo
+   que exige tener el Mac delante.
