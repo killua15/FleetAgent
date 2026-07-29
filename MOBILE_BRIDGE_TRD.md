@@ -356,6 +356,18 @@ Hangar. Ese es el objetivo del documento.
    consultas. Ver §13.
 6. **iOS y Android** desde el principio.
 7. **Precio: sin decidir.** Primero funcionando para uso propio.
+8. **El modo lo fija el Mac, nunca el móvil.** `yolo` es una configuración de
+   Hangar en el escritorio; la app lo **ve** y no lo cambia. Poner una terminal a
+   ejecutar sin preguntar es una decisión que se toma delante del repositorio,
+   no desde el sofá.
+9. **El móvil no crea terminales libremente.** Solo dispara acciones que Hangar
+   ya sabe hacer y que *abren una terminal como consecuencia*: mandar un PR a
+   revisar, mandar una tarea, mandar comentarios. La terminal se abre en el Mac y
+   la conversación sigue desde ahí. No hay "abrir terminal vacía en el proyecto
+   X con la cuenta Y" desde el teléfono.
+10. **La selección se ve en el Mac.** Cuando un dispositivo selecciona una
+    terminal, Hangar lo muestra en ese panel. Un agente dirigido desde otro sitio
+    no puede parecer igual que uno que nadie está tocando.
 
 ---
 
@@ -381,16 +393,38 @@ la aprobación humana.
 
 ---
 
-## 14 · Preguntas abiertas
+## 14 · Selección y presencia
 
-1. **Yolo: ¿al arrancar o a mitad?** Un flag al lanzar el CLI es fiable; cambiarlo
-   con la terminal viva significa mandarle pulsaciones (shift+tab en Claude Code),
-   que funciona pero es teclear a ciegas. ¿Por terminal al abrirla, por proyecto
-   por defecto, o las dos?
-2. **Sin push, ¿cómo te enteras?** Al abrir la app ves el estado. ¿Basta, o
-   quieres al menos un contador en el icono — que también necesita push?
-3. **Repositorio de Flutter**: nombre, y dónde viven los ficheros dorados del
-   contrato. Propuesta: la verdad está en el repo de Hangar y el móvil los copia
-   en CI, para que solo haya un sitio donde cambiarlos.
-4. **Nombre de máquina**: hace falta uno legible y editable en Hangar para que la
-   app distinga dos Macs.
+La selección es estado del dispositivo y viaja en las dos direcciones:
+
+```jsonc
+// móvil → Hangar
+{ "name": "bridge_select", "args": { "terminalId": "term-a" } }
+```
+
+- Hangar marca ese panel con **qué dispositivo lo tiene** (`iPhone de David`).
+- Es el mismo turno exclusivo de §12.3: seleccionar para dirigir lo toma; un
+  segundo dispositivo ve la terminal pero no escribe.
+- Seleccionar una terminal **minimizada no la restaura**: minimizar es una
+  decisión del escritorio y el móvil no la revoca. Se marca, y ya.
+- Al desconectarse el dispositivo, la marca desaparece y el turno se libera.
+
+---
+
+## 15 · Preguntas abiertas
+
+1. **Autenticación con Supabase.** El canal de Realtime necesita que alguien esté
+   autenticado. Lo natural es reutilizar el login con Google de la Fase 5 y una
+   política que solo deje entrar a los canales del propio usuario. **Eso hace que
+   el puente dependa de la Fase 5**, que hoy está bloqueada en crear el cliente
+   OAuth en Google Cloud. Alternativa peor: clave anónima y confiar en que el
+   nombre del canal no se adivine — el contenido seguiría cifrado, pero
+   cualquiera podría inundar el canal.
+2. **Prompt con el Mac dormido.** ¿Se rechaza o se encola? Propuesta: se rechaza
+   con un error claro. Un prompt que se ejecuta tres horas después, sobre un
+   árbol que ha cambiado, es peor que no haberlo mandado.
+3. **Granularidad del modo.** ¿Por proyecto (defecto) y por terminal (excepción),
+   o solo una de las dos?
+4. **Ficheros dorados sin estorbar.** Propuesta: se generan desde los tests que
+   ya existen, a `contract/fixtures/`, y el CI falla si el fichero cambia sin que
+   nadie lo haya mirado. Ni carpeta que mantener a mano ni CI más lento.
