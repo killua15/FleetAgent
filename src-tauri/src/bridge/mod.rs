@@ -7,7 +7,9 @@
 
 pub mod allowlist;
 pub mod crypto;
+pub mod dispatch;
 pub mod protocol;
+pub mod session;
 
 use allowlist::Level;
 use protocol::{Envelope, ErrorCode, Failure, Invoke, Kind, PROTOCOL_VERSION};

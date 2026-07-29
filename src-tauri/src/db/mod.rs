@@ -128,6 +128,12 @@ const MIGRATIONS: &[Migration] = &[
         // PRAGMAs and runs its own transaction — same care as 4 and 9.
         transactional: false,
     },
+    Migration {
+        version: 13,
+        name: "paired_device",
+        run: paired_device_table,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -263,6 +269,23 @@ fn ensure_turn_usage_indexes(conn: &Connection) -> Result<(), String> {
          CREATE INDEX IF NOT EXISTS idx_turn_usage_account ON turn_usage(account_id, created_at);",
     )
     .map_err(|e| format!("could not index turn_usage: {e}"))
+}
+
+/// El dispositivo móvil emparejado con este Mac. Misma forma que declara
+/// `schema.sql` para una base nueva.
+fn paired_device_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS paired_device (
+           id             TEXT PRIMARY KEY,
+           name           TEXT NOT NULL,
+           level          TEXT NOT NULL CHECK (level IN ('watch','steer','launch')),
+           credential_ref TEXT NOT NULL,
+           paired_at      TEXT NOT NULL,
+           last_seen_at   TEXT,
+           push_token     TEXT
+         );",
+    )
+    .map_err(|e| format!("could not create paired_device: {e}"))
 }
 
 /// Where task rows come from: a configured source, and which project each one
