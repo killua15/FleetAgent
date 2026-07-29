@@ -8,6 +8,7 @@
 pub mod allowlist;
 pub mod crypto;
 pub mod dispatch;
+pub mod pairing;
 pub mod protocol;
 pub mod session;
 

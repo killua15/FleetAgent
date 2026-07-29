@@ -77,6 +77,15 @@ pub fn delete(credential_ref: &str) -> Result<(), String> {
     }
 }
 
+/// Los tests que tocan el llavero de verdad van de uno en uno.
+///
+/// `security` puede quedarse esperando una autorización del sistema, y varios a
+/// la vez la convierten en una cola: la suite pasó de 14 segundos a 18 minutos y
+/// uno de ellos acabó dando por perdida la lectura. No es un fallo de lógica —
+/// aislado pasa — es paralelismo contra un recurso que no lo admite.
+#[cfg(test)]
+pub(crate) static KEYCHAIN_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,6 +95,7 @@ mod tests {
     /// keychain it mirrors.
     #[test]
     fn replacing_a_secret_invalidates_what_was_cached() {
+        let _serial = KEYCHAIN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let key = format!("hangar-test-cache-{}", uuid::Uuid::new_v4());
         store(&key, "first").unwrap();
         assert_eq!(get(&key).unwrap(), "first");
@@ -112,11 +122,21 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn secrets_survive_the_process() {
+        let _serial = KEYCHAIN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let reference = format!("hangar-vault-test-{}", uuid::Uuid::new_v4());
         store(&reference, "s3cr3t").expect("storing must succeed");
 
+        // Sin `-w`. Pedir el valor obliga a macOS a autorizar la lectura de un
+        // ítem creado por otro binario — el de test, cuya firma ad-hoc cambia en
+        // cada compilación — y esa autorización falla o se queda esperando de
+        // forma impredecible: el test pasaba aislado y fallaba en la suite, con
+        // stderr vacío. Buscarlo sin leerlo no necesita autorización.
+        //
+        // Lo que se pierde: que el valor viaje de vuelta intacto. Lo que se
+        // conserva es justo la propiedad que estaba rota — que el ítem **exista
+        // en el llavero del sistema** y no en un mapa dentro del proceso.
         let found = std::process::Command::new("security")
-            .args(["find-generic-password", "-s", SERVICE, "-a", &reference, "-w"])
+            .args(["find-generic-password", "-s", SERVICE, "-a", &reference])
             .output()
             .expect("the `security` CLI ships with macOS");
 
@@ -124,9 +144,11 @@ mod tests {
 
         assert!(
             found.status.success(),
-            "the secret never reached the real keychain — keyring is on its in-memory store, so every secret dies with the process: {}",
+            "the secret never reached the real keychain — keyring is on its in-memory store, so every secret dies with the process (exit {:?}: {})",
+            found.status.code(),
             String::from_utf8_lossy(&found.stderr).trim()
         );
-        assert_eq!(String::from_utf8_lossy(&found.stdout).trim(), "s3cr3t");
+        // Y que el ítem encontrado es el nuestro, no otro que pasaba por ahí.
+        assert!(String::from_utf8_lossy(&found.stdout).contains(&reference));
     }
 }

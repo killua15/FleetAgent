@@ -140,40 +140,29 @@ pub fn credential_ref(device_id: &str) -> String {
 /// Un solo teléfono por Mac (`MOBILE_BRIDGE_TRD.md` §12.3). Esa restricción
 /// declarada de entrada es lo que elimina el turno exclusivo, su caducidad y la
 /// lógica de liberarlo: si nunca puede haber dos, no hay disputa que resolver.
-#[tauri::command]
-pub fn bridge_pair_device(db: tauri::State<DbConnection>, name: String, level: Level) -> Result<PairingSecret, String> {
-    if let Some(previous) = paired_device(&db) {
+pub fn store_paired_device(db: &DbConnection, name: &str, level: Level, key: &SharedKey) -> Result<PairedDevice, String> {
+    if let Some(previous) = paired_device(db) {
         let _ = crate::credential_vault::delete(&credential_ref(&previous.id));
     }
 
     let id = Uuid::new_v4().to_string();
-    let key = SharedKey::generate();
     crate::credential_vault::store(&credential_ref(&id), &key.to_base64())?;
 
     let level_name = serde_json::to_value(level).map_err(|e| e.to_string())?.as_str().unwrap_or("watch").to_string();
+    let paired_at = chrono::Utc::now().to_rfc3339();
     {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
+        // Borrar y insertar, no actualizar: un solo teléfono por Mac, y el
+        // anterior deja de existir en el mismo movimiento.
         conn.execute("DELETE FROM paired_device", []).map_err(|e| e.to_string())?;
         conn.execute(
             "INSERT INTO paired_device (id, name, level, credential_ref, paired_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, name.trim(), level_name, credential_ref(&id), chrono::Utc::now().to_rfc3339()],
+            params![id, name.trim(), level_name, credential_ref(&id), paired_at],
         )
         .map_err(|e| e.to_string())?;
     }
 
-    Ok(PairingSecret { machine_id: machine_id(&db)?, machine_name: machine_name(&db), key: key.to_base64(), level })
-}
-
-/// Lo que va dentro del QR. **La clave viaja aquí y solo aquí**: un canal que se
-/// mira con los ojos y no atraviesa ningún servidor, que es lo que permite que
-/// todo lo demás sea cifrado extremo a extremo sin intercambio de claves.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PairingSecret {
-    pub machine_id: String,
-    pub machine_name: String,
-    pub key: String,
-    pub level: Level,
+    Ok(PairedDevice { id, name: name.trim().to_string(), level, paired_at, last_seen_at: None })
 }
 
 #[tauri::command]

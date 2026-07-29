@@ -32,9 +32,15 @@ pub enum Decision {
 
 /// Punto de entrada del puente. Todo mensaje entrante pasa por aquí.
 #[tauri::command]
-pub fn bridge_receive(db: tauri::State<DbConnection>, envelope: Envelope) -> Result<Decision, String> {
+pub fn bridge_receive<R: tauri::Runtime>(app: tauri::AppHandle<R>, envelope: Envelope) -> Result<Decision, String> {
+    use tauri::Manager;
+    let db = app.state::<DbConnection>();
+
     let Some((key, level)) = session::device_key(&db) else {
-        return Ok(Decision::Ignore);
+        // Nadie emparejado. Pero si hay un QR abierto, este mensaje puede ser
+        // el teléfono que acaba de escanearlo — y solo lo sabremos si descifra
+        // con la clave de la oferta, que es la prueba de que vio el QR.
+        return Ok(greet_or_ignore(&app, &envelope));
     };
     session::touch_last_seen(&db);
 
@@ -58,6 +64,29 @@ pub fn bridge_receive(db: tauri::State<DbConnection>, envelope: Envelope) -> Res
             let envelope = crate::bridge::outgoing(Kind::Error, id, &key, &failure)?;
             Ok(Decision::Reply { envelope })
         }
+    }
+}
+
+/// Un mensaje sin dispositivo emparejado: o es el teléfono que acaba de
+/// escanear el QR, o es ruido.
+///
+/// Descifrar con la clave de la oferta **es** la comprobación de que vio el QR:
+/// nadie más la tiene, porque nunca salió de la pantalla. Y aun así no queda
+/// emparejado — se avisa al escritorio y se le dice al teléfono que espere.
+fn greet_or_ignore<R: tauri::Runtime>(app: &tauri::AppHandle<R>, envelope: &Envelope) -> Decision {
+    let Some((key, _)) = crate::bridge::pairing::pending_key() else { return Decision::Ignore };
+    let Ok(plaintext) = crypto::open(&key, &envelope.nonce, &envelope.payload) else {
+        // La oferta está abierta pero esto no viene de quien vio el QR.
+        return Decision::Ignore;
+    };
+
+    let device = serde_json::from_slice::<Hello>(&plaintext).map(|hello| hello.device).unwrap_or_else(|_| "un dispositivo".to_string());
+    crate::bridge::pairing::announce_request(app, &device);
+
+    let failure = Failure::new(ErrorCode::PendingApproval, "esperando que se acepte en el Mac");
+    match crate::bridge::outgoing(Kind::Error, envelope.id.clone(), &key, &failure) {
+        Ok(envelope) => Decision::Reply { envelope },
+        Err(_) => Decision::Ignore,
     }
 }
 

@@ -73,6 +73,7 @@ mod tests {
     /// one up — and it has to mean "no updates available", not a broken app.
     #[test]
     fn no_token_means_no_headers_rather_than_empty_ones() {
+        let _serial = crate::credential_vault::KEYCHAIN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let key = format!("hangar-test-update-none-{}", uuid::Uuid::new_v4());
         assert_eq!(headers_for(&key), None);
         assert!(!crate::credential_vault::has(&key));
@@ -82,6 +83,7 @@ mod tests {
     /// GitHub answers with base64 inside JSON and the manifest never parses.
     #[test]
     fn a_stored_token_produces_headers_that_ask_for_the_raw_file() {
+        let _serial = crate::credential_vault::KEYCHAIN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let key = format!("hangar-test-update-{}", uuid::Uuid::new_v4());
         store_for(&key, Some("ghp_example".to_string())).unwrap();
 

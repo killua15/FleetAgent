@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { invoke } from '../lib/invoke';
 import { toastError } from '../components/ErrorOverlay';
 import { check } from '@tauri-apps/plugin-updater';
+import { PairPhoneDialog } from '../components/PairPhoneDialog';
 import { getVersion } from '@tauri-apps/api/app';
 import { SettingsTabs } from '../components/SettingsTabs';
 import { UsageBar } from '../components/UsageBar';
@@ -296,6 +297,11 @@ export function GeneralSettings() {
         </section>
 
         <section className={styles.section}>
+          <span className={styles.sectionLabel}>TELÉFONO</span>
+          <PhoneRow />
+        </section>
+
+        <section className={styles.section}>
           <span className={styles.sectionLabel}>UPDATES</span>
           <UpdateAccessRow />
         </section>
@@ -329,6 +335,74 @@ export function GeneralSettings() {
  * than into the binary: a copy of the app then carries no credential, and
  * handing someone the app doesn't hand them read access to the repo.
  */
+/** El teléfono emparejado con este Mac, y el nombre con el que lo verá.
+ *
+ * Un solo dispositivo por máquina: emparejar otro expulsa al anterior. Esa
+ * restricción declarada de entrada es lo que evita tener que resolver quién
+ * escribe cuando dos quieren dirigir la misma terminal. */
+function PhoneRow() {
+  const [status, setStatus] = useState<{ machineName: string; device: { name: string; level: string; lastSeenAt: string | null } | null } | null>(null);
+  const [name, setName] = useState('');
+  const [pairing, setPairing] = useState(false);
+
+  const load = () => {
+    invoke<{ machineName: string; device: { name: string; level: string; lastSeenAt: string | null } | null }>('bridge_status')
+      .then((found) => {
+        setStatus(found);
+        setName(found.machineName);
+      })
+      .catch(() => {});
+  };
+
+  useEffect(load, []);
+
+  const revoke = async () => {
+    try {
+      await invoke('bridge_revoke_device');
+      load();
+    } catch (e) {
+      toastError(String(e));
+    }
+  };
+
+  return (
+    <div className={styles.notifList}>
+      <div className={styles.updateRow}>
+        <input
+          className={styles.updateInput}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onBlur={() => invoke('set_machine_name', { name }).then(load).catch(() => {})}
+          placeholder="cómo se llama este Mac en el teléfono"
+        />
+        {status?.device ? (
+          <Button size="sm" variant="outline" onClick={revoke}>
+            revocar
+          </Button>
+        ) : (
+          <Button size="sm" onClick={() => setPairing(true)}>
+            Emparejar
+          </Button>
+        )}
+      </div>
+
+      {status?.device ? (
+        <span className={styles.updateHint}>
+          <strong>{status.device.name}</strong> · nivel {status.device.level}
+          {status.device.lastSeenAt ? ` · visto ${new Date(status.device.lastSeenAt).toLocaleString()}` : ' · aún no se ha conectado'}
+          . Revocar corta el acceso en el siguiente mensaje, sin que el teléfono tenga que cooperar.
+        </span>
+      ) : (
+        <span className={styles.updateHint}>
+          Ningún teléfono emparejado. La clave de cifrado viaja en el QR y solo ahí, así que emparejar exige tener este Mac delante.
+        </span>
+      )}
+
+      {pairing && <PairPhoneDialog onClose={() => setPairing(false)} onPaired={load} />}
+    </div>
+  );
+}
+
 function UpdateAccessRow() {
   const [stored, setStored] = useState(false);
   const [token, setToken] = useState('');

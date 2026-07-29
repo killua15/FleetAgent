@@ -100,6 +100,11 @@ pub enum ErrorCode {
     /// Este dispositivo fue sustituido por otro emparejamiento.
     #[serde(rename = "E_DEVICE_REPLACED")]
     DeviceReplaced,
+    /// El QR era correcto y el escritorio está esperando que alguien acepte.
+    /// Escanear no es autorizar (`MOBILE_BRIDGE_TRD.md` §7), así que el teléfono
+    /// tiene que poder decir "esperando aprobación" en vez de "falló".
+    #[serde(rename = "E_PENDING_APPROVAL")]
+    PendingApproval,
 }
 
 impl Failure {

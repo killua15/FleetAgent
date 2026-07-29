@@ -1,0 +1,107 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.modal {
+  width: min(420px, 92vw);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--overlay);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+}
+
+.title {
+  font: 600 13px var(--font-ui);
+  color: var(--txt);
+  align-self: flex-start;
+}
+
+.hint {
+  font: 400 11px var(--font-ui);
+  color: var(--dim);
+  text-align: center;
+  line-height: 1.5;
+}
+
+.levels {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.level,
+.levelActive {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.levelActive {
+  border-color: var(--acc);
+  background: var(--accD);
+}
+
+.levelLabel {
+  font: 500 12px var(--font-ui);
+  color: var(--txt);
+}
+
+.levelBlurb {
+  font: 400 10.5px var(--font-ui);
+  color: var(--dim);
+}
+
+/* Blanco siempre: un QR sobre fondo oscuro no lo lee ninguna cámara. */
+.qr,
+.qrExpired {
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px;
+}
+
+.qrExpired {
+  opacity: 0.25;
+}
+
+.expired {
+  font: 400 11px var(--font-ui);
+  color: var(--amber);
+  text-align: center;
+}
+
+.request {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.requestName {
+  font: 600 13px var(--font-ui);
+  color: var(--acc);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  width: 100%;
+}
