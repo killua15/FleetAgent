@@ -11,9 +11,23 @@ documentos son cómo se construye cada parte.
 | 3 | [El escritorio listo](TDD-3-escritorio.md) | Hangar | sin empezar |
 | 4-8 | [El cliente Flutter](TDD-4-a-8-movil.md) | repo aparte | esbozo |
 
-**Al terminar la fase 3, Hangar no se toca más por el móvil.** Ese es el criterio
-que ordena todo lo demás: cada decisión que obligue a volver al escritorio
-después de esa línea es una decisión que se tomó tarde.
+## El orden, y por qué
+
+Las fases 0-3 construyen **todo lo que el móvil va a necesitar de Hangar**:
+comandos, eventos con sus campos, emparejamiento, selección, modo. De la 4 en
+adelante solo se toca el repositorio de Flutter.
+
+La razón es evitar esto: estás construyendo una pantalla, descubres que falta un
+campo en un evento, y tienes que parar, cambiar de repositorio, publicar el
+escritorio y esperar. No es el código lo que cuesta, es el cambio de contexto.
+
+**Con un solo desarrollador que prueba todo, eso cuesta un rebuild y poco más.**
+La regla se vuelve cara el día que haya usuarios con versiones distintas: el
+escritorio se actualiza solo, la app pasa por la App Store, y no van a la vez.
+
+Así que hoy vale como aviso, no como prohibición: si vuelves al escritorio una
+vez, mala suerte; si vuelves cinco, el contrato estaba mal pensado y conviene
+arreglarlo antes de seguir parcheando.
 
 ## Dependencias externas
 
