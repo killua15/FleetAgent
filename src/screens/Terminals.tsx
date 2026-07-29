@@ -17,6 +17,23 @@ import type { BoardTask, TaskFetch, TaskSourceLink } from '../types/task';
 import { TERMINAL_STATE_META, type BranchAvailability, type FanOutBranch, type TaskWorktree, type InitCommand, type SuggestedAccount, type TerminalActivity, type TerminalInfo, type TerminalTarget } from '../types/terminal';
 import styles from './Terminals.module.css';
 
+const COLLAPSED_KEY = 'hangar.collapsedTerminals';
+
+/** Which panels were minimised last time. A view preference, so `localStorage`
+ * rather than the database: it belongs to this machine's window, not to the
+ * fleet, and losing it costs one click. */
+function readCollapsed(): Record<string, boolean> {
+  try {
+    const raw = window.localStorage.getItem(COLLAPSED_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    // Corrupt or hand-edited: an unreadable preference is not a reason to
+    // fail to open the screen.
+    return {};
+  }
+}
+
 /** Terminals opened past this point stop being supervisable at a glance —
  * same threshold and same reasoning as the agent grid's own warning. */
 const WARN_THRESHOLD = 4;
@@ -42,7 +59,11 @@ export function Terminals() {
   // that actually varies — which AI you're talking to — while the directory
   // is usually whichever project you were already thinking about.
   const [pickedAccountId, setPickedAccountId] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  // Persisted, like the sidebar right below it. It used to be plain component
+  // state, so navigating to Git and back unmounted the screen and every panel
+  // you had minimised came back — which reads as the app forgetting what you
+  // asked for, twenty times a day.
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(readCollapsed);
   const [gridColumns, setGridColumns] = useState<number | 'auto'>('auto');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [multiOpen, setMultiOpen] = useState(false);
@@ -290,6 +311,22 @@ export function Terminals() {
   useEffect(() => {
     window.localStorage.setItem('hangar.sidebar', sidebarOpen ? 'open' : 'closed');
   }, [sidebarOpen]);
+
+  useEffect(() => {
+    window.localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsed));
+  }, [collapsed]);
+
+  // Terminal ids are per run, so yesterday's entries would accumulate forever
+  // and, worse, a reused id would arrive already minimised. Pruned against the
+  // terminals that actually exist, once they're known.
+  useEffect(() => {
+    if (terminals.length === 0) return;
+    setCollapsed((prev) => {
+      const live = new Set(terminals.map((t) => t.id));
+      const next = Object.fromEntries(Object.entries(prev).filter(([id, on]) => on && live.has(id)));
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+  }, [terminals.length]);
 
   // ⌘B toggles it, the convention every editor with a sidebar uses. Ignored
   // while typing in a field so it can't fire from the filter box or a rename.

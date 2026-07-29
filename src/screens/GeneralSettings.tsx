@@ -252,9 +252,10 @@ export function GeneralSettings() {
         <section className={styles.section}>
           <span className={styles.sectionLabel}>NOTIFICATIONS</span>
           <span className={styles.hint}>
-            Real macOS notifications for the events below — off by default, so turning one on is the moment Hangar
-            first asks the OS for permission.
+            Real macOS notifications for the events below. If they're on and nothing arrives, macOS is dropping them —
+            check System Settings → Notifications → Hangar, and use the test below to see the actual error.
           </span>
+          <NotificationTestRow />
           <div className={styles.notifList}>
             <NotificationRow
               label="Needs your approval"
@@ -400,6 +401,41 @@ function UpdateAccessRow() {
         Stored in the macOS keychain, never in the app or the database. A fine-grained token with read-only <code>Contents</code> on the
         releases repository is enough — nothing else. Without one, Hangar simply never finds an update.
       </span>
+    </div>
+  );
+}
+
+/** Asks the notification path whether it works, out loud.
+ *
+ * The toggles below have been on for months while nothing reached the screen,
+ * and there was no way to tell that apart from "no agent finished recently"
+ * — the send swallowed its error. This is the interrogation button, the same
+ * one the updater needed. */
+function NotificationTestRow() {
+  const [result, setResult] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+
+  const send = async () => {
+    setSending(true);
+    setResult(null);
+    try {
+      await invoke('send_test_notification');
+      setResult('Sent. If nothing appeared, macOS is blocking it — System Settings → Notifications → Hangar.');
+    } catch (e) {
+      setResult(`Failed: ${e}`);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className={styles.notifList}>
+      <div className={styles.updateRow}>
+        <Button size="sm" variant="outline" disabled={sending} onClick={send}>
+          {sending ? 'sending…' : 'Send a test notification'}
+        </Button>
+      </div>
+      {result && <span className={styles.updateHint}>{result}</span>}
     </div>
   );
 }

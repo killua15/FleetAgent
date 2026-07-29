@@ -274,6 +274,7 @@ pub fn run() {
             update_access::has_update_access,
             update_access::set_update_access,
             terminals::refresh_all_quotas,
+            notifications::send_test_notification,
             quota::list_project_budgets,
             quota::get_project_budget,
             quota::set_project_budget,

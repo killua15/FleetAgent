@@ -24,5 +24,27 @@ pub(crate) fn notify_if_enabled<R: Runtime>(app: &AppHandle<R>, is_enabled: impl
     if !is_enabled(&settings) {
         return;
     }
-    let _ = app.notification().builder().title(title).body(body).show();
+    // Still best-effort — a missed notification never breaks a turn — but no
+    // longer *silent*. Swallowing the error is why an enabled setting and a
+    // mute app were indistinguishable for months: the code looked right, the
+    // toggles were on, and nothing ever reached the screen.
+    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+        log::warn!("notification not delivered ({title}): {e}");
+    }
+}
+
+/// Sends one on demand and reports what happened.
+///
+/// Every silent subsystem in this app needed one of these before anyone could
+/// tell "working" from "quietly failing" — the updater needed it, the vault
+/// needed it. This is that button for notifications: the error reaches the
+/// screen instead of a log nobody opens.
+#[tauri::command]
+pub fn send_test_notification<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    app.notification()
+        .builder()
+        .title("Hangar")
+        .body("Notifications are working. This is what an agent finishing looks like.")
+        .show()
+        .map_err(|e| e.to_string())
 }
