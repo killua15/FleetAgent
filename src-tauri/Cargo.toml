@@ -42,6 +42,11 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 portable-pty = "0.9"
 base64 = "0.22"
+# XSalsa20-Poly1305 — el mismo `crypto_secretbox` de libsodium, en Rust puro.
+# Se eligió por interoperar con `sodium_libs` (Dart) y `libsodium-wrappers`
+# (Node) sin arrastrar una dependencia de C al build de macOS.
+crypto_secretbox = "0.1"
+rand = "0.8"
 # The first outgoing HTTP from Rust (ClickUp). `rustls` rather than the system
 # TLS stack so the build doesn't depend on whichever OpenSSL the machine has,
 # and `blocking` because every other outbound call here already runs inside

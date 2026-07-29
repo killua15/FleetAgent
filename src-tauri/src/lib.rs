@@ -1,6 +1,7 @@
 mod app_data;
 mod auth;
 mod blocking;
+mod bridge;
 mod commands;
 mod credential_vault;
 mod db;

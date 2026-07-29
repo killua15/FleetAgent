@@ -1,0 +1,7 @@
+{
+  "_comment": "Producido por Rust. Node y Dart tienen que abrirlo con la misma clave.",
+  "ciphertext": "Q0cyjhTy8Ojq/CZ8zZJitR9u0HWQZjAzyupqhjpMZs+e70WPhXa8hbc2+t5GQBJvkC8=",
+  "key": "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+  "nonce": "iqQsxpKuUIo3FptVtdJu5OomlNQxXwEi",
+  "plaintext": "{\"name\":\"list_projects\",\"args\":{}}"
+}
