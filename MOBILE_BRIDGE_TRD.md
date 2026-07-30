@@ -82,6 +82,42 @@ canal: hangar:<machine_id>
 `machine_id` es un UUID generado al primer arranque y guardado en `app_settings`.
 No es el hostname: un hostname es adivinable y cambia.
 
+### El canal es privado
+
+**Cifrar no es controlar el acceso.** Con el canal público, cualquiera que
+averiguase un `machine_id` podía suscribirse: no abría los sobres, pero contaba
+cuántos y cuándo, y podía llenar el canal de basura. Verificado antes de
+cerrarlo: un cliente anónimo con el `machine_id` real recibía `SUBSCRIBED`.
+
+Así que el canal se pide con `private: true`, y eso hace que Supabase consulte
+las políticas de `realtime.messages` antes de dejar entrar:
+
+```
+public.machines (id, owner → auth.users, name, last_seen_at)
+
+realtime.messages  SELECT  (recibir)  ┐ las dos: con una sola el puente queda
+realtime.messages  INSERT  (mandar)   ┘ medio abierto, que parece funcionar
+
+  extension = 'broadcast' and exists (
+    select 1 from public.machines m
+    where m.owner = auth.uid() and realtime.topic() = 'hangar:' || m.id::text)
+```
+
+Consecuencias que el móvil hereda:
+
+- **El puente exige sesión de Supabase en las dos puntas.** Hangar registra su
+  `machine_id` a nombre de la cuenta al conectar; el móvil entra con la misma
+  cuenta. Sin sesión no hay canal, y eso es intencionado.
+- El `id` de `machines` es clave primaria: es lo que impide que otra cuenta
+  reclame un `machine_id` ajeno para colarse en su canal.
+- Estar logueado **no basta**: hay que ser dueño de esa máquina.
+
+Y un paso que vive en el panel de Supabase, no en el código: **desactivar
+«Allow public access»** en Realtime Settings. Los temas público y privado con el
+mismo nombre están aislados —Realtime no cruza mensajes entre ellos, así que el
+puente ya está a salvo sin eso—, pero mientras el acceso público exista, un
+canal abierto por error en el futuro fallaría en silencio en vez de rebotar.
+
 **Límite conocido**: los mensajes de broadcast rondan los 256 KB. Es de sobra
 para eventos y respuestas; los payloads que puedan crecer (scrollback, diffs)
 están acotados explícitamente en §6.

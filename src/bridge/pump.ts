@@ -53,7 +53,11 @@ export class Bridge {
   async start(machineId: string): Promise<void> {
     if (this.channel) return;
 
-    this.channel = supabase.channel(`hangar:${machineId}`, { config: { broadcast: { self: false } } });
+    // `private: true` es lo que hace que Supabase consulte las políticas de
+    // `realtime.messages` antes de dejar entrar. Sin esto el canal es público y
+    // RLS se salta entero: cualquiera que averiguase el `machine_id` podría
+    // suscribirse. El cifrado protege el contenido; esto protege el acceso.
+    this.channel = supabase.channel(`hangar:${machineId}`, { config: { private: true, broadcast: { self: false } } });
 
     this.channel.on('broadcast', { event: 'msg' }, ({ payload }) => {
       void this.handle(payload as Envelope);

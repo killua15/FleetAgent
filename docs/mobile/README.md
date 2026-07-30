@@ -53,13 +53,27 @@ Sin la variable, nada cambia: un build instalado nunca la tiene puesta, y con
 ella puesta se salta también el renombrado Fleet → Hangar, que si no movería tus
 datos de verdad hacia la instancia de pruebas.
 
+El cliente de prueba necesita su propia sesión, porque el canal es privado:
+
+```sh
+node contract/bridge-client.mjs login      # una vez, con Google
+node contract/bridge-client.mjs loopback   # transporte + autorización
+```
+
+`loopback` comprueba lo que ningún test local puede: que sin sesión no se entra,
+que con sesión y máquina registrada el sobre cifrado va y vuelve, y que una
+máquina que no está a tu nombre te rechaza.
+
 Con el directorio limpio empiezas sin cuentas ni proyectos. Para el puente da
 igual: `list_projects` devolviendo `[]` prueba el camino completo —canal, cifrado,
 allowlist, `invoke`— igual de bien que uno con datos.
 
 ## Dependencias externas
 
-- **Fase 5 del roadmap** (login con Google en Supabase) — el canal necesita
-  autenticación. Bloqueada en crear el cliente OAuth.
+- **Fase 5 del roadmap** (login con Google en Supabase) — hecha, y ahora el
+  canal *depende* de ella: es privado y solo deja entrar a la cuenta dueña del
+  Mac (`MOBILE_BRIDGE_TRD.md` §3). Sin sesión no hay puente.
+- **Desactivar «Allow public access»** en Realtime Settings del panel de
+  Supabase. Es el único paso que no está en el código.
 - **Cuenta de desarrollador de Apple** ($99/año) para publicar la app. La misma
   que resolvería el aviso de Gatekeeper en el escritorio.
