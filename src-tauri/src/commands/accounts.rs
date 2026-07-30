@@ -219,7 +219,7 @@ pub fn create_account(
         }
         path
     } else {
-        let accounts_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("accounts");
+        let accounts_dir = crate::app_data::root(&app)?.join("accounts");
         let config_dir_path = accounts_dir.join(&id);
         std::fs::create_dir_all(&config_dir_path).map_err(|e| e.to_string())?;
         config_dir_path

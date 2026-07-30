@@ -30,6 +30,43 @@ const LEGACY_DIR_NAME: &str = "com.killua.fleet";
 /// Database filename before the rename.
 const LEGACY_DB_FILE: &str = "fleet.db";
 
+/// Un directorio de datos alternativo, para poder correr una versión de
+/// desarrollo **al lado** de la estable sin que se pisen.
+///
+/// Sin esto, las dos comparten base de datos y llavero: dos procesos escribiendo
+/// el mismo SQLite, dos registros de terminales y dos puentes en el mismo canal.
+/// La base en sí es compatible hacia atrás —una migración nueva solo añade, y un
+/// build viejo salta las que no conoce— así que el problema no es el formato,
+/// es la concurrencia.
+///
+///     HANGAR_DATA_DIR=~/.hangar-dev npm run tauri dev
+///
+/// Solo se lee del entorno, así que un build instalado nunca lo tiene puesto.
+pub const DATA_DIR_ENV: &str = "HANGAR_DATA_DIR";
+
+/// El directorio de datos que toca usar: el del entorno si está, y si no el que
+/// Tauri deriva del identificador.
+pub fn root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    use tauri::Manager;
+    let fallback = || app.path().app_data_dir().map_err(|e| format!("could not resolve the app data directory: {e}"));
+    match std::env::var(DATA_DIR_ENV) {
+        Ok(raw) => Ok(expand_home(&raw, std::env::var("HOME").ok().as_deref())),
+        Err(_) => fallback(),
+    }
+}
+
+/// `~/` es lo que uno teclea, y `PathBuf` no lo expande: sin esto acabas con un
+/// directorio llamado literalmente `~` dentro del repo, difícil de ver en un `ls`.
+///
+/// Aparte, es la parte comprobable de `root` sin tocar el entorno del proceso
+/// —que es global y compartido con los demás tests corriendo en paralelo.
+fn expand_home(raw: &str, home: Option<&str>) -> PathBuf {
+    match (raw.strip_prefix("~/"), home) {
+        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => PathBuf::from(raw),
+    }
+}
+
 /// Database filename now. `db::init` opens this.
 pub(crate) const DB_FILE: &str = "hangar.db";
 
@@ -45,6 +82,16 @@ const DB_SIDECAR_SUFFIXES: &[&str] = &["-wal", "-shm", "-journal"];
 /// bricks the app entirely.
 pub(crate) fn migrate<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     use tauri::Manager;
+
+    // Con un directorio propio no hay nada que renombrar: la ruta legada se
+    // deriva como *hermana* de la que da Tauri, y la hermana de `~/.hangar-dev`
+    // no es el directorio de nadie. Peor: mover los datos reales de la versión
+    // estable hacia una instancia de pruebas es exactamente el estropicio que
+    // el override existe para evitar.
+    if std::env::var_os(DATA_DIR_ENV).is_some() {
+        log::info!("app data migration: skipped, {DATA_DIR_ENV} is set");
+        return;
+    }
 
     let Ok(current) = app.path().app_data_dir() else {
         log::warn!("app data migration: could not resolve the app data dir; skipping");
@@ -160,6 +207,34 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
         copy_path(&entry.path(), &to.join(entry.file_name()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod override_tests {
+    use super::*;
+
+    /// La virgulilla se expande. Es lo que uno teclea, y un directorio llamado
+    /// literalmente "~" es de esos despistes que no se ven hasta que faltan las
+    /// cuentas.
+    #[test]
+    fn la_virgulilla_se_expande_al_home() {
+        assert_eq!(expand_home("~/.hangar-dev", Some("/Users/kate")), PathBuf::from("/Users/kate/.hangar-dev"));
+    }
+
+    /// Una ruta absoluta pasa tal cual, y una con "~" en medio no es un home:
+    /// solo el prefijo cuenta.
+    #[test]
+    fn una_ruta_absoluta_no_se_toca() {
+        assert_eq!(expand_home("/tmp/hangar-dev", Some("/Users/kate")), PathBuf::from("/tmp/hangar-dev"));
+        assert_eq!(expand_home("/opt/a~b", Some("/Users/kate")), PathBuf::from("/opt/a~b"));
+    }
+
+    /// Sin HOME —cron, un daemon— se usa lo que se pidió en vez de fabricar una
+    /// ruta a partir de una cadena vacía, que apuntaría a "/.hangar-dev".
+    #[test]
+    fn sin_home_se_respeta_lo_pedido() {
+        assert_eq!(expand_home("~/.hangar-dev", None), PathBuf::from("~/.hangar-dev"));
+    }
 }
 
 #[cfg(test)]

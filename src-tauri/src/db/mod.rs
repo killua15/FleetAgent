@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 pub struct DbConnection(pub Mutex<Connection>);
 
@@ -18,7 +18,7 @@ pub(crate) const SCHEMA: &str = include_str!("schema.sql");
 /// point assumes the schema it was written against, and limping along in a
 /// shape nothing expects corrupts data instead of failing.
 pub fn init(app: &AppHandle) -> Result<Connection, String> {
-    let dir = app.path().app_data_dir().map_err(|e| format!("could not resolve the app data directory: {e}"))?;
+    let dir = crate::app_data::root(app)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     let db_path = dir.join(crate::app_data::DB_FILE);
 
