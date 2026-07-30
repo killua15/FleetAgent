@@ -105,3 +105,16 @@
   justify-content: flex-end;
   width: 100%;
 }
+
+.copyLink {
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  font: 400 10px var(--font-ui);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.copyLink:hover {
+  color: var(--acc);
+}

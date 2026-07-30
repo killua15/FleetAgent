@@ -51,11 +51,12 @@ export function PairPhoneDialog({ onClose, onPaired }: { onClose: () => void; on
 
   // El QR lleva lo mínimo para conectar y descifrar. Nada más: cada campo de
   // aquí es algo que queda en una foto.
+  const payload = offer ? JSON.stringify({ m: offer.machineId, n: offer.machineName, k: offer.key, lvl: offer.level }) : '';
+
   useEffect(() => {
     if (!offer || !canvas.current) return;
-    const payload = JSON.stringify({ m: offer.machineId, n: offer.machineName, k: offer.key, lvl: offer.level });
     void QRCode.toCanvas(canvas.current, payload, { width: 260, margin: 1 });
-  }, [offer]);
+  }, [offer, payload]);
 
   // Caduca a la vista, no solo en el backend: un QR en pantalla que ya no sirve
   // es peor que ninguno.
@@ -129,9 +130,18 @@ export function PairPhoneDialog({ onClose, onPaired }: { onClose: () => void; on
                 </Button>
               </>
             ) : (
-              <span className={styles.hint}>
-                Escanéalo desde la app · caduca en {secondsLeft}s · nivel <strong>{offer.level}</strong>
-              </span>
+              <>
+                <span className={styles.hint}>
+                  Escanéalo desde la app · caduca en {secondsLeft}s · nivel <strong>{offer.level}</strong>
+                </span>
+                {/* Para probar el puente sin app: el mismo contenido, en texto.
+                    No expone nada nuevo — quien pueda fotografiar el QR ya tiene
+                    la clave — y es lo que permitió terminar el escritorio antes
+                    de que existiera un cliente. */}
+                <button className={styles.copyLink} onClick={() => void navigator.clipboard.writeText(payload)}>
+                  copiar para el script de prueba
+                </button>
+              </>
             )}
           </>
         )}
