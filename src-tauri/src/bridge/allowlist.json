@@ -27,6 +27,7 @@
   "list_task_source_links": "watch",
   "list_project_budgets": "watch",
 
+  "bridge_select": "watch",
   "write_terminal": "steer",
   "rename_terminal": "steer",
   "respond_to_permission_request": "steer",

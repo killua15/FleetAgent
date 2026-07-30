@@ -1,7 +1,7 @@
 {
   "_comment": "Producido por Node. Rust tiene que abrirlo — ver bridge::crypto::tests.",
   "key": "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
-  "nonce": "07z7KQhTiS0jfOdn759kuktgz/mFZnK8",
-  "ciphertext": "ac2i9y2eHye5L9RCuJZtG0SQexgMA7akoOj0pR9/aaNMawNRSg==",
+  "nonce": "7kYGFWhFZtsdNK1Hhru9oAaCRAdVhTDh",
+  "ciphertext": "z0GuRL6EF3C2qktimw51zFH4XFOqj5nW/NX545avOVIs0lUMWQ==",
   "plaintext": "{\"ok\":true,\"data\":[]}"
 }

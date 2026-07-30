@@ -10,6 +10,7 @@ pub mod crypto;
 pub mod dispatch;
 pub mod pairing;
 pub mod protocol;
+pub mod selection;
 pub mod session;
 
 use allowlist::Level;

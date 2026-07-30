@@ -22,6 +22,37 @@ impl Mode {
     }
 }
 
+/// Los argumentos con los que cada CLI aplica un modo de permisos.
+///
+/// **Verificado contra los CLIs instalados**, porque los nombres no se parecen
+/// entre sí y ninguno se puede adivinar: Claude usa `--permission-mode` con
+/// valores en camelCase (`bypassPermissions`), y Codex separa la decisión en dos
+/// ejes — cuándo pregunta (`--ask-for-approval`) y qué puede escribir
+/// (`--sandbox`). Pasarle a uno la bandera del otro es `error: unexpected
+/// argument`, que es exactamente cómo empezó el soporte de Codex.
+///
+/// `yolo` es el modo que sostiene el diseño móvil (`MOBILE_BRIDGE_TRD.md` §13):
+/// sin permisos que aprobar no hace falta que nada te despierte. Y es el modo en
+/// el que un agente puede destruir algo, así que lo que protege pasa a ser el
+/// worktree aislado y git.
+pub fn permission_args(provider: &str, mode: Mode) -> &'static [&'static str] {
+    let claude_like = matches!(provider, "claude" | "kimi");
+    match (claude_like, mode) {
+        (true, Mode::Plan) => &["--permission-mode", "plan"],
+        (true, Mode::AskEdits) => &["--permission-mode", "manual"],
+        (true, Mode::AutoEdit) => &["--permission-mode", "acceptEdits"],
+        (true, Mode::Yolo) => &["--permission-mode", "bypassPermissions"],
+
+        // Codex necesita los dos ejes: sin `--sandbox` seguiría sin poder
+        // escribir aunque no pregunte, y "no pregunta pero no puede hacer nada"
+        // es la peor combinación posible.
+        (false, Mode::Plan) => &["--ask-for-approval", "untrusted", "--sandbox", "read-only"],
+        (false, Mode::AskEdits) => &["--ask-for-approval", "untrusted"],
+        (false, Mode::AutoEdit) => &["--ask-for-approval", "on-request", "--sandbox", "workspace-write"],
+        (false, Mode::Yolo) => &["--ask-for-approval", "never", "--sandbox", "danger-full-access"],
+    }
+}
+
 /// Best-effort exhaustion/rate-limit detection, dispatched per provider so
 /// process_manager stays provider-agnostic. Exact strings should be
 /// re-verified against each CLI's real output as adapters are added.
@@ -421,4 +452,42 @@ mod tests {
         assert!(!is_provider_available("not-a-provider"));
         assert!(!is_provider_available(""));
     }
+
+    /// Los nombres no se parecen entre sí y ninguno se puede adivinar. Pasarle a
+    /// un CLI la bandera del otro es `error: unexpected argument`, que es
+    /// exactamente cómo empezó el soporte de Codex.
+    #[test]
+    fn cada_cli_recibe_las_banderas_que_de_verdad_entiende() {
+        assert_eq!(permission_args("claude", Mode::Yolo), &["--permission-mode", "bypassPermissions"]);
+        // Kimi *es* Claude Code apuntando a Moonshot, así que hereda las suyas.
+        assert_eq!(permission_args("kimi", Mode::Plan), &["--permission-mode", "plan"]);
+
+        let codex = permission_args("codex", Mode::Yolo);
+        assert!(codex.contains(&"--ask-for-approval"), "{codex:?}");
+        assert!(!codex.contains(&"--permission-mode"), "la bandera de Claude no existe en Codex: {codex:?}");
+    }
+
+    /// Codex separa "cuándo pregunta" de "qué puede escribir". Sin el segundo
+    /// eje, yolo sería "no pregunta y tampoco puede hacer nada", que es la peor
+    /// combinación posible.
+    #[test]
+    fn codex_necesita_los_dos_ejes_para_trabajar_sin_preguntar() {
+        let yolo = permission_args("codex", Mode::Yolo);
+        assert!(yolo.contains(&"--sandbox") && yolo.contains(&"danger-full-access"), "{yolo:?}");
+
+        let plan = permission_args("codex", Mode::Plan);
+        assert!(plan.contains(&"read-only"), "plan no puede escribir: {plan:?}");
+    }
+
+    /// Ningún modo puede quedarse sin banderas: un modo que no se traduce es un
+    /// ajuste que la interfaz promete y el CLI ignora.
+    #[test]
+    fn ningun_modo_se_queda_sin_traducir() {
+        for provider in ["claude", "codex", "kimi", "gemini"] {
+            for mode in [Mode::Plan, Mode::AskEdits, Mode::AutoEdit, Mode::Yolo] {
+                assert!(!permission_args(provider, mode).is_empty(), "{provider} en {mode:?} no traduce a nada");
+            }
+        }
+    }
+
 }

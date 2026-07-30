@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 const MACHINE_ID_KEY: &str = "bridge.machine_id";
 const MACHINE_NAME_KEY: &str = "bridge.machine_name";
+const DEFAULT_MODE_KEY: &str = "terminal.default_mode";
 
 /// El nombre del canal de este Mac. Un UUID y no el hostname: un hostname es
 /// adivinable, cambia al renombrar el equipo, y a menudo lleva el nombre de una
@@ -101,6 +102,51 @@ fn store_machine_name(db: &DbConnection, name: &str) -> Result<String, String> {
     .map_err(|e| e.to_string())?;
     drop(conn);
     Ok(machine_name(db))
+}
+
+/// El modo con el que nacen las terminales de esta máquina.
+///
+/// **Global y no por proyecto**, por decisión explícita. La consecuencia hay que
+/// tenerla presente: con `yolo`, *todas* las terminales de este Mac ejecutan sin
+/// preguntar, incluida la del repositorio que más importa. Lo que protege pasa a
+/// ser el worktree aislado y git.
+pub fn default_mode(db: &DbConnection) -> crate::providers::Mode {
+    let stored: Option<String> = db
+        .0
+        .lock()
+        .ok()
+        .and_then(|conn| conn.query_row("SELECT value FROM app_settings WHERE key = ?1", params![DEFAULT_MODE_KEY], |row| row.get(0)).optional().ok().flatten());
+
+    // `ask_edits` por defecto y no `yolo`: un ajuste que no se ha tocado nunca
+    // no puede ser el que ejecuta sin preguntar.
+    stored.map(|value| crate::providers::Mode::from_str(&value)).unwrap_or(crate::providers::Mode::AskEdits)
+}
+
+#[tauri::command]
+pub fn get_default_terminal_mode(db: tauri::State<DbConnection>) -> String {
+    mode_name(default_mode(&db))
+}
+
+#[tauri::command]
+pub fn set_default_terminal_mode(db: tauri::State<DbConnection>, mode: String) -> Result<String, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+        params![DEFAULT_MODE_KEY, mode.trim()],
+    )
+    .map_err(|e| e.to_string())?;
+    drop(conn);
+    Ok(mode_name(default_mode(&db)))
+}
+
+fn mode_name(mode: crate::providers::Mode) -> String {
+    match mode {
+        crate::providers::Mode::Plan => "plan",
+        crate::providers::Mode::AskEdits => "ask_edits",
+        crate::providers::Mode::AutoEdit => "auto_edit",
+        crate::providers::Mode::Yolo => "yolo",
+    }
+    .to_string()
 }
 
 pub fn paired_device(db: &DbConnection) -> Option<PairedDevice> {

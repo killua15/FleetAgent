@@ -174,3 +174,17 @@
   border: 1px solid var(--line);
   font-size: 9.5px;
 }
+
+/* No es decoración: una máquina en yolo ejecuta sin preguntar, y eso tiene que
+   verse sin abrir Settings. */
+.yoloBadge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--amber);
+  background: color-mix(in srgb, var(--amber) 16%, transparent);
+  color: var(--amber);
+  font: 600 10px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}

@@ -297,6 +297,11 @@ export function GeneralSettings() {
         </section>
 
         <section className={styles.section}>
+          <span className={styles.sectionLabel}>MODO DE LAS TERMINALES</span>
+          <TerminalModeRow />
+        </section>
+
+        <section className={styles.section}>
           <span className={styles.sectionLabel}>TELÉFONO</span>
           <PhoneRow />
         </section>
@@ -340,6 +345,58 @@ export function GeneralSettings() {
  * Un solo dispositivo por máquina: emparejar otro expulsa al anterior. Esa
  * restricción declarada de entrada es lo que evita tener que resolver quién
  * escribe cuando dos quieren dirigir la misma terminal. */
+const MODES: Array<{ id: string; label: string; blurb: string }> = [
+  { id: 'plan', label: 'Plan', blurb: 'Solo lee y propone. No edita ni ejecuta.' },
+  { id: 'ask_edits', label: 'Preguntar', blurb: 'Pide permiso antes de editar o ejecutar.' },
+  { id: 'auto_edit', label: 'Editar solo', blurb: 'Edita sin preguntar; sigue pidiendo para lo demás.' },
+  { id: 'yolo', label: 'Yolo', blurb: 'No pregunta nada. Lo que te protege es el worktree y git.' },
+];
+
+/** El modo con el que nacen las terminales de esta máquina.
+ *
+ * Global por decisión explícita, así que la consecuencia se dice donde se
+ * activa y no en un documento: con yolo, **todas** las terminales de este Mac
+ * ejecutan sin preguntar. Es lo que permite una app móvil sin notificaciones —
+ * si no hay permisos que aprobar, no hace falta que nada te despierte — y es
+ * también el modo en el que un agente puede destruir algo. */
+function TerminalModeRow() {
+  const [mode, setMode] = useState<string>('ask_edits');
+
+  useEffect(() => {
+    invoke<string>('get_default_terminal_mode').then(setMode).catch(() => {});
+  }, []);
+
+  const choose = async (next: string) => {
+    try {
+      setMode(await invoke<string>('set_default_terminal_mode', { mode: next }));
+    } catch (e) {
+      toastError(String(e));
+    }
+  };
+
+  return (
+    <div className={styles.notifList}>
+      <div className={styles.modeRow}>
+        {MODES.map((option) => (
+          <button key={option.id} className={mode === option.id ? styles.modeActive : styles.mode} onClick={() => choose(option.id)}>
+            <span className={styles.modeLabel}>{option.label}</span>
+            <span className={styles.modeBlurb}>{option.blurb}</span>
+          </button>
+        ))}
+      </div>
+      <span className={styles.updateHint}>
+        Se aplica a las terminales que <strong>se abran a partir de ahora</strong>. Las que ya están corriendo siguen como estaban: el
+        modo se le pasa al CLI al arrancarlo, y cambiarlo después significaría teclearle a ciegas.
+      </span>
+      {mode === 'yolo' && (
+        <span className={styles.modeWarning}>
+          Con yolo, cada terminal de este Mac ejecuta sin preguntar — también la del repositorio que más te importa.
+        </span>
+      )}
+    </div>
+  );
+}
+
 function PhoneRow() {
   const [status, setStatus] = useState<{ machineName: string; device: { name: string; level: string; lastSeenAt: string | null } | null } | null>(null);
   const [name, setName] = useState('');

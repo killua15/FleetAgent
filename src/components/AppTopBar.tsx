@@ -87,12 +87,19 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
   const { navigate, current } = useNavigation();
   const [pendingPrComments, setPendingPrComments] = useState(0);
   const [usageOpen, setUsageOpen] = useState(false);
+  // Visible mientras esté activo, no solo en Settings: alguien pone yolo para
+  // una prueba y se le queda puesto.
+  const [mode, setMode] = useState<string>('ask_edits');
   const inFlight = useInFlightCount();
   const showBusy = useDelayedBusy(inFlight, BUSY_INDICATOR_DELAY_MS);
 
   const refreshPrInbox = () => {
     invoke<ProjectPrInbox[]>('list_pr_review_inbox').then((inbox) => setPendingPrComments(countPendingPrComments(inbox)));
   };
+
+  useEffect(() => {
+    invoke<string>('get_default_terminal_mode').then(setMode).catch(() => {});
+  }, [current.screen]);
 
   useEffect(() => {
     refreshPrInbox();
@@ -170,6 +177,11 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
          * putting a NavItem for `queue` back here. */}
       </nav>
       <span className={styles.spacer} />
+      {mode === 'yolo' && (
+        <span className={styles.yoloBadge} title="Las terminales de este Mac ejecutan sin pedir permiso — Settings → modo de las terminales">
+          yolo
+        </span>
+      )}
       <Button
         variant="outline"
         className={styles.palette}

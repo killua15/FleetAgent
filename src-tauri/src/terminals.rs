@@ -417,6 +417,23 @@ fn shell_quote(value: &str) -> String {
 /// A prompt with newlines would trip zsh's PS2 continuation prompt inside the
 /// quotes, so callers pass a single-line prompt.
 pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitCommand, session_uuid: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
+    account_command_line_with_mode(account, init, session_uuid, prompt, None)
+}
+
+/// Igual, con un modo de permisos.
+///
+/// Las terminales nunca han llevado modo: `Mode` existía desde el principio pero
+/// solo lo usaban los turnos headless, así que el ajuste de la interfaz no
+/// llegaba al CLI que de verdad trabaja. El modo global (`MOBILE_BRIDGE_TRD.md`
+/// §13) es lo que lo hace necesario — sin él, una app móvil sin notificaciones
+/// no puede funcionar, porque siempre habría un permiso esperando a nadie.
+pub(crate) fn account_command_line_with_mode(
+    account: &AccountForTerminal,
+    init: InitCommand,
+    session_uuid: Option<&str>,
+    prompt: Option<&str>,
+    mode: Option<crate::providers::Mode>,
+) -> Result<String, String> {
     let spec = crate::providers::spec(&account.provider).ok_or_else(|| format!("unknown provider '{}'", account.provider))?;
     let binary = spec.binary;
     if !crate::providers::is_provider_available(&account.provider) {
@@ -433,6 +450,16 @@ pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitComma
         Some(p) => format!(" {}", shell_quote(p)),
         None => String::new(),
     };
+    // Antes del prompt y después de la sesión: el orden no le importa a ningún
+    // CLI, pero leerlo sí a quien mira el comando que Hangar va a ejecutar.
+    let permissions: String = match (init, mode) {
+        // Un login no ejecuta nada del proyecto: darle permisos no significa
+        // nada y `claude auth login --permission-mode` no es un comando válido.
+        (InitCommand::Login, _) => String::new(),
+        (_, Some(mode)) => crate::providers::permission_args(&account.provider, mode).iter().map(|flag| format!(" {flag}")).collect(),
+        (_, None) => String::new(),
+    };
+
     let args = match init {
         InitCommand::Start => match (spec.session, session_uuid) {
             // Hangar owns the id so it can locate this exact transcript later.
@@ -467,7 +494,7 @@ pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitComma
             None => return Err(format!("'{}' authenticates with an API key — there's no login to run", account.provider)),
         },
     };
-    Ok(format!("{}={config} {extra}{binary}{args}", spec.config_dir_env))
+    Ok(format!("{}={config} {extra}{binary}{permissions}{args}", spec.config_dir_env))
 }
 
 /// The full script a terminal runs: change directory first, then the account's
@@ -481,7 +508,18 @@ pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitComma
 /// `cwd` on the spawn as well makes this redundant in the normal case, which
 /// is the point.
 pub(crate) fn terminal_script(cwd: &str, account: &AccountForTerminal, init: InitCommand, session_uuid: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
-    Ok(format!("cd {}\n{}", shell_quote(cwd), account_command_line(account, init, session_uuid, prompt)?))
+    terminal_script_with_mode(cwd, account, init, session_uuid, prompt, None)
+}
+
+pub(crate) fn terminal_script_with_mode(
+    cwd: &str,
+    account: &AccountForTerminal,
+    init: InitCommand,
+    session_uuid: Option<&str>,
+    prompt: Option<&str>,
+    mode: Option<crate::providers::Mode>,
+) -> Result<String, String> {
+    Ok(format!("cd {}\n{}", shell_quote(cwd), account_command_line_with_mode(account, init, session_uuid, prompt, mode)?))
 }
 
 /// Resolves a target to the directory its terminal should start in, plus the
@@ -569,7 +607,13 @@ pub fn open_terminal<R: Runtime>(
     // surface as an error the user can act on, not as a terminal that opens
     // and greets them with `command not found`.
     let init_line = match (&account, init) {
-        (Some(account), Some(init)) => Some(format!("{}\n", terminal_script(&cwd, account, init, session_uuid.as_deref(), init_prompt.as_deref())?)),
+        (Some(account), Some(init)) => {
+            // El modo global de la máquina, aplicado al nacer la terminal. No se
+            // puede cambiar después sin teclearle al CLI a ciegas, así que el
+            // ajuste dice explícitamente que afecta a las que se abran.
+            let mode = app.try_state::<DbConnection>().map(|db| crate::bridge::session::default_mode(&db));
+            Some(format!("{}\n", terminal_script_with_mode(&cwd, account, init, session_uuid.as_deref(), init_prompt.as_deref(), mode)?))
+        }
         // A command only means something for an account — "start claude" as
         // nobody in particular isn't a thing Hangar offers.
         (None, Some(_)) => return Err("choose an account before picking a command to run".to_string()),
@@ -2021,6 +2065,38 @@ mod tests {
         };
         let line = account_command_line(&codex, InitCommand::Resume, None, None).unwrap();
         assert!(!line.contains("resume"), "got: {line}");
+    }
+
+    /// El ajuste de la interfaz tiene que llegar al CLI. Las terminales nunca
+    /// habían llevado modo — `Mode` existía y solo lo usaban los turnos
+    /// headless — así que el desplegable prometía algo que el proceso ignoraba.
+    #[test]
+    fn el_modo_global_llega_a_la_linea_de_comandos() {
+        let claude = account("sub", "/Users/killua/.claude-David");
+        let Ok(line) = account_command_line_with_mode(&claude, InitCommand::Start, None, None, Some(crate::providers::Mode::Yolo)) else {
+            return; // sin el CLI instalado no hay forma que comprobar
+        };
+        assert!(line.contains("--permission-mode bypassPermissions"), "got: {line}");
+    }
+
+    /// Y sin modo, la línea es exactamente la de antes: el puente no puede
+    /// cambiar cómo se abre una terminal por el hecho de existir.
+    #[test]
+    fn sin_modo_la_linea_no_cambia() {
+        let claude = account("sub", "/Users/killua/.claude-David");
+        let Ok(with_none) = account_command_line_with_mode(&claude, InitCommand::Start, None, None, None) else { return };
+        let plain = account_command_line(&claude, InitCommand::Start, None, None).unwrap();
+        assert_eq!(with_none, plain);
+        assert!(!plain.contains("--permission-mode"), "got: {plain}");
+    }
+
+    /// Un login no ejecuta nada del proyecto, y `claude auth login
+    /// --permission-mode …` no es un comando válido.
+    #[test]
+    fn un_login_no_lleva_modo() {
+        let claude = account("sub", "/Users/killua/.claude-David");
+        let Ok(line) = account_command_line_with_mode(&claude, InitCommand::Login, None, None, Some(crate::providers::Mode::Yolo)) else { return };
+        assert!(!line.contains("--permission-mode"), "got: {line}");
     }
 
     /// A login command never takes a prompt — there's no session to seed yet.
