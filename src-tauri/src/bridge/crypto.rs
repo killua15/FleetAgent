@@ -128,36 +128,63 @@ mod tests {
         assert_ne!(a, b);
     }
 
-    /// Escribe lo que el otro lado tiene que ser capaz de abrir.
+    /// Ruta del blob que produce Rust y que el resto tiene que poder abrir.
+    fn fixture_path(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../contract/fixtures").join(name)
+    }
+
+    /// El blob de bytes fijos que Node y Dart tienen que abrir.
     ///
     /// Que Rust se entienda consigo mismo no dice **nada** sobre Dart ni sobre
     /// Node: la primitiva se eligió justamente por interoperar, y eso hay que
     /// demostrarlo cruzando el lenguaje. Este fichero lo lee
-    /// `contract/interop.test.ts`.
+    /// `contract/interop.test.ts`, y lo leerá el repo de Flutter.
+    ///
+    /// **Se escribe una sola vez y luego se comprueba.** Antes se regeneraba en
+    /// cada ejecución con un nonce nuevo, y un golden que se reescribe a sí mismo
+    /// no puede fallar nunca: si un cambio rompiera la compatibilidad, el fichero
+    /// cambiaría con él y el otro lado abriría el blob nuevo sin enterarse. Peor
+    /// para lo que viene: el repo de Flutter es otro repo y no puede validar
+    /// contra un fichero que se mueve cada vez que alguien corre los tests aquí.
     #[test]
-    fn escribe_el_fichero_de_interoperabilidad() {
+    fn el_blob_de_interoperabilidad_es_estable() {
         let key = SharedKey::from_base64("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=").expect("clave fija, no aleatoria: el fichero se commitea");
-        let (nonce, ciphertext) = seal(&key, br#"{"name":"list_projects","args":{}}"#).unwrap();
+        let plaintext = r#"{"name":"list_projects","args":{}}"#;
+        let path = fixture_path("crypto-rust.json");
 
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            // Lo normal: existe y hay que poder abrirlo. Esto es lo que detecta
+            // que alguien cambió la primitiva, el orden de los argumentos o la
+            // variante de base64.
+            let fixture: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            let opened = open(&key, fixture["nonce"].as_str().unwrap(), fixture["ciphertext"].as_str().unwrap())
+                .expect("Rust tiene que abrir el blob que Rust dejó commiteado; si esto falla, el móvil ya no habla con el escritorio");
+            assert_eq!(String::from_utf8(opened).unwrap(), plaintext);
+            return;
+        }
+
+        let (nonce, ciphertext) = seal(&key, plaintext.as_bytes()).unwrap();
         let fixture = serde_json::json!({
-            "_comment": "Producido por Rust. Node y Dart tienen que abrirlo con la misma clave.",
+            "_comment": "Producido por Rust una sola vez y commiteado. Node y Dart tienen que abrirlo con la misma clave. No regenerar: ver crypto.rs.",
             "key": key.to_base64(),
             "nonce": nonce,
             "ciphertext": ciphertext,
-            "plaintext": r#"{"name":"list_projects","args":{}}"#,
+            "plaintext": plaintext,
         });
-
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../contract/fixtures");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("crypto-rust.json"), serde_json::to_string_pretty(&fixture).unwrap()).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_string_pretty(&fixture).unwrap()).unwrap();
     }
 
-    /// Y al revés: abre lo que produjo Node. Si el fichero no está —un clon
-    /// recién hecho antes de correr los tests de frontend— no se falla por eso.
+    /// Y al revés: abre lo que produjo Node.
+    ///
+    /// Si el fichero no está es un fallo, no un test que se salta. Está
+    /// commiteado, así que ausente solo puede significar que alguien lo borró — y
+    /// saltar en silencio dejaría la mitad del contrato sin comprobar
+    /// exactamente cuando importa.
     #[test]
     fn abre_lo_que_cifro_node() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../contract/fixtures/crypto-node.json");
-        let Ok(raw) = std::fs::read_to_string(&path) else { return };
+        let path = fixture_path("crypto-node.json");
+        let raw = std::fs::read_to_string(&path).expect("falta contract/fixtures/crypto-node.json, que va commiteado: sin él no hay prueba de interoperabilidad");
         let fixture: serde_json::Value = serde_json::from_str(&raw).unwrap();
 
         let key = SharedKey::from_base64(fixture["key"].as_str().unwrap()).unwrap();
