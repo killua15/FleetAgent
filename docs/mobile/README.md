@@ -11,6 +11,10 @@ documentos son cómo se construye cada parte.
 | 3 | [El escritorio listo](TDD-3-escritorio.md) | Hangar | sin empezar |
 | 4-8 | [El cliente Flutter](TDD-4-a-8-movil.md) | repo aparte | esbozo |
 
+**[FUNCIONALIDADES.md](FUNCIONALIDADES.md)** — el inventario: qué tiene que poder
+hacer el móvil, el flujo de cada cosa, y los ~15 comandos que hay que exponer para
+que «manejar Hangar desde el móvil» sea cierto (hoy son 35 de 150).
+
 ## El orden, y por qué
 
 Las fases 0-3 construyen **todo lo que el móvil va a necesitar de Hangar**:
