@@ -61,9 +61,12 @@ export function useBridge(): void {
             await pump?.stop();
           }
         })
-        // En silencio: sin red o sin emparejar son estados normales de una
-        // instalación que no usa el móvil.
-        .catch(() => {});
+        // Sin toast: no tener el móvil configurado es un estado normal y no
+        // merece una alerta en cada arranque. Pero **no en silencio**: tragarse
+        // esto hizo que "sin sesión de Supabase" y "el puente funciona" se
+        // vieran exactamente igual, y diagnosticarlo costó mirar la base de
+        // datos del servidor.
+        .catch((e) => console.warn('[puente] no se pudo abrir el canal:', e));
     };
 
     // La sesión, ahora y cuando cambie. `setAuth` también en cada refresco: el

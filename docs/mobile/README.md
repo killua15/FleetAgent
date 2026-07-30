@@ -74,6 +74,13 @@ allowlist, `invoke`— igual de bien que uno con datos.
   canal *depende* de ella: es privado y solo deja entrar a la cuenta dueña del
   Mac (`MOBILE_BRIDGE_TRD.md` §3). Sin sesión no hay puente.
 - **Desactivar «Allow public access»** en Realtime Settings del panel de
-  Supabase. Es el único paso que no está en el código.
+  Supabase. Hecho el 2026-07-30. Es el único paso que no está en el código, y se
+  comprueba pidiendo un canal público: tiene que contestar
+  `PrivateOnly: This project only allows private channels`.
+
+  **Efecto secundario a tener presente:** los builds anteriores a esto abrían el
+  canal en público, así que su puente ya no puede conectar. No se pierde nada
+  —el emparejamiento era imposible en ellos de todas formas—, pero el puente
+  solo funciona desde `feat/mobile-companion` en adelante.
 - **Cuenta de desarrollador de Apple** ($99/año) para publicar la app. La misma
   que resolvería el aviso de Gatekeeper en el escritorio.

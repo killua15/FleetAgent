@@ -1,6 +1,6 @@
 use keyring::Entry;
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 /// Keychain service name. Renamed with the product; no migration from the
 /// pre-rename `com.killua.fleet` service is needed or included — that service
@@ -9,11 +9,46 @@ use std::sync::Mutex;
 /// An API key that predated the rename would need re-entering, nothing worse.
 const SERVICE: &str = "com.killua.hangar";
 
+/// El llavero al que se habla, distinto por directorio de datos.
+///
+/// **El llavero no vive en el directorio de datos**, así que separar la base de
+/// datos no separaba los secretos. Y uno de ellos no tolera compañía: el refresh
+/// token de Supabase **rota** en cada uso. Con las dos instancias sobre la misma
+/// entrada, la primera en arrancar lo rota y la segunda intenta uno ya retirado,
+/// falla, y al fallar **borra la entrada compartida** — dejando sin sesión
+/// guardada también a la instancia que funcionaba. Pasó de verdad.
+///
+/// Con `HANGAR_DATA_DIR` puesto, el servicio lleva un sufijo derivado de la ruta:
+/// eso aísla el llavero entero de una vez, en lugar de ir parcheando claves
+/// sueltas cada vez que se añade un secreto nuevo.
+fn service() -> &'static str {
+    static RESOLVED: OnceLock<String> = OnceLock::new();
+    RESOLVED.get_or_init(|| match std::env::var(crate::app_data::DATA_DIR_ENV) {
+        Ok(dir) => format!("{SERVICE}.{}", namespace_suffix(&dir)),
+        Err(_) => SERVICE.to_string(),
+    })
+}
+
+/// Sufijo estable para una ruta.
+///
+/// FNV-1a a mano y no `DefaultHasher`: este último no garantiza el mismo
+/// resultado entre versiones de Rust, y un sufijo que cambia al actualizar el
+/// compilador deja los secretos guardados en un servicio que nadie vuelve a
+/// mirar — un "no encuentro la credencial" sin causa visible.
+fn namespace_suffix(dir: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in dir.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
 /// Credentials never touch the SQLite database or the frontend — only a
 /// `credential_ref` (the account id) is stored there. The actual secret
 /// (API key or CLI session token) lives in the OS keychain.
 fn entry(credential_ref: &str) -> Result<Entry, String> {
-    Entry::new(SERVICE, credential_ref).map_err(|e| e.to_string())
+    Entry::new(service(), credential_ref).map_err(|e| e.to_string())
 }
 
 pub fn store(credential_ref: &str, secret: &str) -> Result<(), String> {
@@ -88,6 +123,15 @@ pub(crate) static KEYCHAIN_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
 mod tests {
+
+    /// El sufijo es estable: el mismo directorio da siempre el mismo servicio, o
+    /// los secretos guardados quedan en un llavero que nadie vuelve a mirar.
+    #[test]
+    fn el_sufijo_del_llavero_es_estable_por_ruta() {
+        assert_eq!(namespace_suffix("/Users/kate/.hangar-dev"), namespace_suffix("/Users/kate/.hangar-dev"));
+        assert_ne!(namespace_suffix("/Users/kate/.hangar-dev"), namespace_suffix("/Users/kate/.hangar-otro"));
+        assert_eq!(namespace_suffix("/Users/kate/.hangar-dev").len(), 16);
+    }
     use super::*;
 
     /// A replaced secret must not keep serving the old one from memory — the
@@ -136,7 +180,7 @@ mod tests {
         // conserva es justo la propiedad que estaba rota — que el ítem **exista
         // en el llavero del sistema** y no en un mapa dentro del proceso.
         let found = std::process::Command::new("security")
-            .args(["find-generic-password", "-s", SERVICE, "-a", &reference])
+            .args(["find-generic-password", "-s", service(), "-a", &reference])
             .output()
             .expect("the `security` CLI ships with macOS");
 

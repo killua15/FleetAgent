@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '../lib/invoke';
+import { supabase } from '../lib/supabase';
 import { toastError } from './ErrorOverlay';
 import { Button } from './ui/button';
 import styles from './PairPhoneDialog.module.css';
@@ -37,7 +38,15 @@ export function PairPhoneDialog({ onClose, onPaired }: { onClose: () => void; on
   const [offer, setOffer] = useState<PairingOffer | null>(null);
   const [secondsLeft, setSecondsLeft] = useState(0);
   const [asking, setAsking] = useState<string | null>(null);
+  const [signedIn, setSignedIn] = useState<boolean | null>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
+
+  // El canal es privado y solo admite a la cuenta dueña de este Mac, así que sin
+  // sesión el QR es un callejón sin salida: el teléfono escanea, se conecta, y
+  // aquí no pasa nada. Decirlo antes cuesta menos que diagnosticarlo después.
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data }) => setSignedIn(Boolean(data.session)));
+  }, []);
 
   const open = async (chosen: Level) => {
     try {
@@ -97,7 +106,20 @@ export function PairPhoneDialog({ onClose, onPaired }: { onClose: () => void; on
       <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
         <span className={styles.title}>Emparejar un teléfono</span>
 
-        {!offer && (
+        {signedIn === false && (
+          <>
+            <span className={styles.hint}>
+              Para usar el móvil hace falta iniciar sesión en Hangar: el canal solo admite a la cuenta dueña de este Mac.
+            </span>
+            <div className={styles.actions}>
+              <Button size="sm" onClick={close}>
+                entendido
+              </Button>
+            </div>
+          </>
+        )}
+
+        {signedIn && !offer && (
           <>
             <span className={styles.hint}>Qué podrá hacer este dispositivo. Se puede revocar en cualquier momento.</span>
             <div className={styles.levels}>
@@ -119,7 +141,7 @@ export function PairPhoneDialog({ onClose, onPaired }: { onClose: () => void; on
           </>
         )}
 
-        {offer && !asking && (
+        {signedIn && offer && !asking && (
           <>
             <canvas ref={canvas} className={expired ? styles.qrExpired : styles.qr} />
             {expired ? (
