@@ -212,12 +212,22 @@ pub fn store_paired_device(db: &DbConnection, name: &str, level: Level, key: &Sh
 }
 
 #[tauri::command]
-pub fn bridge_revoke_device(db: tauri::State<DbConnection>) -> Result<(), String> {
+pub fn bridge_revoke_device<R: tauri::Runtime>(app: tauri::AppHandle<R>, db: tauri::State<DbConnection>) -> Result<(), String> {
     if let Some(device) = paired_device(&db) {
         let _ = crate::credential_vault::delete(&credential_ref(&device.id));
     }
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM paired_device", []).map_err(|e| e.to_string())?;
+    {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM paired_device", []).map_err(|e| e.to_string())?;
+    }
+
+    // Sin esto el canal seguiría abierto hasta reiniciar Hangar: revocar es
+    // justo el momento en el que no debe quedar nada escuchando.
+    use tauri::Emitter;
+    let _ = app.emit("bridge-device-changed", serde_json::json!({ "paired": false }));
+    // Y la terminal marcada se queda sin dueño. Un panel que dice "la está
+    // usando alguien" cuando ya no hay nadie miente.
+    crate::bridge::selection::clear(&app);
     Ok(())
 }
 

@@ -49,8 +49,17 @@ pub struct PairingOffer {
 ///
 /// Cada llamada **sustituye** la anterior: dos QR válidos a la vez significan
 /// dos claves vivas para un solo teléfono, y solo una acabaría usándose.
+///
+/// Avisa al webview de que **hay que abrir el canal ya**. El saludo del teléfono
+/// llega por el mismo puente que luego lleva los comandos, así que si el canal
+/// solo se abriera al haber un dispositivo emparejado, ningún emparejamiento
+/// podría empezar nunca: el `hello` no tendría quién lo contestara.
 #[tauri::command]
-pub fn bridge_begin_pairing(db: tauri::State<DbConnection>, level: Level) -> Result<PairingOffer, String> {
+pub fn bridge_begin_pairing<R: Runtime>(
+    app: AppHandle<R>,
+    db: tauri::State<DbConnection>,
+    level: Level,
+) -> Result<PairingOffer, String> {
     let key = SharedKey::generate();
     let offer = PairingOffer {
         machine_id: session::machine_id(&db)?,
@@ -60,13 +69,24 @@ pub fn bridge_begin_pairing(db: tauri::State<DbConnection>, level: Level) -> Res
         expires_in: OFFER_TTL.as_secs(),
     };
 
-    let mut pending = PENDING.lock().map_err(|e| e.to_string())?;
-    *pending = Some(Pending { key, level, created: Instant::now() });
+    {
+        let mut pending = PENDING.lock().map_err(|e| e.to_string())?;
+        *pending = Some(Pending { key, level, created: Instant::now() });
+    }
+    let _ = app.emit("bridge-pairing-open", ());
     Ok(offer)
 }
 
 #[tauri::command]
-pub fn bridge_cancel_pairing() -> Result<(), String> {
+pub fn bridge_cancel_pairing<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    clear_pending()?;
+    // Con la oferta cerrada el canal ya no hace falta —salvo que haya un
+    // teléfono emparejado, que es lo que decide el webview.
+    let _ = app.emit("bridge-pairing-closed", ());
+    Ok(())
+}
+
+fn clear_pending() -> Result<(), String> {
     let mut pending = PENDING.lock().map_err(|e| e.to_string())?;
     *pending = None;
     Ok(())
@@ -99,9 +119,12 @@ pub fn bridge_accept_pairing<R: Runtime>(app: AppHandle<R>, name: String) -> Res
     let db = app.state::<DbConnection>();
 
     let device = session::store_paired_device(&db, &name, level, &key)?;
-    bridge_cancel_pairing()?;
-    // El puente arranca solo en cuanto hay con quién hablar.
+    clear_pending()?;
+    // En este orden: primero la razón que mantiene el canal abierto, después la
+    // que lo cerraría. Al revés habría un instante sin ninguna de las dos y el
+    // webview desconectaría justo al emparejar.
     let _ = app.emit("bridge-device-changed", serde_json::json!({ "paired": true }));
+    let _ = app.emit("bridge-pairing-closed", ());
     Ok(device)
 }
 
@@ -112,7 +135,7 @@ mod tests {
     /// Sin oferta abierta no hay clave con la que descifrar a un desconocido.
     #[test]
     fn sin_oferta_no_hay_clave() {
-        let _ = bridge_cancel_pairing();
+        let _ = clear_pending();
         assert!(pending_key().is_none());
     }
 
@@ -134,7 +157,7 @@ mod tests {
         assert_eq!(key.to_base64(), second.to_base64());
         assert_ne!(key.to_base64(), first.to_base64());
         assert_eq!(level, Level::Steer);
-        let _ = bridge_cancel_pairing();
+        let _ = clear_pending();
     }
 
     /// Una captura de pantalla de ayer no vale. Se comprueba al usarla, no con

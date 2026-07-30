@@ -7,6 +7,12 @@
 
 use serde::{Deserialize, Serialize};
 
+/// **En el cable todo va en camelCase.** Los eventos que Hangar ya emite hacia
+/// la interfaz viajan así y el puente los reenvía tal cual, así que un protocolo
+/// en snake_case pondría dos convenciones en un mismo canal y Dart tendría que
+/// saber cuál toca en cada mensaje. Por eso los `rename_all` de aquí abajo, que
+/// hoy solo se notan en un campo pero fijan el rumbo del siguiente.
+///
 /// Se sube **solo** al romper el formato. Añadir un campo opcional o un comando
 /// nuevo no es romperlo: un cliente viejo ignora lo que no conoce.
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -40,6 +46,7 @@ pub enum Kind {
 
 /// Lo que el móvil pide.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Invoke {
     pub name: String,
     #[serde(default)]
@@ -50,6 +57,7 @@ pub struct Invoke {
 /// **lo que ese dispositivo puede pedir**, para que la app no ofrezca botones
 /// que van a fallar.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Hello {
     pub v: u16,
     pub device: String,
@@ -60,12 +68,14 @@ pub struct Hello {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Event {
     pub name: String,
     pub data: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Failure {
     pub code: ErrorCode,
     pub message: String,
@@ -125,6 +135,24 @@ impl Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `machineName` en el cable, no `machine_name`. Es el único campo de dos
+    /// palabras del protocolo, así que es el único sitio donde la convención se
+    /// nota — y se notó: el cliente de prueba leía `machineName` y enseñaba
+    /// «emparejado con undefined». Rust renombra un campo sin avisar a nadie,
+    /// por eso se fija aquí.
+    #[test]
+    fn el_saludo_nombra_la_maquina_en_camelcase() {
+        let hello = Hello {
+            v: PROTOCOL_VERSION,
+            device: "teléfono".into(),
+            commands: vec![],
+            machine_name: Some("MacBook".into()),
+        };
+        let json = serde_json::to_value(&hello).unwrap();
+        assert_eq!(json["machineName"], "MacBook");
+        assert!(json.get("machine_name").is_none(), "dos nombres para un campo es peor que el equivocado");
+    }
 
     /// Los nombres de los códigos viajan por el cable y los lee Dart. Cambiar
     /// uno rompe la app sin que Rust se entere, así que se fijan aquí.
