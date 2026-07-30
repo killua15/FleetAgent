@@ -11,6 +11,10 @@ documentos son cómo se construye cada parte.
 | 3 | [El escritorio listo](TDD-3-escritorio.md) | Hangar | sin empezar |
 | 4-8 | [El cliente Flutter](TDD-4-a-8-movil.md) | repo aparte | esbozo |
 
+**[DISENO.md](DISENO.md)** — dónde vive el diseño (proyecto de Claude Design), las
+18 pantallas, y qué se corrigió: el contraste había vuelto a los valores de antes
+del arreglo del escritorio.
+
 **[FUNCIONALIDADES.md](FUNCIONALIDADES.md)** — el inventario: qué tiene que poder
 hacer el móvil, el flujo de cada cosa, y los ~15 comandos que hay que exponer para
 que «manejar Hangar desde el móvil» sea cierto (hoy son 35 de 150).
