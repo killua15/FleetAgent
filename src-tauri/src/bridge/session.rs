@@ -83,7 +83,31 @@ pub struct BridgeStatus {
 
 #[tauri::command]
 pub fn bridge_status(db: tauri::State<DbConnection>) -> Result<BridgeStatus, String> {
-    Ok(BridgeStatus { machine_id: machine_id(&db)?, machine_name: machine_name(&db), device: paired_device(&db) })
+    Ok(BridgeStatus { machine_id: machine_id(&db)?, machine_name: machine_name(&db), device: usable_device(&db) })
+}
+
+/// El dispositivo emparejado **cuya clave se puede leer de verdad**.
+///
+/// La fila y la clave viven en sitios distintos —base de datos y llavero— y
+/// pueden desincronizarse: cambiar el llavero al que se habla deja la fila
+/// apuntando a una clave que ya no está ahí. Sin esto, el escritorio dice
+/// "emparejado" en los ajustes mientras el puente ignora cada mensaje que llega,
+/// porque `device_key` devuelve `None` sin contarlo. Pasó de verdad, y el síntoma
+/// fue silencio absoluto.
+///
+/// No borra la fila: un llavero bloqueado también da error de lectura, y destruir
+/// un emparejamiento válido por un fallo temporal es peor que pedir que se vuelva
+/// a emparejar. Volver a emparejar sustituye la fila de todas formas.
+fn usable_device(db: &DbConnection) -> Option<PairedDevice> {
+    let device = paired_device(db)?;
+    if crate::credential_vault::has(&credential_ref(&device.id)) {
+        return Some(device);
+    }
+    log::warn!(
+        "el dispositivo «{}» está en la base pero su clave no está en el llavero: hay que volver a emparejar",
+        device.name
+    );
+    None
 }
 
 #[tauri::command]
@@ -251,6 +275,29 @@ mod tests {
 
     /// El id del canal no puede cambiar: el teléfono le habla por nombre, y un
     /// nombre nuevo lo deja hablando a un canal vacío sin decir por qué.
+    /// Una fila de emparejamiento sin clave en el llavero **no** es un
+    /// emparejamiento. Los dos viven en sitios distintos y pueden
+    /// desincronizarse; cuando pasó, los ajustes decían "emparejado" y el puente
+    /// ignoraba cada mensaje sin decir nada.
+    #[test]
+    fn un_emparejamiento_sin_clave_no_cuenta_como_emparejado() {
+        let db = seeded();
+        let paired_at = chrono::Utc::now().to_rfc3339();
+        {
+            let conn = db.0.lock().unwrap();
+            conn.execute(
+                "INSERT INTO paired_device (id, name, level, credential_ref, paired_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params!["fantasma", "teléfono de nadie", "steer", credential_ref("fantasma"), paired_at],
+            )
+            .unwrap();
+        }
+
+        // La fila está…
+        assert!(paired_device(&db).is_some());
+        // …pero su clave no, así que para el puente no hay dispositivo.
+        assert!(usable_device(&db).is_none());
+    }
+
     #[test]
     fn el_id_de_maquina_se_crea_una_vez_y_no_cambia() {
         let db = seeded();
