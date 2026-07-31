@@ -30,13 +30,18 @@ cada función nueva de Hangar hay que escribirla dos veces — que es exactament
 lo que este documento existe para evitar.
 
 **No es un emulador de terminal remoto.** Se transmiten hechos (turno terminado,
-fichero editado, comando ejecutado), no bytes de PTY. Un `xterm` de 120 columnas
-no se lee en seis pulgadas, y el flujo crudo es dos órdenes de magnitud más
-pesado que los eventos que lo describen.
+fichero editado, comando ejecutado), no una pantalla. Un `xterm` de 120 columnas
+no se lee en seis pulgadas. Excepción en §6/§12.4: una terminal sin sesión
+manda un tail de texto ya redactado, no bytes de PTY tal cual ni fidelidad de
+cursor/pantalla.
 
-**No es acceso a shell.** El móvil puede pedir lo que Hangar sabe hacer, nunca lo
-que `bash` sabe hacer. Es la única decisión que importa el día que se pierda un
-teléfono.
+**No es acceso a shell libre — con una excepción escrita, no un descuido.** El
+móvil pide lo que Hangar sabe hacer. Excepción (§6, §12.4): para una terminal
+sin sesión (`kind='project'`, un PTY real), `write_terminal` sí manda entrada
+cruda a esa shell — es, literalmente, "lo que `bash` sabe hacer". La mitigación
+del día que se pierda el teléfono nunca fue "no hay shell": es que hay **un
+solo dispositivo emparejado**, revocable al instante desde el Mac, y sin
+sesión de Supabase no hay canal. Esa sigue siendo la decisión que importa.
 
 ---
 
@@ -255,6 +260,7 @@ reconexiones y a cerrar la app. Se cambia llamando otra vez.
 | `terminal-accounts-updated` | flota | siempre |
 | `session-status`, `session-ended` | suscritos | |
 | `session-output` | **suscritos, y resumido** | ver abajo |
+| `terminal-tail` | **suscritos, y acotado+redactado** | ver abajo — solo terminales sin sesión |
 | `pr-comments-found`, `queue-updated` | flota | |
 | `oauth-callback` | **nunca** | es local del escritorio |
 
@@ -268,10 +274,43 @@ En vez del flujo del PTY, el puente manda lo que Hangar ya extrae del transcript
   "text": "…", "files": ["src/x.rs"], "at": "…" }
 ```
 
-**No hay comando de scrollback.** Se consideró uno acotado y se descartó (§12.4):
-el volcado del terminal puede contener lo que el agente imprimió, claves
-incluidas, y el móvil no tiene por qué verlo para hacer su trabajo. Lo crudo se
-queda en el Mac.
+**No hay volcado crudo, ni para terminales con sesión.** `session-output` sigue
+siendo un resumen, nunca el stream del PTY.
+
+### `terminal-tail`: la excepción para terminales sin sesión
+
+Decisión revertida (ver §12.4, actualizada): para una terminal `kind='project'`
+(un PTY real, sin `sessions`/`session_blocks` — el flujo que de verdad se usa
+día a día), el móvil puede escribir con `write_terminal` (ya expuesto, nivel
+`steer`) y necesita ver algo de lo que pasa para saber si sirvió de algo. En
+vez de negarle toda visión, Hangar manda un **tail acotado y redactado**, no el
+volcado crudo — reconstruido por un emulador de terminal real (`vt100`, no un
+stripper de ANSI casero) para que un párrafo que Claude Code redibuja
+(cursor arriba, borra, reescribe según reajusta el ancho de línea) no
+aparezca repetido. Al abrir la pantalla, `get_terminal_tail(id)` (nivel
+`mirar`) devuelve el tail actual entero — igual que `get_session_view` para
+una con sesión, ver §9: no hay reproducción de eventos perdidos, solo el
+estado de ahora. **`terminal-tail` manda ese mismo transcript completo de
+nuevo cada vez que cambia, no un incremento**: el Mac lo reconstruye entero
+desde su buffer vt100 en cada emisión, así que el móvil reemplaza, nunca
+concatena.
+
+```jsonc
+{ "terminalId": "…", "text": "…" }
+```
+
+- `text` es **texto plano ya decodificado y redactado**, nunca los bytes del
+  PTY ni una reproducción fiel de pantalla (sin cursor, sin alt-screen — un
+  `vim`/`htop` se ve como ruido de texto, aceptado a propósito).
+- Redactado por patrones de forma de secreto conocidos (claves de API, tokens,
+  JWT, líneas `KEY=`/`TOKEN=`/`SECRET=`) **best-effort — no es una garantía**.
+  Un secreto de forma no reconocida puede pasar.
+- Acotado a un tail chico (del orden de ~32 KB / ~200 líneas), independiente
+  del buffer de 256 KB que el propio Hangar usa para reconectar su panel — ese
+  sigue siendo exclusivamente local, nunca cruza el puente.
+- Solo existe para terminales sin sesión asociada. Las terminales con sesión
+  siguen usando exclusivamente `session-output` resumido — esto no vuelve a
+  abrir scrollback ahí.
 
 ---
 
@@ -385,10 +424,19 @@ Hangar. Ese es el objetivo del documento.
    (`E_DEVICE_REPLACED`) y lo dice — no se queda fallando en silencio.
    El teléfono guarda **una clave por Mac**: los emparejamientos son
    independientes y perder uno no toca a los demás.
-4. **Nada de scrollback al móvil.** Se descarta `bridge_scrollback`: el
-   contenido crudo se queda en el Mac. El móvil recibe **estado y eventos**
-   (turno terminado, mensaje del agente, fichero tocado), nunca el volcado del
-   terminal.
+4. **Revertida (ver §6).** Decisión original: "nada de scrollback al móvil,
+   se descarta `bridge_scrollback`, el contenido crudo se queda en el Mac".
+   Seguía siendo cierta para terminales con sesión — `session-output`
+   resumido, nunca el volcado. Pero para terminales **sin** sesión
+   (`kind='project'`, un PTY real — el flujo que de verdad se usa día a día),
+   el móvil ya puede escribir con `write_terminal` desde Paso 0, y escribir a
+   ciegas sin ver nada resultó peor que el riesgo que esta regla evitaba.
+   Decisión nueva: `terminal-tail` manda un tail acotado (~32 KB) y
+   redactado por patrones de secreto conocidos — **best-effort, no garantía**.
+   Aceptado con los ojos abiertos: un secreto de forma no reconocida puede
+   filtrarse a un segundo dispositivo físico. Sigue sin haber scrollback
+   completo, persistente ni buscable, y sigue sin haberlo para terminales con
+   sesión.
 5. **Sin notificaciones push.** Se descarta la Edge Function, y con ella el push:
    APNs y FCM exigen una credencial de servidor, y no hay dónde ponerla sin
    distribuirla. **Consecuencia, dicha claramente**: la app no te avisa; la

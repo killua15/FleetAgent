@@ -167,12 +167,27 @@ del transcript.
 Y el histórico por bloques tipados: `you` · `think` · `edit` · `cmd` · `agent` ·
 `sum` · `rev` · `out`.
 
-**No hay scrollback y no lo habrá**: el volcado crudo puede llevar claves que el
-agente imprimió, y el móvil no necesita verlo. Lo crudo se queda en el Mac.
+**No hay scrollback de una terminal con sesión, y no lo habrá**: el volcado
+crudo puede llevar claves que el agente imprimió, y el móvil no necesita
+verlo para dirigir la conversación. Lo crudo se queda en el Mac.
+
+**Excepción: una terminal sin sesión (`kind='project'`, un PTY real).** Ahí no
+hay bloques que interpretar — es la shell cruda que de verdad se usa día a
+día. El móvil escribe con `write_terminal` (fila de abajo) y ve un tail
+acotado y redactado por patrones de secreto conocidos (~32 KB, best-effort,
+no garantía) vía el evento `terminal-tail` — ver `MOBILE_BRIDGE_TRD.md`
+§6 y §12.4. Reconstruido por un emulador de terminal real (`vt100`), no un
+stripper de ANSI a mano, así que un párrafo que Claude Code redibuja al
+reajustar el ancho de línea aparece una sola vez, no repetido — y cada
+`terminal-tail` manda el transcript completo de nuevo, no un incremento a
+concatenar. Sigue sin ser scrollback completo ni persistente, y esta
+excepción no aplica a terminales con sesión.
 
 | Funcionalidad | Comando | Estado | Nivel |
 |---|---|---|---|
 | Escribir en la terminal | `write_terminal` | ✅ | steer |
+| Ver el tail de una terminal sin sesión, al abrir la pantalla | `get_terminal_tail` | ✅ | watch |
+| Seguir viéndolo en vivo | `terminal-tail` (evento) | ✅ | watch |
 | Mandar un mensaje a la sesión | `send_message` | ✅ | steer |
 | Parar el agente | `stop_session` | ✅ | steer |
 | Ver la conversación | `get_session_view`, `list_session_blocks` | ✅ | watch |

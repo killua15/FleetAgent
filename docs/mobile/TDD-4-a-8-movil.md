@@ -42,7 +42,8 @@ siguiente CI y no en producción.
 
 Lista de máquinas emparejadas → terminales de la elegida, con su estado y su
 cuenta → detalle de una terminal: **mensajes del agente, acciones, estado**.
-Nunca el volcado del terminal (TRD §12.4).
+Nunca el volcado del terminal, para una terminal **con sesión** (TRD §12.4 —
+hay una excepción para las que no tienen sesión, ver Fase 6bis).
 
 **Consume**: `list_*`, `get_*` (nivel *mirar*), eventos `terminal-state`.
 **Hecho cuando**: abres la app fuera de casa y sabes qué está corriendo y cuánta
@@ -62,6 +63,31 @@ mandar una tarea. No hay "abrir terminal vacía" (TRD §12.9).
 **Consume**: nivel *dirigir* y *lanzar*, `bridge_select`.
 **Hecho cuando**: desde el móvil, mandas a revisar un PR y la terminal se abre en
 el Mac ya trabajando.
+
+## Fase 6bis · PTY directo · ~1 semana
+
+**Objetivo**: dirigir una terminal sin sesión — el flujo que de verdad se usa
+día a día ("+ New terminal"), que Fase 5/6 no cubren porque no genera bloques
+tipados.
+
+Composer nuevo (no el de Fase 6: ese está armado sobre bloques tipados) que
+escribe con `write_terminal`, y una vista que muestra el tail acotado y
+redactado de `terminal-tail` — el transcript completo, reemplazado entero en
+cada emisión, no un log que se concatena. Reconstruido con un emulador de
+terminal real (`vt100`) del lado del Mac, para que un párrafo que Claude Code
+redibuja al reajustar el ancho de línea se vea una sola vez, no repetido ni
+mezclado. Sin fidelidad visual de cursor/alt-screen en el móvil — texto
+plano, a propósito.
+
+**Decisión revertida para llegar acá**: TRD §12.4 decía "nada de scrollback al
+móvil, nunca". Se revirtió por escrito, con el trade-off explícito: redacción
+por patrones de secreto conocidos, best-effort, no garantía. Ver TRD §6 y
+§12.4, y §1 ("no es acceso a shell libre — con una excepción escrita").
+
+**Consume**: `write_terminal` (nivel *dirigir*, ya expuesto), evento nuevo
+`terminal-tail` (nivel *mirar*).
+**Hecho cuando**: desde el móvil escribís en una terminal PTY real del Mac, y
+ves lo que pasó — acotado, redactado, sin ser un espejo de la pantalla.
 
 ## Fase 7 · El resto de la flota · ~1 semana
 
@@ -94,5 +120,7 @@ un `xterm` de 120 columnas no se lee en seis pulgadas.
 **Notificaciones.** Descartadas en el contrato (TRD §12.5): exigen una credencial
 de servidor y no hay dónde ponerla. El modo yolo es lo que ocupa su lugar.
 
-**Shell.** El teléfono pide lo que Hangar sabe hacer, nunca lo que `bash` sabe
-hacer.
+**Shell libre.** El teléfono pide lo que Hangar sabe hacer. La única excepción
+escrita es Fase 6bis: `write_terminal` sobre una terminal `kind='project'` ya
+abierta en el Mac — no "abrir una shell nueva desde el teléfono a gusto", que
+sigue sin existir.
