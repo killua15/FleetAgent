@@ -5,8 +5,10 @@
 //! atraviesa ningún servidor. No hay terceros que necesiten cifrar sin poder
 //! descifrar, que es lo único que justificaría claves asimétricas aquí.
 //!
-//! La primitiva se eligió por interoperar: la misma que usan `sodium_libs` en
-//! Dart y `libsodium-wrappers` en Node, sin arrastrar una dependencia de C.
+//! La primitiva se eligió por interoperar: la misma que usan `sodium` en Dart
+//! (el sucesor de `sodium_libs`, descontinuado desde que los build hooks de
+//! Dart pueden empaquetar el binario nativo directamente) y
+//! `libsodium-wrappers` en Node, sin arrastrar una dependencia de C.
 
 use base64::Engine;
 use crypto_secretbox::aead::{Aead, KeyInit};
@@ -190,6 +192,22 @@ mod tests {
         let key = SharedKey::from_base64(fixture["key"].as_str().unwrap()).unwrap();
         let plaintext = open(&key, fixture["nonce"].as_str().unwrap(), fixture["ciphertext"].as_str().unwrap())
             .expect("lo que cifra Node tiene que abrirlo Rust, o el móvil no hablará con el escritorio");
+
+        assert_eq!(String::from_utf8(plaintext).unwrap(), fixture["plaintext"].as_str().unwrap());
+    }
+
+    /// Y lo mismo con Dart: sin esto, el cruce de tres lenguajes que pide el
+    /// arranque móvil ("si Dart abre el de Rust y Rust abre el de Dart,
+    /// hablaréis") solo estaría comprobado en dos direcciones de tres.
+    #[test]
+    fn abre_lo_que_cifro_dart() {
+        let path = fixture_path("crypto-dart.json");
+        let raw = std::fs::read_to_string(&path).expect("falta contract/fixtures/crypto-dart.json, que va commiteado: sin él no hay prueba de interoperabilidad con Flutter");
+        let fixture: serde_json::Value = serde_json::from_str(&raw).unwrap();
+
+        let key = SharedKey::from_base64(fixture["key"].as_str().unwrap()).unwrap();
+        let plaintext = open(&key, fixture["nonce"].as_str().unwrap(), fixture["ciphertext"].as_str().unwrap())
+            .expect("lo que cifra Dart tiene que abrirlo Rust, o el móvil no hablará con el escritorio");
 
         assert_eq!(String::from_utf8(plaintext).unwrap(), fixture["plaintext"].as_str().unwrap());
     }
