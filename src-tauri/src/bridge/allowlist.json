@@ -15,6 +15,7 @@
   "get_account_usage_summary": "watch",
   "list_terminals": "watch",
   "list_terminal_states": "watch",
+  "get_terminal_tail": "watch",
   "get_git_overview": "watch",
   "get_worktree_changes": "watch",
   "get_worktree_file_diff": "watch",
@@ -37,5 +38,49 @@
 
   "open_pr_review_terminal": "launch",
   "send_pr_comments_to_terminal": "launch",
-  "open_task_worktrees": "launch"
+  "open_task_worktrees": "launch",
+
+  "_comment2": "Paso 0 del arranque móvil: los doce comandos del resumen de docs/mobile/FUNCIONALIDADES.md, sin los cuales «manejar Hangar desde el móvil» no es cierto.",
+
+  "open_terminal": "launch",
+  "close_terminal": "launch",
+
+  "get_default_terminal_mode": "steer",
+  "set_default_terminal_mode": "steer",
+  "update_session_settings": "steer",
+
+  "list_queued_runs": "watch",
+  "enqueue_run": "launch",
+  "cancel_queued_run": "steer",
+
+  "get_commit_files": "watch",
+  "get_commit_file_diff": "watch",
+
+  "list_source_scopes": "watch",
+
+  "dismiss_pr_comments": "steer",
+
+  "fan_out_prompt": "launch",
+  "project_fan_out": "launch",
+
+  "git_push": "launch",
+  "git_pull": "launch",
+  "git_fetch": "launch",
+  "checkout_branch": "launch",
+  "create_worktree_for_project": "launch",
+
+  "preview_pull_request": "launch",
+  "create_pull_request": "launch",
+  "get_pull_request": "watch",
+
+  "suggest_terminal_account": "watch",
+  "reopen_terminal_with_account": "steer",
+  "refresh_all_quotas": "steer",
+
+  "list_resumable_conversations": "steer",
+  "set_session_resume_target": "steer",
+  "list_file_edits": "watch",
+
+  "list_agent_nodes": "watch",
+  "run_agent_tree": "launch"
 }

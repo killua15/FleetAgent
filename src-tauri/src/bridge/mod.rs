@@ -7,9 +7,11 @@
 
 pub mod allowlist;
 pub mod crypto;
+pub mod dev_pairing_key;
 pub mod dispatch;
 pub mod pairing;
 pub mod protocol;
+pub mod redact;
 pub mod selection;
 pub mod session;
 

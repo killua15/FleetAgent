@@ -60,7 +60,7 @@ pub fn root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, Str
 ///
 /// Aparte, es la parte comprobable de `root` sin tocar el entorno del proceso
 /// —que es global y compartido con los demás tests corriendo en paralelo.
-fn expand_home(raw: &str, home: Option<&str>) -> PathBuf {
+pub(crate) fn expand_home(raw: &str, home: Option<&str>) -> PathBuf {
     match (raw.strip_prefix("~/"), home) {
         (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
         _ => PathBuf::from(raw),

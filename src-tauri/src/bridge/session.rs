@@ -3,6 +3,13 @@
 //! El emparejamiento *como interfaz* (el QR, aceptar, revocar) es la fase 2. Lo
 //! que vive aquí es el sustrato: sin un dispositivo con clave y nivel no hay
 //! puente que probar, y probar el puente es lo que la fase 1 tiene que entregar.
+//!
+//! La clave del dispositivo se guarda vía `dev_pairing_key`, no
+//! `credential_vault` directamente — con `HANGAR_DATA_DIR` puesto va a un
+//! archivo dentro de esa carpeta en vez del Keychain, porque un build de dev
+//! sin firmar recompilado a cada rato pierde acceso a lo que guardó el build
+//! anterior. En un build real (sin esa variable) `dev_pairing_key` delega en
+//! `credential_vault` sin ningún cambio de comportamiento.
 
 use crate::bridge::allowlist::Level;
 use crate::bridge::crypto::SharedKey;
@@ -100,7 +107,7 @@ pub fn bridge_status(db: tauri::State<DbConnection>) -> Result<BridgeStatus, Str
 /// a emparejar. Volver a emparejar sustituye la fila de todas formas.
 fn usable_device(db: &DbConnection) -> Option<PairedDevice> {
     let device = paired_device(db)?;
-    if crate::credential_vault::has(&credential_ref(&device.id)) {
+    if crate::bridge::dev_pairing_key::has(&credential_ref(&device.id)) {
         return Some(device);
     }
     log::warn!(
@@ -197,7 +204,7 @@ pub fn paired_device(db: &DbConnection) -> Option<PairedDevice> {
 /// La clave del dispositivo emparejado. Del llavero, nunca de la base.
 pub fn device_key(db: &DbConnection) -> Option<(SharedKey, Level)> {
     let device = paired_device(db)?;
-    let key = crate::credential_vault::get(&credential_ref(&device.id)).ok()?;
+    let key = crate::bridge::dev_pairing_key::get(&credential_ref(&device.id)).ok()?;
     Some((SharedKey::from_base64(&key).ok()?, device.level))
 }
 
@@ -212,11 +219,11 @@ pub fn credential_ref(device_id: &str) -> String {
 /// lógica de liberarlo: si nunca puede haber dos, no hay disputa que resolver.
 pub fn store_paired_device(db: &DbConnection, name: &str, level: Level, key: &SharedKey) -> Result<PairedDevice, String> {
     if let Some(previous) = paired_device(db) {
-        let _ = crate::credential_vault::delete(&credential_ref(&previous.id));
+        let _ = crate::bridge::dev_pairing_key::delete(&credential_ref(&previous.id));
     }
 
     let id = Uuid::new_v4().to_string();
-    crate::credential_vault::store(&credential_ref(&id), &key.to_base64())?;
+    crate::bridge::dev_pairing_key::store(&credential_ref(&id), &key.to_base64())?;
 
     let level_name = serde_json::to_value(level).map_err(|e| e.to_string())?.as_str().unwrap_or("watch").to_string();
     let paired_at = chrono::Utc::now().to_rfc3339();
@@ -238,7 +245,7 @@ pub fn store_paired_device(db: &DbConnection, name: &str, level: Level, key: &Sh
 #[tauri::command]
 pub fn bridge_revoke_device<R: tauri::Runtime>(app: tauri::AppHandle<R>, db: tauri::State<DbConnection>) -> Result<(), String> {
     if let Some(device) = paired_device(&db) {
-        let _ = crate::credential_vault::delete(&credential_ref(&device.id));
+        let _ = crate::bridge::dev_pairing_key::delete(&credential_ref(&device.id));
     }
     {
         let conn = db.0.lock().map_err(|e| e.to_string())?;

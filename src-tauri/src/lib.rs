@@ -135,6 +135,17 @@ pub fn run() {
                 terminals::tick_terminal_states(&state_handle);
             });
 
+            // Own, faster loop — the mobile tail's `EMIT_DEBOUNCE` (250ms) is
+            // well under the 1s cadence above, and piggybacking on that tick
+            // used to add up to another second of latency on top of it. This
+            // one only does work when a PTY terminal without a session
+            // actually has redacted text piled up.
+            let mobile_tail_handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                terminals::tick_mobile_tail(&mobile_tail_handle);
+            });
+
             let usage_handle = app.handle().clone();
             std::thread::spawn(move || loop {
                 terminals::poll_account_usage(&usage_handle);
@@ -236,6 +247,7 @@ pub fn run() {
             terminals::attach_terminal,
             terminals::detach_terminal,
             terminals::write_terminal,
+            terminals::get_terminal_tail,
             terminals::resize_terminal,
             terminals::close_terminal,
             terminals::list_terminals,

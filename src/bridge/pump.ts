@@ -27,6 +27,8 @@ const FORWARDED_EVENTS = [
   'session-status',
   'session-ended',
   'session-output',
+  'terminal-tail',
+  'permission-request',
   'pr-comments-found',
   'queue-updated',
 ] as const;

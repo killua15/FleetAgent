@@ -42,6 +42,10 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 portable-pty = "0.9"
 base64 = "0.22"
+# Redacts secrets out of a PTY's live output before it crosses the mobile
+# bridge (`bridge::redact`) — linear-time by construction, no backtracking,
+# so arbitrary program output can't turn it into a ReDoS surface.
+regex = "1"
 # XSalsa20-Poly1305 — el mismo `crypto_secretbox` de libsodium, en Rust puro.
 # Se eligió por interoperar con `sodium_libs` (Dart) y `libsodium-wrappers`
 # (Node) sin arrastrar una dependencia de C al build de macOS.
@@ -52,6 +56,7 @@ rand = "0.8"
 # and `blocking` because every other outbound call here already runs inside
 # `blocking::run_blocking`.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+vt100 = "0.16.2"
 
 # keyring 3 puts every platform backend behind a feature, and with none of them
 # enabled it silently falls back to an **in-memory** store: writes succeed, reads
