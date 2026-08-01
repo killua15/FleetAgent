@@ -7,9 +7,10 @@ import type { ProjectPrInbox } from '../types/pullRequest';
 import { Button } from './ui/button';
 import { IconTooltip } from './ui/tooltip';
 import { Spinner } from './Spinner';
-import { AccountsIcon, BranchIcon, FilesIcon, HomeIcon, PullRequestIcon, SettingsIcon, TasksIcon, TerminalIcon, UsageIcon } from './NavIcons';
+import { AccountsIcon, BranchIcon, FilesIcon, HomeIcon, MenuIcon, PullRequestIcon, SettingsIcon, TasksIcon, TerminalIcon, UsageIcon } from './NavIcons';
 import { UsageModal } from './UsageModal';
 import { useAuth } from '../auth/AuthProvider';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu';
 import styles from './AppTopBar.module.css';
 
 /** One destination: icon, label, active state, optional count.
@@ -176,20 +177,61 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
          * poller are all untouched and still work — restoring the feature is
          * putting a NavItem for `queue` back here. */}
       </nav>
+      {/* Below `.navMenu`'s breakpoint the row above overlaps rather than
+       * wrapping (no flex-wrap, and every item already at its minimum
+       * width), so instead of shrinking further it collapses into this one
+       * button — same destinations, same order, as a dropdown. */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button className={styles.navMenuTrigger} aria-label="Menu">
+            <MenuIcon />
+            {pendingPrComments > 0 && <span className={styles.navBadge}>{pendingPrComments > 99 ? '99+' : pendingPrComments}</span>}
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent>
+          {current.screen !== 'terminals' && (
+            <DropdownMenuItem onClick={() => navigate('terminals')}>
+              <HomeIcon /> Back to terminals
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem onClick={() => navigate('terminals')}>
+            <TerminalIcon /> Terminals
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => navigate('task-board')}>
+            <TasksIcon /> Tasks
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => navigate('pr-reviews')}>
+            <PullRequestIcon /> PRs{pendingPrComments > 0 && ` (${pendingPrComments})`}
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => navigate('git-panel')}>
+            <BranchIcon /> Git
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => navigate('files')}>
+            <FilesIcon /> Files
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => setUsageOpen(true)}>
+            <UsageIcon /> Usage
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => navigate('account-list')}>
+            <AccountsIcon /> Accounts
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => navigate('general-settings')}>
+            <SettingsIcon /> Settings
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
       <span className={styles.spacer} />
       {mode === 'yolo' && (
         <span className={styles.yoloBadge} title="Las terminales de este Mac ejecutan sin pedir permiso — Settings → modo de las terminales">
           yolo
         </span>
       )}
-      <Button
-        variant="outline"
-        className={styles.palette}
-        title="Command palette"
-        onClick={() => navigate('command-palette')}
-      >
-        search sessions… <span className={styles.kbd}>⌘K</span>
-      </Button>
+      {/* The ⌘K command palette is hidden: it searches `list_workspace_sessions`
+       * rows that never get pruned when a terminal closes, so closed ones
+       * lingered forever — and the sidebar's own filter already covers the
+       * same "find a terminal" job against live data. `CommandPalette.tsx`,
+       * its route, and the ⌘K shortcut in `App.tsx` are untouched; restoring
+       * this is putting the button back and fixing the underlying query. */}
       <AccountButton />
       {primaryAction}
       {usageOpen && <UsageModal onClose={() => setUsageOpen(false)} />}
