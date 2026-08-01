@@ -32,6 +32,17 @@ Y nivel: `watch` (mirar) · `steer` (dirigir) · `launch` (crear trabajo).
 
 ---
 
+## Es una función Pro
+
+Todo este documento — emparejar y todo lo que se construyó sobre eso
+(`TDD-4-a-8-movil.md`, Fases 4 a 8) — exige `entitlement.plan !== 'free'`
+(`'pro'` o `'team'`). El gate está en el botón "Emparejar" de
+`GeneralSettings.tsx`: sin plan pago, queda deshabilitado con la
+explicación puesta, nada más. Ver `MOBILE_BRIDGE_TRD.md` §12.7 para el
+razonamiento completo (por qué el gate es client-side y alcanza).
+
+---
+
 ## 1 · Emparejar y vivir emparejado
 
 ### Emparejar un teléfono
@@ -130,11 +141,11 @@ significa que el móvil tenga que tener una rejilla de caracteres.
 
 | Funcionalidad | Comando | Estado | Nivel |
 |---|---|---|---|
-| Abrir una terminal | `open_terminal` | ➕ | launch |
-| Cerrarla | `close_terminal` | ➕ | launch |
-| Sugerir la cuenta menos gastada | `suggest_terminal_account` | ➕ | watch |
+| Abrir una terminal | `open_terminal` | ✅ | launch |
+| Cerrarla | `close_terminal` | ✅ | launch |
+| Sugerir la cuenta menos gastada | `suggest_terminal_account` | ✅ expuesto, sin consumir todavía | watch |
 | Resolver a qué apunta una terminal | `resolve_terminal_target` | ➕ | watch |
-| Reabrir con otra cuenta (misma conversación) | `reopen_terminal_with_account` | ➕ | steer |
+| Reabrir con otra cuenta (misma conversación) | `reopen_terminal_with_account` | ✅ expuesto, sin consumir todavía | steer |
 | Renombrarla | `rename_terminal` | ✅ | steer |
 | `attach`/`detach`/`resize`/`restore` | — | ⛔ ciclo de vida del PTY, no del móvil | — |
 
@@ -192,15 +203,16 @@ excepción no aplica a terminales con sesión.
 | Parar el agente | `stop_session` | ✅ | steer |
 | Ver la conversación | `get_session_view`, `list_session_blocks` | ✅ | watch |
 | Marcar dónde estoy mirando | `bridge_select` | ✅ | watch |
-| Ficheros que tocó el turno | `list_file_edits` | ➕ | watch |
-| Retomar una conversación anterior | `list_resumable_conversations`, `set_session_resume_target` | ➕ | steer |
+| Ficheros que tocó el turno | `list_file_edits` | ✅ expuesto, sin consumir todavía | watch |
+| Retomar una conversación anterior | `list_resumable_conversations`, `set_session_resume_target` | ✅ expuesto, sin consumir todavía | steer |
 | Borrar una sesión | `delete_session` | ➕ | launch |
 
 ---
 
 ## 5 · Permisos y modo yolo
 
-Lo pediste explícitamente y **hoy no se puede desde el móvil**.
+Ya se puede desde el móvil (Fase 5/6 de `TDD-4-a-8-movil.md`) — esta sección
+quedó vieja al escribirse antes de esa fase.
 
 ### Flujo: contestar un permiso
 
@@ -227,16 +239,17 @@ tiene sentido antes de salir.
 | Funcionalidad | Comando | Estado | Nivel |
 |---|---|---|---|
 | Contestar un permiso | `respond_to_permission_request` | ✅ | steer |
-| Modo por defecto del Mac | `get_default_terminal_mode`, `set_default_terminal_mode` | ➕ | steer |
-| Modo de una sesión | `update_session_settings` | ➕ | steer |
+| Modo por defecto del Mac | `get_default_terminal_mode`, `set_default_terminal_mode` | ✅ | steer |
+| Modo de una sesión | `update_session_settings` | ✅ | steer |
 
 ---
 
 ## 6 · La cola de trabajo
 
-Aquí hay una **incoherencia real** en el contrato de hoy: el puente reenvía
-`queue-updated` al teléfono, pero no expone ni un comando de cola. Le cuenta al
-móvil que cambió algo que el móvil no puede ni ver ni tocar.
+La incoherencia que había acá ya no es tal — los tres comandos están
+allowlisteados —, pero sigue sin construirse del lado del móvil: el puente
+reenvía `queue-updated`, y hoy nada en la app lo escucha ni pinta la cola.
+Candidato a una fase futura, sin asignar todavía.
 
 ### Flujo
 
@@ -246,16 +259,17 @@ móvil que cambió algo que el móvil no puede ni ver ni tocar.
 
 | Funcionalidad | Comando | Estado | Nivel |
 |---|---|---|---|
-| Ver la cola | `list_queued_runs` | ➕ | watch |
-| Encolar | `enqueue_run` | ➕ | launch |
-| Cancelar | `cancel_queued_run` | ➕ | steer |
+| Ver la cola | `list_queued_runs` | ✅ expuesto, sin consumir todavía | watch |
+| Encolar | `enqueue_run` | ✅ expuesto, sin consumir todavía | launch |
+| Cancelar | `cancel_queued_run` | ✅ expuesto, sin consumir todavía | steer |
 
 ---
 
 ## 7 · Fan-out: un prompt a varias terminales
 
 Mandar lo mismo a varios agentes y comparar. Es una de las razones de existir de
-Hangar y hoy el móvil no la alcanza.
+Hangar y hoy el móvil no la alcanza — los comandos ya están expuestos, falta
+construir la pantalla. Candidato a una fase futura, sin asignar todavía.
 
 ### Flujo
 
@@ -265,8 +279,8 @@ Hangar y hoy el móvil no la alcanza.
 
 | Funcionalidad | Comando | Estado | Nivel |
 |---|---|---|---|
-| A terminales concretas | `fan_out_prompt` | ➕ | launch |
-| A un proyecto | `project_fan_out` | ➕ | launch |
+| A terminales concretas | `fan_out_prompt` | ✅ expuesto, sin consumir todavía | launch |
+| A un proyecto | `project_fan_out` | ✅ expuesto, sin consumir todavía | launch |
 
 ---
 
@@ -382,7 +396,7 @@ necesita acción, un "LGTM" liso).
 |---|---|---|---|
 | Cuentas y su estado | `list_accounts`, `list_account_auth` | ✅ | watch |
 | Cuotas | `list_account_quotas` | ✅ | watch |
-| Refrescar cuotas | `refresh_all_quotas`, `fetch_real_usage` | ➕ | steer |
+| Refrescar cuotas | `refresh_all_quotas` ✅ expuesto sin consumir, `fetch_real_usage` ➕ | mixto | steer |
 | Rotación del proyecto | `list_project_account_rotation`, `get_rotation_policy` | ➕ | watch |
 | Cambiar la política de rotación | `set_rotation_policy` | ➕ | steer |
 | Crear / borrar cuentas, login | `create_account`, `begin_login`, `validate_api_key` | ⛔ credenciales | — |
@@ -434,8 +448,8 @@ menos apta para una pantalla de teléfono.
 
 | Funcionalidad | Comando | Estado | Nivel |
 |---|---|---|---|
-| Ver los árboles y su avance | `list_agent_nodes` | ➕ | watch |
-| Lanzar uno ya definido | `run_agent_tree` | ➕ | launch |
+| Ver los árboles y su avance | `list_agent_nodes` | ✅ expuesto, sin consumir todavía | watch |
+| Lanzar uno ya definido | `run_agent_tree` | ✅ expuesto, sin consumir todavía | launch |
 | Crear o editar la estructura | `create_agent_node`, `update_agent_node` | ⛔ en móvil no | — |
 
 Lanzar sí, diseñar no: definir un árbol es trabajo de escritorio.
@@ -492,7 +506,7 @@ Hasta que exista, el diseño no puede dar por hecho que el usuario se enterará.
 | Funcionalidad | Comando | Estado | Nivel |
 |---|---|---|---|
 | Nombre del Mac | `set_machine_name` | ➕ | steer |
-| Modo por defecto de las terminales | `set_default_terminal_mode` | ➕ | steer |
+| Modo por defecto de las terminales | `set_default_terminal_mode` | ✅ | steer |
 | Ajustes generales | `get_app_settings`, `set_app_settings` | ⛔ mezcla cosas sensibles | — |
 
 `set_app_settings` guarda un revoltijo que incluye rutas y tokens; exponerlo

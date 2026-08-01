@@ -442,7 +442,17 @@ Hangar. Ese es el objetivo del documento.
    distribuirla. **Consecuencia, dicha claramente**: la app no te avisa; la
    consultas. Ver §13.
 6. **iOS y Android** desde el principio.
-7. **Precio: sin decidir.** Primero funcionando para uso propio.
+7. **Precio: decidido.** El companion móvil entero — emparejar y todo lo que
+   se construyó sobre eso (Fases 4 a 8 de `TDD-4-a-8-movil.md`) — es una
+   función **Pro**: exige `entitlement.plan !== 'free'` (`'pro'` o `'team'`,
+   ver `src/lib/supabase.ts`). El gate vive del lado del escritorio
+   (`GeneralSettings.tsx`, `PhoneRow`): sin plan pago, el botón "Emparejar"
+   queda deshabilitado con la explicación puesta. **A propósito, nada nuevo
+   en Rust ni en el puente** — el modelo de amenaza acá es un usuario
+   gateando su propia app, no un tercero adversario, así que no hace falta
+   duplicar la comprobación del lado del bridge. Un teléfono ya emparejado
+   antes de bajar de plan sigue funcionando: esto bloquea *empezar* un
+   emparejamiento nuevo, no revoca uno existente.
 8. **El modo lo fija el Mac, nunca el móvil.** `yolo` es una configuración de
    Hangar en el escritorio; la app lo **ve** y no lo cambia. Poner una terminal a
    ejecutar sin preguntar es una decisión que se toma delante del repositorio,

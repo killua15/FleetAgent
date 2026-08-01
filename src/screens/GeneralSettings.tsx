@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useAuth } from '../auth/AuthProvider';
 import { invoke } from '../lib/invoke';
 import { toastError } from '../components/ErrorOverlay';
 import { check } from '@tauri-apps/plugin-updater';
@@ -398,6 +399,14 @@ function TerminalModeRow() {
 }
 
 function PhoneRow() {
+  // El companion móvil (emparejar, ver, dirigir y escribir en terminales
+  // desde el teléfono — todo lo que trae `feat/mobile-companion`) es una
+  // función Pro: emparejar exige `entitlement.plan !== 'free'`. Un teléfono
+  // ya emparejado antes de bajar de plan sigue funcionando — esto solo
+  // bloquea *empezar* un emparejamiento nuevo, no revoca uno existente.
+  const { entitlement } = useAuth();
+  const isPro = entitlement != null && entitlement.plan !== 'free';
+
   const [status, setStatus] = useState<{ machineName: string; device: { name: string; level: string; lastSeenAt: string | null } | null } | null>(null);
   const [name, setName] = useState('');
   const [pairing, setPairing] = useState(false);
@@ -437,7 +446,7 @@ function PhoneRow() {
             revocar
           </Button>
         ) : (
-          <Button size="sm" onClick={() => setPairing(true)}>
+          <Button size="sm" onClick={() => setPairing(true)} disabled={!isPro} title={isPro ? undefined : 'El companion móvil es una función Pro'}>
             Emparejar
           </Button>
         )}
@@ -449,13 +458,17 @@ function PhoneRow() {
           {status.device.lastSeenAt ? ` · visto ${new Date(status.device.lastSeenAt).toLocaleString()}` : ' · aún no se ha conectado'}
           . Revocar corta el acceso en el siguiente mensaje, sin que el teléfono tenga que cooperar.
         </span>
-      ) : (
+      ) : isPro ? (
         <span className={styles.updateHint}>
           Ningún teléfono emparejado. La clave de cifrado viaja en el QR y solo ahí, así que emparejar exige tener este Mac delante.
         </span>
+      ) : (
+        <span className={styles.updateHint}>
+          Ver, dirigir y escribir en tus terminales desde el teléfono es una función Pro. Hace falta una cuenta con plan Pro o Team para emparejar uno.
+        </span>
       )}
 
-      {pairing && <PairPhoneDialog onClose={() => setPairing(false)} onPaired={load} />}
+      {pairing && isPro && <PairPhoneDialog onClose={() => setPairing(false)} onPaired={load} />}
     </div>
   );
 }

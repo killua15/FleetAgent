@@ -227,6 +227,34 @@ enviar lo manda como si se hubiera tipeado.
 
 ---
 
+## Candidatas para versiones futuras, sin fase asignada
+
+Fases 4 a 8 son el v1 completo (ver "Es una función Pro" en
+`FUNCIONALIDADES.md`). Lo de acá está expuesto en `allowlist.json` — no
+exige tocar Rust — pero nadie lo consume todavía del lado del móvil.
+Deliberadamente sin el detalle de una fase real: escribirlo hoy sería
+especular contra pantallas que no existen (ver el aviso al principio de
+este documento).
+
+- **La cola de trabajo** (`FUNCIONALIDADES.md` §6): `queue-updated` ya
+  llega al teléfono y no lo escucha nadie.
+- **Fan-out** (§7): mandar un prompt a varias terminales a la vez — una de
+  las razones de existir de Hangar, sin pantalla móvil.
+- **Árboles de agentes** (§14): ver el avance y lanzar uno ya definido
+  (crear/editar la estructura sigue ⛔, eso sí es de escritorio).
+- **Retomar y auditar** (§4): conversaciones resumibles y qué ficheros tocó
+  un turno.
+- **Rotación y refresco real de cuotas** (§11): más allá de lo que ya
+  consume Fase 7a.
+
+Lo que sigue genuinamente sin exponer siquiera (harían falta líneas nuevas
+en `allowlist.json`, algunas ni existen como comando de Hangar todavía):
+`resolve_terminal_target`, `delete_session`, `read_file`/`list_files`,
+`fetch_real_usage`, presupuestos/topes de cuenta, memoria del proyecto
+(`CLAUDE.md`) desde el móvil, y renombrar el Mac desde el teléfono.
+
+---
+
 ## Lo que no se construye, y por qué
 
 **Emulador de terminal.** Es donde se va la mitad del esfuerzo del competidor, y
