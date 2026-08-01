@@ -80,7 +80,15 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          args: --target ${{ matrix.target }}
+          # `tauri.conf.json`'s `bundle.macOS.signingIdentity` is hardcoded to
+          # "Hangar" — a real identity in the *local* keychain this repo's
+          # manual `release: vX.Y.Z` commits were built with. A CI runner's
+          # keychain has no such identity and `codesign` fails outright
+          # ("no identity found") rather than falling back to unsigned. This
+          # `--config` overrides just that one field for this invocation —
+          # `-` is codesign's own ad-hoc signing, no certificate needed —
+          # without touching the committed config a local build still uses.
+          args: --target ${{ matrix.target }} --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}-dev', github.run_number) }}
           releaseName: Hangar ${{ github.ref_type == 'tag' && github.ref_name || 'dev build' }}
           releaseBody: |
