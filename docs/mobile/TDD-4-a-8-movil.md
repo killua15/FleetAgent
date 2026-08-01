@@ -171,7 +171,34 @@ Fuera de esta fase: historial de commits y ramas (`list_branches`,
 separada `GitHistoryView.tsx` del escritorio, "qué pasó" en vez de "qué
 cambió ahora"; queda para una sub-fase futura si hace falta.
 
-El resto de Fase 7 (tablero de tareas) sigue sin construir.
+### Fase 7d · Tablero de tareas — hecho
+
+`docs/mobile/FUNCIONALIDADES.md` §8: de un issue a un worktree trabajando.
+Se entra por proyecto (un ícono en la fila propia de un proyecto en
+`git-overview`, nunca en una fila de worktree — una tarea abre uno nuevo, no
+vive en uno existente), no por una pantalla separada de fuentes/tableros:
+`list_project_tasks` ya resuelve del lado del Mac qué fuentes mirar y a qué
+scope, vía los links existentes o, sin ninguno, todas las configuradas a su
+scope por defecto. Filtro por tablero de origen (`Task.container`) del lado
+del cliente, sin pedir `list_source_scopes` — no hace falta si ya no hay que
+elegir de dónde salen las tareas.
+
+Igual que en la bandeja de PRs: de una tarea por vez, nunca selección
+múltiple; elegir cuenta es manual (mismo selector reusado de Fase 7b), sin
+editor de rama (la sugerida por el Mac se usa tal cual). Abrir siempre
+resuelve una terminal de sesión con el agente ya arrancando.
+
+**Consume**: `list_project_tasks` (*mirar*), `open_task_worktrees`
+(*lanzar*), `list_accounts` (ya expuesto desde Fase 7b) — todos ya
+allowlisteados desde antes de esta fase, sin tocar Rust.
+**Hecho cuando**: desde el móvil se ve el tablero de tareas de un proyecto
+real, se elige una tarea y una cuenta, y la app navega a la terminal de
+sesión que el Mac abrió con el worktree y el brief ya cargados.
+
+Fuera de esta fase: navegar por fuente/tablero sin pasar por un proyecto
+(`list_task_sources`/`list_source_scopes` desde una pantalla propia) —
+ninguna fuente Mac-wide lo pide todavía, y agregarla sin ese caso de uso
+sería especular.
 
 ## Fase 8 · Voz · ~4 días
 

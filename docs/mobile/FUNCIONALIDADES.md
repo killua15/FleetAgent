@@ -291,12 +291,17 @@ convierte en un agente trabajando.
 |---|---|---|---|
 | Fuentes configuradas | `list_task_sources`, `list_task_source_links` | ✅ | watch |
 | Tareas | `list_source_tasks`, `list_project_tasks` | ✅ | watch |
-| **Elegir tablero o lista** | `list_source_scopes` | ➕ | watch |
+| Elegir tablero o lista | `list_source_scopes` | ✅ | watch |
 | Abrir worktrees de tareas | `open_task_worktrees` | ✅ | launch |
 | Configurar una fuente (tokens) | `save_task_source`, `link_task_source` | ⛔ lleva credenciales | — |
 
-`list_source_scopes` faltando es otra incoherencia: se pueden pedir las tareas
-pero no saber de qué tableros elegir.
+**Móvil, `TDD-4-a-8-movil.md` Fase 7d**: entra por proyecto (desde la fila
+propia de un proyecto en `git-overview`, no desde una pantalla de fuentes),
+así que consume `list_project_tasks` directo — el Mac ya resuelve
+sources/scope vía los links existentes. `list_source_scopes` queda sin
+consumir del lado del móvil por ahora: no hay comando "todas las tareas de
+esta Mac" del que colgar una pantalla de fuentes/tableros como la del
+escritorio, y `Task.container` ya alcanza para filtrar del lado del cliente.
 
 ---
 
