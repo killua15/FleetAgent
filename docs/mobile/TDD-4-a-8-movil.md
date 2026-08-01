@@ -200,7 +200,7 @@ Fuera de esta fase: navegar por fuente/tablero sin pasar por un proyecto
 ninguna fuente Mac-wide lo pide todavía, y agregarla sin ese caso de uso
 sería especular.
 
-## Fase 8 · Voz · ~4 días
+## Fase 8 · Voz — hecho
 
 **Objetivo**: dictar un prompt.
 
@@ -209,6 +209,21 @@ y tú confirmas antes de enviar.
 
 La confirmación no es burocracia: *"dijiste algo mal y el agente lo hizo"* es el
 fallo que hunde la confianza en la voz para siempre, y ocurre una vez.
+
+Sin comando nuevo ni pantalla nueva: `VoiceMicButton` (nuevo,
+`presentation/widgets/`) se mantiene apretado, dicta en vivo, y el texto
+reconocido reemplaza el contenido del composer — visible y editable, nunca
+mandado solo. Se agregó en los dos composers que ya existían: el de sesión
+(`terminal_screen.dart`, que ya tenía el ícono de mic como placeholder desde
+Fase 6) y el de PTY directo (`pty_terminal_screen.dart`, Fase 6bis, que no
+tenía ninguno). Confirmar sigue siendo el mismo botón de enviar de siempre —
+`send_message` o `write_terminal`, según cuál composer sea.
+
+**Consume**: nada nuevo del lado del Mac — es reconocimiento nativo del
+teléfono, no un comando de la allowlist.
+**Hecho cuando**: desde cualquiera de los dos composers, mantener apretado el
+mic dicta, soltar deja el texto reconocido visible y editable, y tocar
+enviar lo manda como si se hubiera tipeado.
 
 ---
 

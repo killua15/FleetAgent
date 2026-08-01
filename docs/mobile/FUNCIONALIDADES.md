@@ -458,6 +458,12 @@ No hay comando nuevo: la voz es una forma de escribir. Reconocimiento nativo del
 sistema (`speech_to_text`), sin servicio externo — encaja con «no quiero mi propia
 infra» y evita mandar audio a ninguna parte.
 
+**Móvil, `TDD-4-a-8-movil.md` Fase 8**: `VoiceMicButton` en los dos
+composers existentes (sesión y PTY directo). Mantener apretado dicta en
+vivo, soltar deja el texto reconocido en el campo — visible, editable —, y
+el mismo botón de enviar de siempre es la confirmación. Nada del lado del
+Mac cambia.
+
 ---
 
 ## 16 · Notificaciones
