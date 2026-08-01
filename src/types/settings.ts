@@ -8,6 +8,7 @@ export interface AppSettings {
   notifyAccountExhausted: boolean;
   notifySpendCap: boolean;
   notifyPrComments: boolean;
+  notifyUpdateAvailable: boolean;
   /** Opt-in gate for the tree-canvas feature (hierarchical agent teams) —
    * off by default, hides the "Hierarchy trees" icon in `AppTopBar` until
    * turned on. */

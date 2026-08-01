@@ -50,6 +50,7 @@ export function GeneralSettings() {
     notifyAccountExhausted: false,
     notifySpendCap: false,
     notifyPrComments: false,
+    notifyUpdateAvailable: false,
     agentTreesEnabled: false,
     includeOwnPrComments: false,
   });
@@ -288,11 +289,18 @@ export function GeneralSettings() {
               onChange={(v) => toggleNotification('notifySpendCap', v)}
             />
             <NotificationRow
-              label="New PR comments"
-              description="A pull request Hangar opened got new review comments — checked every 5 minutes while Hangar is open."
+              label="Pull requests"
+              description="A new PR shows up for one of your projects, or one Hangar opened gets new review comments — checked every 5 minutes while Hangar is open."
               checked={appSettings.notifyPrComments}
               saving={savingNotif === 'notifyPrComments'}
               onChange={(v) => toggleNotification('notifyPrComments', v)}
+            />
+            <NotificationRow
+              label="Update available"
+              description="A new version of Hangar is ready to install."
+              checked={appSettings.notifyUpdateAvailable}
+              saving={savingNotif === 'notifyUpdateAvailable'}
+              onChange={(v) => toggleNotification('notifyUpdateAvailable', v)}
             />
           </div>
         </section>

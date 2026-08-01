@@ -200,6 +200,7 @@ export function AgentPanelBody({
     notifyAccountExhausted: false,
     notifySpendCap: false,
     notifyPrComments: false,
+    notifyUpdateAvailable: false,
     agentTreesEnabled: false,
     includeOwnPrComments: false,
   });

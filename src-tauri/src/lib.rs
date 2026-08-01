@@ -288,6 +288,7 @@ pub fn run() {
             update_access::set_update_access,
             terminals::refresh_all_quotas,
             notifications::send_test_notification,
+            notifications::notify_update_available,
             bridge::session::bridge_status,
             bridge::session::set_machine_name,
             bridge::session::get_default_terminal_mode,

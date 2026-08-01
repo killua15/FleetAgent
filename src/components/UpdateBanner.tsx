@@ -41,8 +41,15 @@ export function UpdateBanner() {
         .then((headers) => check(headers ? { headers } : undefined))
         .then((found) => {
           // Never replace one already on screen: the user may be mid-install,
-          // and re-rendering the banner under them would reset it.
-          if (found && !stopped) setUpdate((current) => current ?? found);
+          // and re-rendering the banner under them would reset it. That same
+          // "only on the null→found transition" check is what keeps the OS
+          // notification to once per version instead of once per 30-minute poll.
+          if (found && !stopped) {
+            setUpdate((current) => {
+              if (!current) invoke('notify_update_available', { version: found.version }).catch(() => {});
+              return current ?? found;
+            });
+          }
         })
         // Quietly: no network, no token, or an endpoint that has no release yet
         // are all normal, and none of them is worth a toast.

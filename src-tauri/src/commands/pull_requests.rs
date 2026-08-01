@@ -1489,7 +1489,14 @@ pub async fn check_all_open_prs_now(app: AppHandle) -> Result<(), String> {
 /// gets no session (only a PR Hangar opened itself carries the session that
 /// produced it), and errors are the caller's to log, not surface, since this
 /// runs opportunistically alongside a real check.
-fn record_open_prs_for_project(db: &DbConnection, project_id: &str, owner: &str, repo: &str, snapshot: &RepoPrSnapshot) -> Result<(), String> {
+fn record_open_prs_for_project<R: Runtime>(
+    app: &AppHandle<R>,
+    db: &DbConnection,
+    project_id: &str,
+    owner: &str,
+    repo: &str,
+    snapshot: &RepoPrSnapshot,
+) -> Result<(), String> {
     if snapshot.prs.is_empty() {
         return Ok(());
     }
@@ -1536,6 +1543,18 @@ fn record_open_prs_for_project(db: &DbConnection, project_id: &str, owner: &str,
             ],
         )
         .map_err(|e| e.to_string())?;
+
+        // Only for PRs that aren't yours — a PR Hangar just opened for you is
+        // not news, and this would otherwise fire every time an agent finishes
+        // one. Shares the comments toggle: both are "a PR needs your attention".
+        if relation != "mine" {
+            crate::notifications::notify_if_enabled(
+                app,
+                |s| s.notify_pr_comments,
+                "New pull request",
+                &format!("{}/{} #{}: {}", owner, repo, pr.number, pr.title.as_deref().unwrap_or("(untitled)")),
+            );
+        }
     }
     Ok(())
 }
@@ -1637,7 +1656,7 @@ pub fn poll_all_open_prs<R: Runtime>(app: &AppHandle<R>) {
                 continue;
             }
         };
-        if let Err(e) = record_open_prs_for_project(&db, &project_id, &owner, &repo, &snapshot) {
+        if let Err(e) = record_open_prs_for_project(app, &db, &project_id, &owner, &repo, &snapshot) {
             log::error!("poll_all_open_prs: recording {owner}/{repo}'s PRs failed: {e}");
         }
 
