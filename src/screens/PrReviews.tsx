@@ -104,9 +104,11 @@ export function PrReviews() {
       // the backend resolves or creates) under the chosen account, running
       // `claude` already working on the comments. 80x24 is the shell's initial
       // size; the pane's first fit() corrects it.
-      await invoke<TerminalInfo>('send_pr_comments_to_terminal', { commentIds: [comment.id], accountId, cols: 80, rows: 24 });
+      const info = await invoke<TerminalInfo>('send_pr_comments_to_terminal', { commentIds: [comment.id], accountId, cols: 80, rows: 24 });
       await load();
-      navigate('terminals');
+      // Restores the panel if it was minimized, and scrolls it into view —
+      // without this the comment lands in a terminal the user never sees.
+      navigate('terminals', { focusTerminalId: info.id });
     } catch (e) {
       toastError(String(e));
     } finally {
@@ -120,8 +122,8 @@ export function PrReviews() {
   const handleReview = async (entry: PrInboxEntry, accountId: string) => {
     setReviewingPrId(entry.pullRequest.id);
     try {
-      await invoke<TerminalInfo>('open_pr_review_terminal', { prId: entry.pullRequest.id, accountId, cols: 80, rows: 24 });
-      navigate('terminals');
+      const info = await invoke<TerminalInfo>('open_pr_review_terminal', { prId: entry.pullRequest.id, accountId, cols: 80, rows: 24 });
+      navigate('terminals', { focusTerminalId: info.id });
     } catch (e) {
       toastError(String(e));
     } finally {

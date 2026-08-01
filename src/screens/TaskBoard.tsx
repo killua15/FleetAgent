@@ -116,7 +116,7 @@ export function TaskBoard() {
     if (!accountId || !projectId || chosen.length === 0) return;
     setOpening(true);
     try {
-      await invoke<TerminalInfo[]>('open_task_worktrees', {
+      const opened = await invoke<TerminalInfo[]>('open_task_worktrees', {
         projectId,
         tasks: chosen.map((task) => ({
           branch: task.suggestedBranch,
@@ -131,7 +131,10 @@ export function TaskBoard() {
         cols: 80,
         rows: 24,
       });
-      navigate('terminals');
+      // Restores whichever panel was minimized. Several tasks can open at
+      // once (multi-select); focusing the first is still better than
+      // landing on a screen where none of them are visibly open.
+      navigate('terminals', { focusTerminalId: opened[0]?.id });
     } catch (e) {
       toastError(String(e));
     } finally {
