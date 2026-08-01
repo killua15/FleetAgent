@@ -60,25 +60,23 @@ jobs:
       # `tauri-action` runs `beforeBuildCommand` (npm run build) itself, which
       # typechecks and builds the frontend — the Rust crate resolves
       # `frontendDist` at compile time and won't build without it.
+      #
+      # No `APPLE_CERTIFICATE`/`APPLE_SIGNING_IDENTITY`/etc: those secrets were
+      # never actually configured in this repo (`gh secret list` only shows
+      # the two `TAURI_SIGNING_PRIVATE_KEY*` ones below). Setting an `env:` key
+      # to `${{ secrets.MISSING }}` still *defines* the variable as an empty
+      # string rather than leaving it unset, and tauri-bundler's codesign step
+      # treats "set but empty" as "try to sign with this" — it tried to
+      # `security import` an empty certificate and failed outright, instead of
+      # the graceful "no cert, ship unsigned" fallback the comment here used to
+      # promise. Add the six back (with real values) the day there's an Apple
+      # Developer cert to sign with.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Signing and notarization are opt-in: without an Apple Developer
-          # account these secrets are absent, the build still produces a working
-          # .app/.dmg, and macOS shows a Gatekeeper warning on first open. That
-          # warning costs real installs, so this is worth setting up before any
-          # release meant for strangers — but it must not block cutting one now.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           # The updater's own keypair — nothing to do with Apple. This is what
           # lets an unsigned build still deliver updates the app will accept:
           # Gatekeeper is paid once at the first install, not on every fix.
-          # Without these the bundle still builds; it just ships no update
-          # manifest, and installed copies stay where they are.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
@@ -98,3 +96,95 @@ jobs:
           # is never briefly public as a complete release.
           releaseDraft: true
           prerelease: false
+
+      # Feeds `publish-update-manifest` below — `createUpdaterArtifacts: true`
+      # in `tauri.conf.json` makes `tauri-action` emit this `.tar.gz` +
+      # `.tar.gz.sig` pair next to the `.app`/`.dmg`, signed with
+      # `TAURI_SIGNING_PRIVATE_KEY` above regardless of Apple codesigning.
+      - name: Locate the updater artifact
+        id: updater
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: |
+          set -euo pipefail
+          dir="src-tauri/target/${{ matrix.target }}/release/bundle/macos"
+          tarball=$(find "$dir" -maxdepth 1 -name '*.app.tar.gz' -print -quit)
+          if [ -z "$tarball" ]; then
+            echo "no .app.tar.gz under $dir — was TAURI_SIGNING_PRIVATE_KEY set?" >&2
+            exit 1
+          fi
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.target == 'aarch64-apple-darwin'
+        with:
+          name: updater-aarch64-apple-darwin
+          path: |
+            ${{ steps.updater.outputs.tarball }}
+            ${{ steps.updater.outputs.tarball }}.sig
+          if-no-files-found: error
+
+  # The auto-update channel Hangar itself checks (`update_access.rs`,
+  # `tauri.conf.json`'s updater `endpoints`) isn't GitHub Releases at all — a
+  # private repo's release asset ids change every release, so the app instead
+  # reads a fixed path, `updates/latest.json` + `updates/Hangar.app.tar.gz`,
+  # committed straight to `main`. Before this job that step was still manual
+  # (see the `release: vX.Y.Z` commits) — `bundle` produces a signed tarball
+  # nobody published anywhere the app would look.
+  #
+  # Apple Silicon only, matching every `release: vX.Y.Z` commit so far — the
+  # `updates/latest.json` this replaces never carried an `x86_64` entry either.
+  # Extending to Intel is a real improvement, just not this one's job.
+  publish-update-manifest:
+    needs: bundle
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: updater-aarch64-apple-darwin
+          path: artifact
+
+      - name: Assemble updates/latest.json
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          pub_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          tarball=$(find artifact -maxdepth 1 -name '*.app.tar.gz' -print -quit)
+          signature=$(cat "$tarball.sig")
+
+          mkdir -p updates
+          cp "$tarball" updates/Hangar.app.tar.gz
+          python3 - "$version" "$pub_date" "$signature" > updates/latest.json <<'PYEOF'
+          import json, sys
+          version, pub_date, signature = sys.argv[1:4]
+          print(json.dumps({
+              "version": version,
+              "notes": f"Hangar {version}",
+              "pub_date": pub_date,
+              "platforms": {
+                  "darwin-aarch64": {
+                      "signature": signature,
+                      "url": "https://api.github.com/repos/killua15/FleetAgent/contents/updates/Hangar.app.tar.gz",
+                  },
+              },
+          }, indent=2))
+          PYEOF
+
+      - name: Commit and push the update manifest
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add updates/latest.json updates/Hangar.app.tar.gz
+          if git diff --cached --quiet; then
+            echo "nothing changed, skipping commit"
+            exit 0
+          fi
+          git commit -m "release: ${GITHUB_REF_NAME}"
+          git push origin HEAD:main
