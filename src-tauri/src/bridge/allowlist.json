@@ -59,6 +59,7 @@
   "list_source_scopes": "watch",
 
   "dismiss_pr_comments": "steer",
+  "check_all_open_prs_now": "steer",
 
   "fan_out_prompt": "launch",
   "project_fan_out": "launch",

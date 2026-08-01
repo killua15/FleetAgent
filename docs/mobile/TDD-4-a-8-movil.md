@@ -100,6 +100,79 @@ cuenta y proyecto.
 flota en el bolsillo"** — que es la única razón por la que tiene sentido
 construirla habiendo alternativas gratuitas.
 
+### Fase 7a · Gasto y uso por cuenta/proyecto — hecho
+
+Pantalla `spend` por Mac: gasto de cada cuenta (sesión/semana, o coste directo
+para una cuenta que factura por clave), gasto por proyecto en los últimos 7
+días, y presupuestos semanales con su `estimated` cuando el reparto entre
+proyectos es una aproximación. Solo lectura — cambiar un presupuesto o tope
+sigue ➕ (FUNCIONALIDADES.md §12).
+
+**Consume**: `list_account_spend`, `list_project_spend`, `list_project_budgets`
+(nivel *mirar*, ya expuestos desde antes de Fase 7). Sin evento en vivo — se
+carga al entrar y se refresca a mano (`pull-to-refresh`), igual que el
+escritorio no tiene un evento dedicado para esto tampoco.
+**Hecho cuando**: desde la tarjeta de una Mac en la flota, un ícono lleva a su
+gasto por cuenta y proyecto, y a sus presupuestos.
+
+### Fase 7b · PRs y comentarios — hecho
+
+Bandeja de revisión por Mac, agrupada por proyecto: cada PR abierto con sus
+comentarios pendientes, con pestañas cliente-side (mío / para revisar /
+todos) sobre `relation`. Acciones: mandar un PR entero a revisar, mandar un
+comentario puntual (uno a la vez, igual que el escritorio: nunca selección
+múltiple), descartar un comentario sin mandarlo a ningún agente. Elegir la
+cuenta con la que se abre la terminal es un selector manual (`list_accounts`),
+no automático — a propósito, para no adivinar con qué cuenta se gasta.
+
+**Consume**: `list_pr_review_inbox`, `get_pull_request` (*mirar*),
+`check_pr_comments`, `check_all_open_prs_now`, `dismiss_pr_comments`
+(*dirigir*), `open_pr_review_terminal`, `send_pr_comments_to_terminal`
+(*lanzar*) — todos ya expuestos, sin tocar Rust salvo agregar
+`check_all_open_prs_now` a `allowlist.json`. La terminal que abren estos dos
+últimos es siempre de sesión (`kind=Session`), así que la app arma el
+`TerminalSummary` directo de lo que devuelven, sin una vuelta a
+`list_terminals`.
+**Hecho cuando**: desde el móvil se ve la bandeja de revisión real de un Mac,
+se manda un comentario o un PR a una terminal, y la app navega a esa
+conversación ya con un agente trabajando en el Mac.
+
+Fuera de esta fase: crear un PR desde el móvil (`preview_pull_request`/
+`create_pull_request`) — pertenece al ciclo de "terminar el trabajo" de una
+sesión propia (Fase 6), no a la bandeja de revisión.
+
+### Fase 7c · Cambios por worktree/diffs — hecho
+
+Por Mac: estado de git de cada proyecto (su checkout propio + la lista de
+sus worktrees — un worktree no es una entidad propia, es una fila de
+`sessions` con `worktreePath`), archivos cambiados de cualquiera de esos
+paths (sin commitear / commiteado sobre `base`), y el diff línea por línea
+de cada archivo. Solo lectura — sin `fetch`/`pull`/`push`/`checkout`/crear
+worktree en esta v1 (el propio `FUNCIONALIDADES.md` marca `push` como "la
+acción menos reversible de toda la lista"; no era lo que se pidió acá).
+
+**El wire nunca manda un diff calculado** — `get_worktree_file_diff` devuelve
+el archivo entero antes/después (`CommitFileDiff{oldText,newText}`), igual
+que el escritorio. El diff línea por línea se calcula del lado del cliente
+(`presentation/widgets/diff_view.dart`, un LCS con el mismo tipo de tope de
+tamaño que usa `diffLines.ts` para no colgar la UI con un archivo enorme),
+sin el paso de colapsar contexto lejano del escritorio — se ve toda la
+pantalla, sin "expandir sección oculta".
+
+**Consume**: `get_git_overview`, `get_worktree_changes`,
+`get_worktree_file_diff` (*mirar*, ya expuestos desde antes de Fase 7) — sin
+tocar Rust ni `allowlist.json` en esta sub-fase.
+**Hecho cuando**: desde el móvil se abre el estado de git de un proyecto
+real, se entra a un worktree con cambios sin commitear, y el diff de un
+archivo modificado se ve línea por línea, coloreado.
+
+Fuera de esta fase: historial de commits y ramas (`list_branches`,
+`list_commits`, `get_commit_files`, `get_commit_file_diff`) — es la pantalla
+separada `GitHistoryView.tsx` del escritorio, "qué pasó" en vez de "qué
+cambió ahora"; queda para una sub-fase futura si hace falta.
+
+El resto de Fase 7 (tablero de tareas) sigue sin construir.
+
 ## Fase 8 · Voz · ~4 días
 
 **Objetivo**: dictar un prompt.

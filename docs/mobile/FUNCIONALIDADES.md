@@ -315,14 +315,21 @@ pero no saber de qué tableros elegir.
 | Cambios de un worktree | `get_worktree_changes` | ✅ | watch |
 | Diff de un fichero | `get_worktree_file_diff` | ✅ | watch |
 | Ramas y commits | `list_branches`, `list_commits` | ✅ | watch |
-| **Qué hay dentro de un commit** | `get_commit_files`, `get_commit_file_diff` | ➕ | watch |
-| Leer un fichero del proyecto | `read_file`, `list_files` | ➕ | watch |
-| `fetch` / `pull` / `push` | `git_fetch`, `git_pull`, `git_push` | ➕ | launch |
-| Cambiar de rama | `checkout_branch` | ➕ | launch |
-| Crear un worktree | `create_worktree_for_project` | ➕ | launch |
+| Qué hay dentro de un commit | `get_commit_files`, `get_commit_file_diff` | ✅ | watch |
+| Leer un fichero del proyecto | `read_file`, `list_files` | ➕ no existe todavía | watch |
+| `fetch` / `pull` / `push` | `git_fetch`, `git_pull`, `git_push` | ✅ | launch |
+| Cambiar de rama | `checkout_branch` | ✅ | launch |
+| Crear un worktree | `create_worktree_for_project` | ✅ | launch |
 
-Se pueden listar commits pero no abrirlos: otro hueco de los que se notan a los
-dos minutos de usar la app.
+**Móvil, `TDD-4-a-8-movil.md` Fase 7c**: ya consume `get_git_overview`/
+`get_worktree_changes`/`get_worktree_file_diff` — cambios por worktree y su
+diff, línea por línea, calculado del lado del cliente. Todavía no consume
+ramas/historial de commits (`list_branches`/`list_commits`/
+`get_commit_files`/`get_commit_file_diff` — pantalla separada del
+escritorio, "qué pasó" en vez de "qué cambió ahora") ni ninguna acción de
+escritura (`fetch`/`pull`/`push`/checkout/crear worktree) — recordatorio de
+más abajo: `push` sigue sin confirmación explícita en ningún cliente móvil,
+porque todavía no se construyó.
 
 **Nota sobre `push`**: exponerlo significa que el teléfono puede publicar código.
 Es defendible en nivel `launch`, pero conviene que la app pida confirmación
@@ -346,13 +353,14 @@ explícita — es la acción menos reversible de toda la lista.
 | Buscar comentarios ahora | `check_pr_comments` | ✅ | steer |
 | Abrir terminal de revisión | `open_pr_review_terminal` | ✅ | launch |
 | Mandar comentarios a una terminal | `send_pr_comments_to_terminal` | ✅ | launch |
-| **Descartar comentarios** | `dismiss_pr_comments` | ➕ | steer |
-| Ver un PR | `get_pull_request` | ➕ | watch |
-| Crear un PR | `preview_pull_request`, `create_pull_request` | ➕ | launch |
-| Revisar todos los PRs abiertos | `check_all_open_prs_now` | ➕ | steer |
+| Descartar comentarios | `dismiss_pr_comments` | ✅ | steer |
+| Ver un PR | `get_pull_request` | ✅ | watch |
+| Crear un PR | `preview_pull_request`, `create_pull_request` | ✅ expuesto, sin consumir desde el móvil todavía | launch |
+| Revisar todos los PRs abiertos | `check_all_open_prs_now` | ✅ | steer |
 
-Se puede actuar sobre los comentarios pero no marcarlos como vistos, así que la
-bandeja no se vacía nunca desde el móvil.
+`dismiss_pr_comments` sí vacía la bandeja: limpia el comentario de
+`list_pr_review_inbox` sin mandar nada a un agente (para feedback que no
+necesita acción, un "LGTM" liso).
 
 ---
 
@@ -504,6 +512,11 @@ En orden de cuánto duele no tenerlo:
 justo el objetivo de la arquitectura: que añadir una función al móvil no obligue a
 tocar el escritorio. La única excepción es `open_terminal`, que necesita decidir
 qué `cols`/`rows` manda un cliente que no dibuja terminal.
+
+Esta tabla quedó vieja: a esta altura **los 12 puntos ya están en
+`allowlist.json`** (verificado leyéndolo entero). Lo que de verdad falta rastrear
+fase a fase es qué de esto **consume ya la app móvil** — eso vive en
+`TDD-4-a-8-movil.md`, no acá.
 
 ## Y lo que no debe salir del Mac, dicho de una vez
 
