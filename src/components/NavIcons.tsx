@@ -109,3 +109,13 @@ export function SettingsIcon() {
     </svg>
   );
 }
+
+/** The overflow menu trigger — three bars, nothing fancier. Only shows up
+ * once the nav row no longer fits (`AppTopBar`'s narrow breakpoint). */
+export function MenuIcon() {
+  return (
+    <svg {...base} aria-hidden="true">
+      <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" />
+    </svg>
+  );
+}

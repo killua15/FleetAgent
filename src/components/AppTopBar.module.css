@@ -151,28 +151,39 @@
   flex: 1;
 }
 
-.palette {
-  display: flex;
+/* Hidden until the row above no longer fits (see the media query below) —
+   this is the collapsed stand-in for the whole `.icons` nav. */
+.navMenuTrigger {
+  display: none;
+  position: relative;
   align-items: center;
-  gap: 8px;
-  font: 400 11px var(--font-mono);
-  padding: 5px 12px;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
   border-radius: 6px;
-  border: 1px solid var(--line);
-  background: var(--panel);
+  background: transparent;
   color: var(--dim);
+  cursor: pointer;
+  flex: none;
 }
 
-.palette:hover {
-  border-color: var(--line2);
+.navMenuTrigger:hover {
+  color: var(--txt);
+  background: var(--panel);
 }
 
-.kbd {
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: var(--panel2);
-  border: 1px solid var(--line);
-  font-size: 9.5px;
+/* Below this, the icon row doesn't wrap (no flex-wrap) and every item is
+   already at its icon-only minimum — it would overlap instead of shrinking
+   further, so it collapses into the single menu button instead. */
+@media (max-width: 760px) {
+  .icons {
+    display: none;
+  }
+
+  .navMenuTrigger {
+    display: inline-flex;
+  }
 }
 
 /* No es decoración: una máquina en yolo ejecuta sin preguntar, y eso tiene que

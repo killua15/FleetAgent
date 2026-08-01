@@ -48,7 +48,7 @@ function MobileBridge() {
 
 function GlobalShortcuts() {
   const { toggleTheme } = useTheme();
-  const { current, navigate } = useNavigation();
+  const { navigate } = useNavigation();
   const [jumpOpen, setJumpOpen] = useState(false);
 
   useEffect(() => {
@@ -57,9 +57,6 @@ function GlobalShortcuts() {
       if (meta && e.shiftKey && e.key.toLowerCase() === 'l') {
         e.preventDefault();
         toggleTheme();
-      } else if (meta && !e.shiftKey && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        if (current.screen !== 'command-palette') navigate('command-palette');
       } else if (meta && !e.shiftKey && e.key.toLowerCase() === 'j') {
         // ⌘J jumps to a running terminal from anywhere — including the Git
         // panel or the file viewer, which is exactly when navigating home first
@@ -70,7 +67,7 @@ function GlobalShortcuts() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [toggleTheme, navigate, current.screen]);
+  }, [toggleTheme]);
 
   return (
     <JumpPalette

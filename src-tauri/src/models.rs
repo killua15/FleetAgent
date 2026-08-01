@@ -208,7 +208,10 @@ pub struct AppSettings {
     pub notify_session_waiting: bool,
     pub notify_account_exhausted: bool,
     pub notify_spend_cap: bool,
+    /// Covers a new PR being discovered, not just a new comment on one
+    /// already tracked — one toggle, both are "a PR needs your attention".
     pub notify_pr_comments: bool,
+    pub notify_update_available: bool,
     /// Opt-in gate for the tree-canvas feature (hierarchical agent teams) —
     /// off by default so the "Hierarchy trees" entry point in `AppTopBar`
     /// doesn't even show until a user deliberately turns it on.
