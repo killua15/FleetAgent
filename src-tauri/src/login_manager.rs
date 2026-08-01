@@ -76,17 +76,30 @@ pub fn pending_dir(app: &AppHandle, login_id: &str) -> Result<std::path::PathBuf
 /// the login starts, and why a new account no longer needs a manual "move it
 /// somewhere readable" step afterwards.
 ///
-/// Disambiguates a colliding slug with a short suffix, same approach as
-/// `commands::sessions::unique_worktree_dir`.
-fn account_config_dir<R: Runtime>(app: &AppHandle<R>, name: &str) -> Result<std::path::PathBuf, String> {
-    let accounts = crate::app_data::root(app)?.join("accounts");
+/// `~/.<slug>` rather than somewhere under Hangar's own app-data directory —
+/// every provider's CLI (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, ...) is happy
+/// pointed anywhere, and a dot-directory in $HOME is the convention every one
+/// of them already uses when run outside Hangar. AddAccount.tsx checks the
+/// name against every existing account before this is ever called, so a
+/// collision here means that check was bypassed (a race between two tabs, or
+/// a stale account list) — refusing outright is correct, not disambiguating
+/// with a random suffix the whole point of this change was to get away from.
+fn account_config_dir(name: &str) -> Result<std::path::PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|_| "no HOME directory".to_string())?;
+    account_dir_under(&home, name)
+}
+
+/// The testable half of `account_config_dir` — takes `home` as a plain
+/// argument instead of reading it from the process environment, which is
+/// global and shared with every other test running in parallel (same split
+/// `app_data.rs` makes between `root` and `expand_home`).
+fn account_dir_under(home: &str, name: &str) -> Result<std::path::PathBuf, String> {
     let slug = crate::commands::sessions::slugify(name);
-    let candidate = accounts.join(&slug);
-    if !candidate.exists() {
-        return Ok(candidate);
+    let candidate = std::path::PathBuf::from(home).join(format!(".{slug}"));
+    if candidate.exists() {
+        return Err(format!("{} already exists — pick a different account name", candidate.display()));
     }
-    let suffix = &Uuid::new_v4().to_string()[..6];
-    Ok(accounts.join(format!("{slug}-{suffix}")))
+    Ok(candidate)
 }
 
 /// Answers the CLI's first-run question before it gets asked.
@@ -151,7 +164,7 @@ pub(crate) fn login_env_for(provider: &str, config_dir: &str) -> Vec<(String, St
 /// Starts an interactive `claude auth login` for a brand-new account.
 ///
 /// `name` is the account name the user typed: the login runs directly in that
-/// account's permanent home (`accounts/<slug>`), so the account is correctly
+/// account's permanent home (`~/.<slug>`), so the account is correctly
 /// configured the moment it's created — no later "move the config dir
 /// somewhere readable" step. The name has to be known here, before the login,
 /// precisely because the directory can't be renamed afterwards without
@@ -173,7 +186,7 @@ pub fn begin_login(app: AppHandle, provider: String, name: String) -> Result<Log
     }
 
     let login_id = Uuid::new_v4().to_string();
-    let config_dir = account_config_dir(&app, &name)?;
+    let config_dir = account_config_dir(&name)?;
     std::fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
     seed_first_run_settings(&config_dir);
     let config_dir = config_dir.to_string_lossy().to_string();
@@ -357,7 +370,7 @@ pub fn check_login_status(app: &AppHandle, login_id: &str) -> Result<AuthStatus,
 pub fn cancel_login(app: &AppHandle, login_id: &str) -> Result<(), String> {
     let state = app.state::<LoginRegistry>();
     let mut registry = state.0.lock().map_err(|e| e.to_string())?;
-    // The login's dir is now `accounts/<slug>` (see `begin_login`), not a
+    // The login's dir is now `~/.<slug>` (see `begin_login`), not a
     // reconstructable `pending-logins/<id>` — so take the real path off the
     // registered proc before removing it, rather than guessing where it was.
     if let Some(mut proc) = registry.remove(login_id) {
@@ -394,7 +407,7 @@ pub fn take(app: &AppHandle, login_id: &str) {
 }
 
 /// Like `take`, but returns the login's real config dir so the caller doesn't
-/// have to reconstruct it. Since `begin_login` now writes to `accounts/<slug>`
+/// have to reconstruct it. Since `begin_login` now writes to `~/.<slug>`
 /// rather than a path derivable from the login id, `create_account` must adopt
 /// whatever path was actually used, and only the registered proc knows it.
 /// `None` if the login id isn't registered (already adopted, or cancelled).
@@ -419,34 +432,39 @@ mod tests {
         assert!(env.iter().any(|(k, _)| k == "TERM"));
     }
 
-    /// A new login lands in a readable, account-named directory under
-    /// `accounts/`, not the opaque `pending-logins/<uuid>` a user then had to
-    /// move by hand. The name is slugified, so the resulting path is
-    /// filesystem-safe regardless of what was typed.
+    /// A new login lands in a readable, account-named dot-directory directly
+    /// under the home Hangar was given — the same convention every CLI here
+    /// already uses when someone runs its login by hand outside Hangar. The
+    /// name is slugified, so the resulting path is filesystem-safe regardless
+    /// of what was typed.
     #[test]
-    fn a_new_login_dir_is_named_after_the_account_under_accounts() {
-        let app = tauri::test::mock_app();
-        let dir = account_config_dir(app.handle(), "David Personal 1").unwrap();
+    fn a_new_login_dir_is_a_home_dotdir_named_after_the_account() {
+        let home = std::env::temp_dir().join(format!("hangar-test-login-home-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let dir = account_dir_under(home.to_str().unwrap(), "David Personal 1").unwrap();
 
-        let parent = dir.parent().unwrap().file_name().unwrap().to_string_lossy().to_string();
-        assert_eq!(parent, "accounts", "a new login must live under accounts/, not pending-logins/");
-        assert_eq!(dir.file_name().unwrap().to_string_lossy(), "david-personal-1", "the folder must be the slugified account name");
-        assert!(!dir.to_string_lossy().contains("pending-logins"));
+        assert_eq!(dir.parent().unwrap(), home, "must live directly under home, not some nested accounts/ folder");
+        assert_eq!(dir.file_name().unwrap().to_string_lossy(), ".david-personal-1", "the folder must be a dot-dir named after the slugified account");
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// Two accounts with the same name must not share one config dir — that
-    /// would point both at the same login. The second gets a suffix.
+    /// Two accounts can't share one config dir — that would point both at the
+    /// same login. `AddAccount.tsx` is supposed to catch this before it ever
+    /// reaches here (checked against every existing account's name), so
+    /// getting here at all means that check was bypassed — refuse outright
+    /// rather than silently landing the second account somewhere else.
     #[test]
-    fn a_colliding_account_name_gets_a_distinct_dir() {
-        let app = tauri::test::mock_app();
-        let first = account_config_dir(app.handle(), "Personal").unwrap();
+    fn a_colliding_account_name_is_rejected() {
+        let home = std::env::temp_dir().join(format!("hangar-test-collide-home-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let first = account_dir_under(home.to_str().unwrap(), "Personal").unwrap();
         std::fs::create_dir_all(&first).unwrap();
 
-        let second = account_config_dir(app.handle(), "Personal").unwrap();
-        assert_ne!(first, second, "a taken slug must be disambiguated, not reused");
-        assert!(second.file_name().unwrap().to_string_lossy().starts_with("personal-"));
+        let err = account_dir_under(home.to_str().unwrap(), "Personal").unwrap_err();
+        assert!(err.contains("already exists"), "must refuse rather than disambiguate: {err}");
 
-        let _ = std::fs::remove_dir_all(&first);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// The signal that doesn't depend on parsing a sentence: Codex writes
