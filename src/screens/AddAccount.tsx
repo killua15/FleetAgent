@@ -83,6 +83,19 @@ export function AddAccount() {
     });
   }, []);
 
+  // Every account's config dir now lives at `~/.<slugified name>` (see
+  // `login_manager.rs`'s `account_config_dir`) — a name already in use by
+  // another account would collide on that exact directory, so it has to be
+  // rejected before a login even starts, not discovered after.
+  const [existingNames, setExistingNames] = useState<string[]>([]);
+  useEffect(() => {
+    invoke<Array<{ name: string }>>('list_accounts').then((accounts) => setExistingNames(accounts.map((a) => a.name)));
+  }, []);
+  const nameTaken = (candidate: string) => {
+    const trimmed = candidate.trim().toLowerCase();
+    return trimmed !== '' && existingNames.some((n) => n.trim().toLowerCase() === trimmed);
+  };
+
   const stopPolling = () => {
     if (pollRef.current !== null) {
       window.clearInterval(pollRef.current);
@@ -97,7 +110,7 @@ export function AddAccount() {
 
   // Starts the real embedded CLI login. No longer auto-fired on entering
   // step 3: importing an existing login is the default there, and a genuinely
-  // new login now runs in `accounts/<name>` — so its directory is named after
+  // new login now runs in `~/.<name>` — so its directory is named after
   // the account, which means the name has to be known *before* the login
   // starts (the directory can't be renamed afterwards without breaking the
   // keychain token).
@@ -222,7 +235,7 @@ export function AddAccount() {
         ? true
         : step === 3
           ? (billing === 'sub' ? loggedIn || importedConfigDir !== null : keyValid)
-          : true;
+          : !nameTaken(name);
 
   const handleNext = async () => {
     if (!canNext || saving) return;
@@ -420,7 +433,7 @@ export function AddAccount() {
           )}
 
           {/* A genuinely new login. The name is asked first because it decides
-            * the config directory (`accounts/<name>`), which can't be renamed
+            * the config directory (`~/.<name>`), which can't be renamed
             * once `claude auth login` has written the token there. */}
           {step === 3 && billing === 'sub' && importedConfigDir === null && wantsNewLogin && !loginSession && !startingLogin && (
             <div className={styles.newLoginForm}>
@@ -432,11 +445,21 @@ export function AddAccount() {
                 onChange={(e) => setNewLoginName(e.target.value)}
                 placeholder="e.g. Work, Personal…"
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && newLoginName.trim()) startNewLogin(newLoginName.trim());
+                  if (e.key === 'Enter' && newLoginName.trim() && !nameTaken(newLoginName)) startNewLogin(newLoginName.trim());
                 }}
               />
+              {nameTaken(newLoginName) && (
+                <span style={{ color: 'var(--red)', font: '500 11px var(--font-mono)' }}>
+                  An account named "{newLoginName.trim()}" already exists — pick a different name.
+                </span>
+              )}
               <div className={styles.importRow}>
-                <Button variant="outline" size="sm" disabled={!newLoginName.trim()} onClick={() => startNewLogin(newLoginName.trim())}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!newLoginName.trim() || nameTaken(newLoginName)}
+                  onClick={() => startNewLogin(newLoginName.trim())}
+                >
                   Start login →
                 </Button>
                 <button className={styles.newLoginLink} onClick={() => setWantsNewLogin(false)}>
@@ -538,6 +561,11 @@ export function AddAccount() {
                   onChange={(e) => setName(e.target.value)}
                   placeholder={`${prov.name} account`}
                 />
+                {nameTaken(name) && (
+                  <span style={{ color: 'var(--red)', font: '500 11px var(--font-mono)' }}>
+                    An account named "{name.trim()}" already exists — pick a different name.
+                  </span>
+                )}
               </div>
               <div className={styles.fieldRow}>
                 <div className={styles.field}>

@@ -206,7 +206,7 @@ pub fn create_account(
         path
     } else if let Some(login_id) = &account.login_id {
         // Adopt the login's already-authenticated config dir exactly where
-        // `begin_login` ran it (`accounts/<slug>`) — this *is* the account's
+        // `begin_login` ran it (`~/.<slug>`) — this *is* the account's
         // credential. Claude Code's OAuth token lives in the OS keychain,
         // keyed by the literal CLAUDE_CONFIG_DIR path used during
         // `claude auth login`, so the permanent config dir must stay exactly
@@ -219,8 +219,18 @@ pub fn create_account(
         }
         path
     } else {
-        let accounts_dir = crate::app_data::root(&app)?.join("accounts");
-        let config_dir_path = accounts_dir.join(&id);
+        // Key-billed accounts (no interactive login, nothing imported) — same
+        // `~/.<slug>` convention as a fresh CLI login (`login_manager.rs`'s
+        // `account_config_dir`), so every provider's accounts live in the
+        // same place regardless of how they authenticate. The frontend
+        // checks the name against every existing account before this is
+        // ever called; a collision here means that check was bypassed.
+        let home = std::env::var("HOME").map_err(|_| "no HOME directory".to_string())?;
+        let slug = crate::commands::sessions::slugify(&account.name);
+        let config_dir_path = std::path::PathBuf::from(home).join(format!(".{slug}"));
+        if config_dir_path.exists() {
+            return Err(format!("{} already exists — pick a different account name", config_dir_path.display()));
+        }
         std::fs::create_dir_all(&config_dir_path).map_err(|e| e.to_string())?;
         config_dir_path
     };
