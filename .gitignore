@@ -36,3 +36,6 @@ src-tauri/target
 
 # TypeScript incremental build cache
 *.tsbuildinfo
+
+# La sesión de Supabase del cliente de prueba del puente. Es un refresh token.
+contract/.bridge-session.json

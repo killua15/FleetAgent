@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
+import { useAuth } from '../auth/AuthProvider';
 import { invoke } from '../lib/invoke';
 import { toastError } from '../components/ErrorOverlay';
 import { check } from '@tauri-apps/plugin-updater';
+import { PairPhoneDialog } from '../components/PairPhoneDialog';
 import { getVersion } from '@tauri-apps/api/app';
 import { SettingsTabs } from '../components/SettingsTabs';
 import { UsageBar } from '../components/UsageBar';
@@ -296,6 +298,16 @@ export function GeneralSettings() {
         </section>
 
         <section className={styles.section}>
+          <span className={styles.sectionLabel}>MODO DE LAS TERMINALES</span>
+          <TerminalModeRow />
+        </section>
+
+        <section className={styles.section}>
+          <span className={styles.sectionLabel}>TELÉFONO</span>
+          <PhoneRow />
+        </section>
+
+        <section className={styles.section}>
           <span className={styles.sectionLabel}>UPDATES</span>
           <UpdateAccessRow />
         </section>
@@ -329,6 +341,138 @@ export function GeneralSettings() {
  * than into the binary: a copy of the app then carries no credential, and
  * handing someone the app doesn't hand them read access to the repo.
  */
+/** El teléfono emparejado con este Mac, y el nombre con el que lo verá.
+ *
+ * Un solo dispositivo por máquina: emparejar otro expulsa al anterior. Esa
+ * restricción declarada de entrada es lo que evita tener que resolver quién
+ * escribe cuando dos quieren dirigir la misma terminal. */
+const MODES: Array<{ id: string; label: string; blurb: string }> = [
+  { id: 'plan', label: 'Plan', blurb: 'Solo lee y propone. No edita ni ejecuta.' },
+  { id: 'ask_edits', label: 'Preguntar', blurb: 'Pide permiso antes de editar o ejecutar.' },
+  { id: 'auto_edit', label: 'Editar solo', blurb: 'Edita sin preguntar; sigue pidiendo para lo demás.' },
+  { id: 'yolo', label: 'Yolo', blurb: 'No pregunta nada. Lo que te protege es el worktree y git.' },
+];
+
+/** El modo con el que nacen las terminales de esta máquina.
+ *
+ * Global por decisión explícita, así que la consecuencia se dice donde se
+ * activa y no en un documento: con yolo, **todas** las terminales de este Mac
+ * ejecutan sin preguntar. Es lo que permite una app móvil sin notificaciones —
+ * si no hay permisos que aprobar, no hace falta que nada te despierte — y es
+ * también el modo en el que un agente puede destruir algo. */
+function TerminalModeRow() {
+  const [mode, setMode] = useState<string>('ask_edits');
+
+  useEffect(() => {
+    invoke<string>('get_default_terminal_mode').then(setMode).catch(() => {});
+  }, []);
+
+  const choose = async (next: string) => {
+    try {
+      setMode(await invoke<string>('set_default_terminal_mode', { mode: next }));
+    } catch (e) {
+      toastError(String(e));
+    }
+  };
+
+  return (
+    <div className={styles.notifList}>
+      <div className={styles.modeRow}>
+        {MODES.map((option) => (
+          <button key={option.id} className={mode === option.id ? styles.modeActive : styles.mode} onClick={() => choose(option.id)}>
+            <span className={styles.modeLabel}>{option.label}</span>
+            <span className={styles.modeBlurb}>{option.blurb}</span>
+          </button>
+        ))}
+      </div>
+      <span className={styles.updateHint}>
+        Se aplica a las terminales que <strong>se abran a partir de ahora</strong>. Las que ya están corriendo siguen como estaban: el
+        modo se le pasa al CLI al arrancarlo, y cambiarlo después significaría teclearle a ciegas.
+      </span>
+      {mode === 'yolo' && (
+        <span className={styles.modeWarning}>
+          Con yolo, cada terminal de este Mac ejecuta sin preguntar — también la del repositorio que más te importa.
+        </span>
+      )}
+    </div>
+  );
+}
+
+function PhoneRow() {
+  // El companion móvil (emparejar, ver, dirigir y escribir en terminales
+  // desde el teléfono — todo lo que trae `feat/mobile-companion`) es una
+  // función Pro: emparejar exige `entitlement.plan !== 'free'`. Un teléfono
+  // ya emparejado antes de bajar de plan sigue funcionando — esto solo
+  // bloquea *empezar* un emparejamiento nuevo, no revoca uno existente.
+  const { entitlement } = useAuth();
+  const isPro = entitlement != null && entitlement.plan !== 'free';
+
+  const [status, setStatus] = useState<{ machineName: string; device: { name: string; level: string; lastSeenAt: string | null } | null } | null>(null);
+  const [name, setName] = useState('');
+  const [pairing, setPairing] = useState(false);
+
+  const load = () => {
+    invoke<{ machineName: string; device: { name: string; level: string; lastSeenAt: string | null } | null }>('bridge_status')
+      .then((found) => {
+        setStatus(found);
+        setName(found.machineName);
+      })
+      .catch(() => {});
+  };
+
+  useEffect(load, []);
+
+  const revoke = async () => {
+    try {
+      await invoke('bridge_revoke_device');
+      load();
+    } catch (e) {
+      toastError(String(e));
+    }
+  };
+
+  return (
+    <div className={styles.notifList}>
+      <div className={styles.updateRow}>
+        <input
+          className={styles.updateInput}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onBlur={() => invoke('set_machine_name', { name }).then(load).catch(() => {})}
+          placeholder="cómo se llama este Mac en el teléfono"
+        />
+        {status?.device ? (
+          <Button size="sm" variant="outline" onClick={revoke}>
+            revocar
+          </Button>
+        ) : (
+          <Button size="sm" onClick={() => setPairing(true)} disabled={!isPro} title={isPro ? undefined : 'El companion móvil es una función Pro'}>
+            Emparejar
+          </Button>
+        )}
+      </div>
+
+      {status?.device ? (
+        <span className={styles.updateHint}>
+          <strong>{status.device.name}</strong> · nivel {status.device.level}
+          {status.device.lastSeenAt ? ` · visto ${new Date(status.device.lastSeenAt).toLocaleString()}` : ' · aún no se ha conectado'}
+          . Revocar corta el acceso en el siguiente mensaje, sin que el teléfono tenga que cooperar.
+        </span>
+      ) : isPro ? (
+        <span className={styles.updateHint}>
+          Ningún teléfono emparejado. La clave de cifrado viaja en el QR y solo ahí, así que emparejar exige tener este Mac delante.
+        </span>
+      ) : (
+        <span className={styles.updateHint}>
+          Ver, dirigir y escribir en tus terminales desde el teléfono es una función Pro. Hace falta una cuenta con plan Pro o Team para emparejar uno.
+        </span>
+      )}
+
+      {pairing && isPro && <PairPhoneDialog onClose={() => setPairing(false)} onPaired={load} />}
+    </div>
+  );
+}
+
 function UpdateAccessRow() {
   const [stored, setStored] = useState(false);
   const [token, setToken] = useState('');

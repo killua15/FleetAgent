@@ -447,3 +447,27 @@ CREATE TABLE IF NOT EXISTS task_source_links (
   branch_template TEXT,
   PRIMARY KEY (project_id, source_id)
 );
+
+-- El dispositivo móvil emparejado con este Mac.
+--
+-- Una fila como mucho: un solo teléfono por máquina
+-- (`MOBILE_BRIDGE_TRD.md` §12.3). Esa restricción declarada de entrada es lo que
+-- elimina el turno exclusivo por terminal, su caducidad y la lógica de
+-- liberarlo — si nunca puede haber dos, no hay disputa que resolver.
+--
+-- Sigue siendo tabla y no un ajuste suelto porque tiene campos con vida propia
+-- (nivel, última vez visto) y porque un día podrían ser varios.
+--
+-- `credential_ref` apunta al llavero. La clave de cifrado **nunca** está aquí:
+-- una base de datos se copia en un backup y un llavero no.
+CREATE TABLE IF NOT EXISTS paired_device (
+  id             TEXT PRIMARY KEY,
+  name           TEXT NOT NULL,
+  level          TEXT NOT NULL CHECK (level IN ('watch','steer','launch')),
+  credential_ref TEXT NOT NULL,
+  paired_at      TEXT NOT NULL,
+  last_seen_at   TEXT,
+  -- Sin uso hoy: las notificaciones push se descartaron (TRD §12.5). Está por
+  -- si eso cambia, y hoy nadie lo lee.
+  push_token     TEXT
+);

@@ -84,6 +84,9 @@ export function Terminals() {
   // The panel the sidebar last sent you to, highlighted briefly so a click on a
   // row of twelve lands somewhere visible instead of scrolling silently.
   const [focusedId, setFocusedId] = useState<string | null>(null);
+  // Qué terminal está mirando el teléfono. Un agente dirigido desde otro sitio
+  // no puede parecer igual que uno que nadie está tocando.
+  const [phone, setPhone] = useState<{ terminalId: string | null; device: string | null }>({ terminalId: null, device: null });
   // Remembered across launches: whether the sidebar is worth its 260px is a
   // standing preference, not a per-session mood.
   const [sidebarOpen, setSidebarOpen] = useState(() => window.localStorage.getItem('hangar.sidebar') !== 'closed');
@@ -105,6 +108,17 @@ export function Terminals() {
 
   useEffect(() => {
     Promise.all([loadTerminals(), loadProjects(), loadAccounts()]).catch((e) => toastError(String(e)));
+  }, []);
+
+  // Qué terminal está mirando el teléfono, si hay uno emparejado.
+  useEffect(() => {
+    invoke<{ terminalId: string | null; device: string | null }>('bridge_selection')
+      .then(setPhone)
+      .catch(() => {});
+    const unlisten = listen<{ terminalId: string | null; device: string | null }>('bridge-selection', (event) => setPhone(event.payload));
+    return () => {
+      unlisten.then((f) => f());
+    };
   }, []);
 
   // Agent state: one snapshot for the first render, then the event stream.
@@ -650,6 +664,14 @@ export function Terminals() {
                     <span className={styles.cardPath} title={t.cwd}>
                       {t.cwd}
                     </span>
+                    {/* Quién más está en esta terminal. Sin esta marca, alguien
+                        delante del Mac escribe en una que el teléfono está
+                        usando y ninguno de los dos entiende qué pasó. */}
+                    {phone.terminalId === t.id && (
+                      <span className={styles.phoneBadge} title={`${phone.device ?? 'Un teléfono'} está mirando esta terminal`}>
+                        {phone.device ?? 'teléfono'}
+                      </span>
+                    )}
                     <span className={styles.spacer} />
                     <Button
                       variant="outline"

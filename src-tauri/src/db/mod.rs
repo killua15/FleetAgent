@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 pub struct DbConnection(pub Mutex<Connection>);
 
@@ -18,7 +18,7 @@ pub(crate) const SCHEMA: &str = include_str!("schema.sql");
 /// point assumes the schema it was written against, and limping along in a
 /// shape nothing expects corrupts data instead of failing.
 pub fn init(app: &AppHandle) -> Result<Connection, String> {
-    let dir = app.path().app_data_dir().map_err(|e| format!("could not resolve the app data directory: {e}"))?;
+    let dir = crate::app_data::root(app)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     let db_path = dir.join(crate::app_data::DB_FILE);
 
@@ -127,6 +127,12 @@ const MIGRATIONS: &[Migration] = &[
         // Rebuilds a table with foreign keys of its own, so it toggles the
         // PRAGMAs and runs its own transaction — same care as 4 and 9.
         transactional: false,
+    },
+    Migration {
+        version: 13,
+        name: "paired_device",
+        run: paired_device_table,
+        transactional: true,
     },
 ];
 
@@ -263,6 +269,23 @@ fn ensure_turn_usage_indexes(conn: &Connection) -> Result<(), String> {
          CREATE INDEX IF NOT EXISTS idx_turn_usage_account ON turn_usage(account_id, created_at);",
     )
     .map_err(|e| format!("could not index turn_usage: {e}"))
+}
+
+/// El dispositivo móvil emparejado con este Mac. Misma forma que declara
+/// `schema.sql` para una base nueva.
+fn paired_device_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS paired_device (
+           id             TEXT PRIMARY KEY,
+           name           TEXT NOT NULL,
+           level          TEXT NOT NULL CHECK (level IN ('watch','steer','launch')),
+           credential_ref TEXT NOT NULL,
+           paired_at      TEXT NOT NULL,
+           last_seen_at   TEXT,
+           push_token     TEXT
+         );",
+    )
+    .map_err(|e| format!("could not create paired_device: {e}"))
 }
 
 /// Where task rows come from: a configured source, and which project each one

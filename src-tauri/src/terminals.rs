@@ -166,11 +166,7 @@ fn parse_osc_title(chunk: &[u8]) -> Option<String> {
     while i + 3 < chunk.len() {
         if chunk[i] == 0x1b && chunk[i + 1] == b']' && (chunk[i + 2] == b'0' || chunk[i + 2] == b'2') && chunk[i + 3] == b';' {
             let start = i + 4;
-            let mut end = start;
-            while end < chunk.len() && chunk[end] != 0x07 && !(chunk[end] == 0x1b && end + 1 < chunk.len() && chunk[end + 1] == b'\\') {
-                end += 1;
-            }
-            if end < chunk.len() {
+            if let Some(end) = osc_payload_end(chunk, start) {
                 // Later titles win: one read can carry several updates, and the
                 // last one is the current state of the world.
                 found = Some(String::from_utf8_lossy(&chunk[start..end]).trim().to_string());
@@ -180,6 +176,18 @@ fn parse_osc_title(chunk: &[u8]) -> Option<String> {
         i += 1;
     }
     found.filter(|t| !t.is_empty())
+}
+
+/// Where an OSC payload started at `start` ends: BEL (0x07) or ST (`ESC \`).
+/// `None` means the sequence didn't terminate within `chunk` — shared by
+/// `parse_osc_title` and `bridge::redact`'s ANSI stripper, which both need to
+/// recognize the same terminator without duplicating the scan.
+pub(crate) fn osc_payload_end(chunk: &[u8], start: usize) -> Option<usize> {
+    let mut end = start;
+    while end < chunk.len() && chunk[end] != 0x07 && !(chunk[end] == 0x1b && end + 1 < chunk.len() && chunk[end + 1] == b'\\') {
+        end += 1;
+    }
+    (end < chunk.len()).then_some(end)
 }
 
 /// One chunk of terminal output on its way to the frontend.
@@ -208,6 +216,11 @@ struct TerminalHandle {
     /// `Working` into `Waiting`. Shared rather than stored on `info` because
     /// both of those run outside any command.
     activity: Arc<Mutex<Activity>>,
+    /// Redacted, bounded tail for terminals without a session — see
+    /// `bridge::redact`. Kept for every terminal, not only `kind='project'`
+    /// ones: a session-backed terminal's PTY still exists underneath
+    /// `send_message`, it just has no mobile screen wired to read this today.
+    mobile_tail: Arc<Mutex<crate::bridge::redact::PtyTail>>,
     info: TerminalInfo,
 }
 
@@ -417,6 +430,23 @@ fn shell_quote(value: &str) -> String {
 /// A prompt with newlines would trip zsh's PS2 continuation prompt inside the
 /// quotes, so callers pass a single-line prompt.
 pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitCommand, session_uuid: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
+    account_command_line_with_mode(account, init, session_uuid, prompt, None)
+}
+
+/// Igual, con un modo de permisos.
+///
+/// Las terminales nunca han llevado modo: `Mode` existía desde el principio pero
+/// solo lo usaban los turnos headless, así que el ajuste de la interfaz no
+/// llegaba al CLI que de verdad trabaja. El modo global (`MOBILE_BRIDGE_TRD.md`
+/// §13) es lo que lo hace necesario — sin él, una app móvil sin notificaciones
+/// no puede funcionar, porque siempre habría un permiso esperando a nadie.
+pub(crate) fn account_command_line_with_mode(
+    account: &AccountForTerminal,
+    init: InitCommand,
+    session_uuid: Option<&str>,
+    prompt: Option<&str>,
+    mode: Option<crate::providers::Mode>,
+) -> Result<String, String> {
     let spec = crate::providers::spec(&account.provider).ok_or_else(|| format!("unknown provider '{}'", account.provider))?;
     let binary = spec.binary;
     if !crate::providers::is_provider_available(&account.provider) {
@@ -433,6 +463,16 @@ pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitComma
         Some(p) => format!(" {}", shell_quote(p)),
         None => String::new(),
     };
+    // Antes del prompt y después de la sesión: el orden no le importa a ningún
+    // CLI, pero leerlo sí a quien mira el comando que Hangar va a ejecutar.
+    let permissions: String = match (init, mode) {
+        // Un login no ejecuta nada del proyecto: darle permisos no significa
+        // nada y `claude auth login --permission-mode` no es un comando válido.
+        (InitCommand::Login, _) => String::new(),
+        (_, Some(mode)) => crate::providers::permission_args(&account.provider, mode).iter().map(|flag| format!(" {flag}")).collect(),
+        (_, None) => String::new(),
+    };
+
     let args = match init {
         InitCommand::Start => match (spec.session, session_uuid) {
             // Hangar owns the id so it can locate this exact transcript later.
@@ -467,7 +507,7 @@ pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitComma
             None => return Err(format!("'{}' authenticates with an API key — there's no login to run", account.provider)),
         },
     };
-    Ok(format!("{}={config} {extra}{binary}{args}", spec.config_dir_env))
+    Ok(format!("{}={config} {extra}{binary}{permissions}{args}", spec.config_dir_env))
 }
 
 /// The full script a terminal runs: change directory first, then the account's
@@ -481,7 +521,18 @@ pub(crate) fn account_command_line(account: &AccountForTerminal, init: InitComma
 /// `cwd` on the spawn as well makes this redundant in the normal case, which
 /// is the point.
 pub(crate) fn terminal_script(cwd: &str, account: &AccountForTerminal, init: InitCommand, session_uuid: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
-    Ok(format!("cd {}\n{}", shell_quote(cwd), account_command_line(account, init, session_uuid, prompt)?))
+    terminal_script_with_mode(cwd, account, init, session_uuid, prompt, None)
+}
+
+pub(crate) fn terminal_script_with_mode(
+    cwd: &str,
+    account: &AccountForTerminal,
+    init: InitCommand,
+    session_uuid: Option<&str>,
+    prompt: Option<&str>,
+    mode: Option<crate::providers::Mode>,
+) -> Result<String, String> {
+    Ok(format!("cd {}\n{}", shell_quote(cwd), account_command_line_with_mode(account, init, session_uuid, prompt, mode)?))
 }
 
 /// Resolves a target to the directory its terminal should start in, plus the
@@ -569,7 +620,13 @@ pub fn open_terminal<R: Runtime>(
     // surface as an error the user can act on, not as a terminal that opens
     // and greets them with `command not found`.
     let init_line = match (&account, init) {
-        (Some(account), Some(init)) => Some(format!("{}\n", terminal_script(&cwd, account, init, session_uuid.as_deref(), init_prompt.as_deref())?)),
+        (Some(account), Some(init)) => {
+            // El modo global de la máquina, aplicado al nacer la terminal. No se
+            // puede cambiar después sin teclearle al CLI a ciegas, así que el
+            // ajuste dice explícitamente que afecta a las que se abran.
+            let mode = app.try_state::<DbConnection>().map(|db| crate::bridge::session::default_mode(&db));
+            Some(format!("{}\n", terminal_script_with_mode(&cwd, account, init, session_uuid.as_deref(), init_prompt.as_deref(), mode)?))
+        }
         // A command only means something for an account — "start claude" as
         // nobody in particular isn't a thing Hangar offers.
         (None, Some(_)) => return Err("choose an account before picking a command to run".to_string()),
@@ -637,11 +694,13 @@ pub fn open_terminal<R: Runtime>(
     let scrollback = Arc::new(Mutex::new(VecDeque::new()));
     let sink: Arc<Mutex<Option<Channel<TerminalChunk>>>> = Arc::new(Mutex::new(None));
     let activity = Arc::new(Mutex::new(Activity::new()));
+    let mobile_tail = Arc::new(Mutex::new(crate::bridge::redact::PtyTail::new(rows.max(1), cols.max(1))));
 
     {
         let scrollback = scrollback.clone();
         let sink = sink.clone();
         let activity = activity.clone();
+        let mobile_tail = mobile_tail.clone();
         let id = id.clone();
         let app_for_reader = app.clone();
         std::thread::spawn(move || {
@@ -673,12 +732,24 @@ pub fn open_terminal<R: Runtime>(
                                 let _ = channel.send(payload);
                             }
                         }
+                        // Redacted mobile tail — see `bridge::redact`. Fed
+                        // unconditionally; `tick_mobile_tail` is what actually
+                        // throttles the emit, this just keeps the buffer current.
+                        if let Ok(mut tail) = mobile_tail.lock() {
+                            tail.ingest(chunk);
+                        }
                     }
                     Err(_) => break,
                 }
             }
             if let Ok(mut act) = activity.lock() {
                 act.state = TerminalState::Exited;
+            }
+            if let Ok(mut tail) = mobile_tail.lock() {
+                tail.finish();
+                if let Some(text) = tail.take_pending() {
+                    emit_tail(&app_for_reader, &id, text);
+                }
             }
             emit_state(&app_for_reader, &id, TerminalState::Exited, None);
             log::info!("terminal {id}: pty closed");
@@ -727,7 +798,7 @@ pub fn open_terminal<R: Runtime>(
         .0
         .lock()
         .map_err(|e| e.to_string())?
-        .insert(id.clone(), TerminalHandle { master: pair.master, writer, child, scrollback, sink, activity, info: info.clone() });
+        .insert(id.clone(), TerminalHandle { master: pair.master, writer, child, scrollback, sink, activity, mobile_tail, info: info.clone() });
 
     // Mirror the terminal to disk so it can be reopened next launch. Only a
     // registered terminal is persisted, so this can't outlive the shell.
@@ -828,7 +899,15 @@ pub fn resize_terminal<R: Runtime>(app: AppHandle<R>, id: String, cols: u16, row
     handle
         .master
         .resize(PtySize { rows: rows.max(1), cols: cols.max(1), pixel_width: 0, pixel_height: 0 })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // Keeps the mobile tail's vt100 buffer at the same geometry as the real
+    // PTY — its cursor math (and Ink's own hard-wrap decisions) are relative
+    // to this size, so letting them drift apart would misinterpret every
+    // cursor-movement byte that follows.
+    if let Ok(mut tail) = handle.mobile_tail.lock() {
+        tail.resize(rows.max(1), cols.max(1));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1227,6 +1306,35 @@ fn emit_state<R: Runtime>(app: &AppHandle<R>, id: &str, state: TerminalState, ti
     let _ = app.emit("terminal-state", TerminalActivity { id: id.to_string(), state, title });
 }
 
+/// The redacted-tail equivalent of `emit_state`, for a terminal without a
+/// session — see `bridge::redact`. Mobile-only: the desktop's own
+/// `TerminalPane.tsx` already gets the real bytes via `attach_terminal`'s
+/// `Channel`, it has no use for a redacted copy of its own screen.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MobileTailChunk {
+    terminal_id: String,
+    text: String,
+}
+
+fn emit_tail<R: Runtime>(app: &AppHandle<R>, id: &str, text: String) {
+    let _ = app.emit("terminal-tail", MobileTailChunk { terminal_id: id.to_string(), text });
+}
+
+/// The current redacted tail of a terminal without a session, for a mobile
+/// screen that just opened — mirrors `get_session_view` for a session-backed
+/// terminal. Not history: whatever's still in the bounded ring (see
+/// `bridge::redact::PtyTail`), same "no reproducción de eventos perdidos"
+/// spirit as `MOBILE_BRIDGE_TRD.md` §9.
+#[tauri::command]
+pub fn get_terminal_tail<R: Runtime>(app: AppHandle<R>, id: String) -> Result<String, String> {
+    let registry = app.state::<TerminalRegistry>();
+    let map = registry.0.lock().map_err(|e| e.to_string())?;
+    let handle = map.get(&id).ok_or_else(|| format!("no hay una terminal abierta con id {id}"))?;
+    let mut tail = handle.mobile_tail.lock().map_err(|e| e.to_string())?;
+    Ok(tail.snapshot())
+}
+
 /// Every open terminal's state, for the first render. After that the UI follows
 /// `terminal-state` events rather than polling.
 #[tauri::command]
@@ -1288,6 +1396,29 @@ pub fn tick_terminal_states<R: Runtime>(app: &AppHandle<R>) {
             "Agent is waiting",
             &agent_title.unwrap_or_else(|| format!("{panel_title} finished its turn")),
         );
+    }
+}
+
+/// Flushes any redacted-tail text that's piled up past its debounce or size
+/// cap (see `bridge::redact::PtyTail::due`) as `terminal-tail` events.
+/// Piggybacks on the same 1 Hz tick as `tick_terminal_states` rather than a
+/// second timer thread — a phone glance doesn't need sub-second freshness.
+pub fn tick_mobile_tail<R: Runtime>(app: &AppHandle<R>) {
+    let Some(registry) = app.try_state::<TerminalRegistry>() else { return };
+    let due: Vec<(String, String)> = {
+        let Ok(map) = registry.0.lock() else { return };
+        map.iter()
+            .filter_map(|(id, handle)| {
+                let mut tail = handle.mobile_tail.lock().ok()?;
+                if !tail.due() {
+                    return None;
+                }
+                tail.take_pending().map(|text| (id.clone(), text))
+            })
+            .collect()
+    };
+    for (id, text) in due {
+        emit_tail(app, &id, text);
     }
 }
 
@@ -2021,6 +2152,38 @@ mod tests {
         };
         let line = account_command_line(&codex, InitCommand::Resume, None, None).unwrap();
         assert!(!line.contains("resume"), "got: {line}");
+    }
+
+    /// El ajuste de la interfaz tiene que llegar al CLI. Las terminales nunca
+    /// habían llevado modo — `Mode` existía y solo lo usaban los turnos
+    /// headless — así que el desplegable prometía algo que el proceso ignoraba.
+    #[test]
+    fn el_modo_global_llega_a_la_linea_de_comandos() {
+        let claude = account("sub", "/Users/killua/.claude-David");
+        let Ok(line) = account_command_line_with_mode(&claude, InitCommand::Start, None, None, Some(crate::providers::Mode::Yolo)) else {
+            return; // sin el CLI instalado no hay forma que comprobar
+        };
+        assert!(line.contains("--permission-mode bypassPermissions"), "got: {line}");
+    }
+
+    /// Y sin modo, la línea es exactamente la de antes: el puente no puede
+    /// cambiar cómo se abre una terminal por el hecho de existir.
+    #[test]
+    fn sin_modo_la_linea_no_cambia() {
+        let claude = account("sub", "/Users/killua/.claude-David");
+        let Ok(with_none) = account_command_line_with_mode(&claude, InitCommand::Start, None, None, None) else { return };
+        let plain = account_command_line(&claude, InitCommand::Start, None, None).unwrap();
+        assert_eq!(with_none, plain);
+        assert!(!plain.contains("--permission-mode"), "got: {plain}");
+    }
+
+    /// Un login no ejecuta nada del proyecto, y `claude auth login
+    /// --permission-mode …` no es un comando válido.
+    #[test]
+    fn un_login_no_lleva_modo() {
+        let claude = account("sub", "/Users/killua/.claude-David");
+        let Ok(line) = account_command_line_with_mode(&claude, InitCommand::Login, None, None, Some(crate::providers::Mode::Yolo)) else { return };
+        assert!(!line.contains("--permission-mode"), "got: {line}");
     }
 
     /// A login command never takes a prompt — there's no session to seed yet.

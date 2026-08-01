@@ -207,3 +207,50 @@
   color: var(--dim);
   line-height: 1.5;
 }
+
+.modeRow {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.mode,
+.modeActive {
+  flex: 1 1 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.modeActive {
+  border-color: var(--acc);
+  background: var(--accD);
+}
+
+.modeLabel {
+  font: 500 11.5px var(--font-ui);
+  color: var(--txt);
+}
+
+.modeBlurb {
+  font: 400 10px var(--font-ui);
+  color: var(--dim);
+  line-height: 1.4;
+}
+
+/* En ámbar y siempre visible mientras esté activo: alguien lo pone para una
+   prueba y se le queda. */
+.modeWarning {
+  padding: 6px 9px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
+  color: var(--amber);
+  font: 400 10.5px var(--font-ui);
+  line-height: 1.5;
+}

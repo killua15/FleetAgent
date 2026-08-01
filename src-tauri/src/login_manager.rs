@@ -79,7 +79,7 @@ pub fn pending_dir(app: &AppHandle, login_id: &str) -> Result<std::path::PathBuf
 /// Disambiguates a colliding slug with a short suffix, same approach as
 /// `commands::sessions::unique_worktree_dir`.
 fn account_config_dir<R: Runtime>(app: &AppHandle<R>, name: &str) -> Result<std::path::PathBuf, String> {
-    let accounts = app.path().app_data_dir().map_err(|e| e.to_string())?.join("accounts");
+    let accounts = crate::app_data::root(app)?.join("accounts");
     let slug = crate::commands::sessions::slugify(name);
     let candidate = accounts.join(&slug);
     if !candidate.exists() {

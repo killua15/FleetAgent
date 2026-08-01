@@ -1,6 +1,7 @@
 mod app_data;
 mod auth;
 mod blocking;
+mod bridge;
 mod commands;
 mod credential_vault;
 mod db;
@@ -134,6 +135,17 @@ pub fn run() {
                 terminals::tick_terminal_states(&state_handle);
             });
 
+            // Own, faster loop — the mobile tail's `EMIT_DEBOUNCE` (250ms) is
+            // well under the 1s cadence above, and piggybacking on that tick
+            // used to add up to another second of latency on top of it. This
+            // one only does work when a PTY terminal without a session
+            // actually has redacted text piled up.
+            let mobile_tail_handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                terminals::tick_mobile_tail(&mobile_tail_handle);
+            });
+
             let usage_handle = app.handle().clone();
             std::thread::spawn(move || loop {
                 terminals::poll_account_usage(&usage_handle);
@@ -235,6 +247,7 @@ pub fn run() {
             terminals::attach_terminal,
             terminals::detach_terminal,
             terminals::write_terminal,
+            terminals::get_terminal_tail,
             terminals::resize_terminal,
             terminals::close_terminal,
             terminals::list_terminals,
@@ -275,6 +288,19 @@ pub fn run() {
             update_access::set_update_access,
             terminals::refresh_all_quotas,
             notifications::send_test_notification,
+            bridge::session::bridge_status,
+            bridge::session::set_machine_name,
+            bridge::session::get_default_terminal_mode,
+            bridge::session::set_default_terminal_mode,
+            bridge::pairing::bridge_begin_pairing,
+            bridge::pairing::bridge_cancel_pairing,
+            bridge::pairing::bridge_accept_pairing,
+            bridge::session::bridge_revoke_device,
+            bridge::dispatch::bridge_receive,
+            bridge::dispatch::bridge_reply,
+            bridge::dispatch::bridge_event,
+            bridge::selection::bridge_select,
+            bridge::selection::bridge_selection,
             quota::list_project_budgets,
             quota::get_project_budget,
             quota::set_project_budget,

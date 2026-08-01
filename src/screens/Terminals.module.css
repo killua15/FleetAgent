@@ -1014,3 +1014,24 @@
   font: 400 10px var(--font-mono);
   color: var(--dim);
 }
+
+/* Quién más está en esta terminal. Distinto del chip de cuenta a propósito: uno
+   dice con qué credenciales corre, este dice que hay alguien más dentro. */
+.phoneBadge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 5px;
+  border: 1px solid var(--teal);
+  background: var(--tealD);
+  color: var(--teal);
+  font: 500 10px var(--font-ui);
+  white-space: nowrap;
+}
+
+.phoneBadge::before {
+  content: '▣';
+  font-size: 9px;
+}

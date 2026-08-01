@@ -13,6 +13,7 @@ import { GeneralSettings } from './screens/GeneralSettings';
 import { TaskSettings } from './screens/TaskSettings';
 import { TaskBoard } from './screens/TaskBoard';
 import { UpdateBanner } from './components/UpdateBanner';
+import { useBridge } from './bridge/useBridge';
 
 // Inline rather than a module: two rules that exist only to let the banner sit
 // above a screen that expects the full viewport height.
@@ -38,6 +39,13 @@ import { TooltipProvider } from './components/ui/tooltip';
 import './styles/global.css';
 
 /** App-wide keyboard shortcuts that don't belong to any one screen. */
+/** El puente vive aquí, dentro de los proveedores y fuera del router: un cambio
+ * de pantalla no debe cortar la conexión del móvil. */
+function MobileBridge() {
+  useBridge();
+  return null;
+}
+
 function GlobalShortcuts() {
   const { toggleTheme } = useTheme();
   const { current, navigate } = useNavigation();
@@ -135,6 +143,7 @@ export default function App() {
           <AuthProvider>
             <NavigationProvider>
               <GlobalShortcuts />
+              <MobileBridge />
               {/* Above every screen and outside the router: an update is true
                   wherever you happen to be, and it must not vanish because you
                   navigated. */}
