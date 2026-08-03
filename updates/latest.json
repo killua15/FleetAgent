@@ -1,10 +1,10 @@
 {
-  "version": "0.2.1",
-  "notes": "Hangar 0.2.1",
-  "pub_date": "2026-08-01T20:40:43Z",
+  "version": "0.2.2",
+  "notes": "Hangar 0.2.2",
+  "pub_date": "2026-08-03T11:26:02Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbFArcTMrZnZTd29hdEJsRDZ4M1loL1Arc3dlblB5SExwRit6WUdndmllcHJXejBnRThBNkFCTDlWY3ZxZkZCMStCajZFZFNud29CVVNqTUY2b1FRN1E0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1NjE2Nzk1CWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKdHNENkYxNHl2VlVJOS9CZ0xTZHFaNnNsSFltZktuZkZZNnJ6czVyOEJlakNlQmNXd0ZWWk8vK3dMUWxxWmUvUWRRV2JRQzZtRWtreUZ0RXBWbmpTQ2c9PQo=",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbEl0OWEvUHlhRFN2SkFwcDNITlBNaWlEUWpsb25KRXU3VkV2bjFPVHhWZlVXNnF1NkNJUy9xTjZOSU5VOWluaFdQaHhicU0xOW9ncFNNQVY1c2R0ZmdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1NzU1ODY1CWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKaXREaGdESFg1UXBVS2J6WnFIMjRjUnhmcWloNGdOQjgzS0NuUlVZMmsvb1Yvc3laS1IxbFYvTUdEdHNUZjJEVllDSDAzUUcrT3Y5RnBpekh5RGhBQVE9PQo=",
       "url": "https://api.github.com/repos/killua15/FleetAgent/contents/updates/Hangar.app.tar.gz"
     }
   }
