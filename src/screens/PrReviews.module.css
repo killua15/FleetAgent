@@ -110,6 +110,21 @@
   place-items: center;
 }
 
+/* Same slot as .countBadge, shown instead of it once a PR's comments are all
+   resolved — visible in the collapsed header, not just inside the body's
+   "no new comments" text, so a fully-handled PR reads as done at a glance. */
+.resolvedCheck {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--grnD);
+  color: var(--grn);
+  font: 700 11px var(--font-mono);
+  display: grid;
+  place-items: center;
+}
+
 .dimText {
   font: 400 11.5px var(--font-ui);
   color: var(--dim);

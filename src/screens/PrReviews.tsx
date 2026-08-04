@@ -33,6 +33,7 @@ export function PrReviews() {
   const [checkingNow, setCheckingNow] = useState(false);
   const [busyCommentId, setBusyCommentId] = useState<string | null>(null);
   const [reviewingPrId, setReviewingPrId] = useState<string | null>(null);
+  const [sendingAllPrId, setSendingAllPrId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<PrRelation>('mine');
   const [secondsUntilAutoCheck, setSecondsUntilAutoCheck] = useState(AUTO_CHECK_INTERVAL_SECONDS);
 
@@ -113,6 +114,30 @@ export function PrReviews() {
       toastError(String(e));
     } finally {
       setBusyCommentId(null);
+    }
+  };
+
+  /** Same command as `handleSend`, just with every pending comment's id
+   * instead of one — `send_pr_comments_to_terminal` already formats however
+   * many comments it's given into a single prompt and opens (or reuses) one
+   * terminal for them (see `format_pr_comments_prompt`), so this needed no
+   * backend change, only a button that passes all of them at once instead of
+   * one per call. */
+  const handleSendAll = async (entry: PrInboxEntry, accountId: string) => {
+    setSendingAllPrId(entry.pullRequest.id);
+    try {
+      const info = await invoke<TerminalInfo>('send_pr_comments_to_terminal', {
+        commentIds: entry.comments.map((c) => c.id),
+        accountId,
+        cols: 80,
+        rows: 24,
+      });
+      await load();
+      navigate('terminals', { focusTerminalId: info.id });
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setSendingAllPrId(null);
     }
   };
 
@@ -222,8 +247,10 @@ export function PrReviews() {
                   entry={entry}
                   busyCommentId={busyCommentId}
                   reviewing={reviewingPrId === entry.pullRequest.id}
+                  sendingAll={sendingAllPrId === entry.pullRequest.id}
                   onOpenPr={() => openUrl(entry.pullRequest.url)}
                   onSend={handleSend}
+                  onSendAll={handleSendAll}
                   onReview={handleReview}
                   onDismiss={handleDismiss}
                 />
@@ -260,20 +287,25 @@ function PrEntryCard({
   entry,
   busyCommentId,
   reviewing,
+  sendingAll,
   onOpenPr,
   onSend,
+  onSendAll,
   onReview,
   onDismiss,
 }: {
   entry: PrInboxEntry;
   busyCommentId: string | null;
   reviewing: boolean;
+  sendingAll: boolean;
   onOpenPr: () => void;
   onSend: (comment: PrComment, accountId: string) => void;
+  onSendAll: (entry: PrInboxEntry, accountId: string) => void;
   onReview: (entry: PrInboxEntry, accountId: string) => void;
   onDismiss: (comment: PrComment) => void;
 }) {
   const isMine = entry.pullRequest.relation === 'mine';
+  const resolved = isMine && entry.comments.length === 0 && !entry.pullRequest.lastCheckError;
   // Collapsible per card — a PR with several long reviews shouldn't force
   // every other PR further down the page; the header (link/session/count)
   // always stays visible, only the body folds away. Someone else's PR starts
@@ -308,7 +340,23 @@ function PrEntryCard({
           </span>
         )}
         <span className={styles.spacer} />
-        {entry.comments.length > 0 && <span className={styles.countBadge}>{entry.comments.length}</span>}
+        {entry.comments.length > 0 ? (
+          <span className={styles.countBadge}>{entry.comments.length}</span>
+        ) : (
+          resolved && (
+            <span className={styles.resolvedCheck} title="No pending comments">
+              ✓
+            </span>
+          )
+        )}
+        {entry.comments.length > 1 && (
+          <AccountPickerButton
+            label={sendingAll ? 'Opening…' : `Send all ${entry.comments.length}`}
+            busy={sendingAll}
+            title="Send every pending comment on this PR to one terminal, in a single prompt"
+            onPick={(accountId) => onSendAll(entry, accountId)}
+          />
+        )}
         <AccountPickerButton
           label={reviewing ? 'Opening…' : 'Review'}
           busy={reviewing}
