@@ -134,6 +134,14 @@ const MIGRATIONS: &[Migration] = &[
         run: paired_device_table,
         transactional: true,
     },
+    Migration {
+        version: 14,
+        name: "allow_grok_provider",
+        run: allow_grok_provider,
+        // Rebuilds tables other tables reference, so it toggles PRAGMAs and
+        // runs its own transaction — same care as 4, 9 and 12.
+        transactional: false,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -356,6 +364,63 @@ fn allow_kimi_provider(conn: &Connection) -> Result<(), String> {
          CREATE TABLE rotation_policies (
            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
            provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini','kimi')),
+           policy     TEXT NOT NULL DEFAULT 'manual' CHECK (policy IN ('auto','round_robin','manual')),
+           PRIMARY KEY (project_id, provider)
+         );
+         INSERT INTO rotation_policies SELECT project_id, provider, policy FROM rotation_policies_old_provider_migration;
+         DROP TABLE rotation_policies_old_provider_migration;
+         COMMIT;",
+    );
+    let outcome = match result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            Err(format!("could not widen the provider constraint: {e}"))
+        }
+    };
+    let _ = conn.execute_batch("PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;");
+    outcome
+}
+
+/// Adds `grok` to the providers an account may have — same 12-step rebuild as
+/// `allow_kimi_provider`, for the same reason (SQLite can't alter a `CHECK`).
+fn allow_grok_provider(conn: &Connection) -> Result<(), String> {
+    let already: bool = conn
+        .query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='accounts'", [], |row| row.get::<_, String>(0))
+        .map(|sql| sql.contains("'grok'"))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let _ = conn.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;");
+    let result = conn.execute_batch(
+        "BEGIN TRANSACTION;
+         ALTER TABLE accounts RENAME TO accounts_old_provider_migration;
+         CREATE TABLE accounts (
+           id               TEXT PRIMARY KEY,
+           provider         TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini','kimi','grok')),
+           billing          TEXT NOT NULL CHECK (billing IN ('sub','key')),
+           name             TEXT NOT NULL,
+           scope            TEXT NOT NULL CHECK (scope IN ('work','personal')),
+           plan_label       TEXT NOT NULL DEFAULT '',
+           config_dir_path  TEXT NOT NULL,
+           credential_ref   TEXT NOT NULL,
+           monthly_cap      REAL,
+           status           TEXT NOT NULL DEFAULT 'healthy' CHECK (status IN ('healthy','cooling_down','exhausted')),
+           created_at       TEXT NOT NULL,
+           updated_at       TEXT NOT NULL,
+           exhausted_at     TEXT,
+           team_account_id  TEXT
+         );
+         INSERT INTO accounts SELECT id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, monthly_cap, status, created_at, updated_at, exhausted_at, team_account_id
+           FROM accounts_old_provider_migration;
+         DROP TABLE accounts_old_provider_migration;
+
+         ALTER TABLE rotation_policies RENAME TO rotation_policies_old_provider_migration;
+         CREATE TABLE rotation_policies (
+           project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+           provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini','kimi','grok')),
            policy     TEXT NOT NULL DEFAULT 'manual' CHECK (policy IN ('auto','round_robin','manual')),
            PRIMARY KEY (project_id, provider)
          );
@@ -1149,6 +1214,38 @@ mod tests {
 
         // And deleting the account still cascades, which is what the FK is for.
         conn.execute("DELETE FROM accounts WHERE id = 'k1'", []).unwrap();
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0, "ON DELETE CASCADE must survive the rebuild");
+    }
+
+    /// Same rebuild, run again for `grok` — the two migrations widen the same
+    /// two `CHECK` constraints, so a bug that broke one silently and not the
+    /// other (a stale idempotency check, a column dropped from one rebuild but
+    /// not the other) needs its own coverage rather than assuming kimi's
+    /// passing is enough.
+    #[test]
+    fn grok_becomes_a_valid_provider_without_breaking_what_references_accounts() {
+        let conn = fresh_db();
+        run_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, status, created_at, updated_at)
+             VALUES ('g1','grok','sub','Grok','personal','','','g1','healthy','now','now')",
+            [],
+        )
+        .expect("grok must be a valid provider after the migration");
+
+        conn.execute("INSERT INTO projects (id, name, path, created_at) VALUES ('p1','P','/tmp','now')", []).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, name, project_id, account_id, model, effort, mode, status, started_at)
+             VALUES ('s1','s','p1','g1','','high','ask_edits','waiting','now')",
+            [],
+        )
+        .expect("a session referencing the rebuilt accounts table must still insert");
+
+        conn.execute("INSERT INTO rotation_policies (project_id, provider, policy) VALUES ('p1','grok','auto')", [])
+            .expect("rotation policies were rebuilt too, or a grok pool couldn't have a policy");
+
+        conn.execute("DELETE FROM accounts WHERE id = 'g1'", []).unwrap();
         let left: i64 = conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0)).unwrap();
         assert_eq!(left, 0, "ON DELETE CASCADE must survive the rebuild");
     }

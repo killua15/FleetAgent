@@ -1,4 +1,4 @@
-export type Provider = 'claude' | 'codex' | 'gemini' | 'kimi';
+export type Provider = 'claude' | 'codex' | 'gemini' | 'kimi' | 'grok';
 export type Billing = 'sub' | 'key';
 export type Scope = 'work' | 'personal';
 export type AccountStatus = 'healthy' | 'cooling_down' | 'exhausted';
@@ -85,6 +85,17 @@ export const PROVIDER_META: Record<
     colorVar: 'var(--gemini)',
     tintVar: 'var(--geminiD)',
     loginCmd: 'gemini auth',
+  },
+  // ASSUMPTION: letter, color and loginCmd are cosmetic guesses, not
+  // verified against a real `grok` CLI — see the comment on providers/mod.rs's
+  // "grok" spec() arm for what else about this provider is unverified.
+  grok: {
+    name: 'Grok',
+    cli: 'grok cli',
+    letter: '𝕏',
+    colorVar: 'var(--grok)',
+    tintVar: 'var(--grokD)',
+    loginCmd: 'grok auth login',
   },
   // Kimi runs *through* Claude Code, pointed at Moonshot's
   // Anthropic-compatible endpoint — which is why it inherits session ids,

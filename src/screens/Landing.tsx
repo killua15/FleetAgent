@@ -7,6 +7,7 @@ const PROVIDERS = [
   { letter: 'C', label: 'claude code', color: 'var(--acc)' },
   { letter: 'X', label: 'codex cli', color: 'var(--teal)' },
   { letter: 'G', label: 'gemini cli', color: 'var(--gemini)' },
+  { letter: '𝕏', label: 'grok cli', color: 'var(--grok)' },
 ];
 
 export function Landing() {

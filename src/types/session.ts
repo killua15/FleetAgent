@@ -34,7 +34,7 @@ export interface SessionView {
   worktreeKind: WorktreeKind | null;
   accountId: string;
   accountName: string;
-  provider: 'claude' | 'codex' | 'gemini';
+  provider: 'claude' | 'codex' | 'gemini' | 'grok';
   scope: 'work' | 'personal';
   model: string;
   effort: Effort;

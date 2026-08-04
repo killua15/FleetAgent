@@ -36,7 +36,12 @@ impl Mode {
 /// el que un agente puede destruir algo, así que lo que protege pasa a ser el
 /// worktree aislado y git.
 pub fn permission_args(provider: &str, mode: Mode) -> &'static [&'static str] {
-    let claude_like = matches!(provider, "claude" | "kimi");
+    // ASSUMPTION: grok's CLI hasn't been verified against these flags yet
+    // (unlike claude/codex/kimi, checked against the installed binary per the
+    // comment above) — bucketed with claude for now since it's the more
+    // common modern convention. Re-verify against `grok --help` and move it
+    // to its own branch below if it doesn't match.
+    let claude_like = matches!(provider, "claude" | "kimi" | "grok");
     match (claude_like, mode) {
         (true, Mode::Plan) => &["--permission-mode", "plan"],
         (true, Mode::AskEdits) => &["--permission-mode", "manual"],
@@ -267,6 +272,11 @@ const CODEX_LOGIN: &[&str] = &["login"];
 /// using ChatGPT", and respects `CODEX_HOME`.
 const CODEX_STATUS: &[&str] = &["login", "status"];
 const GEMINI_LOGIN: &[&str] = &["auth", "login"];
+/// ASSUMPTION, not verified against a real `grok` CLI (none of the other
+/// consts on this page are guesses — this one is). `grok auth login` is what
+/// was described when this provider was added; re-check against `grok --help`
+/// once the binary is actually available.
+const GROK_LOGIN: &[&str] = &["auth", "login"];
 
 /// Moonshot's Anthropic-compatible endpoint. A Kimi account *is* Claude Code
 /// pointed somewhere else, which is why it inherits every feature built for
@@ -303,6 +313,22 @@ pub fn spec(provider: &str) -> Option<ProviderSpec> {
             login_args: Some(GEMINI_LOGIN),
             extra_env: &[],
             key_env: "GEMINI_API_KEY",
+            auth_status: AuthStatusProbe::None,
+            session: SessionControl::None,
+            login_expects_code: false,
+        }),
+        // ASSUMPTION: config_dir_env, key_env, auth probe and session control
+        // are all unverified against a real `grok` CLI — modeled on Gemini's
+        // shape (own binary, own login, but no way yet to ask "am I logged
+        // in?" or to name/resume a session) since that's the closest existing
+        // provider with its own dedicated binary and no special-cased
+        // integration. Tighten these once the real CLI's behavior is known.
+        "grok" => Some(ProviderSpec {
+            binary: "grok",
+            config_dir_env: "GROK_CONFIG_DIR",
+            login_args: Some(GROK_LOGIN),
+            extra_env: &[],
+            key_env: "XAI_API_KEY",
             auth_status: AuthStatusProbe::None,
             session: SessionControl::None,
             login_expects_code: false,
@@ -483,7 +509,7 @@ mod tests {
     /// ajuste que la interfaz promete y el CLI ignora.
     #[test]
     fn ningun_modo_se_queda_sin_traducir() {
-        for provider in ["claude", "codex", "kimi", "gemini"] {
+        for provider in ["claude", "codex", "kimi", "gemini", "grok"] {
             for mode in [Mode::Plan, Mode::AskEdits, Mode::AutoEdit, Mode::Yolo] {
                 assert!(!permission_args(provider, mode).is_empty(), "{provider} en {mode:?} no traduce a nada");
             }

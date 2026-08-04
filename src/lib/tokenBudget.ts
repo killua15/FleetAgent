@@ -5,6 +5,9 @@ const CONTEXT_WINDOW_BY_PROVIDER: Record<string, number> = {
   claude: 200_000,
   codex: 128_000,
   gemini: 1_000_000,
+  // ASSUMPTION: unverified against real grok docs, same caveat as this
+  // whole table — just a placeholder in the right ballpark.
+  grok: 128_000,
 };
 
 const DEFAULT_CONTEXT_WINDOW = 200_000;
