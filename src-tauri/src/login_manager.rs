@@ -353,7 +353,7 @@ pub fn auth_status_for(provider: &str, config_dir: &str) -> Result<AuthStatus, S
     }
 }
 
-pub fn check_login_status(app: &AppHandle, login_id: &str) -> Result<AuthStatus, String> {
+pub fn check_login_status<R: Runtime>(app: &AppHandle<R>, login_id: &str) -> Result<AuthStatus, String> {
     let (config_dir, provider) = {
         let state = app.state::<LoginRegistry>();
         let registry = state.0.lock().map_err(|e| e.to_string())?;
@@ -362,6 +362,30 @@ pub fn check_login_status(app: &AppHandle, login_id: &str) -> Result<AuthStatus,
             .map(|p| (p.config_dir.clone(), p.provider.clone()))
             .ok_or_else(|| "login session not found".to_string())?
     };
+
+    // A provider with a real interactive login but `AuthStatusProbe::None`
+    // (Gemini, and Grok inherited it — see the ASSUMPTION comment on its
+    // `spec()` entry) has no CLI command to ask, and `auth_status_for` below
+    // answers `logged_in: false` unconditionally for `None`. Polled forever,
+    // that's not "not logged in yet" — it's a wizard that can never advance
+    // past step 3 no matter what the user does in the browser. The best
+    // signal available without knowing that CLI's real status output is
+    // whether the login process itself exited cleanly — worse than a real
+    // probe (nothing here can tell "succeeded" from "closed the window right
+    // as the OAuth redirect landed"), but strictly better than a permanent
+    // deadlock. Swap this for a real probe or marker file the day either
+    // provider's actual output is known.
+    if let Some(spec) = crate::providers::spec(&provider) {
+        if spec.login_args.is_some() && matches!(spec.auth_status, crate::providers::AuthStatusProbe::None) {
+            let logged_in = {
+                let state = app.state::<LoginRegistry>();
+                let mut registry = state.0.lock().map_err(|e| e.to_string())?;
+                registry.get_mut(login_id).and_then(|p| p.child.try_wait().ok().flatten()).is_some_and(|status| status.success())
+            };
+            return Ok(AuthStatus { logged_in, auth_method: "exit-code".to_string(), email: None, subscription_type: None });
+        }
+    }
+
     // The provider comes off the login itself — asking the wrong CLI is the bug
     // that made a completed Codex login look like it never happened.
     auth_status_for(&provider, &config_dir)
@@ -485,6 +509,77 @@ mod tests {
         assert!(filled.logged_in, "a codex home holding auth.json is logged in");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Gemini (and Grok, which copied its shape) has a real interactive login
+    /// but `AuthStatusProbe::None` — no CLI command to ask "am I logged in?".
+    /// Before the exit-code fallback, `check_login_status` answered `false`
+    /// unconditionally for these, forever, even after the user finished the
+    /// browser OAuth flow: a permanent deadlock in the wizard, not a slow
+    /// poll. `true` stands in for a real login CLI here — this only needs
+    /// something that actually exits 0, not gemini/grok installed.
+    #[test]
+    fn a_login_with_no_status_probe_reads_as_logged_in_once_its_process_exits_cleanly() {
+        let app = tauri::test::mock_app();
+        app.manage(LoginRegistry::new());
+        let handle = app.handle().clone();
+
+        let pty = native_pty_system();
+        let pair = pty.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 }).unwrap();
+        let child = pair.slave.spawn_command(CommandBuilder::new("true")).unwrap();
+        drop(pair.slave);
+        let writer = pair.master.take_writer().unwrap();
+
+        let login_id = "test-login".to_string();
+        handle.state::<LoginRegistry>().0.lock().unwrap().insert(
+            login_id.clone(),
+            LoginProc { child, writer, config_dir: "/tmp/irrelevant-for-this-test".to_string(), provider: "gemini".to_string() },
+        );
+
+        // `try_wait` is non-blocking and `true` exits almost immediately, but
+        // "almost" is still a race against a fresh process — poll instead of
+        // asserting on the first check.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut status = check_login_status(&handle, &login_id).unwrap();
+        while !status.logged_in && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            status = check_login_status(&handle, &login_id).unwrap();
+        }
+
+        assert!(status.logged_in, "a cleanly-exited login process must read as logged in when there is no real probe to ask instead");
+        assert_eq!(status.auth_method, "exit-code");
+    }
+
+    /// A provider that never finishes (still running, or was killed) must not
+    /// be reported as logged in just because nothing has happened yet — the
+    /// fallback is "exited successfully", not "not exited unsuccessfully".
+    #[test]
+    fn a_login_with_no_status_probe_that_is_still_running_is_not_logged_in() {
+        let app = tauri::test::mock_app();
+        app.manage(LoginRegistry::new());
+        let handle = app.handle().clone();
+
+        let pty = native_pty_system();
+        let pair = pty.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 }).unwrap();
+        // `sleep` stands in for a login CLI still waiting on the browser —
+        // still running when this test asserts against it.
+        let mut cmd = CommandBuilder::new("sleep");
+        cmd.arg("5");
+        let child = pair.slave.spawn_command(cmd).unwrap();
+        drop(pair.slave);
+        let writer = pair.master.take_writer().unwrap();
+
+        let login_id = "test-login-still-running".to_string();
+        handle.state::<LoginRegistry>().0.lock().unwrap().insert(
+            login_id.clone(),
+            LoginProc { child, writer, config_dir: "/tmp/irrelevant-for-this-test".to_string(), provider: "gemini".to_string() },
+        );
+
+        let status = check_login_status(&handle, &login_id).unwrap();
+        assert!(!status.logged_in, "a login process that hasn't exited yet must not read as logged in");
+
+        // Don't leave a live sleep behind for the next test to trip over.
+        handle.state::<LoginRegistry>().0.lock().unwrap().remove(&login_id).unwrap().child.kill().ok();
     }
 
     /// Exercises the exact code path the app uses to check login state,
