@@ -196,6 +196,13 @@ pub struct TurnRequest<R: Runtime = tauri::Wry> {
     pub name: String,
     pub resume: Option<String>,
     pub prompt: String,
+    /// The user's standing preferences (conversation and code language), as a
+    /// file for `--append-system-prompt-file`, or `None` when nothing is set.
+    ///
+    /// Resolved by the caller rather than here: this runner has no database
+    /// handle and gains nothing from one — every caller already knows which
+    /// project the turn belongs to.
+    pub instructions: Option<std::path::PathBuf>,
 }
 
 /// Runs one headless turn (`claude -p "<prompt>" --output-format
@@ -254,6 +261,7 @@ pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) -> Result<(), String> {
         effort: &req.effort,
         name: &req.name,
         use_permission_prompt,
+        instructions: req.instructions.as_deref(),
     });
 
     std::thread::spawn(move || {
@@ -1327,6 +1335,7 @@ mod tests {
             name: String::new(),
             resume: None,
             prompt: "say hello".to_string(),
+            instructions: None,
         })
         .expect("the first turn on a fresh session must not be refused");
 

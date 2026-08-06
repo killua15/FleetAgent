@@ -21,6 +21,8 @@ const appShell = 'hangar-shell';
 const appBody = 'hangar-body';
 import { Changes } from './screens/Changes';
 import { RotationSettings } from './screens/RotationSettings';
+import { ProjectSettings } from './screens/ProjectSettings';
+import { SkillSettings } from './screens/SkillSettings';
 import { SharedMemorySettings } from './screens/SharedMemorySettings';
 import { PrReviews } from './screens/PrReviews';
 import { GitPanel } from './screens/GitPanel';
@@ -97,6 +99,10 @@ function Screens() {
       return <GeneralSettings />;
     case 'rotation-settings':
       return <RotationSettings />;
+    case 'project-settings':
+      return <ProjectSettings />;
+    case 'skill-settings':
+      return <SkillSettings />;
     case 'task-settings':
       return <TaskSettings />;
     case 'task-board':

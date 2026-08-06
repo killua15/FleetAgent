@@ -101,11 +101,21 @@ export function UsageIcon() {
   );
 }
 
+/** A gear — which is what this always meant to be.
+ *
+ * What was here was a hub with eight detached radial strokes, i.e. a sun. The
+ * difference isn't decorative: rays that don't touch anything read as light,
+ * and teeth that interrupt a closed contour read as a mechanism. So the outline
+ * is one continuous path that steps out and back six times, and the hub sits
+ * inside it rather than floating free of it.
+ *
+ * Six teeth, not eight: at 16px with a 1.5 stroke the gaps between eight fill
+ * in and the whole thing turns back into a blob. */
 export function SettingsIcon() {
   return (
     <svg {...base} aria-hidden="true">
-      <circle cx="8" cy="8" r="2.2" />
-      <path d="M8 1.5v1.8M8 12.7v1.8M14.5 8h-1.8M3.3 8H1.5M12.6 3.4l-1.3 1.3M4.7 11.3l-1.3 1.3M12.6 12.6l-1.3-1.3M4.7 4.7 3.4 3.4" />
+      <path d="M6.2 4.15 L6.75 2.59 L9.25 2.59 L9.8 4.15 L10.44 4.52 L12.06 4.21 L13.31 6.38 L12.23 7.63 L12.23 8.37 L13.31 9.62 L12.06 11.79 L10.44 11.48 L9.8 11.85 L9.25 13.41 L6.75 13.41 L6.2 11.85 L5.56 11.48 L3.94 11.79 L2.69 9.62 L3.77 8.37 L3.77 7.63 L2.69 6.38 L3.94 4.21 L5.56 4.52 Z" />
+      <circle cx="8" cy="8" r="2.1" />
     </svg>
   );
 }

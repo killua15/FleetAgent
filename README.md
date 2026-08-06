@@ -29,6 +29,10 @@ supported (the UI marks them as such).
   sending PR review comments straight back into a session.
 - **Hierarchies and shared memory** — parent agents that spawn children (three levels, three views)
   and memory groups shared across projects.
+- **Per-project agent context** — the language an agent answers in and the one it writes code in, set
+  globally and overridable per project, plus a library of Agent Skills you pick per project. All of it
+  reaches the CLI as spawn flags, so nothing is written into your repository. See
+  [AGENT_CONTEXT.md](AGENT_CONTEXT.md).
 
 ## Development
 
@@ -52,6 +56,16 @@ Tests marked `#[ignore]` spawn the real `claude` CLI — run them with `cargo te
 | `src-tauri/src/` | Rust backend: commands, PTY terminals, turn runner, rotation, git/PR, SQLite |
 | `src-tauri/src/db/schema.sql` | The schema, applied idempotently on startup |
 | `src-tauri/tests/fixtures/` | Real captured CLI output used by the parser tests — recorded data, not to be edited |
+
+## Design documents
+
+| Document | What it covers |
+| --- | --- |
+| [AGENT_CONTEXT.md](AGENT_CONTEXT.md) | How language preferences and skills reach the CLI: where they're configured, where they land on disk, which flag carries them, and what was verified by actually running each CLI |
+| [TERMINAL_CONTINUITY.md](TERMINAL_CONTINUITY.md) | How a conversation survives a relaunch and an account switch |
+| [MOBILE_BRIDGE_TRD.md](MOBILE_BRIDGE_TRD.md) | The phone companion: protocol, encryption, pairing ([build docs](docs/mobile/README.md)) |
+| [GRAPHIFY_TRD.md](GRAPHIFY_TRD.md) | Draft, nothing implemented — a code knowledge graph shared by parallel agents |
+| [ROADMAP.md](ROADMAP.md) | Where this is going |
 
 ## License
 

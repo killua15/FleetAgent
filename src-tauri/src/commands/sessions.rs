@@ -736,7 +736,7 @@ pub fn send_message(app: AppHandle, db: State<DbConnection>, session_id: String,
         process_manager::emit_block(&app, &session_id, "agent", &crate::rotation::switch_notice(switch));
     }
 
-    let (provider, billing, config_dir_path, account_id, cwd, name, model, effort, mode_str, resume) = {
+    let (provider, billing, config_dir_path, account_id, cwd, name, model, effort, mode_str, resume, instructions) = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let (account_id, project_id, name, model, effort, mode_str, resume, worktree_path): (
             String,
@@ -778,7 +778,21 @@ pub fn send_message(app: AppHandle, db: State<DbConnection>, session_id: String,
         // A subsession runs its turns inside its own isolated worktree/copy
         // instead of the shared project path, if it has one.
         let cwd = worktree_path.unwrap_or(project_path);
-        (provider, billing, config_dir_path, account_id, cwd, name, model, effort, mode_str, resume)
+        // Best-effort, like `open_terminal`: a turn that runs without the
+        // user's language preference is worse than one that has it, but a turn
+        // that refuses to run because a preferences file couldn't be written
+        // is a broken app.
+        // Only the file: the headless runner is Claude-only, and Claude takes
+        // a path. The flattened one-line form exists for Codex, which has no
+        // turn runner to reach this.
+        let instructions = crate::app_data::root(&app)
+            .and_then(|root| crate::commands::preferences::instruction_file(&root, &conn, Some(&project_id)))
+            .unwrap_or_else(|e| {
+                log::warn!("send_message: could not prepare the agent preferences — {e}");
+                None
+            })
+            .map(|resolved| resolved.file);
+        (provider, billing, config_dir_path, account_id, cwd, name, model, effort, mode_str, resume, instructions)
     };
 
     let api_key = if billing == "key" {
@@ -801,6 +815,7 @@ pub fn send_message(app: AppHandle, db: State<DbConnection>, session_id: String,
         name,
         resume,
         prompt: text,
+        instructions,
     })
 }
 

@@ -8,12 +8,19 @@ import type { Project } from '../types/session';
 import styles from './TaskSettings.module.css';
 
 /**
- * Where the ☰ Tasks panel gets its rows.
+ * Where the Tasks screen gets its rows.
  *
  * Two steps, because they're two different decisions: a **source** is an
  * account on a tool (one ClickUp token covers every workspace you're in), and a
  * **link** says which project that source feeds. The same ClickUp source can
  * feed four repos; a fifth repo takes its issues from GitHub instead.
+ *
+ * Heads-up on the links half: its only reader was the ☰ Tasks panel inside
+ * Terminals, which is gone. The Tasks screen reads a source at its default
+ * scope (`list_source_tasks` builds an empty link on purpose), so a link's
+ * list and branch template are stored but don't reach a fetch today. Kept
+ * rather than removed — `list_project_tasks` still honours them, and wiring
+ * the screen to it is the only step needed to bring them back.
  */
 export function TaskSettings() {
   const [sources, setSources] = useState<TaskSource[]>([]);
@@ -122,7 +129,7 @@ export function TaskSettings() {
 
   return (
     <div className={styles.screen}>
-      <SettingsTabs active="task-settings" title="Tasks" subtitle="where the ☰ Tasks panel gets its rows" />
+      <SettingsTabs active="task-settings" title="Tasks" subtitle="where the Tasks screen gets its rows" />
 
       <div className={styles.body}>
         <section className={styles.section}>

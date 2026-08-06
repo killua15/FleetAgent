@@ -83,5 +83,12 @@
   "list_file_edits": "watch",
 
   "list_agent_nodes": "watch",
-  "run_agent_tree": "launch"
+  "run_agent_tree": "launch",
+
+  "_comment_preferences": "Solo lectura a propósito. Los set_* no están aquí porque cambiar los ajustes del Mac desde el teléfono no es parte de esta función, y esto es lista blanca: lo que no aparece, no se puede llamar. Lo mismo para save_skill y delete_skill, que además escriben en disco.",
+  "get_global_agent_preferences": "watch",
+  "get_project_agent_preferences": "watch",
+  "list_skills": "watch",
+  "list_project_skills": "watch",
+  "list_always_on_skills": "watch"
 }

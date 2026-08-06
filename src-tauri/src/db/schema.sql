@@ -413,7 +413,7 @@ CREATE TABLE IF NOT EXISTS project_git_identity (
   updated_at     TEXT NOT NULL
 );
 
--- Where the rows in the ☰ Tasks panel come from.
+-- Where the rows on the Tasks screen come from.
 --
 -- Hangar doesn't need to know what ClickUp is; it needs rows. So each adapter
 -- normalises its tool into the same small task shape and everything downstream

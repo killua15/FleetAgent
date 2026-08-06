@@ -1,6 +1,6 @@
-//! Where the rows in the `☰ Tasks` panel come from.
+//! Where the rows on the Tasks screen come from.
 //!
-//! The panel already knows how to open N worktrees, each on its task's real
+//! The screen already knows how to open N worktrees, each on its task's real
 //! branch, with its own account and prompt. This module is the other half: the
 //! bit that goes and asks your board what you're supposed to be working on.
 //!
@@ -480,6 +480,18 @@ fn with_branches(tasks: Vec<Task>, link: &TaskSourceLink) -> Vec<Task> {
         .collect()
 }
 
+/// Reads every source a project is linked to, honouring each link's scope and
+/// branch template.
+///
+/// **Parked, not dead.** Its only caller was the ☰ Tasks panel inside
+/// Terminals, which is gone; the Tasks screen goes through
+/// [`list_source_tasks`] instead, one account at a time and at its default
+/// scope. That means the per-project links in Settings → tasks are stored but
+/// unread today. Kept registered because this is the only code path that
+/// applies them — and because the two fetches genuinely differ on GitHub
+/// (`gh issue list --repo` here, `gh search issues` there), so this isn't a
+/// worse version of the other one. Pointing the Tasks screen at this command
+/// is all that's needed to bring the links back.
 #[tauri::command]
 pub async fn list_project_tasks<R: tauri::Runtime>(app: tauri::AppHandle<R>, project_id: String) -> Result<TaskFetch, String> {
     crate::blocking::run_blocking(move || {
