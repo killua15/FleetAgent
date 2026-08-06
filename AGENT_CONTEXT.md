@@ -3,9 +3,14 @@
 Cómo llegan al CLI el idioma y las skills: dónde se configuran, dónde aterrizan
 en disco, y con qué bandera entran.
 
-**Estado**: implementado. Verificado **ejecutando `claude`**; `kimi` y `grok`
-heredan por ir sobre el mismo binario, que es una inferencia razonable y no una
-comprobación. Codex recibe el idioma pero todavía no las skills (§7).
+**Estado**: implementado — idioma (§1-6), skills por proyecto (§7), skills
+siempre activas para todos los proveedores (§7b) e instalación desde repos de
+GitHub (§10).
+
+Verificado **ejecutando `claude`**; `kimi` y `grok` heredan por ir sobre el mismo
+binario, que es una inferencia razonable y no una comprobación. Codex recibe el
+idioma pero todavía no las skills por bandera (§7). Lo que falta y por qué está
+en §12; la deuda conocida, en §13.
 
 ---
 
@@ -363,16 +368,45 @@ sostiene toda la §5.
 
 ## 10 · Instalar skills de fuera
 
-**No hay instalador propio, y no debería haberlo.** `gh skill` existe, y Hangar
-ya depende de `gh` para PRs e issues:
+Desde **Settings → skills**, en tres pestañas:
 
-```sh
-gh skill install <owner>/<repo> <skill> --dir <app_data>/skills
+```
+  ┌─ Instaladas ─────┬─ Repositorios de GitHub ─┬─ Actualizaciones ──┐
+  │                  │                          │                    │
+  │ tu biblioteca:   │ añades owner/repo o su   │ qué cambió en el   │
+  │ crear, editar,   │ URL, ves su listado,     │ origen, con        │
+  │ borrar, alcance  │ previsualizas e instalas │ --dry-run          │
+  └──────────────────┴──────────────────────────┴────────────────────┘
 ```
 
-Trae búsqueda, previsualización, versiones fijadas (`@v1.2.0` o `--pin`),
-actualización, e inyecta metadatos de origen en el frontmatter que son lo que
-permite a `gh skill update` detectar cambios después.
+**No hay instalador propio, y es deliberado.** Todo envuelve `gh skill`, que ya
+es dependencia de Hangar para PRs e issues:
+
+| La pantalla hace | Ejecuta |
+|---|---|
+| listar un repo, sin instalar nada | `gh skill install <repo>` (sin nombre de skill) |
+| previsualizar | `gh skill preview <repo> <skill>` |
+| instalar | `gh skill install <repo> <skill> --dir <biblioteca> --force` |
+| comprobar actualizaciones | `gh skill update --dir <biblioteca> --dry-run` |
+
+Así se heredan gratis las versiones fijadas (`@v1.2.0`, `--pin`), la
+actualización, y los metadatos de origen que `gh` inyecta en el frontmatter —
+los mismos que el parser de la §10 conserva al guardar.
+
+**Un repo privado funciona igual**, porque `gh` habla autenticado como tú. Es el
+caso de un repo de skills de equipo, que es para lo que existe esto.
+
+Un repo se guarda normalizado a `owner/repo`, así que pegar la URL y escribir la
+forma corta no crean dos entradas. Y quitar un repo de la lista **no borra las
+skills ya instaladas**: son tuyas desde que aterrizaron.
+
+### El preview es obligatorio
+
+No hay ningún camino que instale sin pasar por él. El botón de instalar vive
+*dentro* de la vista de preview, nunca en la lista.
+
+Es la diferencia deliberada con una tienda de un clic, y la razón está justo
+debajo.
 
 ### El riesgo, que es real
 
@@ -422,14 +456,23 @@ dependía.
 | Qué | Dónde |
 |---|---|
 | Resolver idiomas, renderizar, escribir el fichero | `src-tauri/src/commands/preferences.rs` |
-| Biblioteca de skills, selección, enlaces | `src-tauri/src/commands/skills.rs` |
+| Biblioteca, selección por proyecto, enlaces, siempre-activas | `src-tauri/src/commands/skills.rs` |
+| Repos de origen: listar, previsualizar, instalar, actualizar | `src-tauri/src/commands/skill_sources.rs` |
 | Las tres funciones de banderas | `src-tauri/src/providers/mod.rs` |
 | Punto de inserción — terminales (los 5 proveedores) | `terminals.rs` · `account_command_line_full()` |
 | Punto de inserción — turnos headless (solo Claude) | `providers/claude.rs` · `build_turn_args()` |
-| Tablas | `db/mod.rs` migraciones 15 y 16 |
+| Tablas | `db/mod.rs` migraciones 15 a 18 |
+| Salida real de `gh` para los tests del parser | `src-tauri/tests/fixtures/real_gh_skill_listing.txt` |
 | Ajustes globales | `src/screens/GeneralSettings.tsx` |
 | Override y skills por proyecto | `src/screens/ProjectSettings.tsx` |
-| La biblioteca | `src/screens/SkillSettings.tsx` |
+| Biblioteca y actualizaciones | `src/screens/SkillSettings.tsx` |
+| Pestaña de repositorios | `src/components/SkillSourcesTab.tsx` |
+
+**Sobre el parser del listado de `gh`**: su propia ayuda dice que `gh skill` está
+en preview y puede cambiar sin aviso. Por eso el parseo vive en un único sitio y
+tiene un test contra **salida real grabada** — si el formato cambia, falla ahí y
+no en tres pantallas. Validarlo así fue además lo que destapó que un repo puede
+traer 411 skills, y por eso la pestaña lleva filtro.
 
 Las migraciones **no van en `schema.sql`**: ese fichero se aplica a bases
 existentes *antes* de que corra ninguna migración, así que declarar ahí algo
@@ -452,3 +495,24 @@ antiguas. El aviso está en `schema.sql` y en el TRD de Graphify §5.4.
   Graphify, que ya lo tenía medio previsto.
 - **Desbloquear la memoria compartida.** Ahora sería barato —el canal ya
   existe— pero es una decisión aparte.
+- **Búsqueda global de skills.** `gh skill search --json repo,skillName,
+  description,stars` está verificado y devuelve hasta las estrellas, pero no hay
+  pantalla. Se dejó fuera a propósito: una tienda mundial cuyo principal producto
+  sería confianza prestada merece pensarse, no salir de rebote.
+- **Avisar al *activar* una skill con `allowed-tools`.** Hoy el aviso está al
+  instalarla. Activarla en un proyecto es otro momento y merece el suyo.
+- **Skills de Codex por bandera** (`-c skills.config`) y confirmar que
+  `developer_instructions` cambia el comportamiento. Las dos necesitan cuota de
+  Codex.
+- **GitLab y Bitbucket.** `gh skill` es solo GitHub. El plan B ya existe y no hay
+  que construirlo: clonar el repo y usar «abrir carpeta».
+
+## 13 · Deuda anotada
+
+**Grok recibe banderas que nadie ha verificado nunca.** Se le pasan
+`--append-system-prompt-file` y `--add-dir` por estar agrupado con los
+claude-like, siguiendo la convención de `permission_args` — cuyo propio
+comentario (`providers/mod.rs`) dice que *todo* lo de Grok está sin comprobar
+contra un CLI real. Se mantuvo así por decisión explícita, para que si esa
+suposición falla, falle entera y se arregle de una vez. Pero si Grok no acepta
+esas banderas, sus terminales no abren.
