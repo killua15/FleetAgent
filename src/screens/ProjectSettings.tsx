@@ -31,6 +31,7 @@ export function ProjectSettings() {
   const [saving, setSaving] = useState(false);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [enabledSkills, setEnabledSkills] = useState<string[]>([]);
+  const [alwaysOn, setAlwaysOn] = useState<string[]>([]);
 
   useEffect(() => {
     Promise.all([
@@ -40,6 +41,7 @@ export function ProjectSettings() {
       }),
       invoke<AgentPreferences>('get_global_agent_preferences').then(setGlobal),
       invoke<Skill[]>('list_skills').then(setSkills),
+      invoke<string[]>('list_always_on_skills').then(setAlwaysOn),
     ]).catch((e) => toastError(String(e)));
   }, []);
 
@@ -154,23 +156,35 @@ export function ProjectSettings() {
                   </span>
                 ) : (
                   <div className={styles.skillList}>
-                    {skills.map((skill) => (
-                      <label key={skill.name} className={styles.skillRow}>
-                        <input
-                          type="checkbox"
-                          checked={enabledSkills.includes(skill.name)}
-                          disabled={saving}
-                          onChange={(e) => toggleSkill(skill.name, e.target.checked)}
-                        />
-                        <span className={styles.skillInfo}>
-                          <span className={styles.skillName}>
-                            /{skill.name}
-                            {skill.hasExtraFiles && <span className={styles.skillBadge}>+ ficheros</span>}
+                    {skills.map((skill) => {
+                      // Una skill siempre activa ya está en todos los proyectos
+                      // por otro camino. Se muestra marcada y bloqueada porque
+                      // desmarcarla aquí no haría nada: una casilla que no
+                      // obedece se lee como un fallo.
+                      const always = alwaysOn.includes(skill.name);
+                      return (
+                        <label key={skill.name} className={styles.skillRow}>
+                          <input
+                            type="checkbox"
+                            checked={always || enabledSkills.includes(skill.name)}
+                            disabled={saving || always}
+                            onChange={(e) => toggleSkill(skill.name, e.target.checked)}
+                          />
+                          <span className={styles.skillInfo}>
+                            <span className={styles.skillName}>
+                              /{skill.name}
+                              {always && <span className={styles.skillBadge}>siempre activa</span>}
+                              {skill.hasExtraFiles && <span className={styles.skillBadge}>+ ficheros</span>}
+                            </span>
+                            <span className={styles.skillDescription}>
+                              {always
+                                ? 'Activa en todos los proyectos desde Settings → skills.'
+                                : skill.description || 'sin descripción — no se activará sola'}
+                            </span>
                           </span>
-                          <span className={styles.skillDescription}>{skill.description || 'sin descripción — no se activará sola'}</span>
-                        </span>
-                      </label>
-                    ))}
+                        </label>
+                      );
+                    })}
                   </div>
                 )}
               </div>

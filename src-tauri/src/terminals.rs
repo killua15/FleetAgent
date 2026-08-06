@@ -706,6 +706,15 @@ pub fn open_terminal<R: Runtime>(
                 log::warn!("open_terminal: could not prepare this project's skills — {e}");
                 None
             });
+        // Las skills «siempre activas» van por otro camino: se enlazan en el
+        // config dir de esta cuenta, donde cada CLI ya mira por su cuenta. Por
+        // eso no añaden ninguna bandera y llegan también a los proveedores cuyas
+        // banderas no están verificadas.
+        if let (Ok(root), Some(account)) = (root.as_ref(), account.as_ref()) {
+            if let Err(e) = crate::commands::skills::link_always_on(root, &conn, std::path::Path::new(&account.config_dir_path)) {
+                log::warn!("open_terminal: could not link the always-on skills — {e}");
+            }
+        }
         (cwd, title, account, TerminalContext { instructions, skills_dir })
     };
     if !std::path::Path::new(&cwd).is_dir() {

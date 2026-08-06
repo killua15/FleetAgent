@@ -318,6 +318,103 @@ pub fn skills_dir(root: &Path, conn: &rusqlite::Connection, project_id: &str) ->
     Ok(Some(base))
 }
 
+// --------------------------------------------------- skills siempre activas
+
+pub(crate) fn always_on(conn: &rusqlite::Connection) -> Result<Vec<String>, String> {
+    let mut stmt = conn.prepare("SELECT skill_name FROM always_on_skills ORDER BY skill_name").map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_always_on_skills(db: State<DbConnection>) -> Result<Vec<String>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    always_on(&conn)
+}
+
+#[tauri::command]
+pub fn set_always_on_skill(db: State<DbConnection>, skill_name: String, enabled: bool) -> Result<Vec<String>, String> {
+    valid_name(&skill_name)?;
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    if enabled {
+        conn.execute("INSERT INTO always_on_skills (skill_name) VALUES (?1) ON CONFLICT DO NOTHING", params![skill_name])
+    } else {
+        conn.execute("DELETE FROM always_on_skills WHERE skill_name = ?1", params![skill_name])
+    }
+    .map_err(|e| e.to_string())?;
+    always_on(&conn)
+}
+
+/// True when `path` is a symlink Hangar itself put there — the only thing this
+/// module is allowed to remove from a config directory.
+///
+/// **This function is the safety rule.** An account's config directory can be
+/// one the user already had (`~/.claude-work`, adopted through Settings →
+/// General), full of their own files. A real directory, or a link pointing
+/// somewhere else, belongs to them and must survive everything Hangar does.
+fn is_ours(path: &Path, library: &Path) -> bool {
+    let Ok(meta) = path.symlink_metadata() else { return false };
+    if !meta.file_type().is_symlink() {
+        return false;
+    }
+    // `read_link` rather than `canonicalize`: a link whose target was deleted
+    // still has to be recognised as ours so it can be cleaned up.
+    std::fs::read_link(path).map(|target| target.starts_with(library)).unwrap_or(false)
+}
+
+/// Links the always-on skills into one account's config directory, and removes
+/// the ones Hangar previously put there and are no longer marked.
+///
+/// **No flag involved.** These land where every CLI already looks for its own
+/// skills — `$CLAUDE_CONFIG_DIR/skills`, `$CODEX_HOME/skills` — which is what
+/// makes them reach providers whose command-line flags Hangar has not verified.
+/// Confirmed for Claude Code by running it: a probe skill in `~/.claude/skills`
+/// was invisible while `CLAUDE_CONFIG_DIR` pointed elsewhere, and loaded as soon
+/// as it moved into the directory that variable named.
+///
+/// Safe to call concurrently. The content depends on the *account*, never on the
+/// project, so two terminals of the same account on different projects write
+/// exactly the same links — and creating a link that already exists is a no-op.
+pub fn link_always_on(root: &Path, conn: &rusqlite::Connection, config_dir: &Path) -> Result<(), String> {
+    let library = library_dir(root);
+    let marked: Vec<String> = always_on(conn)?
+        .into_iter()
+        .filter(|name| library.join(name).join("SKILL.md").is_file())
+        .collect();
+
+    let dir = config_dir.join("skills");
+    if marked.is_empty() && !dir.is_dir() {
+        // Nothing marked and nothing to clean: don't create a directory in
+        // someone's config dir just to leave it empty.
+        return Ok(());
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+
+    // Retirar solo lo nuestro. Todo lo demás —una skill que instalaste tú, una
+    // carpeta de verdad— se queda donde está.
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let keep = marked.iter().any(|name| std::ffi::OsStr::new(name) == entry.file_name());
+            if !keep && is_ours(&entry.path(), &library) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    for name in &marked {
+        let link = dir.join(name);
+        if link.symlink_metadata().is_ok() {
+            // Ya hay algo con ese nombre. Si es nuestro, ya apunta bien; si es
+            // del usuario, gana él y no se toca.
+            continue;
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(library.join(name), &link).map_err(|e| format!("could not link skill '{name}': {e}"))?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,6 +583,105 @@ mod tests {
         let rendered = render_skill_md(&skill, "");
         let (description, _) = parse_skill_md(&rendered, "canary");
         assert_eq!(description, "first line second line");
+    }
+
+    fn conn_with_always_on(names: &[&str]) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE always_on_skills (skill_name TEXT PRIMARY KEY);").unwrap();
+        for name in names {
+            conn.execute("INSERT INTO always_on_skills VALUES (?1)", params![name]).unwrap();
+        }
+        conn
+    }
+
+    #[test]
+    fn an_always_on_skill_lands_in_the_account_config_dir() {
+        let root = temp();
+        write_skill(&root, "canary");
+        let config = root.join("cuenta-a");
+        std::fs::create_dir_all(&config).unwrap();
+
+        link_always_on(&root, &conn_with_always_on(&["canary"]), &config).unwrap();
+
+        let link = config.join("skills").join("canary");
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink(), "enlace, no copia");
+        assert!(link.join("SKILL.md").is_file(), "y resuelve a la carpeta real");
+    }
+
+    #[test]
+    fn unmarking_removes_it_from_the_config_dir() {
+        let root = temp();
+        write_skill(&root, "canary");
+        let config = root.join("cuenta-a");
+        std::fs::create_dir_all(&config).unwrap();
+
+        link_always_on(&root, &conn_with_always_on(&["canary"]), &config).unwrap();
+        link_always_on(&root, &conn_with_always_on(&[]), &config).unwrap();
+
+        assert!(config.join("skills").join("canary").symlink_metadata().is_err(), "desmarcada tiene que irse");
+    }
+
+    /// **La regla de seguridad del módulo.**
+    ///
+    /// El config dir de una cuenta puede ser uno que el usuario ya tenía
+    /// (`~/.claude-work`, adoptado desde Settings → General) con sus propias
+    /// skills dentro. Hangar solo puede tocar lo que puso él.
+    #[test]
+    fn the_users_own_skills_survive_everything_hangar_does() {
+        let root = temp();
+        write_skill(&root, "canary");
+        let config = root.join("cuenta-a");
+        let skills = config.join("skills");
+        std::fs::create_dir_all(&skills).unwrap();
+
+        // Una skill de verdad, del usuario, escrita a mano.
+        let suya = skills.join("mia-propia");
+        std::fs::create_dir_all(&suya).unwrap();
+        std::fs::write(suya.join("SKILL.md"), "---\nname: mia-propia\n---\n\nno la toques\n").unwrap();
+
+        // Y un enlace suyo a un sitio que no es la biblioteca de Hangar.
+        let fuera = root.join("otro-sitio");
+        std::fs::create_dir_all(&fuera).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&fuera, skills.join("enlace-ajeno")).unwrap();
+
+        // Ciclo completo: marcar, desmarcar, volver a marcar.
+        link_always_on(&root, &conn_with_always_on(&["canary"]), &config).unwrap();
+        link_always_on(&root, &conn_with_always_on(&[]), &config).unwrap();
+        link_always_on(&root, &conn_with_always_on(&["canary"]), &config).unwrap();
+
+        assert!(suya.join("SKILL.md").is_file(), "una carpeta real del usuario no se borra jamás");
+        assert!(skills.join("enlace-ajeno").symlink_metadata().is_ok(), "un enlace que apunta fuera tampoco");
+        assert!(skills.join("canary").symlink_metadata().is_ok(), "y la nuestra sí vuelve");
+    }
+
+    #[test]
+    fn linking_twice_is_a_no_op() {
+        // Dos terminales de la misma cuenta pueden arrancar a la vez. Como el
+        // contenido no depende del proyecto, ambas escriben lo mismo y la
+        // segunda no puede romper nada.
+        let root = temp();
+        write_skill(&root, "canary");
+        let config = root.join("cuenta-a");
+        std::fs::create_dir_all(&config).unwrap();
+
+        let conn = conn_with_always_on(&["canary"]);
+        link_always_on(&root, &conn, &config).unwrap();
+        link_always_on(&root, &conn, &config).unwrap();
+
+        let entries = std::fs::read_dir(config.join("skills")).unwrap().count();
+        assert_eq!(entries, 1, "no se duplica");
+    }
+
+    #[test]
+    fn nothing_marked_does_not_create_a_directory_in_someone_elses_config() {
+        let root = temp();
+        let config = root.join("cuenta-a");
+        std::fs::create_dir_all(&config).unwrap();
+
+        link_always_on(&root, &conn_with_always_on(&[]), &config).unwrap();
+
+        assert!(!config.join("skills").exists(), "sin nada que poner, no se ensucia el directorio ajeno");
     }
 
     #[test]

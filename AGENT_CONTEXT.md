@@ -218,7 +218,8 @@ costaría una línea de algo que el usuario lee para decidir.
 | | `claude` · `kimi` · `grok` | `codex` | `gemini` |
 |---|---|---|---|
 | **Idioma** | `--append-system-prompt-file <ruta>` | `-c developer_instructions=<texto>` | — |
-| **Skills** | `--add-dir <dir>` | *(pendiente)* | — |
+| **Skills por proyecto** | `--add-dir <dir>` | *(pendiente)* | — |
+| **Skills siempre activas** | `<config_dir>/skills/` — sin bandera | igual (§7b) | igual (§7b) |
 | **Verificado** | ✅ `claude`, ejecutándolo · `kimi`/`grok` heredados, sin probar | ⚠️ acepta la config; falta probar el comportamiento | ❌ sin instalar |
 
 Notas que explican las casillas raras:
@@ -241,6 +242,72 @@ rutas por skill en vez de un directorio padre. No se ha cableado sin poder
 verificarlo contra una ejecución real: mandar un `-c` sin probar arriesga el
 `error: unexpected argument` con el que empezó el soporte de Codex en este repo.
 Mientras tanto su terminal se comporta exactamente igual que antes.
+
+---
+
+## 7b · Skills «siempre activas»: el otro camino
+
+Hay **dos** formas de que una skill llegue a un agente, y usan mecanismos
+distintos a propósito.
+
+```
+   ┌──────────────────────────────┐        ┌──────────────────────────────┐
+   │  POR PROYECTO                │        │  SIEMPRE ACTIVA              │
+   │  la marcas en un repo        │        │  la marcas una vez           │
+   ├──────────────────────────────┤        ├──────────────────────────────┤
+   │  <app_data>/projects/<id>/   │        │  <config_dir de la cuenta>/  │
+   │    .claude/skills/           │        │    skills/                   │
+   ├──────────────────────────────┤        ├──────────────────────────────┤
+   │  entra por  --add-dir        │        │  entra SIN ninguna bandera   │
+   │  granularidad: proyecto      │        │  granularidad: cuenta        │
+   │  llega a: claude, kimi       │        │  llega a: TODOS              │
+   └──────────────────────────────┘        └──────────────────────────────┘
+```
+
+### El hallazgo que lo hace posible
+
+Las skills personales de un CLI **no viven en `~/.claude/skills`, sino en
+`$CLAUDE_CONFIG_DIR/skills`**. La documentación oficial solo menciona la primera
+ruta y no nombra la variable.
+
+Verificado en tres pasos: una skill sonda en `~/.claude/skills/` no cargó;
+resultó que el entorno tenía `CLAUDE_CONFIG_DIR` apuntando a otro sitio; al
+moverla ahí, cargó al instante. Y después, de punta a punta: una skill enlazada
+en el config dir de una cuenta respondió desde un directorio cualquiera, **sin
+`--add-dir` ni ninguna otra bandera**.
+
+Codex hace lo mismo: `$CODEX_HOME/skills/` existe y trae `.system/` con seis
+skills suyas en formato `SKILL.md`.
+
+Como Hangar ya inyecta ese directorio por cuenta para aislar credenciales
+(`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CONFIG_DIR`, `GROK_CONFIG_DIR`),
+resulta ser también un canal de skills que **no necesita banderas** — y por eso
+es el único que alcanza a proveedores cuyas banderas no están verificadas.
+
+**Corolario que ya es cierto sin hacer nada:** lo que tengas en el config dir de
+una cuenta ya le llega a sus terminales en Hangar. Si adoptaste `~/.claude-work`
+como login, sus skills ya funcionan ahí.
+
+### Por qué esto no sustituye a lo otro
+
+El config dir es de la **cuenta**, y una cuenta trabaja en varios proyectos a la
+vez. Reescribirlo según el proyecto haría que dos terminales de la misma cuenta
+en proyectos distintos se pisaran — con seis en paralelo, ese es el caso central
+de Hangar, no un caso raro. De ahí que la selección por proyecto siga necesitando
+una bandera por invocación.
+
+### La regla que protege tus ficheros
+
+Esta capa escribe **fuera del app data de Hangar**, en directorios que pueden ser
+tuyos. De ahí la única regla no negociable del módulo:
+
+> Hangar solo crea y solo borra **enlaces simbólicos que apuntan dentro de su
+> biblioteca**. Una carpeta real, un enlace a otro sitio, una skill que
+> instalaste tú — **no se tocan jamás**.
+
+Hay un test que lo representa: mete una skill real del usuario y un enlace ajeno
+en el directorio, hace un ciclo completo de marcar/desmarcar/marcar, y comprueba
+que los dos siguen intactos.
 
 ---
 

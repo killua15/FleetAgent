@@ -4,6 +4,7 @@ import { SettingsTabs } from '../components/SettingsTabs';
 import { ConfirmDeleteDialog } from '../components/ConfirmDeleteDialog';
 import { toastError } from '../components/ErrorOverlay';
 import { Button } from '../components/ui/button';
+import { SkillSourcesTab } from '../components/SkillSourcesTab';
 import type { Skill } from '../types/settings';
 import styles from './SkillSettings.module.css';
 
@@ -24,17 +25,36 @@ import styles from './SkillSettings.module.css';
  */
 const BLANK: Skill = { name: '', description: '', body: '', hasExtraFiles: false };
 
+type Tab = 'library' | 'sources' | 'updates';
+
 export function SkillSettings() {
+  const [tab, setTab] = useState<Tab>('library');
   const [skills, setSkills] = useState<Skill[]>([]);
+  const [alwaysOn, setAlwaysOn] = useState<string[]>([]);
   const [editing, setEditing] = useState<Skill | null>(null);
   const [isNew, setIsNew] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const load = () => invoke<Skill[]>('list_skills').then(setSkills).catch((e) => toastError(String(e)));
+  const load = () =>
+    Promise.all([
+      invoke<Skill[]>('list_skills').then(setSkills),
+      invoke<string[]>('list_always_on_skills').then(setAlwaysOn),
+    ]).catch((e) => toastError(String(e)));
 
   useEffect(() => {
     load();
   }, []);
+
+  const toggleAlwaysOn = async (skillName: string, enabled: boolean) => {
+    const previous = alwaysOn;
+    setAlwaysOn((prev) => (enabled ? [...prev, skillName] : prev.filter((n) => n !== skillName)));
+    try {
+      setAlwaysOn(await invoke<string[]>('set_always_on_skill', { skillName, enabled }));
+    } catch (e) {
+      setAlwaysOn(previous);
+      toastError(String(e));
+    }
+  };
 
   const save = async () => {
     if (!editing) return;
@@ -76,6 +96,28 @@ export function SkillSettings() {
         title="Skills"
         subtitle="carpetas con un SKILL.md, en el formato abierto que leen todos los CLI. Cuáles se activan se elige por proyecto."
       />
+
+      {/* Dice «GitHub», no «marketplace»: hay varios ecosistemas (skills.sh,
+          npm) y aquí se usa uno. Llamarlo *el* marketplace haría preguntarse
+          por qué no sale una skill vista en otro sitio. */}
+      <div className={styles.tabs}>
+        {(
+          [
+            ['library', 'Instaladas'],
+            ['sources', 'Repositorios de GitHub'],
+            ['updates', 'Actualizaciones'],
+          ] as const
+        ).map(([id, label]) => (
+          <button key={id} className={tab === id ? styles.tabActive : styles.tab} onClick={() => setTab(id)}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'sources' && <SkillSourcesTab onInstalled={load} />}
+      {tab === 'updates' && <SkillUpdatesTab />}
+
+      {tab === 'library' && (
       <div className={styles.body}>
         <div className={styles.list}>
           <div className={styles.listHead}>
@@ -110,6 +152,7 @@ export function SkillSettings() {
               >
                 <span className={styles.rowName}>
                   /{skill.name}
+                  {alwaysOn.includes(skill.name) && <span className={styles.badgeOn}>siempre</span>}
                   {skill.hasExtraFiles && <span className={styles.badge}>+ ficheros</span>}
                 </span>
                 <span className={styles.rowDescription}>{skill.description || 'sin descripción'}</span>
@@ -177,6 +220,29 @@ export function SkillSettings() {
                 />
               </label>
 
+              {!isNew && (
+                <div className={styles.field}>
+                  <span className={styles.fieldLabel}>ALCANCE</span>
+                  <label className={styles.toggleRow}>
+                    <input
+                      type="checkbox"
+                      checked={alwaysOn.includes(editing.name)}
+                      onChange={(e) => toggleAlwaysOn(editing.name, e.target.checked)}
+                    />
+                    <span className={styles.fieldHint}>
+                      <strong>Siempre activa</strong> — en todas las cuentas y todos los proyectos, sin marcarla una por una.
+                      {/* La diferencia importa y no es un detalle: esta capa se
+                          enlaza en el config dir de cada cuenta, donde todos los
+                          CLI miran solos, mientras que las de proyecto van por
+                          una bandera que solo unos pocos aceptan. */}
+                      <br />
+                      Llega a <strong>todos los proveedores</strong>, porque se instala donde cada CLI ya busca sus skills. Las que
+                      eliges por proyecto viajan por una bandera y hoy solo las reciben Claude y Kimi.
+                    </span>
+                  </label>
+                </div>
+              )}
+
               <div className={styles.actions}>
                 {!isNew && (
                   <Button size="sm" variant="outline" onClick={() => reveal(editing.name)}>
@@ -200,6 +266,65 @@ export function SkillSettings() {
           )}
         </div>
       </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Qué cambió en los repos de origen, sin tocar nada hasta que lo pidas.
+ *
+ * Instalar **copia**, no enlaza: una skill se queda en la versión que trajiste.
+ * Es lo correcto —el repo de otro no debería cambiar tu comportamiento sin
+ * avisar— pero obliga a que exista una forma de preguntar, y es esta.
+ */
+function SkillUpdatesTab() {
+  const [report, setReport] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const check = async () => {
+    setBusy(true);
+    try {
+      const found = await invoke<string>('check_skill_updates');
+      setReport(found.trim() || 'Todo al día — ninguna skill instalada tiene cambios en su repositorio.');
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const apply = async () => {
+    setBusy(true);
+    try {
+      await invoke<string>('update_installed_skills');
+      await check();
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className={styles.editor}>
+      <div className={styles.panelHead}>
+        <span className={styles.fieldLabel}>ACTUALIZACIONES</span>
+        <span className={styles.spacer} />
+        <Button size="sm" variant="outline" disabled={busy} onClick={check}>
+          {busy ? '…' : 'comprobar'}
+        </Button>
+        {report && (
+          <Button size="sm" disabled={busy} onClick={apply}>
+            Actualizar todas
+          </Button>
+        )}
+      </div>
+      <span className={styles.fieldHint}>
+        Comprobar no modifica nada. Solo afecta a las skills instaladas desde un repositorio — las que escribiste tú no tienen
+        origen que consultar.
+      </span>
+      {report && <pre className={styles.preview}>{report}</pre>}
     </div>
   );
 }

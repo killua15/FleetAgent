@@ -89,5 +89,6 @@
   "get_global_agent_preferences": "watch",
   "get_project_agent_preferences": "watch",
   "list_skills": "watch",
-  "list_project_skills": "watch"
+  "list_project_skills": "watch",
+  "list_always_on_skills": "watch"
 }

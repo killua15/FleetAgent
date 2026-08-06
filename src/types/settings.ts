@@ -58,6 +58,22 @@ export interface Skill {
   hasExtraFiles: boolean;
 }
 
+/** A GitHub repository you can install skills from. Holds no credential —
+ * `gh` brings its own login, which is why a private team repo works. */
+export interface SkillSource {
+  id: string;
+  /** Always `owner/repo`, normalised from whatever was typed or pasted. */
+  repo: string;
+  label: string;
+}
+
+/** A skill seen in a repository, not installed yet. */
+export interface RemoteSkill {
+  name: string;
+  description: string;
+  installed: boolean;
+}
+
 /** One row of the Rotation checklist — an account plus whether the given
  * project may use it. */
 export interface ProjectAccountRotation {

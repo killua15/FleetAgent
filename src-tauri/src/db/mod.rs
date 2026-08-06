@@ -154,6 +154,18 @@ const MIGRATIONS: &[Migration] = &[
         run: project_skills_table,
         transactional: true,
     },
+    Migration {
+        version: 17,
+        name: "always_on_skills",
+        run: always_on_skills_table,
+        transactional: true,
+    },
+    Migration {
+        version: 18,
+        name: "skill_sources",
+        run: skill_sources_table,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -266,6 +278,47 @@ fn project_skills_table(conn: &Connection) -> Result<(), String> {
          );",
     )
     .map_err(|e| format!("could not create project_skills: {e}"))
+}
+
+/// Skills that apply everywhere, without picking them project by project.
+///
+/// These reach the CLI by a different road than `project_skills`: they are
+/// linked into each account's own config directory (`$CLAUDE_CONFIG_DIR/skills`,
+/// `$CODEX_HOME/skills`, …), where every CLI already looks without needing a
+/// flag. That is what makes them work on providers whose flags Hangar hasn't
+/// verified.
+///
+/// No `account_id` column on purpose: "always on" means every account and every
+/// project. Wanting a skill on the work account but not the personal one is a
+/// third dimension nobody has asked for, and adding it later needs no migration
+/// of what's here.
+fn always_on_skills_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS always_on_skills (
+           skill_name TEXT PRIMARY KEY
+         );",
+    )
+    .map_err(|e| format!("could not create always_on_skills: {e}"))
+}
+
+/// GitHub repositories you can install skills from.
+///
+/// Same shape as `task_sources`: register a source, browse what's in it, pull
+/// what you want. And like the GitHub task source, it holds no credential —
+/// `gh` brings its own login, which is also why a private team repo works.
+///
+/// `repo` is UNIQUE and stored normalised to `owner/repo`, so pasting a URL and
+/// typing the short form can't produce two entries for the same place.
+fn skill_sources_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS skill_sources (
+           id         TEXT PRIMARY KEY,
+           repo       TEXT NOT NULL UNIQUE,
+           label      TEXT NOT NULL,
+           created_at TEXT NOT NULL
+         );",
+    )
+    .map_err(|e| format!("could not create skill_sources: {e}"))
 }
 
 /// Makes `turn_usage` able to record what a **terminal** spent.

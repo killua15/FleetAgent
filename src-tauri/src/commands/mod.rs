@@ -8,4 +8,5 @@ pub mod projects;
 pub mod pull_requests;
 pub mod sessions;
 pub mod settings;
+pub mod skill_sources;
 pub mod skills;

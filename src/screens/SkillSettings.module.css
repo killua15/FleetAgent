@@ -17,6 +17,71 @@
   min-height: 0;
 }
 
+.tabs {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  padding: 0 18px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tab,
+.tabActive {
+  padding: 5px 10px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--dim);
+  font: 500 11.5px var(--font-ui);
+  cursor: pointer;
+}
+
+.tab:hover {
+  background: var(--panel2);
+  color: var(--txt);
+}
+
+.tabActive {
+  border-color: var(--acc);
+  background: var(--panel);
+  color: var(--txt);
+}
+
+.addRow {
+  display: flex;
+  gap: 6px;
+  padding: 0 4px 8px;
+}
+
+.panelHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.remoteList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+}
+
+/* La salida de `gh skill preview` viene ya formateada en columnas, así que se
+   muestra tal cual: reflowearla la volvería ilegible. */
+.preview {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg2);
+  color: var(--txt);
+  font: 400 11px var(--font-mono);
+  line-height: 1.5;
+  white-space: pre;
+  overflow: auto;
+  max-height: 60vh;
+}
+
 .list {
   width: 300px;
   flex: none;
@@ -99,6 +164,25 @@
   border: 1px solid var(--line);
   font: 500 9px var(--font-ui);
   color: var(--mut);
+}
+
+/* Distinto del badge neutro a propósito: «siempre» cambia dónde corre la skill,
+   no es una etiqueta informativa más. */
+.badgeOn {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 5px;
+  border: 1px solid var(--acc);
+  color: var(--acc);
+  font: 500 9px var(--font-ui);
+}
+
+.toggleRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  margin-top: 3px;
 }
 
 .iconBtn {
