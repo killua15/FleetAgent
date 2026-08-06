@@ -447,6 +447,40 @@ pub(crate) fn account_command_line_with_mode(
     prompt: Option<&str>,
     mode: Option<crate::providers::Mode>,
 ) -> Result<String, String> {
+    account_command_line_full(account, init, session_uuid, prompt, mode, None, None)
+}
+
+/// Everything Hangar adds to a terminal beyond the command itself: the user's
+/// standing preferences and the skills this project turns on.
+///
+/// Grouped rather than passed as two more positional arguments because they
+/// travel together, are both `Option`, and both come from the same place — the
+/// project the terminal belongs to.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TerminalContext {
+    /// Language preferences, in both shapes the CLIs want.
+    pub instructions: Option<crate::commands::preferences::ResolvedInstructions>,
+    /// A directory containing `.claude/skills/`, or `None` when this project
+    /// has nothing selected.
+    pub skills_dir: Option<std::path::PathBuf>,
+}
+
+/// Igual, más el fichero de preferencias del usuario (idioma de la conversación
+/// y del código).
+///
+/// Va aquí y no delante del prompt porque **una terminal interactiva no tiene
+/// prompt**: la persona teclea contra el PTY, así que no hay primer mensaje que
+/// Hangar pueda decorar. La bandera al arrancar es el único canal que existe
+/// para el caso que motivó todo esto.
+pub(crate) fn account_command_line_full(
+    account: &AccountForTerminal,
+    init: InitCommand,
+    session_uuid: Option<&str>,
+    prompt: Option<&str>,
+    mode: Option<crate::providers::Mode>,
+    instructions: Option<&crate::commands::preferences::ResolvedInstructions>,
+    skills_dir: Option<&std::path::Path>,
+) -> Result<String, String> {
     let spec = crate::providers::spec(&account.provider).ok_or_else(|| format!("unknown provider '{}'", account.provider))?;
     let binary = spec.binary;
     if !crate::providers::is_provider_available(&account.provider) {
@@ -470,6 +504,31 @@ pub(crate) fn account_command_line_with_mode(
         // nada y `claude auth login --permission-mode` no es un comando válido.
         (InitCommand::Login, _) => String::new(),
         (_, Some(mode)) => crate::providers::permission_args(&account.provider, mode).iter().map(|flag| format!(" {flag}")).collect(),
+        (_, None) => String::new(),
+    };
+
+    // Mismo trato que los permisos: nada para un login, y nada para un
+    // proveedor sin canal (Codex), donde `instruction_args` devuelve vacío y
+    // esto queda en la cadena vacía.
+    let instructions: String = match (init, instructions) {
+        (InitCommand::Login, _) => String::new(),
+        (_, Some(resolved)) => {
+            crate::providers::instruction_args(&account.provider, &resolved.file.to_string_lossy(), &resolved.inline)
+                .iter()
+                .map(|arg| format!(" {}", shell_quote(arg)))
+                .collect()
+        }
+        (_, None) => String::new(),
+    };
+
+    // Mismo trato que las instrucciones: un login no ejecuta nada del
+    // proyecto, así que no tiene sentido darle sus skills.
+    let skills: String = match (init, skills_dir) {
+        (InitCommand::Login, _) => String::new(),
+        (_, Some(dir)) => crate::providers::skills_args(&account.provider, &dir.to_string_lossy())
+            .iter()
+            .map(|arg| format!(" {}", shell_quote(arg)))
+            .collect(),
         (_, None) => String::new(),
     };
 
@@ -507,7 +566,7 @@ pub(crate) fn account_command_line_with_mode(
             None => return Err(format!("'{}' authenticates with an API key — there's no login to run", account.provider)),
         },
     };
-    Ok(format!("{}={config} {extra}{binary}{permissions}{args}", spec.config_dir_env))
+    Ok(format!("{}={config} {extra}{binary}{permissions}{instructions}{skills}{args}", spec.config_dir_env))
 }
 
 /// The full script a terminal runs: change directory first, then the account's
@@ -532,7 +591,31 @@ pub(crate) fn terminal_script_with_mode(
     prompt: Option<&str>,
     mode: Option<crate::providers::Mode>,
 ) -> Result<String, String> {
-    Ok(format!("cd {}\n{}", shell_quote(cwd), account_command_line_with_mode(account, init, session_uuid, prompt, mode)?))
+    terminal_script_full(cwd, account, init, session_uuid, prompt, mode, &TerminalContext::default())
+}
+
+pub(crate) fn terminal_script_full(
+    cwd: &str,
+    account: &AccountForTerminal,
+    init: InitCommand,
+    session_uuid: Option<&str>,
+    prompt: Option<&str>,
+    mode: Option<crate::providers::Mode>,
+    context: &TerminalContext,
+) -> Result<String, String> {
+    Ok(format!(
+        "cd {}\n{}",
+        shell_quote(cwd),
+        account_command_line_full(
+            account,
+            init,
+            session_uuid,
+            prompt,
+            mode,
+            context.instructions.as_ref(),
+            context.skills_dir.as_deref(),
+        )?
+    ))
 }
 
 /// Resolves a target to the directory its terminal should start in, plus the
@@ -547,12 +630,21 @@ pub(crate) fn resolve_target_for_files(conn: &rusqlite::Connection, target: &Ter
 }
 
 fn resolve_target(conn: &rusqlite::Connection, target: &TerminalTarget) -> Result<(String, String), String> {
+    resolve_target_with_project(conn, target).map(|(cwd, title, _)| (cwd, title))
+}
+
+/// Same, plus **which project this terminal belongs to** — the key the agent
+/// preferences are stored under.
+///
+/// It costs nothing: the session branch already had to read `project_id` to
+/// find a fallback directory, and used to throw it away.
+fn resolve_target_with_project(conn: &rusqlite::Connection, target: &TerminalTarget) -> Result<(String, String, String), String> {
     match target.kind {
         TargetKind::Project => conn
             .query_row(
                 "SELECT path, name FROM projects WHERE id = ?1",
                 rusqlite::params![target.id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, target.id.clone())),
             )
             .map_err(|e| format!("project lookup failed: {e}")),
         TargetKind::Session => {
@@ -569,7 +661,7 @@ fn resolve_target(conn: &rusqlite::Connection, target: &TerminalTarget) -> Resul
                     .query_row("SELECT path FROM projects WHERE id = ?1", rusqlite::params![project_id], |row| row.get(0))
                     .map_err(|e| format!("project lookup failed: {e}"))?,
             };
-            Ok((cwd, name))
+            Ok((cwd, name, project_id))
         }
     }
 }
@@ -585,15 +677,36 @@ pub fn open_terminal<R: Runtime>(
     cols: u16,
     rows: u16,
 ) -> Result<TerminalInfo, String> {
-    let (cwd, title, account) = {
+    let (cwd, title, account, context) = {
         let db = app.state::<DbConnection>();
         let conn = db.0.lock().map_err(|e| e.to_string())?;
-        let (cwd, title) = resolve_target(&conn, &target)?;
+        let (cwd, title, project_id) = resolve_target_with_project(&conn, &target)?;
         let account = match &account_id {
             Some(id) => Some(load_account(&conn, id)?),
             None => None,
         };
-        (cwd, title, account)
+        // Best-effort, both of them: a terminal that opens without the user's
+        // language preference or without its skills is a worse terminal, but
+        // one that refuses to open because a file couldn't be written is a
+        // broken app.
+        let root = crate::app_data::root(&app);
+        let instructions = root
+            .as_ref()
+            .map_err(|e| e.clone())
+            .and_then(|root| crate::commands::preferences::instruction_file(root, &conn, Some(&project_id)))
+            .unwrap_or_else(|e| {
+                log::warn!("open_terminal: could not prepare the agent preferences — {e}");
+                None
+            });
+        let skills_dir = root
+            .as_ref()
+            .map_err(|e| e.clone())
+            .and_then(|root| crate::commands::skills::skills_dir(root, &conn, &project_id))
+            .unwrap_or_else(|e| {
+                log::warn!("open_terminal: could not prepare this project's skills — {e}");
+                None
+            });
+        (cwd, title, account, TerminalContext { instructions, skills_dir })
     };
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(format!("{cwd} no longer exists on disk — the worktree may have been removed"));
@@ -625,7 +738,10 @@ pub fn open_terminal<R: Runtime>(
             // puede cambiar después sin teclearle al CLI a ciegas, así que el
             // ajuste dice explícitamente que afecta a las que se abran.
             let mode = app.try_state::<DbConnection>().map(|db| crate::bridge::session::default_mode(&db));
-            Some(format!("{}\n", terminal_script_with_mode(&cwd, account, init, session_uuid.as_deref(), init_prompt.as_deref(), mode)?))
+            Some(format!(
+                "{}\n",
+                terminal_script_full(&cwd, account, init, session_uuid.as_deref(), init_prompt.as_deref(), mode, &context)?
+            ))
         }
         // A command only means something for an account — "start claude" as
         // nobody in particular isn't a thing Hangar offers.
@@ -2279,6 +2395,106 @@ mod tests {
         // up as continuity.
         let resumed = account_command_line(&codex, InitCommand::Resume, None, None).unwrap();
         assert!(!resumed.contains("--resume"), "got: {resumed}");
+    }
+
+    /// The user's language preference has to reach the CLI, and reach it
+    /// *only* when there is one.
+    ///
+    /// No preferences must mean **no flag at all** — not a flag pointing at an
+    /// empty file. The command line is what the picker previews, so a flag
+    /// that says nothing costs a line of something the user reads to decide
+    /// what is about to run.
+    #[test]
+    fn las_preferencias_llegan_al_cli_y_solo_cuando_existen() {
+        let claude = AccountForTerminal {
+            provider: "claude".to_string(),
+            billing: "sub".to_string(),
+            config_dir_path: "/tmp/cl".to_string(),
+            name: "Claude".to_string(),
+        };
+        if !crate::providers::is_provider_available("claude") {
+            return;
+        }
+
+        let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None).unwrap();
+        assert!(!without.contains("--append-system-prompt-file"), "sin preferencias no se pasa nada: {without}");
+
+        let prefs = sample_instructions();
+        let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, Some(&prefs), None).unwrap();
+        assert!(with.contains("--append-system-prompt-file"), "got: {with}");
+        assert!(with.contains("/tmp/hangar/prefs.md"), "got: {with}");
+
+        // Un login no ejecuta nada del proyecto: no hay conversación a la que
+        // ponerle idioma, y `claude auth login --append-system-prompt-file` no
+        // es un comando válido.
+        let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, Some(&prefs), None).unwrap();
+        assert!(!login.contains("--append-system-prompt-file"), "un login no lleva instrucciones: {login}");
+    }
+
+    fn sample_instructions() -> crate::commands::preferences::ResolvedInstructions {
+        crate::commands::preferences::ResolvedInstructions {
+            file: std::path::PathBuf::from("/tmp/hangar/prefs.md"),
+            inline: "Responde siempre en español.".to_string(),
+        }
+    }
+
+    /// Codex no acepta la bandera de Claude — pasársela abriría la terminal con
+    /// `error: unexpected argument`, que es el fallo con el que empezó el
+    /// soporte de Codex. Sí acepta la clave de configuración equivalente.
+    #[test]
+    fn codex_recibe_las_instrucciones_por_configuracion_y_nunca_por_la_bandera_de_claude() {
+        let codex = AccountForTerminal {
+            provider: "codex".to_string(),
+            billing: "sub".to_string(),
+            config_dir_path: "/tmp/cx".to_string(),
+            name: "Codex".to_string(),
+        };
+        if !crate::providers::is_provider_available("codex") {
+            return;
+        }
+
+        let prefs = sample_instructions();
+        let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, Some(&prefs), None).unwrap();
+        assert!(!line.contains("--append-system-prompt-file"), "codex la rechaza: {line}");
+        assert!(!line.contains("prefs.md"), "ni la ruta suelta: {line}");
+        assert!(line.contains("developer_instructions="), "pero sí la clave que entiende: {line}");
+    }
+
+    /// El directorio de skills entra solo cuando el proyecto tiene alguna
+    /// marcada, y solo para los CLI donde está verificado que funciona.
+    #[test]
+    fn el_directorio_de_skills_llega_solo_a_quien_lo_entiende() {
+        let dir = std::path::Path::new("/tmp/hangar/projects/p1");
+
+        let claude = AccountForTerminal {
+            provider: "claude".to_string(),
+            billing: "sub".to_string(),
+            config_dir_path: "/tmp/cl".to_string(),
+            name: "Claude".to_string(),
+        };
+        if crate::providers::is_provider_available("claude") {
+            let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None).unwrap();
+            assert!(!without.contains("--add-dir"), "sin skills marcadas no se pasa nada: {without}");
+
+            let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, Some(dir)).unwrap();
+            assert!(with.contains("--add-dir"), "got: {with}");
+            assert!(with.contains("/tmp/hangar/projects/p1"), "got: {with}");
+
+            // Un login no trabaja en el proyecto, así que no necesita sus skills.
+            let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, Some(dir)).unwrap();
+            assert!(!login.contains("--add-dir"), "un login no lleva skills: {login}");
+        }
+
+        let codex = AccountForTerminal {
+            provider: "codex".to_string(),
+            billing: "sub".to_string(),
+            config_dir_path: "/tmp/cx".to_string(),
+            name: "Codex".to_string(),
+        };
+        if crate::providers::is_provider_available("codex") {
+            let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, Some(dir)).unwrap();
+            assert!(!line.contains("--add-dir"), "codex no usa esa bandera: {line}");
+        }
     }
 
     /// Kimi is Claude Code pointed at Moonshot's Anthropic-compatible endpoint,

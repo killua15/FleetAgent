@@ -73,6 +73,10 @@ pub struct TurnArgs<'a> {
     /// the plan this shipped with for the exact transcript. `false` for
     /// every other mode, which never blocks on approval in the first place.
     pub use_permission_prompt: bool,
+    /// Path to the user's standing preferences (conversation and code
+    /// language), or `None` when nothing is configured — in which case no flag
+    /// is added at all rather than one pointing at an empty file.
+    pub instructions: Option<&'a std::path::Path>,
 }
 
 /// Args for one headless turn: `claude -p "<prompt>" --output-format
@@ -111,6 +115,15 @@ pub fn build_turn_args(args: TurnArgs) -> Vec<String> {
     if let Some(r) = args.resume {
         out.push("--resume".to_string());
         out.push(r.to_string());
+    }
+    // Always "claude" here — this builder is Claude Code's own — but routed
+    // through `instruction_args` anyway so the flag is named in exactly one
+    // place for every caller and provider.
+    if let Some(path) = args.instructions {
+        // The inline form is empty because this builder is Claude Code's own,
+        // and Claude Code takes the file. Only Codex needs the flattened text,
+        // and Codex has no headless turn runner.
+        out.extend(super::instruction_args("claude", &path.to_string_lossy(), ""));
     }
     out
 }
@@ -166,6 +179,7 @@ mod tests {
             effort: "high",
             name: "fix-billing-rounding",
             use_permission_prompt: false,
+            instructions: None,
         });
         assert_eq!(
             args,
@@ -186,6 +200,7 @@ mod tests {
             effort: "medium",
             name: "",
             use_permission_prompt: false,
+            instructions: None,
         });
         assert_eq!(args.last().cloned(), Some("session-123".to_string()));
         assert_eq!(args[args.len() - 2], "--resume");
@@ -203,6 +218,7 @@ mod tests {
             effort: "",
             name: "",
             use_permission_prompt: false,
+            instructions: None,
         });
         assert!(args.contains(&"hi".to_string()), "prompt must be a positional arg when not using the stdio protocol");
         assert!(!args.contains(&"--permission-prompt-tool".to_string()));
@@ -219,6 +235,7 @@ mod tests {
             effort: "",
             name: "",
             use_permission_prompt: true,
+            instructions: None,
         });
         // The prompt must NOT appear as a `-p` positional arg — it goes over
         // stdin instead (see turn_runner::spawn_turn).

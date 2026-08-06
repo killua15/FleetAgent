@@ -58,6 +58,71 @@ pub fn permission_args(provider: &str, mode: Mode) -> &'static [&'static str] {
     }
 }
 
+/// How each CLI takes a block of standing instructions — the channel Hangar's
+/// per-project preferences travel through.
+///
+/// **Verified against the installed CLIs**, and they do not agree. Claude Code
+/// has `--append-system-prompt-file`, confirmed by running it: the same English
+/// question answered in Spanish with the flag and in English without it. Codex
+/// has no equivalent flag at all — its documented mechanism is `AGENTS.md` in
+/// the repo tree, which would mean writing into the user's checkout, so it is
+/// left out rather than faked.
+///
+/// The **file** variant, not the inline one, because
+/// `terminals::account_command_line_with_mode` renders a *shell string*: a
+/// multi-line, accented instruction block inlined there is exactly what trips
+/// zsh's PS2 continuation. A path has none of those characters.
+///
+/// Returns empty for a provider with no channel, which the callers treat as
+/// "add nothing" — a terminal for such a provider opens exactly as it does
+/// today.
+/// `inline` is the same content flattened to a single line, for a CLI that
+/// takes the text rather than a path — see below for why that matters.
+pub fn instruction_args(provider: &str, path: &str, inline: &str) -> Vec<String> {
+    match provider {
+        // Kimi and Grok run through Claude Code's own binary/conventions, the
+        // same bucketing `permission_args` uses above.
+        "claude" | "kimi" | "grok" => vec!["--append-system-prompt-file".to_string(), path.to_string()],
+        // Codex has no flag for this, but it does have a config key, and
+        // `-c` overrides anything `~/.codex/config.toml` would have said.
+        //
+        // `developer_instructions` and **not** `model_instructions_file`: the
+        // latter is documented as a *replacement* for the CLI's built-in
+        // instructions, so using it would trade the user's language preference
+        // for Codex's own idea of how to behave.
+        //
+        // The value has to be one line — this ends up inside a shell string
+        // (see `terminals::account_command_line_full`), where a newline opens
+        // zsh's continuation prompt.
+        "codex" if !inline.trim().is_empty() => vec!["-c".to_string(), format!("developer_instructions={inline}")],
+        _ => Vec::new(),
+    }
+}
+
+/// How each CLI is pointed at a directory of skills.
+///
+/// `dir` is a directory *containing* `.claude/skills/`, not the skills folder
+/// itself — that is the shape `--add-dir` expects.
+///
+/// **Verified by running it**: a canary skill carrying a unique token came
+/// back from the agent with `--add-dir` and was unknown without it. Claude
+/// Code's docs call this out as a deliberate exception — `--add-dir` otherwise
+/// grants file access without loading configuration, but `.claude/skills/`
+/// inside an added directory is loaded anyway.
+///
+/// Codex reads `.agents/skills`, not `.claude/skills`, and takes explicit
+/// per-skill paths instead of a parent directory. Left empty until that can be
+/// verified against a real run: this account's Codex quota is exhausted, and
+/// shipping an unverified `-c` risks the `error: unexpected argument` failure
+/// that Codex support started life with. A Codex terminal behaves exactly as
+/// it does today.
+pub fn skills_args(provider: &str, dir: &str) -> Vec<String> {
+    match provider {
+        "claude" | "kimi" | "grok" => vec!["--add-dir".to_string(), dir.to_string()],
+        _ => Vec::new(),
+    }
+}
+
 /// Best-effort exhaustion/rate-limit detection, dispatched per provider so
 /// process_manager stays provider-agnostic. Exact strings should be
 /// re-verified against each CLI's real output as adapters are added.
@@ -491,6 +556,50 @@ mod tests {
         let codex = permission_args("codex", Mode::Yolo);
         assert!(codex.contains(&"--ask-for-approval"), "{codex:?}");
         assert!(!codex.contains(&"--permission-mode"), "la bandera de Claude no existe en Codex: {codex:?}");
+    }
+
+    /// Mismo cuidado que con los permisos: la bandera de instrucciones de
+    /// Claude no existe en Codex, y pasársela abriría la terminal con
+    /// `error: unexpected argument`. Vacío significa "no añadas nada", no
+    /// "añade algo vacío".
+    #[test]
+    fn cada_cli_recibe_las_instrucciones_en_la_forma_que_acepta() {
+        let inline = "Responde en español.";
+        assert_eq!(instruction_args("claude", "/tmp/p.md", inline), vec!["--append-system-prompt-file", "/tmp/p.md"]);
+        // Kimi y Grok van por el binario y las convenciones de Claude Code.
+        assert_eq!(instruction_args("kimi", "/tmp/p.md", inline), vec!["--append-system-prompt-file", "/tmp/p.md"]);
+        assert_eq!(instruction_args("grok", "/tmp/p.md", inline), vec!["--append-system-prompt-file", "/tmp/p.md"]);
+
+        // Codex no tiene bandera, pero sí una clave de configuración, y toma el
+        // texto en vez de una ruta. Pasarle la bandera de Claude sería
+        // `error: unexpected argument`.
+        let codex = instruction_args("codex", "/tmp/p.md", inline);
+        assert_eq!(codex, vec!["-c", "developer_instructions=Responde en español."]);
+        assert!(!codex.contains(&"--append-system-prompt-file".to_string()));
+        // `model_instructions_file` reemplazaría las instrucciones internas del
+        // CLI en vez de sumarse, así que no debe aparecer nunca.
+        assert!(!codex.iter().any(|a| a.contains("model_instructions_file")));
+
+        // Sin nada que decir, ninguna clave: `-c developer_instructions=` sería
+        // gastar una bandera para no decir nada.
+        assert!(instruction_args("codex", "/tmp/p.md", "").is_empty());
+        assert!(instruction_args("gemini", "/tmp/p.md", inline).is_empty());
+    }
+
+    /// `--add-dir` es lo que carga `.claude/skills/` del directorio añadido —
+    /// verificado con una skill "canario" que el agente devolvió con la bandera
+    /// y desconocía sin ella.
+    #[test]
+    fn solo_los_cli_verificados_reciben_el_directorio_de_skills() {
+        assert_eq!(skills_args("claude", "/tmp/proj"), vec!["--add-dir", "/tmp/proj"]);
+        assert_eq!(skills_args("kimi", "/tmp/proj"), vec!["--add-dir", "/tmp/proj"]);
+        assert_eq!(skills_args("grok", "/tmp/proj"), vec!["--add-dir", "/tmp/proj"]);
+
+        // Codex mira en `.agents/skills` y toma rutas por skill, no un
+        // directorio padre. Sin poder verificarlo contra una ejecución real, no
+        // se le pasa nada: su terminal se comporta como hasta hoy.
+        assert!(skills_args("codex", "/tmp/proj").is_empty());
+        assert!(skills_args("gemini", "/tmp/proj").is_empty());
     }
 
     /// Codex separa "cuándo pregunta" de "qué puede escribir". Sin el segundo

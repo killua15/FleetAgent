@@ -17,7 +17,8 @@ import { useRealUsage } from '../lib/useRealUsage';
 import { useTheme, type Theme } from '../theme/ThemeProvider';
 import type { Account } from '../types/account';
 import type { AccountUsageSummary } from '../types/session';
-import type { AppSettings } from '../types/settings';
+import type { AgentPreferences, AppSettings } from '../types/settings';
+import { LANGUAGES, systemLanguage } from '../lib/languages';
 import styles from './GeneralSettings.module.css';
 
 const THEME_OPTS: Theme[] = ['dark', 'light', 'glass', 'system'];
@@ -306,6 +307,11 @@ export function GeneralSettings() {
         </section>
 
         <section className={styles.section}>
+          <span className={styles.sectionLabel}>IDIOMA DE LOS AGENTES</span>
+          <AgentLanguageRow />
+        </section>
+
+        <section className={styles.section}>
           <span className={styles.sectionLabel}>MODO DE LAS TERMINALES</span>
           <TerminalModeRow />
         </section>
@@ -360,6 +366,108 @@ const MODES: Array<{ id: string; label: string; blurb: string }> = [
   { id: 'auto_edit', label: 'Editar solo', blurb: 'Edita sin preguntar; sigue pidiendo para lo demás.' },
   { id: 'yolo', label: 'Yolo', blurb: 'No pregunta nada. Lo que te protege es el worktree y git.' },
 ];
+
+/** Los idiomas por defecto de toda la app, que cada proyecto puede sobreescribir.
+ *
+ * Existe porque pedir algo en la consola y recibirlo en inglés —y tener que
+ * pedir que se reescriba, cada vez— era el estado normal: Hangar tenía ajustes
+ * y ninguno llegaba nunca al CLI. Esto es el primer ajuste que sí llega.
+ *
+ * Dos campos y no uno porque son preferencias distintas: conversar en español
+ * sobre un repo cuyos comentarios están en inglés es el caso común, no el raro. */
+function AgentLanguageRow() {
+  const [prefs, setPrefs] = useState<AgentPreferences>({ conversationLanguage: null, commentLanguage: null });
+  const [saving, setSaving] = useState(false);
+  const suggestion = systemLanguage();
+
+  useEffect(() => {
+    invoke<AgentPreferences>('get_global_agent_preferences').then(setPrefs).catch(() => {});
+  }, []);
+
+  const save = async (next: AgentPreferences) => {
+    const previous = prefs;
+    setPrefs(next);
+    setSaving(true);
+    try {
+      setPrefs(await invoke<AgentPreferences>('set_global_agent_preferences', { input: next }));
+    } catch (e) {
+      setPrefs(previous);
+      toastError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className={styles.notifList}>
+      <div className={styles.updateRow}>
+        <LanguageSelect
+          label="Conversación"
+          value={prefs.conversationLanguage}
+          disabled={saving}
+          onChange={(v) => save({ ...prefs, conversationLanguage: v })}
+        />
+        <LanguageSelect
+          label="Código y commits"
+          value={prefs.commentLanguage}
+          disabled={saving}
+          onChange={(v) => save({ ...prefs, commentLanguage: v })}
+        />
+      </div>
+      <span className={styles.updateHint}>
+        El primero es en el que te responde. El segundo es el de los comentarios, los nombres y los mensajes de commit — puedes
+        conversar en uno y escribir el código en otro. Cada proyecto puede sobreescribir esto en <strong>Settings → proyectos</strong>.
+      </span>
+      {/* Misma advertencia que el modo, y por la misma razón: las preferencias
+          se le pasan al CLI al arrancarlo. */}
+      <span className={styles.updateHint}>
+        Se aplica a las terminales y turnos que <strong>empiecen a partir de ahora</strong>. Hoy llega a Claude, Kimi y Grok; Codex no
+        tiene forma de recibirlo, así que sus terminales siguen igual.
+      </span>
+      {prefs.conversationLanguage === null && suggestion && (
+        <span className={styles.updateHint}>
+          Sin configurar no se le dice nada al agente.{' '}
+          <button className={styles.inlineLink} onClick={() => save({ ...prefs, conversationLanguage: suggestion.label })}>
+            Usar {suggestion.label}, el de este Mac
+          </button>
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** Un idioma o ninguno. "Sin preferencia" es un valor real y es el que hace que
+ * Hangar no pase ninguna bandera, en vez de pasar una vacía. */
+function LanguageSelect({
+  label,
+  value,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: string | null;
+  disabled?: boolean;
+  onChange: (value: string | null) => void;
+}) {
+  return (
+    <label className={styles.langField}>
+      <span className={styles.langLabel}>{label}</span>
+      <select
+        className={styles.langSelect}
+        value={value ?? ''}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value || null)}
+      >
+        <option value="">sin preferencia</option>
+        {LANGUAGES.map((l) => (
+          <option key={l.code} value={l.label}>
+            {l.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
 
 /** El modo con el que nacen las terminales de esta máquina.
  *

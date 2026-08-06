@@ -208,6 +208,47 @@
   line-height: 1.5;
 }
 
+/* Los dos idiomas, uno al lado del otro. Comparten fila porque son la misma
+   decisión leída dos veces —en qué te habla, en qué escribe el código— y
+   separarlos en secciones haría creer que uno depende del otro. */
+.langField {
+  flex: 1 1 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.langLabel {
+  font: 500 10.5px var(--font-ui);
+  color: var(--dim);
+}
+
+.langSelect {
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--txt);
+  font: 400 11.5px var(--font-ui);
+}
+
+.langSelect:disabled {
+  opacity: 0.6;
+}
+
+/* Un enlace dentro de una frase, no un botón: la acción es una sugerencia que
+   se acepta leyendo, y un botón la anunciaría más de lo que vale. */
+.inlineLink {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--acc);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
 .modeRow {
   display: flex;
   gap: 6px;

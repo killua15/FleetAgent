@@ -142,6 +142,18 @@ const MIGRATIONS: &[Migration] = &[
         // runs its own transaction — same care as 4, 9 and 12.
         transactional: false,
     },
+    Migration {
+        version: 15,
+        name: "project_preferences",
+        run: project_preferences_table,
+        transactional: true,
+    },
+    Migration {
+        version: 16,
+        name: "project_skills",
+        run: project_skills_table,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -210,6 +222,50 @@ fn project_git_identity_table(conn: &Connection) -> Result<(), String> {
          );",
     )
     .map_err(|e| format!("could not create project_git_identity: {e}"))
+}
+
+/// Per-project overrides of the agent preferences that otherwise come from the
+/// global defaults in `app_settings`.
+///
+/// A `NULL` column means **inherit**, which is why every one of them is
+/// nullable and there is no companion "use the global" boolean: one column can
+/// only be in one of the two states, so a second field could contradict it.
+///
+/// Deliberately not in `schema.sql` — that file is applied to existing
+/// databases *before* any migration runs, so anything new declared there and
+/// referenced by a migration takes startup down on older installs.
+fn project_preferences_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS project_preferences (
+           project_id            TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+           conversation_language TEXT,
+           comment_language      TEXT
+         );",
+    )
+    .map_err(|e| format!("could not create project_preferences: {e}"))
+}
+
+/// Which of the user's skills each project turns on.
+///
+/// Only the *selection* lives here. The skills themselves are real folders on
+/// disk (`<app_data>/skills/<name>/SKILL.md`), because the Agent Skills
+/// standard defines a skill as a folder that may also carry `scripts/`,
+/// `references/` and `assets/` — a markdown column would close that door on
+/// day one.
+///
+/// Keyed by name rather than by an id for the same reason: the folder name
+/// *is* the skill's identity and its slash command. A row holding an id would
+/// be a second census of the directory, and the two drift apart the moment
+/// anyone touches the disk.
+fn project_skills_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS project_skills (
+           project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+           skill_name TEXT NOT NULL,
+           PRIMARY KEY (project_id, skill_name)
+         );",
+    )
+    .map_err(|e| format!("could not create project_skills: {e}"))
 }
 
 /// Makes `turn_usage` able to record what a **terminal** spent.

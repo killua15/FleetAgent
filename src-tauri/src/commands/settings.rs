@@ -435,6 +435,21 @@ pub fn trigger_review<R: Runtime>(app: AppHandle<R>, db: State<DbConnection>, se
          and report issues, risks, or suggestions. Do not make any changes yourself."
         .to_string();
 
+    // The review is prose the user reads, so it obeys the same language
+    // preference as any other turn. Best-effort: a review in the wrong
+    // language beats no review.
+    let instructions = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        crate::app_data::root(&app)
+            .and_then(|root| crate::commands::preferences::instruction_file(&root, &conn, Some(&project_id)))
+            .unwrap_or_else(|e| {
+                log::warn!("trigger_review: could not prepare the agent preferences — {e}");
+                None
+            })
+            // The runner is Claude-only, and Claude takes the file path.
+            .map(|resolved| resolved.file)
+    };
+
     turn_runner::spawn_turn(TurnRequest {
         app,
         session_id: new_session_id.clone(),
@@ -448,6 +463,7 @@ pub fn trigger_review<R: Runtime>(app: AppHandle<R>, db: State<DbConnection>, se
         name,
         resume: None,
         prompt: review_prompt,
+        instructions,
     })?;
 
     let conn = db.0.lock().map_err(|e| e.to_string())?;

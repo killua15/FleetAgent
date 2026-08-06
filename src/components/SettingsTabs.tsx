@@ -10,6 +10,8 @@ import styles from './SettingsTabs.module.css';
 // content actually reaches a turn.
 const TABS: Array<{ screen: ScreenName; label: string }> = [
   { screen: 'general-settings', label: 'general' },
+  { screen: 'project-settings', label: 'projects' },
+  { screen: 'skill-settings', label: 'skills' },
   { screen: 'rotation-settings', label: 'rotation' },
   { screen: 'task-settings', label: 'tasks' },
 ];

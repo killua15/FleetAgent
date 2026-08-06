@@ -78,27 +78,27 @@ mod tests {
 
     /// Sin selección no hay marca. Es el estado normal: el teléfono está
     /// emparejado casi siempre y mirando una terminal casi nunca.
+    ///
+    /// El candado se sostiene de principio a fin **a propósito**. `SELECTED` es
+    /// un `static` y estos dos tests corren en paralelo: soltándolo entre
+    /// escribir y comprobar, el otro test puede colar su `Some("term-a")` justo
+    /// en medio y este falla sin que nada esté roto. Pasaba una vez cada
+    /// muchas, y solo con la máquina cargada, que es la peor forma de fallar.
     #[test]
     fn sin_seleccion_no_hay_terminal_marcada() {
-        {
-            let mut selected = SELECTED.lock().unwrap();
-            *selected = None;
-        }
-        assert!(SELECTED.lock().unwrap().is_none());
+        let mut selected = SELECTED.lock().unwrap();
+        *selected = None;
+        assert!(selected.is_none());
     }
 
     /// Una cadena vacía es "ninguna", no una terminal llamada "". El móvil
     /// mandará eso al salir de la pantalla de detalle.
     #[test]
     fn una_seleccion_vacia_equivale_a_ninguna() {
-        {
-            let mut selected = SELECTED.lock().unwrap();
-            *selected = Some("term-a".to_string());
-        }
-        {
-            let mut selected = SELECTED.lock().unwrap();
-            *selected = Some("   ".to_string()).filter(|id| !id.trim().is_empty());
-        }
-        assert!(SELECTED.lock().unwrap().is_none());
+        // Mismo motivo: un solo guardián para toda la prueba.
+        let mut selected = SELECTED.lock().unwrap();
+        *selected = Some("term-a".to_string());
+        *selected = Some("   ".to_string()).filter(|id| !id.trim().is_empty());
+        assert!(selected.is_none());
     }
 }

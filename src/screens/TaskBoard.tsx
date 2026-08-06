@@ -14,11 +14,11 @@ import styles from './TaskBoard.module.css';
 /**
  * Your board, with a terminal at the end of every row.
  *
- * The ☰ Tasks picker inside Terminals is for the moment you already know what
- * you're doing and want four worktrees at once. This is the other moment:
- * you don't know yet, and you want to see what's assigned to you before
- * deciding. Same fetch, same `open_task_worktrees` underneath — the difference
- * is that here the list is the screen rather than a step inside a launcher.
+ * The only way into a task now: pick a board, see what's assigned to you, and
+ * turn the ones you want into worktrees. It replaced a launcher panel inside
+ * Terminals that asked you to type branch names before you'd looked at
+ * anything — the list has to come first, because "what am I picking up" is the
+ * question you answer by reading, not by remembering.
  */
 export function TaskBoard() {
   const { navigate } = useNavigation();
