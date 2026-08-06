@@ -35,6 +35,11 @@
   --gemini: #7aa2ff;
   --geminiD: rgba(122, 162, 255, 0.13);
 
+  /* Grok identity color — ASSUMPTION, not a verified brand color, just a hue
+     not already claimed by another provider (acc=violet, teal, gemini=blue). */
+  --grok: #e878c0;
+  --grokD: rgba(232, 120, 192, 0.13);
+
   /* The one surface that never dissolves: popovers, palettes and modals.
      It was defined only inside the glass theme, so in dark and light
      `background: var(--overlay)` resolved to nothing and every one of them
@@ -79,6 +84,9 @@
 
   --gemini: #3f66d6;
   --geminiD: rgba(63, 102, 214, 0.1);
+
+  --grok: #c23f96;
+  --grokD: rgba(194, 63, 150, 0.1);
 
   --overlay: #ffffff;
   --overlay-line: rgba(30, 30, 60, 0.14);
@@ -134,6 +142,9 @@
 
   --gemini: #7aa2ff;
   --geminiD: rgba(122, 162, 255, 0.13);
+
+  --grok: #e878c0;
+  --grokD: rgba(232, 120, 192, 0.13);
 
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
 

@@ -2,7 +2,7 @@
 
 CREATE TABLE IF NOT EXISTS accounts (
   id               TEXT PRIMARY KEY,
-  provider         TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini','kimi')),
+  provider         TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini','kimi','grok')),
   billing          TEXT NOT NULL CHECK (billing IN ('sub','key')),
   name             TEXT NOT NULL,
   scope            TEXT NOT NULL CHECK (scope IN ('work','personal')),
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS project_allowed_accounts (
 
 CREATE TABLE IF NOT EXISTS rotation_policies (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini','kimi')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini','kimi','grok')),
   policy     TEXT NOT NULL DEFAULT 'manual' CHECK (policy IN ('auto','round_robin','manual')),
   PRIMARY KEY (project_id, provider)
 );
