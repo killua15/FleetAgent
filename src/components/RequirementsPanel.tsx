@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
-import { invoke } from '../lib/invoke';
-import { toastError } from '../components/ErrorOverlay';
-import type { CapabilityStatus } from '../types/requirements';
-import styles from './RequirementsPanel.module.css';
+import { useCallback, useEffect, useState } from "react";
+import { invoke } from "../lib/invoke";
+import { toastError } from "../components/ErrorOverlay";
+import type { CapabilityStatus } from "../types/requirements";
+import styles from "./RequirementsPanel.module.css";
 
 /**
  * Qué puede hacer Hangar en esta máquina, y qué falta para lo que no.
@@ -20,7 +20,10 @@ export function RequirementsPanel() {
   const [checking, setChecking] = useState(false);
 
   const load = useCallback(
-    () => invoke<CapabilityStatus[]>('list_requirements').then(setCaps).catch((e) => toastError(String(e))),
+    () =>
+      invoke<CapabilityStatus[]>("list_requirements")
+        .then(setCaps)
+        .catch((e) => toastError(String(e))),
     [],
   );
 
@@ -33,7 +36,7 @@ export function RequirementsPanel() {
     try {
       // Olvida la caché de rutas antes de mirar: si no, instalas lo que te dijo
       // y te sigue diciendo que falta hasta reiniciar la app.
-      setCaps(await invoke<CapabilityStatus[]>('recheck_requirements'));
+      setCaps(await invoke<CapabilityStatus[]>("recheck_requirements"));
     } catch (e) {
       toastError(String(e));
     } finally {
@@ -44,7 +47,9 @@ export function RequirementsPanel() {
   const working = caps.filter((c) => c.available);
   // Lo imprescindible primero: si falta, es lo único que importa de esta
   // pantalla y no debería estar por debajo de un extra opcional.
-  const broken = caps.filter((c) => !c.available).sort((a, b) => Number(b.essential) - Number(a.essential));
+  const broken = caps
+    .filter((c) => !c.available)
+    .sort((a, b) => Number(b.essential) - Number(a.essential));
   const brokenEssential = broken.filter((c) => c.essential);
   const brokenOptional = broken.filter((c) => !c.essential);
 
@@ -54,19 +59,24 @@ export function RequirementsPanel() {
         <span className={styles.summary}>
           {brokenEssential.length > 0 ? (
             <>
-              Falta lo imprescindible para <strong>{brokenEssential.map((c) => c.label.toLowerCase()).join(' y ')}</strong>.
+              Falta lo imprescindible para{" "}
+              <strong>
+                {brokenEssential.map((c) => c.label.toLowerCase()).join(" y ")}
+              </strong>
+              .
             </>
           ) : brokenOptional.length > 0 ? (
             <>
-              Lo esencial funciona. Hay <strong>{brokenOptional.length}</strong> cosa{brokenOptional.length === 1 ? '' : 's'} que
-              podrías hacer y todavía no — opcionales de verdad.
+              Lo esencial funciona. Hay <strong>{brokenOptional.length}</strong>{" "}
+              cosa{brokenOptional.length === 1 ? "" : "s"} que podrías hacer y
+              todavía no — opcionales de verdad.
             </>
           ) : (
             <>Todo disponible.</>
           )}
         </span>
         <button className={styles.btn} onClick={recheck} disabled={checking}>
-          {checking ? 'comprobando…' : 'volver a comprobar'}
+          {checking ? "comprobando…" : "volver a comprobar"}
         </button>
       </div>
 
@@ -81,7 +91,7 @@ export function RequirementsPanel() {
             <span
               key={cap.id}
               className={styles.okChip}
-              title={`${cap.enables}\n\n${cap.tools.map((t) => `${t.name} → ${t.path}`).join('\n')}`}
+              title={`${cap.enables}\n\n${cap.tools.map((t) => `${t.name} → ${t.path}`).join("\n")}`}
             >
               ✓ {cap.label}
             </span>
@@ -92,18 +102,27 @@ export function RequirementsPanel() {
       {/* Y lo que falta ocupa el ancho, en rejilla: es lo que hay que leer. */}
       <div className={styles.grid}>
         {broken.map((cap) => (
-          <div key={cap.id} className={cap.essential ? styles.cardBad : styles.card}>
+          <div
+            key={cap.id}
+            className={cap.essential ? styles.cardBad : styles.card}
+          >
             <div className={styles.title}>
               <span className={cap.essential ? styles.dotBad : styles.dotOpt} />
               <span className={styles.label}>{cap.label}</span>
-              <span className={cap.essential ? styles.tagRequired : styles.tagOptional}>
-                {cap.essential ? 'imprescindible' : 'opcional'}
+              <span
+                className={
+                  cap.essential ? styles.tagRequired : styles.tagOptional
+                }
+              >
+                {cap.essential ? "imprescindible" : "opcional"}
               </span>
             </div>
             <div className={styles.unlocks}>{cap.enables}</div>
 
             <details className={styles.guide} open>
-              <summary className={styles.guideHead}>{cap.reason} — cómo arreglarlo</summary>
+              <summary className={styles.guideHead}>
+                {cap.reason} — cómo arreglarlo
+              </summary>
               <div className={styles.guideBody}>
                 {cap.tools
                   .filter((t) => !t.installed)
@@ -111,15 +130,27 @@ export function RequirementsPanel() {
                     <div key={tool.name} className={styles.step}>
                       <div className={styles.stepName}>
                         {tool.name}
-                        {tool.blockedBy && <span className={styles.needs}> — antes hace falta {tool.blockedBy}</span>}
+                        {tool.blockedBy && (
+                          <span className={styles.needs}>
+                            {" "}
+                            — antes hace falta {tool.blockedBy}
+                          </span>
+                        )}
                       </div>
-                      {tool.installHint && <code className={styles.hint}>{tool.installHint}</code>}
+                      {tool.installHint && (
+                        <code className={styles.hint}>{tool.installHint}</code>
+                      )}
                       {tool.alternative && (
                         <div className={styles.alt}>
-                          o, si no usas Homebrew: <code className={styles.hintInline}>{tool.alternative}</code>
+                          o, si no usas Homebrew:{" "}
+                          <code className={styles.hintInline}>
+                            {tool.alternative}
+                          </code>
                         </div>
                       )}
-                      {tool.then && <div className={styles.after}>{tool.then}</div>}
+                      {tool.then && (
+                        <div className={styles.after}>{tool.then}</div>
+                      )}
                     </div>
                   ))}
               </div>
@@ -130,14 +161,16 @@ export function RequirementsPanel() {
 
       {broken.length > 0 && (
         <p className={styles.footnote}>
-          Cuando termines, pulsa <strong>volver a comprobar</strong> — Hangar cachea dónde encuentra cada binario, y si no seguiría
-          diciéndote que falta.
+          Cuando termines, pulsa <strong>volver a comprobar</strong> — Hangar
+          cachea dónde encuentra cada binario, y si no seguiría diciéndote que
+          falta.
         </p>
       )}
 
       <p className={styles.footnote}>
-        El estado de sesión de GitHub no se comprueba aquí — eso lanza un proceso, y abrir Ajustes no debería esperar por la red. Te
-        lo dice la función que lo necesite, cuando lo necesite.
+        El estado de sesión de GitHub no se comprueba aquí — eso lanza un
+        proceso, y abrir Ajustes no debería esperar por la red. Te lo dice la
+        función que lo necesite, cuando lo necesite.
       </p>
     </div>
   );

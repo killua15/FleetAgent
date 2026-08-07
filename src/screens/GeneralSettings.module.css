@@ -307,3 +307,69 @@
   font: 400 10.5px var(--font-ui);
   line-height: 1.5;
 }
+
+/* General had grown into eleven sections and a scrollbar to match. A rail
+   rather than a second row of tabs: the tab strip above is already six wide,
+   and two stacked horizontal strips make "where am I" a question. This also
+   spends the width the section max-width freed up. */
+.split {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.rail {
+  width: 168px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  background: var(--bg2);
+  padding: 18px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+}
+
+.railItem,
+.railItemActive {
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--mut);
+  font: 500 12.5px var(--font-ui);
+  cursor: pointer;
+}
+
+.railItem:hover {
+  background: var(--panel2);
+  color: var(--txt);
+}
+
+.railItemActive {
+  background: var(--panel);
+  border-color: var(--acc);
+  color: var(--txt);
+}
+
+.railItem:focus-visible,
+.railItemActive:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 1px;
+}
+
+@media (max-width: 720px) {
+  .split {
+    flex-direction: column;
+  }
+
+  .rail {
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    padding: 10px;
+  }
+}
