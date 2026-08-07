@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { rowY, seamLayout, shortenPath } from '../lib/seamLayout';
 import type { Bridge } from '../types/graph';
 import styles from './SeamMap.module.css';
 
@@ -20,45 +21,16 @@ import styles from './SeamMap.module.css';
  * `pull_request.dart` carry six each, and those are where a careless edit
  * breaks the other side.
  */
-/** Paths are long and the interesting part is the tail. The full path is still
- * on the `<title>`, so nothing is actually lost. */
-const shorten = (p: string) => p.replace(/^(src-tauri\/src|lib\/domain\/entities|lib\/presentation\/widgets|lib|src)\//, '');
-
 export function SeamMap({ bridges }: { bridges: Bridge[] }) {
   const [focus, setFocus] = useState<{ kind: 'bridge'; index: number } | { kind: 'file'; file: string } | null>(null);
 
-  const layout = useMemo(() => {
-    // Repo order is taken from the data, not assumed: a group can have more
-    // than two members, and the first two carry the seam most of the time.
-    const repos = [...new Set(bridges.flatMap((b) => b.ends.map((e) => e.repo)))].sort();
-    const [left, right] = repos;
-    const filesOf = (repo: string) => [
-      ...new Set(bridges.flatMap((b) => b.ends.filter((e) => e.repo === repo).map((e) => e.sourceFile))),
-    ];
-    return { left, right, leftFiles: filesOf(left), rightFiles: filesOf(right) };
-  }, [bridges]);
+  // The geometry lives in `src/lib/seamLayout.ts`, with tests: it is a pure
+  // decision, and it is where the clipping bug was.
+  const layout = useMemo(() => seamLayout(bridges), [bridges]);
+  if (!layout) return null;
 
-  const { left, right, leftFiles, rightFiles } = layout;
-  if (!left || !right) return null;
-
-  const GAP = 26;
-  const TOP = 34;
-  const SPAN = 360; // horizontal room the curves need to read as curves
-
-  // The rails are placed from the *measured* labels, not from constants. With
-  // fixed margins a long path is clipped by the viewBox, and a viewBox clips
-  // for good — no amount of scrolling on the container brings it back. Every
-  // label is mono at 9.5px, where a character is ~5.75px wide.
-  const CHAR = 5.75;
-  const widest = (files: string[]) => files.reduce((max, f) => Math.max(max, shorten(f).length), 0) * CHAR;
-  const leftGutter = Math.ceil(widest(leftFiles)) + 22;
-  const rightGutter = Math.ceil(widest(rightFiles)) + 22;
-
-  const LX = leftGutter;
-  const RX = LX + SPAN;
-  const width = RX + rightGutter;
-  const height = TOP + Math.max(leftFiles.length, rightFiles.length) * GAP + 18;
-  const y = (files: string[], f: string) => TOP + files.indexOf(f) * GAP;
+  const { left, right, leftFiles, rightFiles, leftX: LX, rightX: RX, width, height } = layout;
+  const y = (files: string[], f: string) => rowY(layout, files, f);
 
   const endIn = (b: Bridge, repo: string) => b.ends.find((e) => e.repo === repo);
   const touches = (b: Bridge, file: string) => b.ends.some((e) => e.sourceFile === file);
@@ -139,7 +111,7 @@ export function SeamMap({ bridges }: { bridges: Bridge[] }) {
                   textAnchor={anchor}
                   className={`${styles.fileLabel} ${fileOn(f) ? styles.labelOn : ''}`}
                 >
-                  {shorten(f)}
+                  {shortenPath(f)}
                 </text>
               </g>
             )),

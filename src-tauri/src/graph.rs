@@ -241,20 +241,32 @@ pub struct Bridge {
     pub ends: Vec<BridgeEnd>,
 }
 
+/// A string field that graphify may write as `null` rather than omit.
+///
+/// `#[serde(default)]` covers a *missing* key, not an explicit `null`, and a
+/// real graph has plenty of the latter: 306 of 4 480 nodes in the measured pair
+/// carry `"source_file": null`. Without this the whole file fails to parse and
+/// building any group dies with "is not a graphify graph" — which is exactly
+/// what the end-to-end test caught, and what every unit test missed because
+/// they all used hand-written fixtures.
+fn null_as_empty<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
+}
+
 /// A node as `merge-graphs` leaves it. Only the fields the bridge needs —
 /// graphify's own schema is much wider and we do not depend on the rest.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MergedNode {
     pub id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub label: String,
     /// Set by `merge-graphs`, which prefixes ids and tags every node with the
     /// graph it came from. Absent in a single-repo graph.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub repo: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub norm_label: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub source_file: String,
 }
 
@@ -400,9 +412,9 @@ pub fn architecture_brief(graph_path: &Path, bridges: &[Bridge], top_hubs: usize
     }
     #[derive(Deserialize)]
     struct Link {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_as_empty")]
         source: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_as_empty")]
         target: String,
     }
 

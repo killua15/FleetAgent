@@ -9,8 +9,10 @@ No es un documento de "integrar una herramienta". Es la respuesta a por qué est
 vale algo en un mercado donde cualquiera puede instalar el mismo skill en una
 tarde.
 
-**Estado**: Fase 0 (spike) ejecutada y con datos — §6. Nada implementado en
-producto todavía.
+**Estado**: Fases 0–5 implementadas en `feat/graphify-multi-repo-graph`. 483
+tests unitarios más uno de integración que recorre la cadena entera contra dos
+repos reales (`--ignored`, §6). La Fase 5 se entregó **distinta de como este
+documento la describía**, y el porqué está escrito en su sección.
 **Dependencia externa**: `graphifyy` en PyPI, binario `graphify` (Python ≥3.10,
 vía `uv`). Opcional para siempre — Hangar arranca y funciona sin ella.
 
@@ -483,7 +485,22 @@ Fase 1, con el grafo ya construido.
 El spike es reproducible: `docs/graphify/spike.sh <repo-a> <repo-b>` imprime las
 cifras de §5.7 para cualquier par de proyectos.
 
-### Fase 1 — Detección y grafo único (G1, G2, G3)
+**Y la cadena entera tiene su propio test**, que es lo que prueba que las piezas
+encajan y no solo que cada una funciona por separado:
+
+```sh
+HANGAR_GRAPH_TEST_REPO_A=~/Proyects/Fleet-Agent \
+HANGAR_GRAPH_TEST_REPO_B=~/Proyects/hangar-mobile \
+  cargo test --lib -- --ignored the_whole_chain
+```
+
+Construye, fusiona, puentea, reclusteriza y renderiza el brief contra dos repos
+de verdad, y comprueba que `git status` de los dos sigue limpio — la promesa de
+§3, que es la única que no se puede deducir leyendo código. Corriéndolo contra
+Hangar + `hangar-mobile` da **29 puentes** (el spike ve 54 candidatos crudos; la
+diferencia son los 25 que descarta el filtro de §5.7).
+
+### Fase 1 — Detección y grafo único (G1, G2, G3). ✅ Hecha
 
 - `resolve_binary("graphify")` + comando de estado.
 - Construcción por proyecto, una en vuelo, con progreso:
@@ -504,7 +521,7 @@ cifras de §5.7 para cualquier par de proyectos.
 seis agentes con la herramienta disponible, y `git status` del repo del usuario
 limpio. Sin `graphify` instalado, todo lo anterior desaparece sin un solo error.
 
-### Fase 2 — Grupos multi-repo y visualización (G6, G7, Diferencial C)
+### Fase 2 — Grupos multi-repo y visualización (G6, G7, Diferencial C). ✅ Hecha
 
 Va aquí, y no al final, porque es la pieza que la Fase 0 dejó apuntada y porque
 las dos partes se validan la una a la otra: el grafo del grupo solo es creíble si
@@ -534,7 +551,7 @@ como estaban.
 Contra Hangar + `hangar-mobile` eso son 53 puentes conocidos: es un caso de
 prueba con respuesta esperada, no un "a ver qué sale".
 
-### Fase 3 — Medición (G4, Diferencial B)
+### Fase 3 — Medición (G4, Diferencial B). ✅ Hecha
 
 `turn_usage` ya trae input, output, caché y `cost_usd` por sesión y proyecto. Se
 añade a `sessions` una marca de si el turno corrió con grafo, y se compara.
@@ -548,7 +565,7 @@ añade a `sessions` una marca de si el turno corrió con grafo, y se compara.
 tamaño de muestra. Esta fase es la que convierte el argumento comercial en una
 cifra propia del usuario, sobre su código, y por eso no se salta.
 
-### Fase 4 — Colisión semántica (G5, Diferencial A)
+### Fase 4 — Colisión semántica (G5, Diferencial A). ✅ Hecha
 
 Aquí está lo que nadie más puede copiar sin construir Hangar entero. Y sobre un
 grupo vale doble: el aviso deja de ser "dos agentes tocan el mismo módulo" y pasa
@@ -569,14 +586,32 @@ en su repo".
 distintas, producen aviso. Dos sobre subsistemas ajenos, no. El falso positivo se
 tolera; el silencio ante una colisión real, no.
 
-### Fase 5 — Superficie (memoria)
+### Fase 5 — Superficie (memoria). ✅ Hecha, y **distinta de como se planeó**
 
-- El reporte markdown de graphify (`GRAPH_REPORT.md`) entra como `memory_files`
-  (`schema.sql:76`), regenerado con el grafo. Es contexto de arquitectura que hoy
-  cada agente re-deriva y paga; los grupos de memoria compartida ya existen
-  (`src/screens/SharedMemorySettings.tsx`) y esto es exactamente su caso de uso.
-- Para un ámbito de grupo, ese reporte es el documento que hoy nadie escribe: cómo
-  encajan dos servicios que se despliegan por separado.
+Lo que esta sección decía: meter el `GRAPH_REPORT.md` de graphify como
+`memory_files` (`schema.sql:76`). No se hizo, por dos razones que aparecieron al
+implementarla y que merecen quedar escritas.
+
+**La aritmética no salía.** Ese fichero son 25 KB para este repo — unos 6 000
+tokens en el system prompt de *cada* turno. Gastar contexto para ahorrar
+contexto es un intercambio que pierde, y además habría contaminado justo la
+comparación de la Fase 3: los turnos "con grafo" arrancarían 6 000 tokens por
+delante y el informe habría medido nuestro propio lastre.
+
+Lo que se entrega es un **brief compacto**: los ficheros más conectados —el
+grado de un fichero en el grafo no es algo que veinte greps revelen— y, en un
+grupo, la costura. Unos cientos de tokens, y un test que falla si pasa de 4 KB.
+
+**Y `memory_files` no llega a ningún agente.** Nada ha alimentado nunca esa
+tabla a un turno; por eso su propia pantalla está oculta, y `SettingsTabs.tsx`
+lo dice con todas las letras. Escribir el brief ahí habría sido entregar una
+fase rota. Va por `--append-system-prompt-file`, el canal verificado con un
+canario, y **además** se guarda en `memory_files` para que sea visible: el
+usuario puede leer lo que se les está contando a sus agentes, que es la
+diferencia entre contexto y una caja negra.
+
+La lección general: una fase que escribe en un canal que nadie lee no está
+hecha, está simulada.
 
 ---
 
@@ -596,6 +631,30 @@ tolera; el silencio ante una colisión real, no.
 | **Falsos positivos de colisión cansan al usuario** | Aviso descartable, nunca bloqueo; si la señal es mala, la Fase 4 se retira sin tocar las anteriores |
 | **La competencia copia el cableado del MCP** | Es lo esperado, y es la parte que no defendemos. Las Fases 2, 3 y 4 son las que piden el puente que la fusión no da, la contabilidad y la flota (§2) |
 
+### Tres fallos que destapó implementarlo
+
+Escritos porque los tres son del tipo que vuelve, y ninguno se veía leyendo el
+diff que los introdujo.
+
+**`bool::then_some` evalúa de forma ansiosa.** El lock de construcción (§5.1)
+hacía `set.insert(k).then_some(BuildGuard { key })`. Cuando la inserción falla
+—o sea, cuando hay que rechazar una segunda construcción— `then_some` ya ha
+construido el guard, y destruirlo bloquea el mismo mutex que seguíamos
+teniendo cogido. `std::sync::Mutex` no es reentrante: la segunda construcción
+simultánea habría congelado *todas* las del proceso hasta reiniciar la app. Lo
+destapó un test que no fallaba, **colgaba**. Es `then`, con closure.
+
+**`store_turn_usage` nunca guardó `project_id`.** Anterior a este trabajo, y
+mucho más ancho: **ningún** informe por proyecto veía los turnos headless, no
+solo el del grafo.
+
+**`#[serde(default)]` no cubre `null`.** Solo cubre la clave ausente. Un grafo
+real trae 306 de 4 480 nodos con `"source_file": null`, así que el fichero
+entero fallaba al parsear y construir cualquier grupo moría con *"is not a
+graphify graph"*. Los tests unitarios no lo vieron porque todos usaban
+fixtures escritas a mano; lo cazó el test de integración la primera vez que
+corrió. Es la razón de que ese test exista.
+
 ---
 
 ## 8 · Preguntas abiertas
@@ -614,12 +673,15 @@ tolera; el silencio ante una colisión real, no.
    representativo en vez de por id de comunidad. La Fase 0 ya dio media
    respuesta y no es buena: entre dos grafos distintos los ids **colisionan**
    sin significar nada. Anclar por fichero parece la apuesta segura.
-4. **Instalación asistida.** Ya no es teórica: en un macOS limpio hace falta
-   `uv` (el Python del sistema es 3.9.6 y graphify pide ≥3.10), y luego
-   `uv tool install "graphifyy[sql]"`. Son dos instalaciones, no una. Sigue en
-   pie la pregunta de si Hangar las ofrece o solo detecta y enlaza; por defecto,
-   detectar y enlazar, pero el enlace tiene que contar los dos pasos y el nombre
-   con dos íes.
+4. ~~**Instalación asistida.**~~ **Cerrada: detectar y enlazar, nunca instalar.**
+   En un macOS limpio hacen falta dos pasos —`uv` primero, porque el Python del
+   sistema es 3.9.6— y la respuesta la dio el registro de capacidades
+   (`src-tauri/src/capabilities.rs`): cada función declara lo que necesita y la
+   app enseña **el primer eslabón que falta**, no el último. Instalar software
+   en la máquina de alguien sigue siendo cosa suya.
+
+   Lo que queda: las pistas asumen Homebrew, así que en un Mac sin `brew` el
+   comando tampoco es ejecutable. Es el mismo error un nivel más abajo.
 5. **Sacar un proyecto de un grupo.** ¿Se reconstruye el grafo al momento —CPU
    por una edición de ajustes— o se marca viejo y se reconstruye cuando toque?
    Marcarlo viejo es más barato y más honesto, pero deja un grafo que menciona

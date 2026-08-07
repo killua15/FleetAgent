@@ -1035,4 +1035,116 @@ mod tests {
         assert!(state.commits[0].current_sha.is_none(), "a non-repo has no HEAD to compare against");
         assert!(!state.stale, "unknown freshness must not be reported as stale");
     }
+
+    /// The whole chain against two real repositories, once.
+    ///
+    /// Every other test here proves a piece in isolation — the bridge filter,
+    /// the flags, the lock, the freshness rule. None of them has ever run
+    /// `graphify`, so nothing so far proves the pieces fit: that the argv we
+    /// build is argv graphify accepts, that `merge-graphs` writes where we look
+    /// for it, that our injected edges survive its clustering.
+    ///
+    /// `#[ignore]` like the other tests that need real binaries
+    /// (`turn_runner.rs`, `login_manager.rs`, `usage_scraper.rs`). The repos
+    /// come from the environment and the test skips without them: one that only
+    /// passes on one machine tells nobody anything the day it fails.
+    ///
+    /// ```sh
+    /// HANGAR_GRAPH_TEST_REPO_A=~/Proyects/Fleet-Agent \
+    /// HANGAR_GRAPH_TEST_REPO_B=~/Proyects/hangar-mobile \
+    ///   cargo test --lib -- --ignored the_whole_chain
+    /// ```
+    #[test]
+    #[ignore = "runs real graphify against two real repos; set HANGAR_GRAPH_TEST_REPO_A/B"]
+    fn the_whole_chain_builds_merges_and_bridges_two_real_repos() {
+        let (Ok(repo_a), Ok(repo_b)) =
+            (std::env::var("HANGAR_GRAPH_TEST_REPO_A"), std::env::var("HANGAR_GRAPH_TEST_REPO_B"))
+        else {
+            eprintln!("skipped: set HANGAR_GRAPH_TEST_REPO_A and HANGAR_GRAPH_TEST_REPO_B to two repos that talk to each other");
+            return;
+        };
+        let (repo_a, repo_b) = (PathBuf::from(&repo_a), PathBuf::from(&repo_b));
+        let binary = graph::detect().expect("graphify has to be installed to run this");
+
+        let root = std::env::temp_dir().join(format!("hangar-graph-chain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        // §3's promise, captured before we touch anything. A graph build that
+        // dirties the user's checkout is the one failure that can't be caught
+        // by reading the code, because it depends on what graphify does.
+        let status_of = |repo: &Path| {
+            crate::commands::pull_requests::git_capture(repo, &["status", "--porcelain"]).unwrap_or_default()
+        };
+        let (before_a, before_b) = (status_of(&repo_a), status_of(&repo_b));
+
+        let run = |args: Vec<String>| {
+            let mut cmd = Command::new(&binary);
+            cmd.args(&args);
+            let out = crate::process_timeout::run_with_timeout(cmd, BUILD_TIMEOUT)
+                .unwrap_or_else(|e| panic!("graphify {args:?} could not run: {e}"));
+            assert!(out.status.success(), "graphify {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+            out
+        };
+
+        // 1 — one graph per member, exactly as `build_project_graph` does it.
+        let out_a = root.join("a");
+        let out_b = root.join("b");
+        std::fs::create_dir_all(&out_a).unwrap();
+        std::fs::create_dir_all(&out_b).unwrap();
+        run(graph::build_args(&repo_a, &out_a));
+        run(graph::build_args(&repo_b, &out_b));
+
+        let graph_a = graph::graph_json(&out_a);
+        let graph_b = graph::graph_json(&out_b);
+        assert!(graph_a.is_file() && graph_b.is_file(), "both member graphs have to exist where we look for them");
+
+        // 2 — graphify's own merge. Verifies the union we measured in Phase 0:
+        // it joins the two graphs and creates nothing between them.
+        let merged = root.join("merged").join("graphify-out").join("graph.json");
+        std::fs::create_dir_all(merged.parent().unwrap()).unwrap();
+        run(graph::merge_args(&[graph_a, graph_b], &merged));
+
+        let nodes = graph::read_merged_nodes(&merged).expect("the merged graph has to parse");
+        assert!(nodes.len() > 100, "a merge of two real repos should be substantial, got {}", nodes.len());
+
+        // 3 — the one piece of graph logic we own.
+        let bridges = graph::find_bridges(&nodes);
+        assert!(
+            !bridges.is_empty(),
+            "two repos that talk to each other must share at least one type name, or §5.6 buys nothing"
+        );
+        eprintln!("bridges found: {} — {:?}", bridges.len(), bridges.iter().map(|b| &b.label).collect::<Vec<_>>());
+
+        // 4 — the edges reach the graph the MCP serves, not just the screen.
+        let added = graph::inject_bridges(&merged, &bridges).expect("bridges have to be writable");
+        assert_eq!(added, bridges.len(), "one edge per two-ended bridge");
+
+        let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&merged).unwrap()).unwrap();
+        let ours = raw["links"].as_array().unwrap().iter().filter(|l| l["_origin"] == "hangar-bridge").count();
+        assert_eq!(ours, added, "every injected edge has to be findable and marked as ours");
+
+        // 5 — re-clustering, which is also what writes the HTML that
+        // `merge-graphs` never produces. `--no-label` keeps it off any model.
+        run(graph::recluster_args(&root.join("merged")));
+        assert!(
+            graph::graph_html(&root.join("merged")).is_file(),
+            "cluster-only is the only thing that writes graph.html; without it the 'open in browser' button never appears"
+        );
+
+        // 6 — the brief, and the size that justified not shipping the 25 KB
+        // report graphify generates (Phase 5).
+        let brief = graph::architecture_brief(&merged, &bridges, 12).expect("the brief has to render");
+        assert!(!brief.trim().is_empty());
+        assert!(
+            brief.len() < 4096,
+            "the brief rides every turn's system prompt; at {} bytes it stops being cheaper than the greps it replaces",
+            brief.len()
+        );
+
+        // 7 — and the promise again, after all of it.
+        assert_eq!(status_of(&repo_a), before_a, "building a graph must not touch the user's checkout");
+        assert_eq!(status_of(&repo_b), before_b, "building a graph must not touch the user's checkout");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 }
