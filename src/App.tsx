@@ -24,6 +24,7 @@ import { RotationSettings } from './screens/RotationSettings';
 import { ProjectSettings } from './screens/ProjectSettings';
 import { SkillSettings } from './screens/SkillSettings';
 import { SharedMemorySettings } from './screens/SharedMemorySettings';
+import { GraphGroups } from './screens/GraphGroups';
 import { PrReviews } from './screens/PrReviews';
 import { GitPanel } from './screens/GitPanel';
 import { Files } from './screens/Files';
@@ -109,6 +110,8 @@ function Screens() {
       return <TaskBoard />;
     case 'shared-memory':
       return <SharedMemorySettings />;
+    case 'graph-groups':
+      return <GraphGroups />;
     case 'pr-reviews':
       return <PrReviews />;
     case 'git-panel':

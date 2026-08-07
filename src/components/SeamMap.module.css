@@ -1,0 +1,86 @@
+.wrap {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+/* The map is wide by nature — one rail per repo plus the file names — and tall
+   in proportion to how many files carry the seam. It scrolls on **both** axes
+   inside its own box, so the settings screen never scrolls sideways and a long
+   rail is reachable instead of clipped. */
+.scroll {
+  overflow: auto;
+  max-height: 62vh;
+  overscroll-behavior: contain;
+}
+
+/* The SVG carries its own pixel width/height (see SeamMap.tsx) so this box has
+   something real to scroll. `flex: none` keeps a flex parent from squashing it
+   back down to the column width, which would clip it again. */
+.svg {
+  display: block;
+  flex: none;
+}
+
+.railHead {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.fileLabel {
+  font: 400 9.5px var(--font-mono);
+  fill: var(--mut);
+}
+
+.labelOn {
+  fill: var(--txt);
+}
+
+.fileNode {
+  cursor: pointer;
+}
+
+.fileNode:focus-visible {
+  outline: 1px solid var(--acc);
+  outline-offset: 2px;
+}
+
+.bridge {
+  fill: none;
+  stroke-width: 1.2;
+  opacity: 0.34;
+  cursor: pointer;
+  transition:
+    opacity 0.15s,
+    stroke-width 0.15s;
+}
+
+.on {
+  opacity: 1;
+  stroke-width: 2.4;
+}
+
+/* Everything not in focus drops back rather than disappearing: the shape of
+   the whole seam stays readable while one strand is traced. */
+.dim {
+  opacity: 0.07;
+}
+
+.readout {
+  border-top: 1px solid var(--line);
+  background: var(--bg2);
+  padding: 8px 12px;
+  font: 400 10.5px var(--font-mono);
+  color: var(--mut);
+  min-height: 30px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bridge {
+    transition: none;
+  }
+}

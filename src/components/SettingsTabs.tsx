@@ -12,6 +12,7 @@ const TABS: Array<{ screen: ScreenName; label: string }> = [
   { screen: 'general-settings', label: 'general' },
   { screen: 'project-settings', label: 'projects' },
   { screen: 'skill-settings', label: 'skills' },
+  { screen: 'graph-groups', label: 'graphs' },
   { screen: 'rotation-settings', label: 'rotation' },
   { screen: 'task-settings', label: 'tasks' },
 ];

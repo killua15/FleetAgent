@@ -19,6 +19,7 @@ export type ScreenName =
   | 'task-settings'
   | 'task-board'
   | 'shared-memory'
+  | 'graph-groups'
   | 'git-panel'
   | 'files'
   | 'queue'

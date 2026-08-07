@@ -1,0 +1,297 @@
+.screen {
+  width: 100%;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--txt);
+  font-family: var(--font-ui);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.sectionLabel {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.16em;
+  color: var(--dim);
+  padding: 0 8px 8px;
+}
+
+.missing {
+  margin: 24px;
+  padding: 16px;
+  border: 1px dashed var(--line2);
+  border-radius: 8px;
+  font: 400 12.5px var(--font-ui);
+  color: var(--mut);
+  line-height: 1.6;
+  max-width: 62ch;
+}
+
+.empty {
+  font: 400 11.5px var(--font-ui);
+  color: var(--dim);
+  padding: 8px;
+  line-height: 1.55;
+}
+
+/* --- groups column --- */
+.groupList {
+  width: 262px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  background: var(--bg2);
+  padding: 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow: auto;
+}
+
+.groupRow,
+.groupRowActive {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font-family: inherit;
+}
+
+.groupRow:hover {
+  background: var(--panel2);
+}
+
+.groupRowActive {
+  border-color: var(--acc);
+  background: var(--panel);
+}
+
+.groupDot {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  flex: none;
+  background: var(--acc);
+}
+
+.groupInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.groupName {
+  font: 600 12.5px var(--font-ui);
+}
+
+.groupSub {
+  font: 400 10.5px var(--font-mono);
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.newGroupRow {
+  display: flex;
+  gap: 6px;
+  padding: 6px 4px;
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--txt);
+  border-radius: 6px;
+  padding: 6px 9px;
+  font: 500 11px var(--font-mono);
+}
+
+.input::placeholder {
+  color: var(--dim);
+}
+
+.btn,
+.btnPrimary {
+  border-radius: 6px;
+  padding: 7px 12px;
+  font: 500 11.5px var(--font-ui);
+  cursor: pointer;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--txt);
+}
+
+.btn:hover,
+.btnPrimary:hover {
+  border-color: var(--acc);
+  color: var(--acc);
+}
+
+.btnPrimary {
+  border-color: var(--acc);
+  background: var(--accD);
+  color: var(--acc);
+  margin-top: 8px;
+}
+
+.btn:disabled,
+.btnPrimary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.footnote {
+  font: 400 10.5px var(--font-ui);
+  color: var(--dim);
+  line-height: 1.55;
+  padding: 0 8px;
+}
+
+/* --- membership column --- */
+.membership {
+  width: 340px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  padding: 20px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+}
+
+.membershipTitle {
+  font: 600 15px var(--font-mono);
+}
+
+.membershipHint {
+  font: 400 11.5px var(--font-ui);
+  color: var(--mut);
+  margin-bottom: 8px;
+}
+
+.memberRow,
+.memberRowActive {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: transparent;
+  cursor: pointer;
+}
+
+.memberRowActive {
+  background: var(--panel);
+  border-color: var(--line2);
+}
+
+.memberIcon {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  background: var(--panel2);
+  font: 600 10px var(--font-mono);
+  color: var(--mut);
+}
+
+.memberInfo {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.memberName {
+  font: 500 12px var(--font-ui);
+}
+
+.memberSha {
+  font: 400 10px var(--font-mono);
+  color: var(--dim);
+}
+
+.note {
+  padding: 9px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  font: 400 11.5px var(--font-ui);
+  color: var(--mut);
+  line-height: 1.55;
+}
+
+.warn {
+  padding: 9px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--amber);
+  background: var(--amberD);
+  font: 400 11.5px var(--font-ui);
+  color: var(--txt);
+  line-height: 1.55;
+}
+
+/* --- savings --- */
+.savings {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.savingsRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+  font: 400 11.5px var(--font-ui);
+  color: var(--mut);
+}
+
+.num {
+  font: 400 10.5px var(--font-mono);
+  color: var(--txt);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- bridges column --- */
+.bridgeWrap {
+  flex: 1;
+  min-width: 0;
+  padding: 20px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+}
+
+.bridgeHint {
+  font: 400 11px var(--font-ui);
+  color: var(--mut);
+  margin-bottom: 6px;
+  line-height: 1.5;
+  max-width: 60ch;
+}
