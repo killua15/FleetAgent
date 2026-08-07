@@ -179,6 +179,20 @@ pub fn resolve_binary(name: &str) -> String {
 /// auth probe and every `gh` call.
 static RESOLVED: std::sync::Mutex<std::collections::BTreeMap<String, String>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
 
+/// Drops the resolution cache so a tool installed while Hangar is running is
+/// found without a relaunch.
+///
+/// The cache exists because resolving can spawn a login shell and this is
+/// called on every terminal open. But it also means a user who follows an
+/// install hint keeps being told the tool is missing — which reads as "I did
+/// what it said and nothing happened". Cleared only on explicit re-check, not
+/// on a timer: the steady state is that nothing changes.
+pub fn forget_resolved_binaries() {
+    if let Ok(mut cached) = RESOLVED.lock() {
+        cached.clear();
+    }
+}
+
 fn resolve_binary_uncached(name: &str) -> String {
     if let Ok(path) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path) {

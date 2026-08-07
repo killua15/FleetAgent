@@ -7,6 +7,7 @@ pub mod login;
 pub mod preferences;
 pub mod projects;
 pub mod pull_requests;
+pub mod requirements;
 pub mod sessions;
 pub mod settings;
 pub mod skill_sources;

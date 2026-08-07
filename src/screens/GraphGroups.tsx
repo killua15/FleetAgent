@@ -110,8 +110,8 @@ export function GraphGroups() {
 
       {!graphify?.installed ? (
         <div className={styles.missing}>
-          Necesita <strong>graphify</strong>, que no está en esta máquina. Se instala con <code>{graphify?.installHint ?? "uv tool install 'graphifyy[sql]'"}</code>.
-          Sin él, Hangar funciona exactamente igual que hasta ahora.
+          Necesita <strong>graphify</strong>, que no está en esta máquina. El paso que falta —que puede ser instalar <code>uv</code>{' '}
+          antes— está en <strong>Settings → general</strong>. Sin él, Hangar funciona exactamente igual que hasta ahora.
         </div>
       ) : (
         <div className={styles.body}>

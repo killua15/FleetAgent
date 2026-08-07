@@ -252,9 +252,13 @@ function CodeGraphField({ projectId, graphify }: { projectId: string; graphify: 
       </span>
 
       {!graphify?.installed ? (
+        // La pista concreta vive en Settings → general, que es lo único que
+        // sabe si el prerrequisito (uv) también falta. Repetir aquí un comando
+        // que puede no ser ejecutable es justo el callejón sin salida que esa
+        // pantalla existe para evitar.
         <span className={styles.empty}>
-          Necesita <strong>graphify</strong>, que no está en esta máquina. Se instala con <code>{graphify?.installHint ?? "uv tool install 'graphifyy[sql]'"}</code>{' '}
-          y luego reabre esta pantalla. Sin él, todo lo demás funciona igual.
+          Necesita <strong>graphify</strong>, que no está en esta máquina. En <strong>Settings → general</strong> tienes el paso que
+          falta. Sin él, todo lo demás funciona igual.
         </span>
       ) : !graphify.mcpInstalled ? (
         <span className={styles.empty}>

@@ -6,6 +6,7 @@ import { check } from '@tauri-apps/plugin-updater';
 import { PairPhoneDialog } from '../components/PairPhoneDialog';
 import { getVersion } from '@tauri-apps/api/app';
 import { SettingsTabs } from '../components/SettingsTabs';
+import { RequirementsPanel } from '../components/RequirementsPanel';
 import { UsageBar } from '../components/UsageBar';
 import { PickConfigDirDialog } from '../components/PickConfigDirDialog';
 import { Button } from '../components/ui/button';
@@ -118,6 +119,11 @@ export function GeneralSettings() {
     <div className={styles.screen}>
       <SettingsTabs active="general-settings" title="General" />
       <div className={styles.body}>
+        <section className={styles.section}>
+          <span className={styles.sectionLabel}>WHAT HANGAR NEEDS</span>
+          <RequirementsPanel />
+        </section>
+
         <section className={styles.section}>
           <span className={styles.sectionLabel}>APPEARANCE</span>
           <div className={styles.themeRow}>

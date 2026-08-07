@@ -1,0 +1,154 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.summary {
+  font: 400 11.5px var(--font-ui);
+  color: var(--mut);
+}
+
+.btn {
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--txt);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font: 500 11px var(--font-ui);
+  cursor: pointer;
+  flex: none;
+}
+
+.btn:hover {
+  border-color: var(--acc);
+  color: var(--acc);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 9px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+/* State in form as well as text: green present, red missing-and-needed, plain
+   missing-and-optional. What needs attention has to read at a glance. */
+.dotOk,
+.dotBad,
+.dotOpt {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  margin-top: 6px;
+}
+
+.dotOk {
+  background: var(--grn);
+}
+
+.dotBad {
+  background: var(--red);
+}
+
+.dotOpt {
+  background: var(--line2);
+}
+
+.info {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.label {
+  font: 600 12.5px var(--font-ui);
+}
+
+.tagRequired,
+.tagOptional {
+  font: 500 9px var(--font-mono);
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: 20px;
+}
+
+.tagRequired {
+  background: var(--redD);
+  color: var(--red);
+}
+
+.tagOptional {
+  background: var(--panel2);
+  color: var(--dim);
+}
+
+.unlocks {
+  font: 400 11.5px var(--font-ui);
+  color: var(--mut);
+  line-height: 1.5;
+  max-width: 68ch;
+}
+
+.path {
+  font: 400 10px var(--font-mono);
+  color: var(--dim);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.hintWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 2px;
+}
+
+.blocked {
+  font: 400 10.5px var(--font-ui);
+  color: var(--amber);
+}
+
+.hint {
+  font: 500 10.5px var(--font-mono);
+  color: var(--acc);
+  background: var(--accD);
+  border-radius: 4px;
+  padding: 5px 8px;
+  display: block;
+  overflow-x: auto;
+  white-space: nowrap;
+  user-select: all;
+}

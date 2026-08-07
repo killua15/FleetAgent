@@ -223,6 +223,8 @@ pub fn run() {
             commands::skill_sources::update_installed_skills,
             commands::settings::list_project_account_rotation,
             commands::settings::set_project_account_allowed,
+            commands::requirements::list_requirements,
+            commands::requirements::recheck_requirements,
             commands::graph::graphify_status,
             commands::graph::get_project_graph,
             commands::graph::build_project_graph,
