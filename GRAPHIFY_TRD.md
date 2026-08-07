@@ -326,9 +326,7 @@ grok, y ya está documentado allí que esa bandera concede acceso a ficheros ade
 de cargar skills. Un agente en un proyecto agrupado recibe `--add-dir` de sus
 hermanos: mismo mecanismo, sin inventar nada.
 
-**UI.** El patrón de `src/screens/SharedMemorySettings.tsx` —crear grupo, marcar
-proyectos— y el estado del grafo del grupo en `src/screens/ProjectSettings.tsx`.
-Nada de esto en el grid.
+**UI.** Diseñada en §5.8.
 
 ### 5.7 · Qué conecta un grafo de grupo — medido, no supuesto
 
@@ -388,6 +386,56 @@ de la Fase 2, no un detalle de implementación.
 
 Y la regla de honestidad se mantiene: si en un grupo concreto los puentes salen
 a cero, **se dice en la UI**. Dos islas dibujadas juntas no son un sistema.
+
+### 5.8 · Cómo se ve y cómo se toca
+
+**El HTML de graphify no se embebe.** Hay que corregir lo que este documento dio
+por hecho: `graph.html` **no es autocontenido**. Carga `vis-network` desde
+`unpkg.com` con un `<script src="https://…">`. Bajo el CSP de la app se queda en
+blanco, sin red no funciona, y viene en un único tema oscuro que no es el
+nuestro. Verificado abriendo el fichero, no leyendo su documentación.
+
+De ahí, dos superficies en vez de una:
+
+- **La vista de Hangar**, dibujada por nosotros desde `graph.json`, con los
+  tokens de `src/styles/tokens.css` y los tres temas.
+- **"Abrir la vista completa de graphify"**, acción secundaria que lanza su HTML
+  en el navegador del sistema. Fuera del CSP, fuera de nuestra promesa de temas,
+  y etiquetada como lo que es: una herramienta externa.
+
+**Qué dibuja la vista de Hangar: la costura, no la madeja.** Un grafo de fuerzas
+de 4 480 nodos queda bien en una captura y no responde ninguna pregunta — y
+además graphify ya lo hace. La vista propia es un **mapa de dos raíles**: un repo
+por raíl, los ficheros que participan en el contrato, y una curva por puente.
+Responde la única pregunta que tiene un grupo: *¿por dónde se tocan estos dos
+repos, y qué fichero hay a cada lado?*
+
+Dibujarlo destapó algo que en una lista no se ve: `models.rs` y
+`pull_request.dart` concentran seis puentes cada uno. **Son los hubs de la
+costura**, y es donde una edición descuidada rompe el otro lado.
+
+**Dónde vive cada parte:**
+
+| Superficie | Qué muestra |
+|---|---|
+| Settings → **Graph groups** | Tres columnas, el esqueleto de `SharedMemorySettings.tsx`: grupos, miembros, y —en la tercera— **los puentes**. Donde memoria compartida lista ficheros, esto lista la prueba de que agrupar sirvió |
+| AgentPanel → pestaña **Graph** | El mapa de costura, filtrado a los ficheros que la sesión tocó |
+| Diálogo de crear subsesión | El aviso de colisión (Fase 4), con el tipo compartido concreto |
+| **El grid** | Nada. Un índice y su antigüedad no son una señal gruesa |
+
+**Dos decisiones que parecen detalle y no lo son:**
+
+*La frescura se muestra por miembro, no solo por grupo.* §5.5 manda que el
+conjunto valga lo que su peor miembro, pero un aviso que solo dice "viejo" no
+dice qué reconstruir. Chip por proyecto (`fresh`, `18 commits behind`) **y**
+aviso de grupo.
+
+*El recuento de puentes se muestra siempre, incluido el cero.* Un grupo con cero
+puentes tiene que verse en la lista, no descubrirse abriendo el grafo. Es la
+misma regla de §5.7 llevada al sitio donde el usuario decide si deshacer la
+agrupación.
+
+Mockup con datos reales del spike: `docs/graphify/ui-mockup.md`.
 
 ---
 
@@ -471,9 +519,9 @@ se puede mirar.
   con dos grafos de juguete, y el número de puentes visible.
 - `--add-dir` de los proyectos hermanos en el spawn, vía `skills_args`.
 - Frescura por miembro: `graph_commits`, y el peor manda (§5.5).
-- El `graph.html` del ámbito en una pestaña de `AgentPanel`. **No en el grid**:
-  es una feature densa, y esa lección ya se aprendió con el árbol de ficheros y
-  los diffs.
+- El mapa de costura en una pestaña de `AgentPanel`, dibujado por nosotros
+  (§5.8). **No en el grid**: es una feature densa, y esa lección ya se aprendió
+  con el árbol de ficheros y los diffs.
 - **La métrica de §5.7 en la UI**: cuántos puentes hay y entre qué ficheros. Si
   el grupo son dos islas, el usuario lo ve y deshace la agrupación.
 
