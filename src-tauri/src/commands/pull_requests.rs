@@ -28,6 +28,11 @@ pub(crate) fn git_capture(cwd: &Path, args: &[&str]) -> Result<String, String> {
 /// git calls here are reads that don't need either, and threading a keychain
 /// lookup through `rev-parse` would be a cost paid on every call for nothing.
 pub(crate) fn git_capture_with_env(cwd: &Path, args: &[&str], env: &[(String, String)]) -> Result<String, String> {
+    // Every git read in the app funnels through here, which makes it the one
+    // place worth checking. Without it a machine with no developer tools said
+    // `git rev-parse HEAD: No such file or directory` instead of naming the
+    // thing to install. Cheap: binary resolution is cached process-wide.
+    crate::capabilities::Capability::GitWork.check_offline().map_err(|b| b.message())?;
     let mut cmd = Command::new(providers::resolve_binary("git"));
     cmd.args(args).current_dir(cwd);
     for (k, v) in env {
@@ -57,15 +62,10 @@ pub(crate) fn gh_output(cwd: Option<&Path>, args: &[&str]) -> Result<std::proces
 /// Clear, actionable error instead of letting a bare `gh pr create` failure
 /// (missing binary or expired login) surface as a cryptic exit-code message.
 pub(crate) fn gh_available_and_authed() -> Result<(), String> {
-    let gh_path = providers::resolve_binary("gh");
-    if gh_path == "gh" {
-        return Err("the GitHub CLI (gh) isn't installed — install it from https://cli.github.com and run `gh auth login`".to_string());
-    }
-    let output = gh_output(None, &["auth", "status"])?;
-    if !output.status.success() {
-        return Err("gh isn't logged in — run `gh auth login` first".to_string());
-    }
-    Ok(())
+    // Now one line, because the knowledge moved to where every feature can ask
+    // the same question: `gh` present *and* logged in, since installed-but-not-
+    // authenticated fails exactly as hard as absent.
+    crate::capabilities::Capability::PullRequests.check().map_err(|b| b.message())
 }
 
 /// `origin/HEAD`'s target if the remote's default branch was ever resolved

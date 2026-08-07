@@ -173,6 +173,10 @@ fn project_is_git_repo(project_path: &str) -> bool {
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> Result<(), String> {
+    // The write path's funnel, as `git_capture_with_env` is the read path's:
+    // creating a worktree is where a missing git hurts most, because the
+    // session is already half-created when it fails.
+    crate::capabilities::Capability::GitWork.check_offline().map_err(|b| b.message())?;
     let output = Command::new(providers::resolve_binary("git"))
         .args(args)
         .current_dir(cwd)

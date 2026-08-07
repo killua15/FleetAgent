@@ -1,30 +1,26 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '../lib/invoke';
 import { toastError } from '../components/ErrorOverlay';
-import type { Requirement } from '../types/requirements';
+import type { CapabilityStatus } from '../types/requirements';
 import styles from './RequirementsPanel.module.css';
 
 /**
- * Lo que Hangar necesita en la máquina, y lo que falta.
+ * Qué puede hacer Hangar en esta máquina, y qué falta para lo que no.
  *
- * Hangar orquesta CLIs de otros, así que en un equipo recién instalado casi
- * todo está inerte hasta que existan. Hasta ahora eso aparecía en el momento de
- * usarlo: una terminal que no abre, un botón de PR que da error, una pista de
- * instalación que nombra una herramienta que tampoco tienes.
+ * La unidad es la **capacidad** —algo que quieres hacer—, no la herramienta.
+ * Una lista de binarios es una tarea; una lista de lo que desbloquea cada uno
+ * es una decisión. Y la frase que sale aquí es la misma que verás si intentas
+ * usar la función directamente: las dos preguntan al mismo registro.
  *
- * Dos reglas que esta pantalla existe para cumplir:
- *
- * - **Nombrar el paso que falta de verdad.** Si no tienes `uv`, la pista del
- *   grafo es `brew install uv`, no un comando que va a fallar.
- * - **Decir qué te da.** Una lista de binarios es una tarea; una lista de lo
- *   que desbloquea cada uno es una decisión.
+ * Las herramientas salen debajo de cada capacidad, no sueltas, porque así se ve
+ * *por qué* hace falta cada una en vez de recibir un comando a secas.
  */
 export function RequirementsPanel() {
-  const [reqs, setReqs] = useState<Requirement[]>([]);
+  const [caps, setCaps] = useState<CapabilityStatus[]>([]);
   const [checking, setChecking] = useState(false);
 
   const load = useCallback(
-    () => invoke<Requirement[]>('list_requirements').then(setReqs).catch((e) => toastError(String(e))),
+    () => invoke<CapabilityStatus[]>('list_requirements').then(setCaps).catch((e) => toastError(String(e))),
     [],
   );
 
@@ -35,9 +31,9 @@ export function RequirementsPanel() {
   const recheck = async () => {
     setChecking(true);
     try {
-      // Vuelve a mirar el disco olvidando la caché de rutas: si no, instalas lo
-      // que te dijo y te sigue diciendo que falta hasta reiniciar la app.
-      setReqs(await invoke<Requirement[]>('recheck_requirements'));
+      // Olvida la caché de rutas antes de mirar: si no, instalas lo que te dijo
+      // y te sigue diciendo que falta hasta reiniciar la app.
+      setCaps(await invoke<CapabilityStatus[]>('recheck_requirements'));
     } catch (e) {
       toastError(String(e));
     } finally {
@@ -45,25 +41,24 @@ export function RequirementsPanel() {
     }
   };
 
-  const missingRequired = reqs.filter((r) => !r.installed && r.need === 'required');
-  const missingOptional = reqs.filter((r) => !r.installed && r.need === 'optional');
+  const brokenEssential = caps.filter((c) => !c.available && c.essential);
+  const brokenOptional = caps.filter((c) => !c.available && !c.essential);
 
   return (
     <div className={styles.wrap}>
       <div className={styles.head}>
         <span className={styles.summary}>
-          {missingRequired.length > 0 ? (
+          {brokenEssential.length > 0 ? (
             <>
-              Falta{missingRequired.length === 1 ? '' : 'n'} <strong>{missingRequired.length}</strong> herramienta
-              {missingRequired.length === 1 ? '' : 's'} imprescindible{missingRequired.length === 1 ? '' : 's'}.
+              Falta lo imprescindible para <strong>{brokenEssential.map((c) => c.label.toLowerCase()).join(' y ')}</strong>.
             </>
-          ) : missingOptional.length > 0 ? (
+          ) : brokenOptional.length > 0 ? (
             <>
-              Todo lo imprescindible está. Hay <strong>{missingOptional.length}</strong> extra
-              {missingOptional.length === 1 ? '' : 's'} sin instalar — opcionales de verdad.
+              Lo esencial funciona. Hay <strong>{brokenOptional.length}</strong> cosa{brokenOptional.length === 1 ? '' : 's'} que
+              podrías hacer y todavía no — opcionales de verdad.
             </>
           ) : (
-            <>Todo instalado.</>
+            <>Todo disponible.</>
           )}
         </span>
         <button className={styles.btn} onClick={recheck} disabled={checking}>
@@ -72,32 +67,44 @@ export function RequirementsPanel() {
       </div>
 
       <div className={styles.list}>
-        {reqs.map((r) => (
-          <div key={r.id} className={styles.row}>
-            <span className={r.installed ? styles.dotOk : r.need === 'required' ? styles.dotBad : styles.dotOpt} />
+        {caps.map((cap) => (
+          <div key={cap.id} className={styles.row}>
+            <span className={cap.available ? styles.dotOk : cap.essential ? styles.dotBad : styles.dotOpt} />
             <div className={styles.info}>
               <div className={styles.title}>
-                <span className={styles.label}>{r.label}</span>
-                {!r.installed && r.need === 'required' && <span className={styles.tagRequired}>imprescindible</span>}
-                {!r.installed && r.need === 'optional' && <span className={styles.tagOptional}>opcional</span>}
+                <span className={styles.label}>{cap.label}</span>
+                {!cap.available && cap.essential && <span className={styles.tagRequired}>imprescindible</span>}
+                {!cap.available && !cap.essential && <span className={styles.tagOptional}>opcional</span>}
               </div>
-              <div className={styles.unlocks}>{r.unlocks}</div>
+              <div className={styles.unlocks}>{cap.enables}</div>
 
-              {r.installed ? (
-                // La ruta, no solo un tick: «funciona en mi terminal» y «Hangar
-                // lo encuentra» son cosas distintas cuando la app se abre desde
-                // Finder con un PATH mínimo.
-                <div className={styles.path}>{r.path}</div>
-              ) : (
+              {!cap.available && (
                 <div className={styles.hintWrap}>
-                  {r.blockedBy && <div className={styles.blocked}>Antes hace falta {r.blockedBy}:</div>}
-                  <code className={styles.hint}>{r.installHint}</code>
+                  <div className={styles.blocked}>{cap.reason}</div>
+                  {cap.installHint && <code className={styles.hint}>{cap.installHint}</code>}
                 </div>
               )}
+
+              {/* Las herramientas, con su ruta cuando están: «funciona en mi
+                  terminal» y «Hangar lo encuentra» son cosas distintas cuando
+                  la app se abre desde Finder con un PATH mínimo. */}
+              <div className={styles.tools}>
+                {cap.tools.map((tool) => (
+                  <span key={tool.name} className={tool.installed ? styles.toolOk : styles.toolMissing} title={tool.path ?? undefined}>
+                    {tool.installed ? '✓' : '·'} {tool.name}
+                    {tool.blockedBy && <span className={styles.needs}> ← necesita {tool.blockedBy}</span>}
+                  </span>
+                ))}
+              </div>
             </div>
           </div>
         ))}
       </div>
+
+      <p className={styles.footnote}>
+        El estado de sesión de GitHub no se comprueba aquí — eso lanza un proceso, y abrir Ajustes no debería esperar por la red. Te
+        lo dice la función que lo necesite, cuando lo necesite.
+      </p>
     </div>
   );
 }

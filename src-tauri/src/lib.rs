@@ -1,6 +1,7 @@
 mod app_data;
 mod auth;
 mod blocking;
+mod capabilities;
 mod bridge;
 mod commands;
 mod credential_vault;
@@ -225,6 +226,7 @@ pub fn run() {
             commands::settings::set_project_account_allowed,
             commands::requirements::list_requirements,
             commands::requirements::recheck_requirements,
+            commands::requirements::check_capability,
             commands::graph::graphify_status,
             commands::graph::get_project_graph,
             commands::graph::build_project_graph,

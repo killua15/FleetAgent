@@ -1,20 +1,40 @@
-/** What Hangar needs on the machine, and what is missing. */
-export interface Requirement {
-  id: string;
-  label: string;
-  /** `required` — nothing works without it. `optional` — one named feature is
-   * unavailable and everything else is fine. */
-  need: 'required' | 'optional';
-  /** What having it buys, in the user's terms. */
-  unlocks: string;
+/** What Hangar needs, derived from what each feature declares.
+ *
+ * The unit is a **capability** — something the user wants to do — not a tool.
+ * A tool appears because some capability names it, and what it unlocks is that
+ * capability's own words: the same sentence the feature shows when it refuses.
+ */
+
+export type CapabilityId =
+  | 'run-agents'
+  | 'git-work'
+  | 'pull-requests'
+  | 'skills-from-git-hub'
+  | 'code-graph'
+  | 'graph-to-agents';
+
+export interface ToolStatus {
+  name: string;
   installed: boolean;
-  /** Absolute path when found — "it works in my terminal" and "Hangar can find
-   * it" are different claims for an app launched from Finder. */
+  /** Where Hangar found it — the answer to "but it works in my terminal". */
   path: string | null;
-  /** The command to run *next*, which is the prerequisite's when this tool's
-   * own prerequisite is missing. */
+  /** The command to run next, which is the prerequisite's when that is also
+   * missing. */
   installHint: string | null;
-  /** Set when the hint above belongs to a prerequisite, so the UI can say why
-   * it's talking about `uv` when you asked about a knowledge graph. */
+  /** Named when this tool needs another first, so the UI can explain why it's
+   * talking about `uv` when you asked about a knowledge graph. */
   blockedBy: string | null;
+}
+
+export interface CapabilityStatus {
+  id: CapabilityId;
+  label: string;
+  enables: string;
+  /** Hangar is useless without it. */
+  essential: boolean;
+  available: boolean;
+  /** One sentence naming the missing step. */
+  reason: string | null;
+  installHint: string | null;
+  tools: ToolStatus[];
 }
