@@ -247,8 +247,18 @@ pub fn render_instructions_inline(prefs: &AgentPreferences) -> Option<String> {
 /// disappear — the file cannot be older than the process reading it.
 pub fn instruction_file(root: &std::path::Path, conn: &rusqlite::Connection, project_id: Option<&str>) -> Result<Option<ResolvedInstructions>, String> {
     let prefs = resolve(conn, project_id)?;
-    let Some(text) = render_instructions(&prefs) else {
-        return Ok(None);
+    // The architecture brief rides this channel because it is the one already
+    // proven to reach an agent (`--append-system-prompt-file`, verified with a
+    // canary). `memory_files` would have been the tidier home, but nothing has
+    // ever fed that table to a turn — which is why its own screen is hidden.
+    // A brief written where no agent reads it is a phase that ships broken.
+    let brief = project_id.and_then(|id| graph_brief(root, conn, id));
+
+    let text = match (render_instructions(&prefs), &brief) {
+        (None, None) => return Ok(None),
+        (Some(instructions), None) => instructions,
+        (None, Some(brief)) => brief.clone(),
+        (Some(instructions), Some(brief)) => format!("{instructions}\n\n---\n\n{brief}"),
     };
     let dir = root.join("agent-instructions");
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
@@ -260,6 +270,20 @@ pub fn instruction_file(root: &std::path::Path, conn: &rusqlite::Connection, pro
         file,
         inline: render_instructions_inline(&prefs).unwrap_or_default(),
     }))
+}
+
+/// This project's architecture brief, if its graph has been built.
+///
+/// Reads a small pre-rendered file rather than the graph itself: the graph is
+/// megabytes, and this runs on every terminal open. It cannot go stale in a way
+/// that matters either — it is written by the same build that writes the graph.
+///
+/// Silent on every failure. No graphify, no graph, no group: the terminal opens
+/// exactly as it does today.
+fn graph_brief(root: &std::path::Path, conn: &rusqlite::Connection, project_id: &str) -> Option<String> {
+    let (kind, scope_id) = crate::commands::graph::effective_scope(conn, project_id)?;
+    let brief = crate::graph::brief_path(&crate::graph::scope_dir(root, kind, &scope_id));
+    std::fs::read_to_string(brief).ok().filter(|s| !s.trim().is_empty())
 }
 
 /// The same instructions in the two shapes the CLIs want: a file for the ones

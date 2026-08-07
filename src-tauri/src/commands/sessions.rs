@@ -173,6 +173,10 @@ fn project_is_git_repo(project_path: &str) -> bool {
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> Result<(), String> {
+    // The write path's funnel, as `git_capture_with_env` is the read path's:
+    // creating a worktree is where a missing git hurts most, because the
+    // session is already half-created when it fails.
+    crate::capabilities::Capability::GitWork.check_offline().map_err(|b| b.message())?;
     let output = Command::new(providers::resolve_binary("git"))
         .args(args)
         .current_dir(cwd)
@@ -736,7 +740,7 @@ pub fn send_message(app: AppHandle, db: State<DbConnection>, session_id: String,
         process_manager::emit_block(&app, &session_id, "agent", &crate::rotation::switch_notice(switch));
     }
 
-    let (provider, billing, config_dir_path, account_id, cwd, name, model, effort, mode_str, resume, instructions) = {
+    let (provider, billing, config_dir_path, account_id, cwd, name, model, effort, mode_str, resume, instructions, mcp_config) = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let (account_id, project_id, name, model, effort, mode_str, resume, worktree_path): (
             String,
@@ -792,7 +796,11 @@ pub fn send_message(app: AppHandle, db: State<DbConnection>, session_id: String,
                 None
             })
             .map(|resolved| resolved.file);
-        (provider, billing, config_dir_path, account_id, cwd, name, model, effort, mode_str, resume, instructions)
+        // Same best-effort treatment, and `None` is the normal answer: most
+        // projects have no graph, and a turn must never be handed an MCP
+        // pointing at one that isn't there (`GRAPHIFY_TRD.md` §5.5).
+        let mcp_config = crate::commands::graph::mcp_config_for_project(&app, &conn, &project_id);
+        (provider, billing, config_dir_path, account_id, cwd, name, model, effort, mode_str, resume, instructions, mcp_config)
     };
 
     let api_key = if billing == "key" {
@@ -816,6 +824,7 @@ pub fn send_message(app: AppHandle, db: State<DbConnection>, session_id: String,
         resume,
         prompt: text,
         instructions,
+        mcp_config,
     })
 }
 

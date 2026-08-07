@@ -166,6 +166,24 @@ const MIGRATIONS: &[Migration] = &[
         run: skill_sources_table,
         transactional: true,
     },
+    Migration {
+        version: 19,
+        name: "code_graphs",
+        run: code_graphs_tables,
+        transactional: true,
+    },
+    Migration {
+        version: 20,
+        name: "graph_groups",
+        run: graph_groups_tables,
+        transactional: true,
+    },
+    Migration {
+        version: 21,
+        name: "turn_usage_graph_marker",
+        run: turn_usage_graph_marker,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -309,6 +327,89 @@ fn always_on_skills_table(conn: &Connection) -> Result<(), String> {
 ///
 /// `repo` is UNIQUE and stored normalised to `owner/repo`, so pasting a URL and
 /// typing the short form can't produce two entries for the same place.
+/// Graphify knowledge graphs (`GRAPHIFY_TRD.md` §5.4).
+///
+/// A graph hangs off a **scope**, not a project: one project, or a group of
+/// them. Phase 1 only writes `'project'`, but the column is here from the start
+/// because adding it later means a second migration over a primary key.
+///
+/// `graph_commits` is a table rather than a column on `graphs` because a group
+/// graph was built over N commits, one per member, and it is stale the moment
+/// *any* of them moves (§5.5). One column could only ever record one of them.
+///
+/// Not in `schema.sql`, deliberately: that file is applied to existing
+/// databases before any migration runs, so declaring something there and
+/// referencing it from a migration takes startup down on older installs.
+fn code_graphs_tables(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS graphs (
+           scope_kind  TEXT NOT NULL,
+           scope_id    TEXT NOT NULL,
+           graph_path  TEXT NOT NULL,
+           built_at    TEXT,
+           node_count  INTEGER NOT NULL DEFAULT 0,
+           edge_count  INTEGER NOT NULL DEFAULT 0,
+           status      TEXT NOT NULL DEFAULT 'never_built',
+           last_error  TEXT,
+           PRIMARY KEY (scope_kind, scope_id)
+         );
+
+         CREATE TABLE IF NOT EXISTS graph_commits (
+           scope_kind  TEXT NOT NULL,
+           scope_id    TEXT NOT NULL,
+           project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+           commit_sha  TEXT NOT NULL,
+           PRIMARY KEY (scope_kind, scope_id, project_id)
+         );",
+    )
+    .map_err(|e| format!("could not create the graph tables: {e}"))
+}
+
+/// Projects the user has marked as one system (`GRAPHIFY_TRD.md` §5.6).
+///
+/// The same shape as `memory_groups`, and deliberately **not** the same table.
+/// "What context do these share?" and "what code gets indexed together?" are
+/// two questions: coupling them would make changing a memory group trigger a
+/// graph rebuild, and make one scope impossible without the other.
+///
+/// `bridge_count` is cached on the group because it is the number the list
+/// screen shows for every group at once, and recomputing it means parsing a
+/// multi-megabyte graph per row. `-1` distinguishes "never built" from a real,
+/// meaningful zero — a group whose members share nothing (§5.7).
+fn graph_groups_tables(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS graph_groups (
+           id           TEXT PRIMARY KEY,
+           name         TEXT NOT NULL,
+           bridge_count INTEGER NOT NULL DEFAULT -1,
+           created_at   TEXT NOT NULL
+         );
+
+         CREATE TABLE IF NOT EXISTS graph_group_projects (
+           group_id   TEXT NOT NULL REFERENCES graph_groups(id) ON DELETE CASCADE,
+           project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+           PRIMARY KEY (group_id, project_id)
+         );",
+    )
+    .map_err(|e| format!("could not create the graph group tables: {e}"))
+}
+
+/// Whether a turn ran with a graph available (`GRAPHIFY_TRD.md` Phase 3).
+///
+/// One column, on the table that already records what every turn cost in
+/// input, output, cache and dollars. That is the whole point of Differential
+/// B: the saving is *measured against the user's own work*, not asserted — and
+/// measuring it needs nothing more than knowing which side of the line each
+/// turn fell on.
+fn turn_usage_graph_marker(conn: &Connection) -> Result<(), String> {
+    if has_column(conn, "turn_usage", "with_graph")? {
+        return Ok(());
+    }
+    conn.execute("ALTER TABLE turn_usage ADD COLUMN with_graph INTEGER NOT NULL DEFAULT 0", [])
+        .map(|_| ())
+        .map_err(|e| format!("could not add turn_usage.with_graph: {e}"))
+}
+
 fn skill_sources_table(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS skill_sources (

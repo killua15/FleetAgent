@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useAuth } from '../auth/AuthProvider';
 import { invoke } from '../lib/invoke';
 import { toastError } from '../components/ErrorOverlay';
@@ -6,6 +6,7 @@ import { check } from '@tauri-apps/plugin-updater';
 import { PairPhoneDialog } from '../components/PairPhoneDialog';
 import { getVersion } from '@tauri-apps/api/app';
 import { SettingsTabs } from '../components/SettingsTabs';
+import { RequirementsPanel } from '../components/RequirementsPanel';
 import { UsageBar } from '../components/UsageBar';
 import { PickConfigDirDialog } from '../components/PickConfigDirDialog';
 import { Button } from '../components/ui/button';
@@ -20,6 +21,19 @@ import type { AccountUsageSummary } from '../types/session';
 import type { AgentPreferences, AppSettings } from '../types/settings';
 import { LANGUAGES, systemLanguage } from '../lib/languages';
 import styles from './GeneralSettings.module.css';
+
+/** Los grupos del raíl. General era un cajón de sastre de once secciones; esto
+ * es lo que tienen en común, no un reparto por tamaño. */
+const PANES = [
+  { id: 'machine', label: 'Máquina' },
+  { id: 'appearance', label: 'Apariencia' },
+  { id: 'accounts', label: 'Cuentas' },
+  { id: 'agents', label: 'Agentes' },
+  { id: 'phone', label: 'Teléfono' },
+  { id: 'advanced', label: 'Avanzado' },
+] as const;
+
+type PaneId = (typeof PANES)[number]['id'];
 
 const THEME_OPTS: Theme[] = ['dark', 'light', 'glass', 'system'];
 
@@ -38,6 +52,9 @@ function isWizardConfigDir(path: string): boolean {
 }
 
 export function GeneralSettings() {
+  // Arranca en Máquina: es lo que alguien recién instalado necesita, y lo único
+  // de esta pantalla que puede estar en rojo.
+  const [pane, setPane] = useState<PaneId>('machine');
   const { theme, resolvedTheme, setTheme, unfocusedTint, setUnfocusedTint } = useTheme();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [usage, setUsage] = useState<Record<string, AccountUsageSummary>>({});
@@ -117,234 +134,285 @@ export function GeneralSettings() {
   return (
     <div className={styles.screen}>
       <SettingsTabs active="general-settings" title="General" />
-      <div className={styles.body}>
-        <section className={styles.section}>
-          <span className={styles.sectionLabel}>APPEARANCE</span>
-          <div className={styles.themeRow}>
-            {THEME_OPTS.map((t) => (
-              <button
-                key={t}
-                className={t === theme ? styles.themeBtnActive : styles.themeBtn}
-                onClick={() => setTheme(t)}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-          {/* Only meaningful in glass, and hiding it elsewhere is better than
-              showing a slider that does nothing. */}
-          {resolvedTheme === 'glass' && (
-            <div className={styles.tintRow}>
-              <span className={styles.tintLabel}>Transparency when Hangar isn't focused</span>
-              <input
-                type="range"
-                min={0.1}
-                max={1}
-                step={0.02}
-                value={unfocusedTint}
-                onChange={(e) => setUnfocusedTint(Number(e.target.value))}
-                className={styles.tintSlider}
-              />
-              <span className={styles.tintValue}>{unfocusedTint >= 0.99 ? 'no fade' : `${Math.round((1 - unfocusedTint) * 100)}% see-through`}</span>
+      <div className={styles.split}>
+        <nav className={styles.rail} aria-label="Secciones de General">
+          {PANES.map((p) => (
+            <button
+              key={p.id}
+              className={p.id === pane ? styles.railItemActive : styles.railItem}
+              aria-current={p.id === pane}
+              onClick={() => setPane(p.id)}
+            >
+              {p.label}
+            </button>
+          ))}
+        </nav>
+        <div className={styles.body}>
+          <Pane id="machine" active={pane}>
+          <section className={styles.sectionWide}>
+            <span className={styles.sectionLabel}>WHAT HANGAR NEEDS</span>
+            <RequirementsPanel />
+          </section>
+          </Pane>
+
+          <Pane id="appearance" active={pane}>
+          <section className={styles.section}>
+            <span className={styles.sectionLabel}>APPEARANCE</span>
+            <div className={styles.themeRow}>
+              {THEME_OPTS.map((t) => (
+                <button
+                  key={t}
+                  className={t === theme ? styles.themeBtnActive : styles.themeBtn}
+                  onClick={() => setTheme(t)}
+                >
+                  {t}
+                </button>
+              ))}
             </div>
-          )}
-          {resolvedTheme === 'glass' && (
-            <span className={styles.hint}>
-              The window fades to this while you're in another app and comes back when you return. Popovers, dialogs and the
-              command palette stay solid at every setting — anything you have to read shouldn't have your wallpaper behind it.
-            </span>
-          )}
-        </section>
-
-        <section className={styles.section}>
-          <span className={styles.sectionLabel}>ACCOUNT LOGIN — CONFIG DIRECTORY</span>
-          <span className={styles.hint}>
-            Each subscription account runs the CLI against an isolated <code>CLAUDE_CONFIG_DIR</code>. Point it at a login you
-            already have (e.g. <code>~/.claude-work</code>) instead of the one Hangar created — nothing is moved, and the
-            account keeps its sessions and history.
-          </span>
-          <div className={styles.capList}>
-            {accounts
-              .filter((acc) => acc.provider === 'claude' && acc.billing === 'sub')
-              .map((acc) => (
-                <div className={styles.capRow} key={acc.id}>
-                  <ProviderBadge account={acc} />
-                  <span className={styles.capName}>{acc.name}</span>
-                  <code
-                    className={styles.dimText}
-                    title={acc.configDirPath}
-                    style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)' }}
-                  >
-                    {abbreviateHome(acc.configDirPath)}
-                  </code>
-                  <PickConfigDirDialog
-                    trigger={
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        style={isWizardConfigDir(acc.configDirPath) ? { color: 'var(--amber)', borderColor: 'var(--amber)' } : undefined}
-                        title="Point this account at a login you already have"
-                      >
-                        change…
-                      </Button>
-                    }
-                    title={`Config directory for ${acc.name}`}
-                    description="Pick a login already on this machine. Hangar adopts it in place — nothing is moved or copied, and the account's sessions and history stay intact."
-                    onPick={async (login) => {
-                      await invoke('set_account_config_dir', { id: acc.id, configDirPath: login.path });
-                      await loadAccounts();
-                    }}
-                  />
-                </div>
-              ))}
-            {accounts.filter((acc) => acc.provider === 'claude' && acc.billing === 'sub').length === 0 && (
-              <span className={styles.empty}>No subscription accounts yet.</span>
+            {/* Only meaningful in glass, and hiding it elsewhere is better than
+                showing a slider that does nothing. */}
+            {resolvedTheme === 'glass' && (
+              <div className={styles.tintRow}>
+                <span className={styles.tintLabel}>Transparency when Hangar isn't focused</span>
+                <input
+                  type="range"
+                  min={0.1}
+                  max={1}
+                  step={0.02}
+                  value={unfocusedTint}
+                  onChange={(e) => setUnfocusedTint(Number(e.target.value))}
+                  className={styles.tintSlider}
+                />
+                <span className={styles.tintValue}>{unfocusedTint >= 0.99 ? 'no fade' : `${Math.round((1 - unfocusedTint) * 100)}% see-through`}</span>
+              </div>
             )}
-          </div>
-        </section>
+            {resolvedTheme === 'glass' && (
+              <span className={styles.hint}>
+                The window fades to this while you're in another app and comes back when you return. Popovers, dialogs and the
+                command palette stay solid at every setting — anything you have to read shouldn't have your wallpaper behind it.
+              </span>
+            )}
+          </section>
+          </Pane>
 
-        <section className={styles.section}>
-          <span className={styles.sectionLabel}>SPEND CAP PER ACCOUNT — MONTHLY</span>
-          <div className={styles.capList}>
-            {accounts.map((acc) => (
-              <AccountCapRow
-                key={acc.id}
-                account={acc}
-                usage={usage[acc.id]}
-                capInput={caps[acc.id] ?? ''}
-                onCapInputChange={(v) => setCaps((prev) => ({ ...prev, [acc.id]: v }))}
-                onSave={() => saveCap(acc.id)}
-                saving={savingCap === acc.id}
-              />
-            ))}
-            {accounts.length === 0 && <span className={styles.empty}>No accounts yet.</span>}
-          </div>
-        </section>
+          <Pane id="accounts" active={pane}>
+          <section className={styles.section}>
+            <span className={styles.sectionLabel}>ACCOUNT LOGIN — CONFIG DIRECTORY</span>
+            <span className={styles.hint}>
+              Each subscription account runs the CLI against an isolated <code>CLAUDE_CONFIG_DIR</code>. Point it at a login you
+              already have (e.g. <code>~/.claude-work</code>) instead of the one Hangar created — nothing is moved, and the
+              account keeps its sessions and history.
+            </span>
+            <div className={styles.capList}>
+              {accounts
+                .filter((acc) => acc.provider === 'claude' && acc.billing === 'sub')
+                .map((acc) => (
+                  <div className={styles.capRow} key={acc.id}>
+                    <ProviderBadge account={acc} />
+                    <span className={styles.capName}>{acc.name}</span>
+                    <code
+                      className={styles.dimText}
+                      title={acc.configDirPath}
+                      style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)' }}
+                    >
+                      {abbreviateHome(acc.configDirPath)}
+                    </code>
+                    <PickConfigDirDialog
+                      trigger={
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          style={isWizardConfigDir(acc.configDirPath) ? { color: 'var(--amber)', borderColor: 'var(--amber)' } : undefined}
+                          title="Point this account at a login you already have"
+                        >
+                          change…
+                        </Button>
+                      }
+                      title={`Config directory for ${acc.name}`}
+                      description="Pick a login already on this machine. Hangar adopts it in place — nothing is moved or copied, and the account's sessions and history stay intact."
+                      onPick={async (login) => {
+                        await invoke('set_account_config_dir', { id: acc.id, configDirPath: login.path });
+                        await loadAccounts();
+                      }}
+                    />
+                  </div>
+                ))}
+              {accounts.filter((acc) => acc.provider === 'claude' && acc.billing === 'sub').length === 0 && (
+                <span className={styles.empty}>No subscription accounts yet.</span>
+              )}
+            </div>
+          </section>
+          </Pane>
 
-        <section className={styles.section}>
-          <span className={styles.sectionLabel}>PREFERRED REVIEWER ACCOUNT</span>
-          <span className={styles.hint}>
-            Used by the "Review now" button on any session — spawns a plan-mode session with this account to report
-            issues without editing anything.
-          </span>
-          <label className={styles.reviewerToggle}>
-            <Checkbox
-              checked={appSettings.reviewerEnabled}
-              onCheckedChange={(checked) => saveReviewer({ ...appSettings, reviewerEnabled: checked === true })}
-              disabled={savingReviewer}
-            />
-            Enable reviewer
-          </label>
-          <Select
-            value={appSettings.reviewerAccountId ?? ''}
-            onValueChange={(v) => saveReviewer({ ...appSettings, reviewerAccountId: v || null })}
-            disabled={!appSettings.reviewerEnabled || savingReviewer}
-          >
-            <SelectTrigger className={styles.reviewerSelect}>
-              <SelectValue placeholder="select a reviewer account…" />
-            </SelectTrigger>
-            <SelectContent>
-              {accounts.map((a) => (
-                <SelectItem key={a.id} value={a.id}>
-                  {a.name} — {a.provider}
-                </SelectItem>
+          <Pane id="accounts" active={pane}>
+          <section className={styles.section}>
+            <span className={styles.sectionLabel}>SPEND CAP PER ACCOUNT — MONTHLY</span>
+            <div className={styles.capList}>
+              {accounts.map((acc) => (
+                <AccountCapRow
+                  key={acc.id}
+                  account={acc}
+                  usage={usage[acc.id]}
+                  capInput={caps[acc.id] ?? ''}
+                  onCapInputChange={(v) => setCaps((prev) => ({ ...prev, [acc.id]: v }))}
+                  onSave={() => saveCap(acc.id)}
+                  saving={savingCap === acc.id}
+                />
               ))}
-            </SelectContent>
-          </Select>
-        </section>
+              {accounts.length === 0 && <span className={styles.empty}>No accounts yet.</span>}
+            </div>
+          </section>
+          </Pane>
 
-        <section className={styles.section}>
-          <span className={styles.sectionLabel}>NOTIFICATIONS</span>
-          <span className={styles.hint}>
-            Real macOS notifications for the events below. If they're on and nothing arrives, macOS is dropping them —
-            check System Settings → Notifications → Hangar, and use the test below to see the actual error.
-          </span>
-          <NotificationTestRow />
-          <div className={styles.notifList}>
-            <NotificationRow
-              label="Needs your approval"
-              description="Ask Edits sessions blocked on a permission you haven't answered yet."
-              checked={appSettings.notifyNeedsApproval}
-              saving={savingNotif === 'notifyNeedsApproval'}
-              onChange={(v) => toggleNotification('notifyNeedsApproval', v)}
-            />
-            <NotificationRow
-              label="Session finished"
-              description="A session ran a turn and is back to waiting for you."
-              checked={appSettings.notifySessionWaiting}
-              saving={savingNotif === 'notifySessionWaiting'}
-              onChange={(v) => toggleNotification('notifySessionWaiting', v)}
-            />
-            <NotificationRow
-              label="Account rate-limited"
-              description="An account hit a rate limit and can't run turns until it clears."
-              checked={appSettings.notifyAccountExhausted}
-              saving={savingNotif === 'notifyAccountExhausted'}
-              onChange={(v) => toggleNotification('notifyAccountExhausted', v)}
-            />
-            <NotificationRow
-              label="Spend cap exceeded"
-              description="An API-key account passed its estimated weekly budget."
-              checked={appSettings.notifySpendCap}
-              saving={savingNotif === 'notifySpendCap'}
-              onChange={(v) => toggleNotification('notifySpendCap', v)}
-            />
-            <NotificationRow
-              label="Pull requests"
-              description="A new PR shows up for one of your projects, or one Hangar opened gets new review comments — checked every 5 minutes while Hangar is open."
-              checked={appSettings.notifyPrComments}
-              saving={savingNotif === 'notifyPrComments'}
-              onChange={(v) => toggleNotification('notifyPrComments', v)}
-            />
-            <NotificationRow
-              label="Update available"
-              description="A new version of Hangar is ready to install."
-              checked={appSettings.notifyUpdateAvailable}
-              saving={savingNotif === 'notifyUpdateAvailable'}
-              onChange={(v) => toggleNotification('notifyUpdateAvailable', v)}
-            />
-          </div>
-        </section>
+          <Pane id="accounts" active={pane}>
+          <section className={styles.section}>
+            <span className={styles.sectionLabel}>PREFERRED REVIEWER ACCOUNT</span>
+            <span className={styles.hint}>
+              Used by the "Review now" button on any session — spawns a plan-mode session with this account to report
+              issues without editing anything.
+            </span>
+            <label className={styles.reviewerToggle}>
+              <Checkbox
+                checked={appSettings.reviewerEnabled}
+                onCheckedChange={(checked) => saveReviewer({ ...appSettings, reviewerEnabled: checked === true })}
+                disabled={savingReviewer}
+              />
+              Enable reviewer
+            </label>
+            <Select
+              value={appSettings.reviewerAccountId ?? ''}
+              onValueChange={(v) => saveReviewer({ ...appSettings, reviewerAccountId: v || null })}
+              disabled={!appSettings.reviewerEnabled || savingReviewer}
+            >
+              <SelectTrigger className={styles.reviewerSelect}>
+                <SelectValue placeholder="select a reviewer account…" />
+              </SelectTrigger>
+              <SelectContent>
+                {accounts.map((a) => (
+                  <SelectItem key={a.id} value={a.id}>
+                    {a.name} — {a.provider}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </section>
+          </Pane>
 
-        <section className={styles.section}>
-          <span className={styles.sectionLabel}>IDIOMA DE LOS AGENTES</span>
-          <AgentLanguageRow />
-        </section>
+          <Pane id="agents" active={pane}>
+          <section className={styles.section}>
+            <span className={styles.sectionLabel}>NOTIFICATIONS</span>
+            <span className={styles.hint}>
+              Real macOS notifications for the events below. If they're on and nothing arrives, macOS is dropping them —
+              check System Settings → Notifications → Hangar, and use the test below to see the actual error.
+            </span>
+            <NotificationTestRow />
+            <div className={styles.notifList}>
+              <NotificationRow
+                label="Needs your approval"
+                description="Ask Edits sessions blocked on a permission you haven't answered yet."
+                checked={appSettings.notifyNeedsApproval}
+                saving={savingNotif === 'notifyNeedsApproval'}
+                onChange={(v) => toggleNotification('notifyNeedsApproval', v)}
+              />
+              <NotificationRow
+                label="Session finished"
+                description="A session ran a turn and is back to waiting for you."
+                checked={appSettings.notifySessionWaiting}
+                saving={savingNotif === 'notifySessionWaiting'}
+                onChange={(v) => toggleNotification('notifySessionWaiting', v)}
+              />
+              <NotificationRow
+                label="Account rate-limited"
+                description="An account hit a rate limit and can't run turns until it clears."
+                checked={appSettings.notifyAccountExhausted}
+                saving={savingNotif === 'notifyAccountExhausted'}
+                onChange={(v) => toggleNotification('notifyAccountExhausted', v)}
+              />
+              <NotificationRow
+                label="Spend cap exceeded"
+                description="An API-key account passed its estimated weekly budget."
+                checked={appSettings.notifySpendCap}
+                saving={savingNotif === 'notifySpendCap'}
+                onChange={(v) => toggleNotification('notifySpendCap', v)}
+              />
+              <NotificationRow
+                label="Pull requests"
+                description="A new PR shows up for one of your projects, or one Hangar opened gets new review comments — checked every 5 minutes while Hangar is open."
+                checked={appSettings.notifyPrComments}
+                saving={savingNotif === 'notifyPrComments'}
+                onChange={(v) => toggleNotification('notifyPrComments', v)}
+              />
+              <NotificationRow
+                label="Update available"
+                description="A new version of Hangar is ready to install."
+                checked={appSettings.notifyUpdateAvailable}
+                saving={savingNotif === 'notifyUpdateAvailable'}
+                onChange={(v) => toggleNotification('notifyUpdateAvailable', v)}
+              />
+            </div>
+          </section>
+          </Pane>
 
-        <section className={styles.section}>
-          <span className={styles.sectionLabel}>MODO DE LAS TERMINALES</span>
-          <TerminalModeRow />
-        </section>
+          <Pane id="agents" active={pane}>
+          <section className={styles.section}>
+            <span className={styles.sectionLabel}>IDIOMA DE LOS AGENTES</span>
+            <AgentLanguageRow />
+          </section>
+          </Pane>
 
-        <section className={styles.section}>
-          <span className={styles.sectionLabel}>TELÉFONO</span>
-          <PhoneRow />
-        </section>
+          <Pane id="agents" active={pane}>
+          <section className={styles.section}>
+            <span className={styles.sectionLabel}>MODO DE LAS TERMINALES</span>
+            <TerminalModeRow />
+          </section>
+          </Pane>
 
-        <section className={styles.section}>
-          <span className={styles.sectionLabel}>UPDATES</span>
-          <UpdateAccessRow />
-        </section>
+          <Pane id="phone" active={pane}>
+          <section className={styles.section}>
+            <span className={styles.sectionLabel}>TELÉFONO</span>
+            <PhoneRow />
+          </section>
+          </Pane>
 
-        <section className={styles.section}>
-          <span className={styles.sectionLabel}>EXPERIMENTAL</span>
-          <div className={styles.notifList}>
-            {/* "Hierarchy trees" is hidden for now — the agent-tree feature is
-              * parked pending a rethink. The setting itself still exists; only
-              * its toggle is removed, so nothing that reads agentTreesEnabled
-              * breaks, and restoring this row brings it back. */}
-            <NotificationRow
-              label="Include my own PR comments"
-              description="PR review comments normally hide anything you wrote yourself, since the feature is meant to surface other reviewers' feedback. Turn this on to test the review flow solo, by commenting on your own PRs."
-              checked={appSettings.includeOwnPrComments}
-              saving={savingNotif === 'includeOwnPrComments'}
-              onChange={(v) => toggleNotification('includeOwnPrComments', v)}
-            />
-          </div>
-        </section>
+          <Pane id="machine" active={pane}>
+          <section className={styles.section}>
+            <span className={styles.sectionLabel}>UPDATES</span>
+            <UpdateAccessRow />
+          </section>
+          </Pane>
+
+          <Pane id="advanced" active={pane}>
+          <section className={styles.section}>
+            <span className={styles.sectionLabel}>EXPERIMENTAL</span>
+            <div className={styles.notifList}>
+              {/* "Hierarchy trees" is hidden for now — the agent-tree feature is
+                * parked pending a rethink. The setting itself still exists; only
+                * its toggle is removed, so nothing that reads agentTreesEnabled
+                * breaks, and restoring this row brings it back. */}
+              <NotificationRow
+                label="Include my own PR comments"
+                description="PR review comments normally hide anything you wrote yourself, since the feature is meant to surface other reviewers' feedback. Turn this on to test the review flow solo, by commenting on your own PRs."
+                checked={appSettings.includeOwnPrComments}
+                saving={savingNotif === 'includeOwnPrComments'}
+                onChange={(v) => toggleNotification('includeOwnPrComments', v)}
+              />
+            </div>
+          </section>
+          </Pane>
+        </div>
       </div>
     </div>
   );
+}
+
+/**
+ * Un panel del raíl: sus secciones solo existen cuando está elegido.
+ *
+ * Se desmonta en vez de esconderse con CSS, para que el scroll de un panel no
+ * se lleve al siguiente y para no montar once secciones para enseñar una.
+ */
+function Pane({ id, active, children }: { id: PaneId; active: PaneId; children: ReactNode }) {
+  return id === active ? <>{children}</> : null;
 }
 
 /**

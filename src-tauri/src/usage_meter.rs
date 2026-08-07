@@ -218,14 +218,18 @@ fn number(value: &Value, key: &str) -> i64 {
 /// first, races with itself the moment two terminals go idle together.
 pub fn record_turns(db: &DbConnection, account_id: &str, project_id: Option<&str>, session_id: Option<&str>, turns: &[TurnCost]) -> usize {
     let Ok(conn) = db.0.lock() else { return 0 };
+    // Whether a graph was available *now*, when the turn ran. Recorded rather
+    // than derived later, so building one next week doesn't rewrite this
+    // week's history and flatter the comparison (Phase 3).
+    let with_graph = project_id.is_some_and(|id| crate::commands::graph::graph_available_for_project(&conn, id));
     let mut written = 0;
     for turn in turns {
         let cost = estimate_cost_usd(turn);
         let result = conn.execute(
             "INSERT OR IGNORE INTO turn_usage
                (id, session_id, account_id, project_id, block_id, model, provider_message_id,
-                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, created_at)
-             VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, created_at, with_graph)
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 Uuid::new_v4().to_string(),
                 session_id,
@@ -239,6 +243,7 @@ pub fn record_turns(db: &DbConnection, account_id: &str, project_id: Option<&str
                 turn.cache_creation_tokens,
                 cost,
                 turn.at.clone().unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+                with_graph as i64,
             ],
         );
         written += result.unwrap_or(0);

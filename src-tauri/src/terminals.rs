@@ -447,7 +447,7 @@ pub(crate) fn account_command_line_with_mode(
     prompt: Option<&str>,
     mode: Option<crate::providers::Mode>,
 ) -> Result<String, String> {
-    account_command_line_full(account, init, session_uuid, prompt, mode, None, None)
+    account_command_line_full(account, init, session_uuid, prompt, mode, None, None, None, &[])
 }
 
 /// Everything Hangar adds to a terminal beyond the command itself: the user's
@@ -463,6 +463,15 @@ pub(crate) struct TerminalContext {
     /// A directory containing `.claude/skills/`, or `None` when this project
     /// has nothing selected.
     pub skills_dir: Option<std::path::PathBuf>,
+    /// The `--mcp-config` file pointing at this project's code graph, or `None`
+    /// when there is no graph built (the common case) or graphify isn't
+    /// installed. `None` means no flag at all — never a flag pointing at a
+    /// graph that doesn't exist.
+    pub graph_mcp: Option<std::path::PathBuf>,
+    /// Checkouts of the projects this one shares a graph group with, so an
+    /// agent can open the code the graph tells it about. Empty for a project
+    /// in no group, which is the common case.
+    pub sibling_dirs: Vec<std::path::PathBuf>,
 }
 
 /// Igual, más el fichero de preferencias del usuario (idioma de la conversación
@@ -480,6 +489,8 @@ pub(crate) fn account_command_line_full(
     mode: Option<crate::providers::Mode>,
     instructions: Option<&crate::commands::preferences::ResolvedInstructions>,
     skills_dir: Option<&std::path::Path>,
+    graph_mcp: Option<&std::path::Path>,
+    sibling_dirs: &[std::path::PathBuf],
 ) -> Result<String, String> {
     let spec = crate::providers::spec(&account.provider).ok_or_else(|| format!("unknown provider '{}'", account.provider))?;
     let binary = spec.binary;
@@ -532,6 +543,31 @@ pub(crate) fn account_command_line_full(
         (_, None) => String::new(),
     };
 
+    // Los proyectos hermanos de un grupo de grafo (`GRAPHIFY_TRD.md` §5.6).
+    // Sin esto el grafo le hablaría al agente de código que no puede abrir, que
+    // es peor que no contárselo: `--add-dir` es la misma bandera que ya lleva
+    // las skills, y ahí ya está documentado que además concede acceso.
+    let siblings: String = match init {
+        InitCommand::Login => String::new(),
+        _ => sibling_dirs
+            .iter()
+            .flat_map(|dir| crate::providers::skills_args(&account.provider, &dir.to_string_lossy()))
+            .map(|arg| format!(" {}", shell_quote(&arg)))
+            .collect(),
+    };
+
+    // Y lo mismo con el grafo: un login no consulta código, y sin grafo
+    // construido `graph_mcp` llega en `None` y aquí no se añade nada. Ese es el
+    // caso normal — la mayoría de proyectos no tendrán grafo.
+    let graph: String = match (init, graph_mcp) {
+        (InitCommand::Login, _) => String::new(),
+        (_, Some(config)) => crate::providers::mcp_config_args(&account.provider, &config.to_string_lossy())
+            .iter()
+            .map(|arg| format!(" {}", shell_quote(arg)))
+            .collect(),
+        (_, None) => String::new(),
+    };
+
     let args = match init {
         InitCommand::Start => match (spec.session, session_uuid) {
             // Hangar owns the id so it can locate this exact transcript later.
@@ -566,7 +602,7 @@ pub(crate) fn account_command_line_full(
             None => return Err(format!("'{}' authenticates with an API key — there's no login to run", account.provider)),
         },
     };
-    Ok(format!("{}={config} {extra}{binary}{permissions}{instructions}{skills}{args}", spec.config_dir_env))
+    Ok(format!("{}={config} {extra}{binary}{permissions}{instructions}{skills}{siblings}{graph}{args}", spec.config_dir_env))
 }
 
 /// The full script a terminal runs: change directory first, then the account's
@@ -614,6 +650,8 @@ pub(crate) fn terminal_script_full(
             mode,
             context.instructions.as_ref(),
             context.skills_dir.as_deref(),
+            context.graph_mcp.as_deref(),
+            &context.sibling_dirs,
         )?
     ))
 }
@@ -715,7 +753,13 @@ pub fn open_terminal<R: Runtime>(
                 log::warn!("open_terminal: could not link the always-on skills — {e}");
             }
         }
-        (cwd, title, account, TerminalContext { instructions, skills_dir })
+        // Mismo trato de «mejor esfuerzo»: sin grafo construido esto es `None`
+        // y la terminal abre exactamente como hoy. Y tiene que ser `None` en
+        // ese caso — registrar un MCP que apunta a un grafo inexistente le da
+        // al agente una herramienta que falla al usarla (§5.5).
+        let graph_mcp = crate::commands::graph::mcp_config_for_project(&app, &conn, &project_id);
+        let sibling_dirs = crate::commands::graph::sibling_dirs(&conn, &project_id);
+        (cwd, title, account, TerminalContext { instructions, skills_dir, graph_mcp, sibling_dirs })
     };
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(format!("{cwd} no longer exists on disk — the worktree may have been removed"));
@@ -2425,18 +2469,18 @@ mod tests {
             return;
         }
 
-        let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None).unwrap();
+        let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[]).unwrap();
         assert!(!without.contains("--append-system-prompt-file"), "sin preferencias no se pasa nada: {without}");
 
         let prefs = sample_instructions();
-        let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, Some(&prefs), None).unwrap();
+        let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, Some(&prefs), None, None, &[]).unwrap();
         assert!(with.contains("--append-system-prompt-file"), "got: {with}");
         assert!(with.contains("/tmp/hangar/prefs.md"), "got: {with}");
 
         // Un login no ejecuta nada del proyecto: no hay conversación a la que
         // ponerle idioma, y `claude auth login --append-system-prompt-file` no
         // es un comando válido.
-        let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, Some(&prefs), None).unwrap();
+        let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, Some(&prefs), None, None, &[]).unwrap();
         assert!(!login.contains("--append-system-prompt-file"), "un login no lleva instrucciones: {login}");
     }
 
@@ -2463,7 +2507,7 @@ mod tests {
         }
 
         let prefs = sample_instructions();
-        let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, Some(&prefs), None).unwrap();
+        let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, Some(&prefs), None, None, &[]).unwrap();
         assert!(!line.contains("--append-system-prompt-file"), "codex la rechaza: {line}");
         assert!(!line.contains("prefs.md"), "ni la ruta suelta: {line}");
         assert!(line.contains("developer_instructions="), "pero sí la clave que entiende: {line}");
@@ -2482,15 +2526,15 @@ mod tests {
             name: "Claude".to_string(),
         };
         if crate::providers::is_provider_available("claude") {
-            let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None).unwrap();
+            let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[]).unwrap();
             assert!(!without.contains("--add-dir"), "sin skills marcadas no se pasa nada: {without}");
 
-            let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, Some(dir)).unwrap();
+            let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, Some(dir), None, &[]).unwrap();
             assert!(with.contains("--add-dir"), "got: {with}");
             assert!(with.contains("/tmp/hangar/projects/p1"), "got: {with}");
 
             // Un login no trabaja en el proyecto, así que no necesita sus skills.
-            let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, Some(dir)).unwrap();
+            let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, Some(dir), None, &[]).unwrap();
             assert!(!login.contains("--add-dir"), "un login no lleva skills: {login}");
         }
 
@@ -2501,8 +2545,52 @@ mod tests {
             name: "Codex".to_string(),
         };
         if crate::providers::is_provider_available("codex") {
-            let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, Some(dir)).unwrap();
+            let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, Some(dir), None, &[]).unwrap();
             assert!(!line.contains("--add-dir"), "codex no usa esa bandera: {line}");
+        }
+    }
+
+    /// El grafo entra por bandera y **nunca** con `--strict-mcp-config`
+    /// (`GRAPHIFY_TRD.md` §5.2): esa bandera apagaría los servidores MCP del
+    /// usuario a cambio de añadir el nuestro. Aditivo o nada.
+    #[test]
+    fn el_grafo_entra_por_bandera_y_es_aditivo() {
+        let config = std::path::Path::new("/tmp/hangar/graphs/project-p1/mcp-config.json");
+
+        let claude = AccountForTerminal {
+            provider: "claude".to_string(),
+            billing: "sub".to_string(),
+            config_dir_path: "/tmp/cl".to_string(),
+            name: "Claude".to_string(),
+        };
+        if crate::providers::is_provider_available("claude") {
+            // El caso normal: sin grafo construido no se añade nada, y la
+            // terminal abre exactamente como abría antes de que esto existiera.
+            let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[]).unwrap();
+            assert!(!without.contains("--mcp-config"), "sin grafo no se pasa bandera: {without}");
+
+            let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, Some(config), &[]).unwrap();
+            assert!(with.contains("--mcp-config"), "got: {with}");
+            assert!(with.contains("mcp-config.json"), "got: {with}");
+            assert!(
+                !with.contains("--strict-mcp-config"),
+                "esa bandera ignora toda otra configuración MCP: le apagaría al usuario sus propios servidores. Got: {with}"
+            );
+
+            // Un login no consulta código.
+            let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, None, Some(config), &[]).unwrap();
+            assert!(!login.contains("--mcp-config"), "un login no lleva grafo: {login}");
+        }
+
+        let codex = AccountForTerminal {
+            provider: "codex".to_string(),
+            billing: "sub".to_string(),
+            config_dir_path: "/tmp/cx".to_string(),
+            name: "Codex".to_string(),
+        };
+        if crate::providers::is_provider_available("codex") {
+            let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, None, Some(config), &[]).unwrap();
+            assert!(!line.contains("--mcp-config"), "codex no usa esa bandera: {line}");
         }
     }
 

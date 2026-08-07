@@ -13,6 +13,7 @@ import {
   type SessionView,
 } from '../types/session';
 import type { ProjectAccountRotation } from '../types/settings';
+import type { GraphCollision } from '../types/graph';
 import { Button } from './ui/button';
 import {
   Dialog,
@@ -30,6 +31,17 @@ import { Textarea } from './ui/textarea';
 
 const fieldLabel = { font: '600 9.5px var(--font-mono)', letterSpacing: '0.1em', color: 'var(--dim)' } as const;
 const fieldStyle = { display: 'flex', flexDirection: 'column' as const, gap: 4 };
+const collisionStyle = {
+  display: 'flex',
+  gap: 9,
+  alignItems: 'flex-start' as const,
+  padding: '9px 10px',
+  borderRadius: 6,
+  border: '1px solid var(--amber)',
+  background: 'var(--amberD)',
+  font: '400 11.5px var(--font-ui)',
+  lineHeight: 1.5,
+} as const;
 
 interface CreateSubsessionDialogProps {
   trigger: ReactNode;
@@ -57,6 +69,7 @@ export function CreateSubsessionDialog({ trigger, parentSession, accounts, onCre
   const [setupCommand, setSetupCommand] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [collisions, setCollisions] = useState<GraphCollision[]>([]);
 
   useEffect(() => {
     if (!open) return;
@@ -75,6 +88,22 @@ export function CreateSubsessionDialog({ trigger, parentSession, accounts, onCre
     if (!open) return;
     invoke<ProjectAccountRotation[]>('list_project_account_rotation', { projectId: parentSession.projectId }).then(setRotation);
   }, [open, parentSession.projectId]);
+
+  // Debounced against the name as it's typed: the check reads a graph off disk,
+  // and running it per keystroke would do that a dozen times a word. Failures
+  // are swallowed — no graph, or no graphify at all, simply means no warning.
+  useEffect(() => {
+    if (!open) {
+      setCollisions([]);
+      return;
+    }
+    const timer = setTimeout(() => {
+      invoke<GraphCollision[]>('graph_collisions', { projectId: parentSession.projectId, taskText: name })
+        .then(setCollisions)
+        .catch(() => setCollisions([]));
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [open, name, parentSession.projectId]);
 
   // The parent's own account is always offered even if rotation would
   // otherwise exclude it — a subsession naturally inherits it by default.
@@ -139,6 +168,29 @@ export function CreateSubsessionDialog({ trigger, parentSession, accounts, onCre
             <Label style={fieldLabel}>NAME</Label>
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="try-alternate-approach" />
           </div>
+
+          {/* Aviso, nunca bloqueo (`GRAPHIFY_TRD.md` §6): a veces trabajar los
+              dos lados de un contrato a la vez es exactamente lo que quieres.
+              Hangar dice lo que sabe; decides tú. */}
+          {collisions.map((c) => (
+            <div key={c.sessionId} style={collisionStyle}>
+              <span aria-hidden="true" style={{ color: 'var(--amber)' }}>
+                ⚠
+              </span>
+              <div>
+                <div>
+                  <strong>{c.sessionName}</strong> está en el otro lado de este contrato.
+                </div>
+                <div style={{ font: '400 10.5px var(--font-mono)', color: 'var(--mut)', marginTop: 3 }}>
+                  {c.sharedType} · {c.files.join(' ↔ ')}
+                </div>
+                <div style={{ color: 'var(--mut)', marginTop: 3 }}>
+                  En {c.projectName}
+                  {c.branch ? `, rama ${c.branch}` : ''}.
+                </div>
+              </div>
+            </div>
+          ))}
           <div style={fieldStyle}>
             <Label style={fieldLabel}>ACCOUNT</Label>
             <Select value={accountId} onValueChange={setAccountId}>

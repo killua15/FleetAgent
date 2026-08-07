@@ -275,7 +275,13 @@ CREATE TABLE IF NOT EXISTS turn_usage (
   cache_read_tokens     INTEGER,
   cache_creation_tokens INTEGER,
   cost_usd              REAL,
-  created_at            TEXT NOT NULL
+  created_at            TEXT NOT NULL,
+  -- Whether a code knowledge graph was available to this turn (GRAPHIFY_TRD.md
+  -- Phase 3). Recorded as the turn is written, never derived later: building a
+  -- graph next week must not rewrite this week's history and flatter the
+  -- comparison. A plain column on an existing table, so it is declared here for
+  -- fresh databases and added by migration 21 for existing ones.
+  with_graph            INTEGER NOT NULL DEFAULT 0
 );
 
 -- The indexes for the columns above live in migration 12, not here. This file

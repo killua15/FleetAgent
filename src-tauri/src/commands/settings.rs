@@ -449,6 +449,13 @@ pub fn trigger_review<R: Runtime>(app: AppHandle<R>, db: State<DbConnection>, se
             // The runner is Claude-only, and Claude takes the file path.
             .map(|resolved| resolved.file)
     };
+    // A review reads the diff and the repo it sits in, so it gets the same
+    // graph the working session gets — or nothing, which is the common case.
+    // Resolved before `app` moves into the request below.
+    let mcp_config = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        crate::commands::graph::mcp_config_for_project(&app, &conn, &project_id)
+    };
 
     turn_runner::spawn_turn(TurnRequest {
         app,
@@ -464,6 +471,7 @@ pub fn trigger_review<R: Runtime>(app: AppHandle<R>, db: State<DbConnection>, se
         resume: None,
         prompt: review_prompt,
         instructions,
+        mcp_config,
     })?;
 
     let conn = db.0.lock().map_err(|e| e.to_string())?;
