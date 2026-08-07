@@ -64,7 +64,7 @@ Tests marked `#[ignore]` spawn the real `claude` CLI — run them with `cargo te
 | [AGENT_CONTEXT.md](AGENT_CONTEXT.md) | How language preferences and skills reach the CLI: where they're configured, where they land on disk, which flag carries them, and what was verified by actually running each CLI |
 | [TERMINAL_CONTINUITY.md](TERMINAL_CONTINUITY.md) | How a conversation survives a relaunch and an account switch |
 | [MOBILE_BRIDGE_TRD.md](MOBILE_BRIDGE_TRD.md) | The phone companion: protocol, encryption, pairing ([build docs](docs/mobile/README.md)) |
-| [GRAPHIFY_TRD.md](GRAPHIFY_TRD.md) | Draft, nothing implemented — a code knowledge graph shared by parallel agents |
+| [GRAPHIFY_TRD.md](GRAPHIFY_TRD.md) | Draft, nothing implemented — a code knowledge graph shared by parallel agents, spanning the several repos that make up one system |
 | [ROADMAP.md](ROADMAP.md) | Where this is going |
 
 ## License
