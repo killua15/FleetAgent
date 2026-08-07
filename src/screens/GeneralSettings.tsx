@@ -119,7 +119,7 @@ export function GeneralSettings() {
     <div className={styles.screen}>
       <SettingsTabs active="general-settings" title="General" />
       <div className={styles.body}>
-        <section className={styles.section}>
+        <section className={styles.sectionWide}>
           <span className={styles.sectionLabel}>WHAT HANGAR NEEDS</span>
           <RequirementsPanel />
         </section>

@@ -41,8 +41,12 @@ export function RequirementsPanel() {
     }
   };
 
-  const brokenEssential = caps.filter((c) => !c.available && c.essential);
-  const brokenOptional = caps.filter((c) => !c.available && !c.essential);
+  const working = caps.filter((c) => c.available);
+  // Lo imprescindible primero: si falta, es lo único que importa de esta
+  // pantalla y no debería estar por debajo de un extra opcional.
+  const broken = caps.filter((c) => !c.available).sort((a, b) => Number(b.essential) - Number(a.essential));
+  const brokenEssential = broken.filter((c) => c.essential);
+  const brokenOptional = broken.filter((c) => !c.essential);
 
   return (
     <div className={styles.wrap}>
@@ -66,65 +70,70 @@ export function RequirementsPanel() {
         </button>
       </div>
 
-      <div className={styles.list}>
-        {caps.map((cap) => (
-          <div key={cap.id} className={styles.row}>
-            <span className={cap.available ? styles.dotOk : cap.essential ? styles.dotBad : styles.dotOpt} />
-            <div className={styles.info}>
-              <div className={styles.title}>
-                <span className={styles.label}>{cap.label}</span>
-                {!cap.available && cap.essential && <span className={styles.tagRequired}>imprescindible</span>}
-                {!cap.available && !cap.essential && <span className={styles.tagOptional}>opcional</span>}
-              </div>
-              <div className={styles.unlocks}>{cap.enables}</div>
+      {/* Lo que funciona se resume en una línea. Nueve tarjetas para decir
+          nueve veces "esto va bien" es scroll a cambio de nada, y entierra lo
+          único que pide atención. La ruta de cada binario sigue estando, en el
+          tooltip: «funciona en mi terminal» y «Hangar lo encuentra» son cosas
+          distintas cuando la app se abre desde Finder con un PATH mínimo. */}
+      {working.length > 0 && (
+        <div className={styles.okStrip}>
+          {working.map((cap) => (
+            <span
+              key={cap.id}
+              className={styles.okChip}
+              title={`${cap.enables}\n\n${cap.tools.map((t) => `${t.name} → ${t.path}`).join('\n')}`}
+            >
+              ✓ {cap.label}
+            </span>
+          ))}
+        </div>
+      )}
 
-              {/* Las herramientas, con su ruta cuando están: «funciona en mi
-                  terminal» y «Hangar lo encuentra» son cosas distintas cuando
-                  la app se abre desde Finder con un PATH mínimo. */}
-              <div className={styles.tools}>
-                {cap.tools.map((tool) => (
-                  <span key={tool.name} className={tool.installed ? styles.toolOk : styles.toolMissing} title={tool.path ?? undefined}>
-                    {tool.installed ? '✓' : '·'} {tool.name}
-                    {tool.blockedBy && <span className={styles.needs}> ← necesita {tool.blockedBy}</span>}
-                  </span>
-                ))}
-              </div>
-
-              {/* La guía va abierta cuando está en rojo, porque es justo cuando
-                  hace falta, y plegada si funciona: quien lo tiene todo no
-                  necesita leer cómo instalarlo. */}
-              {!cap.available && (
-                <details className={styles.guide} open>
-                  <summary className={styles.guideHead}>{cap.reason} — cómo arreglarlo</summary>
-                  <div className={styles.guideBody}>
-                    {cap.tools
-                      .filter((t) => !t.installed)
-                      .map((tool) => (
-                        <div key={tool.name} className={styles.step}>
-                          <div className={styles.stepName}>
-                            {tool.name}
-                            {tool.blockedBy && <span className={styles.needs}> — antes hace falta {tool.blockedBy}</span>}
-                          </div>
-                          {tool.installHint && <code className={styles.hint}>{tool.installHint}</code>}
-                          {tool.alternative && (
-                            <div className={styles.alt}>
-                              o, si no usas Homebrew: <code className={styles.hintInline}>{tool.alternative}</code>
-                            </div>
-                          )}
-                          {tool.then && <div className={styles.after}>{tool.then}</div>}
-                        </div>
-                      ))}
-                    <div className={styles.after}>
-                      Cuando termines, pulsa <strong>volver a comprobar</strong> aquí arriba — Hangar cachea dónde encuentra cada
-                      binario y si no, seguiría diciéndote que falta.
-                    </div>
-                  </div>
-                </details>
-              )}
+      {/* Y lo que falta ocupa el ancho, en rejilla: es lo que hay que leer. */}
+      <div className={styles.grid}>
+        {broken.map((cap) => (
+          <div key={cap.id} className={cap.essential ? styles.cardBad : styles.card}>
+            <div className={styles.title}>
+              <span className={cap.essential ? styles.dotBad : styles.dotOpt} />
+              <span className={styles.label}>{cap.label}</span>
+              <span className={cap.essential ? styles.tagRequired : styles.tagOptional}>
+                {cap.essential ? 'imprescindible' : 'opcional'}
+              </span>
             </div>
+            <div className={styles.unlocks}>{cap.enables}</div>
+
+            <details className={styles.guide} open>
+              <summary className={styles.guideHead}>{cap.reason} — cómo arreglarlo</summary>
+              <div className={styles.guideBody}>
+                {cap.tools
+                  .filter((t) => !t.installed)
+                  .map((tool) => (
+                    <div key={tool.name} className={styles.step}>
+                      <div className={styles.stepName}>
+                        {tool.name}
+                        {tool.blockedBy && <span className={styles.needs}> — antes hace falta {tool.blockedBy}</span>}
+                      </div>
+                      {tool.installHint && <code className={styles.hint}>{tool.installHint}</code>}
+                      {tool.alternative && (
+                        <div className={styles.alt}>
+                          o, si no usas Homebrew: <code className={styles.hintInline}>{tool.alternative}</code>
+                        </div>
+                      )}
+                      {tool.then && <div className={styles.after}>{tool.then}</div>}
+                    </div>
+                  ))}
+              </div>
+            </details>
           </div>
         ))}
       </div>
+
+      {broken.length > 0 && (
+        <p className={styles.footnote}>
+          Cuando termines, pulsa <strong>volver a comprobar</strong> — Hangar cachea dónde encuentra cada binario, y si no seguiría
+          diciéndote que falta.
+        </p>
+      )}
 
       <p className={styles.footnote}>
         El estado de sesión de GitHub no se comprueba aquí — eso lanza un proceso, y abrir Ajustes no debería esperar por la red. Te

@@ -38,25 +38,8 @@
   cursor: default;
 }
 
-.list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.row {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  padding: 9px 10px;
-  border-radius: 7px;
-  border: 1px solid var(--line);
-  background: var(--panel);
-}
-
 /* State in form as well as text: green present, red missing-and-needed, plain
    missing-and-optional. What needs attention has to read at a glance. */
-.dotOk,
 .dotBad,
 .dotOpt {
   width: 7px;
@@ -66,24 +49,12 @@
   margin-top: 6px;
 }
 
-.dotOk {
-  background: var(--grn);
-}
-
 .dotBad {
   background: var(--red);
 }
 
 .dotOpt {
   background: var(--line2);
-}
-
-.info {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
 }
 
 .title {
@@ -122,17 +93,7 @@
   max-width: 68ch;
 }
 
-.path {
-  font: 400 10px var(--font-mono);
-  color: var(--dim);
-  overflow-x: auto;
-  white-space: nowrap;
-}
 
-.blocked {
-  font: 400 10.5px var(--font-ui);
-  color: var(--amber);
-}
 
 .hint {
   font: 500 10.5px var(--font-mono);
@@ -148,27 +109,6 @@
 
 /* Tools sit under the capability that needs them, not in a list of their own —
    the point is showing *why* each one matters. */
-.tools {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-top: 3px;
-}
-
-.toolOk,
-.toolMissing {
-  font: 400 10px var(--font-mono);
-  white-space: nowrap;
-}
-
-.toolOk {
-  color: var(--grn);
-}
-
-.toolMissing {
-  color: var(--dim);
-}
-
 .needs {
   color: var(--amber);
 }
@@ -254,4 +194,57 @@
   color: var(--mut);
   line-height: 1.5;
   max-width: 66ch;
+}
+
+/* Everything that works, in one wrapped line. Nine cards saying "this is fine"
+   nine times is scroll bought with nothing, and it buries the one thing that
+   needs reading. */
+.okStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.okChip {
+  font: 500 10.5px var(--font-ui);
+  color: var(--grn);
+  background: var(--grnD);
+  border: 1px solid transparent;
+  border-radius: 20px;
+  padding: 3px 10px;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.okChip:hover {
+  border-color: var(--grn);
+}
+
+/* What's missing tiles across the width instead of stacking. The section opts
+   out of the reading measure for exactly this. */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
+.card,
+.cardBad {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 11px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  min-width: 0;
+}
+
+/* Missing something essential is the one state worth colouring the whole card
+   for — it is the difference between "Hangar can't work" and "this extra is
+   off". */
+.cardBad {
+  border-color: var(--red);
+  background: var(--redD);
 }
