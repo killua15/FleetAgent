@@ -44,6 +44,13 @@ pub struct ToolStatus {
     /// a CLI is present but unusable.
     pub path: Option<String>,
     pub install_hint: Option<String>,
+    /// The other route, when the one above isn't the only way. Homebrew is not
+    /// on every Mac, and a command the user can't run is the dead end this
+    /// whole module exists to stop.
+    pub alternative: Option<String>,
+    /// A step that isn't a command — logging in, or adding an account. The
+    /// install guide is incomplete without it: a provider CLI signs nobody in.
+    pub then: Option<String>,
     /// Named when this tool needs another one first, so the UI can explain why
     /// it is talking about `uv` when the user asked about a knowledge graph.
     pub blocked_by: Option<String>,
@@ -83,13 +90,16 @@ fn tool_status(name: &'static str) -> ToolStatus {
     // user cannot run yet is a dead end dressed as an instruction.
     let blocker = capabilities::prerequisite_of(name).filter(|p| capabilities::locate(p).is_none());
 
+    // When a prerequisite is missing, the guide shown is *its* guide: that is
+    // the step the user can actually take.
+    let install = blocker.and_then(capabilities::install_for).or_else(|| capabilities::install_for(name));
+
     ToolStatus {
         name: name.to_string(),
         installed,
-        install_hint: (!installed)
-            .then(|| blocker.and_then(capabilities::hint_for).or_else(|| capabilities::hint_for(name)))
-            .flatten()
-            .map(str::to_string),
+        install_hint: (!installed).then(|| install.map(|i| i.command().to_string())).flatten(),
+        alternative: (!installed).then(|| install.and_then(|i| i.alternative()).map(str::to_string)).flatten(),
+        then: (!installed).then(|| install.and_then(|i| i.then).map(str::to_string)).flatten(),
         blocked_by: (!installed).then_some(blocker).flatten().map(str::to_string),
         path,
     }

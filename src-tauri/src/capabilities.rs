@@ -43,6 +43,16 @@ pub enum Capability {
     CodeGraph,
     /// Serve that graph to agents over MCP.
     GraphToAgents,
+    /// Codex accounts, which need their own CLI.
+    CodexAccounts,
+    /// Gemini accounts, same.
+    GeminiAccounts,
+    /// Grok accounts, same.
+    GrokAccounts,
+    // Kimi is deliberately absent: it runs through the `claude` binary with
+    // Moonshot's endpoint in the environment (`providers::spec`), so there is
+    // nothing to install. What it needs is an account, and a row telling
+    // someone to install a CLI that doesn't exist would be worse than silence.
 }
 
 /// Why a capability is unavailable, in the shape both a disabled button and a
@@ -70,15 +80,49 @@ impl Blocked {
     }
 }
 
-/// A binary this machine needs, and what to run to get it.
+/// How to get a binary, in the shapes a real machine needs.
+///
+/// One command was not enough. `brew install uv` is not executable on a Mac
+/// without Homebrew — the same dead end this module exists to stop, one level
+/// down — so the route that is actually runnable has to be chosen, not assumed.
+#[derive(Clone, Copy)]
+pub struct Install {
+    /// Preferred when Homebrew is there.
+    pub brew: Option<&'static str>,
+    /// Works without it.
+    pub fallback: &'static str,
+    /// A step that is **not** a command. Installing a provider's CLI doesn't
+    /// give you an account, and adding one is Hangar's own wizard, not a shell
+    /// line — so pointing at a command there would leave the user stuck one
+    /// step from done.
+    pub then: Option<&'static str>,
+}
+
+impl Install {
+    /// The command to show: the one this machine can actually run.
+    pub fn command(&self) -> &'static str {
+        match self.brew {
+            Some(brew) if locate("brew").is_some() => brew,
+            _ => self.fallback,
+        }
+    }
+
+    /// The other route, when there is one worth showing under the first.
+    pub fn alternative(&self) -> Option<&'static str> {
+        let shown = self.command();
+        self.brew.filter(|b| *b != shown).or(Some(self.fallback)).filter(|other| *other != shown)
+    }
+}
+
+/// A binary this machine needs, and how to get it.
 struct Binary {
     name: &'static str,
-    /// What to run, assuming its own prerequisites are met.
-    hint: &'static str,
-    /// Must exist before `hint` can even be typed. macOS ships Python 3.9 and
-    /// graphify needs 3.10+, so `uv` isn't a convenience — it's the thing that
-    /// brings a usable Python, and telling someone to run `uv tool install`
-    /// when they have no `uv` is a dead end dressed as an instruction.
+    install: Install,
+    /// Must exist before the install can even be typed. macOS ships Python 3.9
+    /// and graphify needs 3.10+, so `uv` isn't a convenience — it's the thing
+    /// that brings a usable Python, and telling someone to run
+    /// `uv tool install` when they have no `uv` is a dead end dressed as an
+    /// instruction.
     prerequisite: Option<&'static str>,
 }
 
@@ -95,9 +139,67 @@ pub struct CapabilitySpec {
     needs_gh_auth: bool,
 }
 
-const GIT: Binary = Binary { name: "git", hint: "xcode-select --install", prerequisite: None };
-const GH: Binary = Binary { name: "gh", hint: "brew install gh", prerequisite: None };
-const UV: Binary = Binary { name: "uv", hint: "brew install uv", prerequisite: None };
+const GIT: Binary = Binary {
+    name: "git",
+    install: Install {
+        brew: Some("brew install git"),
+        fallback: "xcode-select --install",
+        then: None,
+    },
+    prerequisite: None,
+};
+const GH: Binary = Binary {
+    name: "gh",
+    install: Install {
+        brew: Some("brew install gh"),
+        fallback: "See https://cli.github.com for your platform's installer",
+        then: Some("Then run `gh auth login` — installed isn't the same as logged in, and Hangar needs both."),
+    },
+    prerequisite: None,
+};
+const UV: Binary = Binary {
+    name: "uv",
+    install: Install {
+        brew: Some("brew install uv"),
+        fallback: "curl -LsSf https://astral.sh/uv/install.sh | sh",
+        then: None,
+    },
+    prerequisite: None,
+};
+
+/// Every provider CLI installs the same way and needs the same step after, so
+/// the shape is shared and only the package changes.
+///
+/// `const` items rather than a helper call inside the array: an rvalue built by
+/// a function call isn't promoted to `'static`, and these have to outlive the
+/// `spec()` that hands them out.
+const fn provider(name: &'static str, npm_package: &'static str) -> Binary {
+    Binary {
+        name,
+        install: Install {
+            brew: None,
+            fallback: npm_package,
+            then: Some("Then add an account in Settings → accounts. The CLI on its own signs nobody in."),
+        },
+        prerequisite: None,
+    }
+}
+
+const CLAUDE: Binary = provider(crate::providers::claude::BINARY, "npm install -g @anthropic-ai/claude-code");
+const CODEX: Binary = provider("codex", "npm install -g @openai/codex");
+const GEMINI: Binary = provider("gemini", "npm install -g @google/gemini-cli");
+const GROK: Binary = provider("grok", "npm install -g @vibe-kit/grok-cli");
+
+const GRAPHIFY: Binary = Binary {
+    name: crate::graph::BINARY,
+    install: Install { brew: None, fallback: crate::graph::INSTALL_HINT, then: None },
+    prerequisite: Some("uv"),
+};
+const GRAPHIFY_MCP: Binary = Binary {
+    name: crate::graph::MCP_BINARY,
+    install: Install { brew: None, fallback: crate::graph::INSTALL_HINT, then: None },
+    prerequisite: Some("uv"),
+};
 
 impl Capability {
     pub const ALL: &'static [Capability] = &[
@@ -107,6 +209,9 @@ impl Capability {
         Capability::SkillsFromGitHub,
         Capability::CodeGraph,
         Capability::GraphToAgents,
+        Capability::CodexAccounts,
+        Capability::GeminiAccounts,
+        Capability::GrokAccounts,
     ];
 
     pub fn spec(self) -> CapabilitySpec {
@@ -115,11 +220,7 @@ impl Capability {
                 label: "Run agents",
                 enables: "Terminals, headless turns and account rotation — Hangar's whole reason to exist.",
                 essential: true,
-                binaries: &[Binary {
-                    name: crate::providers::claude::BINARY,
-                    hint: "npm install -g @anthropic-ai/claude-code",
-                    prerequisite: None,
-                }],
+                binaries: &[CLAUDE],
                 needs_gh_auth: false,
             },
             Capability::GitWork => CapabilitySpec {
@@ -147,28 +248,35 @@ impl Capability {
                 label: "Code knowledge graph",
                 enables: "A map of your code that agents consult instead of re-deriving it with twenty greps every turn.",
                 essential: false,
-                binaries: &[
-                    UV,
-                    Binary {
-                        name: crate::graph::BINARY,
-                        hint: crate::graph::INSTALL_HINT,
-                        prerequisite: Some("uv"),
-                    },
-                ],
+                binaries: &[UV, GRAPHIFY],
+                needs_gh_auth: false,
+            },
+            Capability::CodexAccounts => CapabilitySpec {
+                label: "Codex accounts",
+                enables: "Running Codex agents alongside your Claude ones, with the same isolation and rotation.",
+                essential: false,
+                binaries: &[CODEX],
+                needs_gh_auth: false,
+            },
+            Capability::GeminiAccounts => CapabilitySpec {
+                label: "Gemini accounts",
+                enables: "Running Gemini agents alongside your Claude ones.",
+                essential: false,
+                binaries: &[GEMINI],
+                needs_gh_auth: false,
+            },
+            Capability::GrokAccounts => CapabilitySpec {
+                label: "Grok accounts",
+                enables: "Running Grok agents alongside your Claude ones.",
+                essential: false,
+                binaries: &[GROK],
                 needs_gh_auth: false,
             },
             Capability::GraphToAgents => CapabilitySpec {
                 label: "Graph served to agents",
                 enables: "Handing that graph to agents over MCP. Without it the graph builds but never reaches anyone.",
                 essential: false,
-                binaries: &[
-                    UV,
-                    Binary {
-                        name: crate::graph::MCP_BINARY,
-                        hint: crate::graph::INSTALL_HINT,
-                        prerequisite: Some("uv"),
-                    },
-                ],
+                binaries: &[UV, GRAPHIFY_MCP],
                 needs_gh_auth: false,
             },
         }
@@ -207,11 +315,11 @@ impl Capability {
                         .iter()
                         .flat_map(|c| c.spec().binaries)
                         .find(|b| b.name == prereq)
-                        .map(|b| b.hint)
+                        .map(|b| b.install.command())
                         .unwrap_or(prereq);
                     (prereq, prereq_hint)
                 }
-                _ => (binary.name, binary.hint),
+                _ => (binary.name, binary.install.command()),
             };
             return Err(Blocked {
                 capability: self,
@@ -241,7 +349,13 @@ pub fn locate(binary: &str) -> Option<String> {
 
 /// What to run to get a binary, for the settings screen's per-tool rows.
 pub fn hint_for(binary: &str) -> Option<&'static str> {
-    Capability::ALL.iter().flat_map(|c| c.spec().binaries).find(|b| b.name == binary).map(|b| b.hint)
+    install_for(binary).map(|i| i.command())
+}
+
+/// The full route for a binary, for the install guide that opens under a
+/// blocked row.
+pub fn install_for(binary: &str) -> Option<Install> {
+    Capability::ALL.iter().flat_map(|c| c.spec().binaries).find(|b| b.name == binary).map(|b| b.install)
 }
 
 /// Whether that binary needs another one first.
@@ -315,6 +429,55 @@ mod tests {
 
         assert!(binaries.contains(&"git"), "got: {binaries:?}");
         assert!(binaries.contains(&"gh"), "got: {binaries:?}");
+    }
+
+    /// Every provider with its own CLI has to be listed, or the panel says
+    /// "everything is fine" on a machine that can't run Codex. Dropping Codex
+    /// and Gemini is exactly what the tool-shaped version did when it became
+    /// capability-shaped.
+    #[test]
+    fn every_provider_with_its_own_binary_is_declared() {
+        let declared: Vec<&str> = Capability::ALL.iter().flat_map(|c| c.binaries()).collect();
+
+        for provider in ["claude", "codex", "gemini", "grok"] {
+            let binary = crate::providers::spec(provider).expect("known provider").binary;
+            assert!(declared.contains(&binary), "{provider} runs `{binary}`, which nothing declares: {declared:?}");
+        }
+    }
+
+    /// Kimi runs *through* the `claude` binary with Moonshot's endpoint in the
+    /// environment. A row telling someone to install a `kimi` CLI would send
+    /// them looking for something that does not exist.
+    #[test]
+    fn kimi_gets_no_row_because_it_has_no_binary_of_its_own() {
+        let kimi = crate::providers::spec("kimi").expect("kimi is a known provider");
+
+        assert_eq!(kimi.binary, crate::providers::claude::BINARY, "if this changes, Kimi needs its own capability");
+        assert!(
+            !Capability::ALL.iter().any(|c| c.spec().label.contains("Kimi")),
+            "Kimi needs an account, not an install"
+        );
+    }
+
+    /// The Homebrew assumption, one level down from the one this module fixed:
+    /// `brew install uv` is not executable on a Mac without Homebrew.
+    #[test]
+    fn a_tool_with_no_homebrew_route_still_offers_one_that_runs() {
+        let uv = install_for("uv").expect("uv is declared");
+
+        assert!(!uv.command().is_empty());
+        assert!(uv.alternative().is_some(), "there has to be a route for a machine with no brew");
+        assert_ne!(uv.command(), uv.alternative().unwrap(), "showing the same command twice helps nobody");
+    }
+
+    /// Installing a provider's CLI does not sign anyone in, and the account
+    /// wizard is Hangar's own — not a shell command. A guide that stops at the
+    /// install leaves the user one step short and thinking they are done.
+    #[test]
+    fn a_provider_guide_says_the_step_that_isnt_a_command() {
+        let codex = install_for("codex").expect("codex is declared");
+
+        assert!(codex.then.is_some_and(|t| t.contains("account")), "the guide has to name the account step");
     }
 
     /// git is required by more than one capability and is the tool that had no

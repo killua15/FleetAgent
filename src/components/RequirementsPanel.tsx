@@ -78,13 +78,6 @@ export function RequirementsPanel() {
               </div>
               <div className={styles.unlocks}>{cap.enables}</div>
 
-              {!cap.available && (
-                <div className={styles.hintWrap}>
-                  <div className={styles.blocked}>{cap.reason}</div>
-                  {cap.installHint && <code className={styles.hint}>{cap.installHint}</code>}
-                </div>
-              )}
-
               {/* Las herramientas, con su ruta cuando están: «funciona en mi
                   terminal» y «Hangar lo encuentra» son cosas distintas cuando
                   la app se abre desde Finder con un PATH mínimo. */}
@@ -96,6 +89,38 @@ export function RequirementsPanel() {
                   </span>
                 ))}
               </div>
+
+              {/* La guía va abierta cuando está en rojo, porque es justo cuando
+                  hace falta, y plegada si funciona: quien lo tiene todo no
+                  necesita leer cómo instalarlo. */}
+              {!cap.available && (
+                <details className={styles.guide} open>
+                  <summary className={styles.guideHead}>{cap.reason} — cómo arreglarlo</summary>
+                  <div className={styles.guideBody}>
+                    {cap.tools
+                      .filter((t) => !t.installed)
+                      .map((tool) => (
+                        <div key={tool.name} className={styles.step}>
+                          <div className={styles.stepName}>
+                            {tool.name}
+                            {tool.blockedBy && <span className={styles.needs}> — antes hace falta {tool.blockedBy}</span>}
+                          </div>
+                          {tool.installHint && <code className={styles.hint}>{tool.installHint}</code>}
+                          {tool.alternative && (
+                            <div className={styles.alt}>
+                              o, si no usas Homebrew: <code className={styles.hintInline}>{tool.alternative}</code>
+                            </div>
+                          )}
+                          {tool.then && <div className={styles.after}>{tool.then}</div>}
+                        </div>
+                      ))}
+                    <div className={styles.after}>
+                      Cuando termines, pulsa <strong>volver a comprobar</strong> aquí arriba — Hangar cachea dónde encuentra cada
+                      binario y si no, seguiría diciéndote que falta.
+                    </div>
+                  </div>
+                </details>
+              )}
             </div>
           </div>
         ))}

@@ -129,13 +129,6 @@
   white-space: nowrap;
 }
 
-.hintWrap {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  margin-top: 2px;
-}
-
 .blocked {
   font: 400 10.5px var(--font-ui);
   color: var(--amber);
@@ -185,4 +178,80 @@
   color: var(--dim);
   line-height: 1.55;
   max-width: 68ch;
+}
+
+/* The guide opens for what's red and stays folded for what works — someone
+   whose machine is complete has no reason to read install instructions. */
+.guide {
+  margin-top: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg2);
+  overflow: hidden;
+}
+
+.guideHead {
+  padding: 7px 10px;
+  font: 500 11px var(--font-ui);
+  color: var(--amber);
+  cursor: pointer;
+  list-style: none;
+}
+
+.guideHead::-webkit-details-marker {
+  display: none;
+}
+
+.guideHead::before {
+  content: '▸ ';
+  color: var(--dim);
+}
+
+.guide[open] .guideHead::before {
+  content: '▾ ';
+}
+
+.guideHead:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: -2px;
+}
+
+.guideBody {
+  padding: 0 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.step {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stepName {
+  font: 600 10.5px var(--font-mono);
+  color: var(--txt);
+}
+
+.alt {
+  font: 400 10.5px var(--font-ui);
+  color: var(--dim);
+  display: flex;
+  gap: 5px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.hintInline {
+  font: 500 10px var(--font-mono);
+  color: var(--mut);
+  user-select: all;
+}
+
+.after {
+  font: 400 10.5px var(--font-ui);
+  color: var(--mut);
+  line-height: 1.5;
+  max-width: 66ch;
 }
