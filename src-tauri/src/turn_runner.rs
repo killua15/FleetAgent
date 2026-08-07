@@ -203,6 +203,10 @@ pub struct TurnRequest<R: Runtime = tauri::Wry> {
     /// handle and gains nothing from one — every caller already knows which
     /// project the turn belongs to.
     pub instructions: Option<std::path::PathBuf>,
+    /// The `--mcp-config` naming this project's code graph, or `None` when
+    /// there is no graph (the common case). Resolved by the caller for the
+    /// same reason as `instructions`.
+    pub mcp_config: Option<std::path::PathBuf>,
 }
 
 /// Runs one headless turn (`claude -p "<prompt>" --output-format
@@ -262,6 +266,7 @@ pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) -> Result<(), String> {
         name: &req.name,
         use_permission_prompt,
         instructions: req.instructions.as_deref(),
+        mcp_config: req.mcp_config.as_deref(),
     });
 
     std::thread::spawn(move || {
@@ -847,8 +852,12 @@ fn store_turn_usage<R: Runtime>(app: &AppHandle<R>, session_id: &str, usage: &Tu
         match db.0.lock() {
             Ok(conn) => {
                 if let Err(e) = conn.execute(
-                    "INSERT INTO turn_usage (id, session_id, block_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    // `project_id` comes off the session rather than being left
+                    // NULL as it was: every per-project report — spend, budget,
+                    // and now the graph comparison — filters on it, so headless
+                    // turns were invisible to all of them.
+                    "INSERT INTO turn_usage (id, session_id, project_id, block_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, created_at, with_graph)
+                     VALUES (?1, ?2, (SELECT project_id FROM sessions WHERE id = ?2), ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                     params![
                         uuid::Uuid::new_v4().to_string(),
                         session_id,
@@ -859,6 +868,9 @@ fn store_turn_usage<R: Runtime>(app: &AppHandle<R>, session_id: &str, usage: &Tu
                         usage.cache_creation_tokens,
                         usage.cost_usd,
                         chrono::Utc::now().to_rfc3339(),
+                        // See `usage_meter::record_turns`: a fact about when
+                        // the turn ran, not about now.
+                        crate::commands::graph::graph_available_for_session(&conn, session_id) as i64,
                     ],
                 ) {
                     log::error!("store_turn_usage: failed to persist usage for session {session_id}: {e}");
@@ -1336,6 +1348,7 @@ mod tests {
             resume: None,
             prompt: "say hello".to_string(),
             instructions: None,
+            mcp_config: None,
         })
         .expect("the first turn on a fresh session must not be refused");
 

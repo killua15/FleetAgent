@@ -123,6 +123,29 @@ pub fn skills_args(provider: &str, dir: &str) -> Vec<String> {
     }
 }
 
+/// How each CLI is handed the code knowledge graph's MCP server
+/// (`GRAPHIFY_TRD.md` §5.2).
+///
+/// **Additive, never `--strict-mcp-config`.** That flag makes Claude Code
+/// ignore every other MCP configuration, which would mean switching off the
+/// user's own servers for the privilege of adding ours. Unacceptable: additive
+/// or nothing.
+///
+/// A flag rather than a registered server, for two reasons. Registering at user
+/// level would mean writing into every account's `CLAUDE_CONFIG_DIR` — the
+/// directories that exist precisely so accounts don't contaminate each other —
+/// and rewriting them on every new account. And a `.mcp.json` in the project
+/// would be a file in the user's checkout, which §3 forbids.
+///
+/// Empty for a provider with no equivalent, which callers treat as "add
+/// nothing": that terminal opens exactly as it does today.
+pub fn mcp_config_args(provider: &str, config_path: &str) -> Vec<String> {
+    match provider {
+        "claude" | "kimi" | "grok" => vec!["--mcp-config".to_string(), config_path.to_string()],
+        _ => Vec::new(),
+    }
+}
+
 /// Best-effort exhaustion/rate-limit detection, dispatched per provider so
 /// process_manager stays provider-agnostic. Exact strings should be
 /// re-verified against each CLI's real output as adapters are added.

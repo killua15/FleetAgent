@@ -1664,9 +1664,17 @@ pub fn poll_all_open_prs<R: Runtime>(app: &AppHandle<R>) {
             let Ok(conn) = db.0.lock() else { return };
             tracked_open_prs_for_repo(&conn, &owner, &repo)
         };
+        // A merge is exactly when the base branch moved under every worktree,
+        // which is the moment a code graph stops describing the repo. Noted
+        // before the loop consumes `tracked`, so one poll rebuilds once however
+        // many PRs landed together (`GRAPHIFY_TRD.md` §5.1: debounce, never per
+        // turn).
+        let mut merged_something = false;
+
         for (pr_id, number) in tracked {
             let Ok(Some(pr)) = fetch_pull_request_by_id(&db, &pr_id) else { continue };
             let session_id = pr.session_id.clone();
+            merged_something |= snapshot.prs.iter().find(|p| p.number == number).is_none_or(|p| p.state == "merged");
             // A tracked PR missing from a snapshot of *open* PRs has been merged
             // or closed, and the snapshot can't say which — that one gets its
             // own query, which is rare and is what resolves it exactly.
@@ -1692,6 +1700,10 @@ pub fn poll_all_open_prs<R: Runtime>(app: &AppHandle<R>) {
                 Ok(_) => {}
                 Err(e) => log::error!("poll_all_open_prs: check failed for PR {pr_id}: {e}"),
             }
+        }
+
+        if merged_something {
+            crate::commands::graph::rebuild_after_merge(app, &project_id);
         }
     }
 }

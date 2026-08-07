@@ -77,6 +77,11 @@ pub struct TurnArgs<'a> {
     /// language), or `None` when nothing is configured — in which case no flag
     /// is added at all rather than one pointing at an empty file.
     pub instructions: Option<&'a std::path::Path>,
+    /// Path to the `--mcp-config` naming this scope's code graph, or `None`
+    /// when there is no graph built or graphify isn't installed
+    /// (`GRAPHIFY_TRD.md` §5.2). Additive: Hangar never passes
+    /// `--strict-mcp-config`, which would suppress the user's own servers.
+    pub mcp_config: Option<&'a std::path::Path>,
 }
 
 /// Args for one headless turn: `claude -p "<prompt>" --output-format
@@ -124,6 +129,11 @@ pub fn build_turn_args(args: TurnArgs) -> Vec<String> {
         // and Claude Code takes the file. Only Codex needs the flattened text,
         // and Codex has no headless turn runner.
         out.extend(super::instruction_args("claude", &path.to_string_lossy(), ""));
+    }
+    // Same routing, same reason: the flag is named in one place. `None` means
+    // no flag at all — never one pointing at a graph that isn't there.
+    if let Some(config) = args.mcp_config {
+        out.extend(super::mcp_config_args("claude", &config.to_string_lossy()));
     }
     out
 }
@@ -180,6 +190,7 @@ mod tests {
             name: "fix-billing-rounding",
             use_permission_prompt: false,
             instructions: None,
+            mcp_config: None,
         });
         assert_eq!(
             args,
@@ -201,6 +212,7 @@ mod tests {
             name: "",
             use_permission_prompt: false,
             instructions: None,
+            mcp_config: None,
         });
         assert_eq!(args.last().cloned(), Some("session-123".to_string()));
         assert_eq!(args[args.len() - 2], "--resume");
@@ -219,6 +231,7 @@ mod tests {
             name: "",
             use_permission_prompt: false,
             instructions: None,
+            mcp_config: None,
         });
         assert!(args.contains(&"hi".to_string()), "prompt must be a positional arg when not using the stdio protocol");
         assert!(!args.contains(&"--permission-prompt-tool".to_string()));
@@ -236,6 +249,7 @@ mod tests {
             name: "",
             use_permission_prompt: true,
             instructions: None,
+            mcp_config: None,
         });
         // The prompt must NOT appear as a `-p` positional arg — it goes over
         // stdin instead (see turn_runner::spawn_turn).

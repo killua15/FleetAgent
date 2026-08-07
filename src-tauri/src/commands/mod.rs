@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod agent_nodes;
 pub mod attachments;
 pub mod git_panel;
+pub mod graph;
 pub mod login;
 pub mod preferences;
 pub mod projects;

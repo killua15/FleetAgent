@@ -6,6 +6,7 @@ import { Spinner } from '../components/Spinner';
 import { LANGUAGES } from '../lib/languages';
 import type { Project } from '../types/session';
 import type { AgentPreferences, Skill } from '../types/settings';
+import type { GraphState, GraphifyStatus } from '../types/graph';
 import styles from './ProjectSettings.module.css';
 
 /**
@@ -32,6 +33,7 @@ export function ProjectSettings() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [enabledSkills, setEnabledSkills] = useState<string[]>([]);
   const [alwaysOn, setAlwaysOn] = useState<string[]>([]);
+  const [graphify, setGraphify] = useState<GraphifyStatus | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -42,6 +44,7 @@ export function ProjectSettings() {
       invoke<AgentPreferences>('get_global_agent_preferences').then(setGlobal),
       invoke<Skill[]>('list_skills').then(setSkills),
       invoke<string[]>('list_always_on_skills').then(setAlwaysOn),
+      invoke<GraphifyStatus>('graphify_status').then(setGraphify),
     ]).catch((e) => toastError(String(e)));
   }, []);
 
@@ -189,6 +192,8 @@ export function ProjectSettings() {
                 )}
               </div>
 
+              <CodeGraphField projectId={selected.id} graphify={graphify} />
+
               <p className={styles.footnote}>
                 Idiomas y skills llegan hoy a Claude, Kimi y Grok. Codex recibe el idioma por su propia configuración, pero todavía no
                 las skills — busca en otra ruta y no he podido verificarlo contra una ejecución real. Sus terminales funcionan
@@ -199,6 +204,102 @@ export function ProjectSettings() {
           {!selected && <span className={styles.empty}>Elige un proyecto para configurarlo.</span>}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * El grafo de código de este proyecto (`GRAPHIFY_TRD.md`, Fase 1).
+ *
+ * Tres cosas que esta sección tiene que decir sin que haya que preguntarlas:
+ * si la herramienta está o no, cuándo se construyó el grafo, y si el repo ha
+ * avanzado desde entonces. La tercera es la que importa — §5.5: un grafo viejo
+ * responde con la forma de la verdad y el contenido equivocado.
+ *
+ * Sin `graphify` instalado esto no es un error ni un hueco: dice qué instalar y
+ * se queda quieto.
+ */
+function CodeGraphField({ projectId, graphify }: { projectId: string; graphify: GraphifyStatus | null }) {
+  const [state, setState] = useState<GraphState | null>(null);
+  const [building, setBuilding] = useState(false);
+
+  useEffect(() => {
+    setState(null);
+    if (!graphify?.installed) return;
+    invoke<GraphState>('get_project_graph', { projectId }).then(setState).catch((e) => toastError(String(e)));
+  }, [projectId, graphify?.installed]);
+
+  const build = async () => {
+    setBuilding(true);
+    try {
+      setState(await invoke<GraphState>('build_project_graph', { projectId }));
+    } catch (e) {
+      toastError(String(e));
+      // El backend ya dejó el fallo escrito; releerlo es lo que hace que el
+      // motivo siga ahí después de que el toast se vaya.
+      invoke<GraphState>('get_project_graph', { projectId }).then(setState).catch(() => {});
+    } finally {
+      setBuilding(false);
+    }
+  };
+
+  return (
+    <div className={styles.field}>
+      <span className={styles.fieldLabel}>GRAFO DE CÓDIGO</span>
+      <span className={styles.fieldHint}>
+        Un mapa del repo que los agentes consultan en vez de reconstruirlo a base de <code>grep</code> en cada turno. Se indexa{' '}
+        <strong>solo código, en local</strong>, y se escribe en los datos de Hangar — nunca dentro de tu repo.
+      </span>
+
+      {!graphify?.installed ? (
+        <span className={styles.empty}>
+          Necesita <strong>graphify</strong>, que no está en esta máquina. Se instala con <code>{graphify?.installHint ?? "uv tool install 'graphifyy[sql]'"}</code>{' '}
+          y luego reabre esta pantalla. Sin él, todo lo demás funciona igual.
+        </span>
+      ) : !graphify.mcpInstalled ? (
+        <span className={styles.empty}>
+          Está <code>graphify</code> pero falta <code>graphify-mcp</code>, que es lo que se lo sirve a los agentes. Reinstala con{' '}
+          <code>{graphify.installHint}</code>.
+        </span>
+      ) : (
+        <>
+          <div className={styles.skillList}>
+            {state?.status === 'ready' ? (
+              <span className={styles.skillDescription}>
+                {state.nodeCount.toLocaleString('es')} nodos · {state.edgeCount.toLocaleString('es')} aristas
+                {state.builtAt && ` · construido ${new Date(state.builtAt).toLocaleString('es')}`}
+              </span>
+            ) : state?.status === 'failed' ? (
+              <span className={styles.skillDescription}>La última construcción falló: {state.lastError ?? 'sin detalle'}</span>
+            ) : (
+              <span className={styles.skillDescription}>Todavía sin construir. Tarda unos segundos en un repo mediano.</span>
+            )}
+
+            {/* §5.5: la antigüedad se dice, no se deduce. Y se dice por
+                miembro, porque un aviso que solo dice "viejo" no dice qué
+                reconstruir. */}
+            {state?.stale && (
+              <span className={styles.skillDescription}>
+                ⚠ El repo ha avanzado desde que se construyó. Los agentes lo siguen usando, pero se les dice la edad con cada respuesta.
+              </span>
+            )}
+          </div>
+
+          <div className={styles.skillList}>
+            <button className={styles.select} disabled={building} onClick={build}>
+              {building ? <Spinner label="indexando…" /> : state?.status === 'ready' ? 'Reconstruir el grafo' : 'Construir el grafo'}
+            </button>
+            {state?.htmlPath && (
+              <button
+                className={styles.select}
+                onClick={() => invoke('open_graph_html', { projectId }).catch((e) => toastError(String(e)))}
+              >
+                Abrir la vista de graphify en el navegador
+              </button>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -6,6 +6,7 @@ mod commands;
 mod credential_vault;
 mod db;
 mod git_identity;
+mod graph;
 mod handoff;
 mod login_manager;
 mod models;
@@ -222,6 +223,21 @@ pub fn run() {
             commands::skill_sources::update_installed_skills,
             commands::settings::list_project_account_rotation,
             commands::settings::set_project_account_allowed,
+            commands::graph::graphify_status,
+            commands::graph::get_project_graph,
+            commands::graph::build_project_graph,
+            commands::graph::open_graph_html,
+            commands::graph::graph_storage_dir,
+            commands::graph::list_graph_groups,
+            commands::graph::create_graph_group,
+            commands::graph::delete_graph_group,
+            commands::graph::set_graph_group_member,
+            commands::graph::get_graph_group_members,
+            commands::graph::get_graph_group_state,
+            commands::graph::get_graph_bridges,
+            commands::graph::build_graph_group,
+            commands::graph::graph_savings_report,
+            commands::graph::graph_collisions,
             rotation::get_rotation_policy,
             rotation::set_rotation_policy,
             commands::settings::list_memory_groups,
