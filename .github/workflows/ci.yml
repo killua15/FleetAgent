@@ -81,7 +81,7 @@ jobs:
   # the Rust that only compiles there.
   windows:
     runs-on: windows-latest
-    name: Windows (compile + test)
+    name: Windows (compile)
 
     steps:
       - uses: actions/checkout@v4
@@ -109,9 +109,26 @@ jobs:
           workspaces: src-tauri
           key: windows
 
-      - name: Match the default branch developers have configured
-        run: git config --global init.defaultBranch main
-
-      - name: Test backend
+      # Compiled but not run, and that limit is real rather than laziness.
+      #
+      # `tauri-build` embeds a Windows manifest into the app binary and not into
+      # test binaries. That manifest is what pins `comctl32.dll` to version 6,
+      # and without it the loader binds the v5 copy in system32, which lacks the
+      # window-subclassing entry points Tauri imports — so the test executable
+      # dies before `main` with STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139) and
+      # every test "fails" at once with no output. It's an open upstream bug:
+      # https://github.com/tauri-apps/tauri/issues/13419
+      #
+      # The obvious fix — having `build.rs` emit `rustc-link-arg-tests` with the
+      # manifest — does not work here: Cargo rejects that instruction outright
+      # unless the package declares a test target, and this crate's tests all
+      # live in `#[cfg(test)]` modules inside `src/`, which don't count. Verified
+      # by trying it; `cargo test` failed the same way `cargo build` did.
+      #
+      # So this compiles the tests and stops. That still catches what this job
+      # exists for — a `#[cfg(windows)]` arm that no longer builds — and the
+      # platform-independent behaviour is covered by the macOS job, which runs
+      # the same tests for real.
+      - name: Compile backend and its tests
         working-directory: src-tauri
-        run: cargo test
+        run: cargo test --no-run
