@@ -62,3 +62,45 @@ jobs:
         # installed here — see their doc comments. Run them locally with
         # `cargo test -- --ignored`.
         run: cargo test
+
+  # Windows is a *shipped* target (see `release.yml`) but not the one anyone
+  # develops on, so nothing here would catch a `#[cfg(windows)]` arm that stopped
+  # compiling — until a tag was cut and the release job failed. This job exists
+  # to move that discovery to the pull request.
+  #
+  # No bundling and no frontend tests: the macOS job above already covers
+  # everything platform-independent, and what's genuinely at risk on Windows is
+  # the Rust that only compiles there.
+  windows:
+    runs-on: windows-latest
+    name: Windows (compile + test)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # Same ordering constraint as the macOS job: `tauri-build` resolves
+      # `frontendDist` (../dist) at compile time, so the crate cannot be built
+      # against a tree with no `dist/`.
+      - name: Build frontend
+        run: npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: windows
+
+      - name: Test backend
+        working-directory: src-tauri
+        run: cargo test

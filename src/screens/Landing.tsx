@@ -10,6 +10,16 @@ const PROVIDERS = [
   { letter: '𝕏', label: 'grok cli', color: 'var(--grok)' },
 ];
 
+// `navigator.platform` is deprecated but still the only synchronous answer, and
+// this is a footer label — not worth an async Tauri call. Anything that isn't a
+// Mac or a Windows box stays 'desktop' rather than guessing.
+function platformName() {
+  const platform = navigator.platform;
+  if (platform.includes('Mac')) return 'macOS';
+  if (platform.startsWith('Win')) return 'Windows';
+  return 'desktop';
+}
+
 export function Landing() {
   const [entering, setEntering] = useState(false);
   const { navigate } = useNavigation();
@@ -58,7 +68,7 @@ export function Landing() {
         <span className={styles.footNote}>local-first · your keys stay in the keychain</span>
       </div>
 
-      <div className={styles.version}>hangar v0.1 — {navigator.platform.includes('Mac') ? 'macOS' : 'desktop'} · Tauri</div>
+      <div className={styles.version}>hangar v0.1 — {platformName()} · Tauri</div>
     </div>
   );
 }

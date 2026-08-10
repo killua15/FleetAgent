@@ -161,7 +161,7 @@ fn fetch_usage_text(config_dir: &str) -> Result<String, String> {
     // edit and execute over their entire home directory, which is not a
     // decision a background quota check gets to make. So we start in a folder
     // this account *already* trusts, which the CLI records itself.
-    cmd.cwd(trusted_workspace(config_dir).unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".to_string())));
+    cmd.cwd(trusted_workspace(config_dir).unwrap_or_else(|| crate::app_data::home_dir().unwrap_or_else(|| "/".to_string())));
     for (k, v) in login_env(config_dir) {
         cmd.env(k, v);
     }
@@ -464,7 +464,7 @@ mod live_tests {
     #[test]
     #[ignore = "spawns a real `claude` and needs a logged-in config dir"]
     fn live_scrape_prints_what_usage_returned() {
-        let dir = std::env::var("HANGAR_TEST_CONFIG_DIR").unwrap_or_else(|_| format!("{}/.claude", std::env::var("HOME").unwrap()));
+        let dir = std::env::var("HANGAR_TEST_CONFIG_DIR").unwrap_or_else(|_| format!("{}/.claude", crate::app_data::home_dir().unwrap()));
         let text = fetch_usage_text(&dir).expect("the scrape itself must not error");
         println!("--- {} bytes captured from {dir} ---", text.len());
         println!("{text}");

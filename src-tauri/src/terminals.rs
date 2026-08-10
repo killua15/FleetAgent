@@ -282,8 +282,103 @@ fn push_scrollback(buffer: &mut VecDeque<u8>, chunk: &[u8]) {
 
 /// The shell to launch. `$SHELL` is what the user actually chose; the
 /// fallback only matters for a process started without it.
-fn user_shell() -> String {
+#[cfg(unix)]
+pub(crate) fn user_shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string())
+}
+
+/// The shell to launch on Windows — Git's `bash.exe` whenever it can be found.
+///
+/// This is the load-bearing decision behind Windows support, and it is not the
+/// obvious one. `terminal_script_full` below emits POSIX: `VAR=value binary`
+/// prefixes, `cd` lines, `&&`. PowerShell understands none of that, so pointing
+/// this at `powershell.exe` would mean writing a second script generator and a
+/// second copy of every test that covers the first.
+///
+/// Git for Windows ships a full bash, and Hangar already cannot function
+/// without git — worktrees are how a subsession exists at all. So the shell
+/// that keeps every generated script valid is one the machine necessarily
+/// already has.
+///
+/// `powershell.exe` is the last resort rather than an equal option: a terminal
+/// that opens and shows a prompt is more useful than one that fails to spawn,
+/// even if the account-scoped command written into it won't parse.
+#[cfg(windows)]
+pub(crate) fn user_shell() -> String {
+    // `$SHELL` first for the same reason as on Unix: if the user has one, it's
+    // an answer they chose. Git Bash and MSYS both set it.
+    if let Ok(shell) = std::env::var("SHELL") {
+        if !shell.is_empty() && std::path::Path::new(&shell).is_file() {
+            return shell;
+        }
+    }
+    if let Some(bash) = git_bash_path() {
+        return bash;
+    }
+    "powershell.exe".to_string()
+}
+
+/// Git's `bash.exe`, looked up the same way `providers::resolve_binary` looks up
+/// a CLI: PATH first, then the places the installer actually puts it.
+///
+/// Deliberately *not* `sh.exe` from `Git\usr\bin`: that one is on the MSYS
+/// side and behaves differently about paths and `-l`.
+#[cfg(windows)]
+pub(crate) fn git_bash_path() -> Option<String> {
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let candidate = dir.join("bash.exe");
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+        }
+    }
+    // The two install roots Git for Windows uses — 64-bit and the 32-bit
+    // installer's directory — read from the environment rather than hardcoded
+    // to `C:\`, since neither is guaranteed to be on the system drive.
+    for root_var in ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"] {
+        let Ok(root) = std::env::var(root_var) else { continue };
+        let candidate = std::path::Path::new(&root).join("Git").join("bin").join("bash.exe");
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+    // Per-user install ("Git for Windows" installed without admin rights).
+    if let Some(home) = crate::app_data::home_dir() {
+        let candidate = std::path::Path::new(&home).join("AppData/Local/Programs/Git/bin/bash.exe");
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+/// Whether `user_shell()` speaks POSIX — which decides both the login flag the
+/// PTY passes it and how `run_setup_command` hands it a one-liner.
+///
+/// On Unix this is always true. On Windows it's true exactly when
+/// `user_shell()` found a bash rather than falling through to PowerShell.
+pub(crate) fn shell_is_posix() -> bool {
+    #[cfg(unix)]
+    {
+        true
+    }
+    #[cfg(windows)]
+    {
+        !user_shell().to_ascii_lowercase().ends_with("powershell.exe")
+    }
+}
+
+/// How to hand this shell a single command to run and exit — `sh -c` and its
+/// equivalent. Used by `run_setup_command`, which used to hardcode `sh`.
+pub(crate) fn shell_command_args(command: &str) -> Vec<String> {
+    if shell_is_posix() {
+        vec!["-c".to_string(), command.to_string()]
+    } else {
+        // `-NoProfile` because a setup command's output is parsed, and a
+        // profile that prints a banner would end up in it.
+        vec!["-NoProfile".to_string(), "-Command".to_string(), command.to_string()]
+    }
 }
 
 /// Environment variables that decide *which account* a provider CLI acts as.
@@ -396,6 +491,24 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
+/// A filesystem path, quoted for the shell that will receive it.
+///
+/// Separate from `shell_quote` because a path is the one kind of value that
+/// needs rewriting rather than just quoting. On Windows every path Hangar holds
+/// comes back from `git worktree` or the OS with backslashes, and the shell
+/// these scripts run in is Git's bash: `cd 'C:\Users\me\proj'` puts bash inside
+/// a directory whose name it reads as containing escape sequences, and `cd
+/// C:\Users\me\proj` is worse. Bash accepts `C:/Users/me/proj` — and so does
+/// every Windows API — so the separator is normalised once, here.
+///
+/// A no-op on Unix, where a backslash in a path is a legitimate character in a
+/// filename and rewriting it would corrupt the path rather than fix it.
+fn shell_path(value: &str) -> String {
+    #[cfg(windows)]
+    let value = &value.replace('\\', "/");
+    shell_quote(value)
+}
+
 /// The exact command a terminal for this account will run — inline
 /// `CLAUDE_CONFIG_DIR=<dir>` prefix and all, the same shape used by hand:
 ///
@@ -497,7 +610,7 @@ pub(crate) fn account_command_line_full(
     if !crate::providers::is_provider_available(&account.provider) {
         return Err(format!("the `{binary}` CLI isn't installed on this machine"));
     }
-    let config = shell_quote(&account.config_dir_path);
+    let config = shell_path(&account.config_dir_path);
     // Fixed environment the provider always needs — for Kimi, pointing Claude
     // Code at Moonshot's Anthropic-compatible endpoint. Rendered into the
     // command line so what the picker previews is literally what runs.
@@ -538,7 +651,7 @@ pub(crate) fn account_command_line_full(
         (InitCommand::Login, _) => String::new(),
         (_, Some(dir)) => crate::providers::skills_args(&account.provider, &dir.to_string_lossy())
             .iter()
-            .map(|arg| format!(" {}", shell_quote(arg)))
+            .map(|arg| format!(" {}", shell_path(arg)))
             .collect(),
         (_, None) => String::new(),
     };
@@ -552,7 +665,7 @@ pub(crate) fn account_command_line_full(
         _ => sibling_dirs
             .iter()
             .flat_map(|dir| crate::providers::skills_args(&account.provider, &dir.to_string_lossy()))
-            .map(|arg| format!(" {}", shell_quote(&arg)))
+            .map(|arg| format!(" {}", shell_path(&arg)))
             .collect(),
     };
 
@@ -563,7 +676,7 @@ pub(crate) fn account_command_line_full(
         (InitCommand::Login, _) => String::new(),
         (_, Some(config)) => crate::providers::mcp_config_args(&account.provider, &config.to_string_lossy())
             .iter()
-            .map(|arg| format!(" {}", shell_quote(arg)))
+            .map(|arg| format!(" {}", shell_path(arg)))
             .collect(),
         (_, None) => String::new(),
     };
@@ -641,7 +754,7 @@ pub(crate) fn terminal_script_full(
 ) -> Result<String, String> {
     Ok(format!(
         "cd {}\n{}",
-        shell_quote(cwd),
+        shell_path(cwd),
         account_command_line_full(
             account,
             init,
@@ -833,7 +946,14 @@ pub fn open_terminal<R: Runtime>(
         .map_err(|e| e.to_string())?;
 
     let mut cmd = CommandBuilder::new(user_shell());
-    cmd.arg("-l");
+    // `-l` is a POSIX login shell's flag. PowerShell reads it as a positional
+    // argument — a script file named `-l` — and exits immediately, which would
+    // look like the terminal closing the moment it opens.
+    if shell_is_posix() {
+        cmd.arg("-l");
+    } else {
+        cmd.arg("-NoLogo");
+    }
     cmd.cwd(&cwd);
     for (k, v) in terminal_env(&account_vars, account.is_some()) {
         cmd.env(k, v);
@@ -2382,6 +2502,27 @@ mod tests {
         assert_eq!(shell_quote("/Applications/My Tools/claude"), "'/Applications/My Tools/claude'");
         assert_eq!(shell_quote("/weird/it's/claude"), r"'/weird/it'\''s/claude'");
         assert_eq!(shell_quote(""), "''", "an empty value still has to occupy an argument");
+    }
+
+    /// On Unix a backslash is a legal character in a filename, so `shell_path`
+    /// must leave it alone — rewriting it would point at a different file.
+    #[cfg(unix)]
+    #[test]
+    fn a_unix_path_keeps_every_character_it_came_with() {
+        assert_eq!(shell_path("/Users/me/proj"), "/Users/me/proj");
+        assert_eq!(shell_path(r"/Users/me/od\d name"), r"'/Users/me/od\d name'");
+    }
+
+    /// The Windows half of the same seam: `git worktree` hands back
+    /// `C:\Users\me\proj`, and the script that consumes it runs in Git's bash,
+    /// where the backslashes would be read as escapes. Forward slashes are
+    /// understood by both, and they leave the path unquoted — which is what
+    /// keeps the command readable in the account row.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_path_is_handed_to_bash_with_separators_it_understands() {
+        assert_eq!(shell_path(r"C:\Users\me\proj"), "C:/Users/me/proj");
+        assert_eq!(shell_path(r"C:\Users\me\My Projects\app"), "'C:/Users/me/My Projects/app'");
     }
 
     /// A config dir with a space must survive as one word, or the shell would

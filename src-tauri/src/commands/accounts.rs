@@ -225,7 +225,7 @@ pub fn create_account(
         // same place regardless of how they authenticate. The frontend
         // checks the name against every existing account before this is
         // ever called; a collision here means that check was bypassed.
-        let home = std::env::var("HOME").map_err(|_| "no HOME directory".to_string())?;
+        let home = crate::app_data::home_dir().ok_or_else(|| "no home directory".to_string())?;
         let slug = crate::commands::sessions::slugify(&account.name);
         let config_dir_path = std::path::PathBuf::from(home).join(format!(".{slug}"));
         if config_dir_path.exists() {
@@ -322,7 +322,7 @@ pub async fn list_discoverable_logins<R: Runtime>(app: AppHandle<R>) -> Result<V
             rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
         };
 
-        let home = std::env::var("HOME").map_err(|_| "no HOME directory".to_string())?;
+        let home = crate::app_data::home_dir().ok_or_else(|| "no home directory".to_string())?;
         let mut candidates: Vec<std::path::PathBuf> = std::fs::read_dir(&home)
             .map_err(|e| format!("could not read the home directory: {e}"))?
             .flatten()

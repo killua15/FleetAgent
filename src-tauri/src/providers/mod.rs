@@ -193,32 +193,44 @@ pub fn forget_resolved_binaries() {
     }
 }
 
+/// The suffixes a bare CLI name can actually wear on this platform.
+///
+/// On Unix there is only the name. On Windows, `npm i -g @anthropic-ai/claude-code`
+/// does not install `claude` — it installs `claude.cmd`, a shim next to
+/// `claude` (the extensionless shell script, which Windows cannot execute).
+/// Searching for the bare name there finds that unusable script, or nothing,
+/// and the app reports the CLI as not installed on a machine where it is.
+///
+/// Ordered deliberately: `.cmd` before the bare name, so the shim wins over the
+/// script sitting beside it.
+#[cfg(unix)]
+const BINARY_SUFFIXES: &[&str] = &[""];
+#[cfg(windows)]
+const BINARY_SUFFIXES: &[&str] = &[".cmd", ".exe", ".bat", ".ps1", ""];
+
+/// `dir/name` with each platform suffix tried in turn, first hit wins.
+fn first_existing_in(dir: &std::path::Path, name: &str) -> Option<String> {
+    for suffix in BINARY_SUFFIXES {
+        let candidate = dir.join(format!("{name}{suffix}"));
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
 fn resolve_binary_uncached(name: &str) -> String {
     if let Ok(path) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path) {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                return candidate.to_string_lossy().into_owned();
+            if let Some(found) = first_existing_in(&dir, name) {
+                return found;
             }
         }
     }
 
-    let home = std::env::var("HOME").unwrap_or_default();
-    let candidates = [
-        format!("{home}/.local/bin/{name}"),
-        format!("/opt/homebrew/bin/{name}"),
-        format!("/usr/local/bin/{name}"),
-        format!("{home}/.claude/local/{name}"),
-        // Version managers that keep binaries outside any fixed directory.
-        format!("{home}/.volta/bin/{name}"),
-        format!("{home}/.bun/bin/{name}"),
-        format!("{home}/.asdf/shims/{name}"),
-        format!("{home}/.local/share/mise/shims/{name}"),
-    ];
-    for candidate in candidates {
-        if std::path::Path::new(&candidate).is_file() {
-            return candidate;
-        }
+    let home = crate::app_data::home_dir().unwrap_or_default();
+    if let Some(found) = install_locations(&home).iter().find_map(|dir| first_existing_in(dir, name)) {
+        return found;
     }
 
     // nvm keeps a directory per Node version and puts every globally installed
@@ -241,25 +253,93 @@ fn resolve_binary_uncached(name: &str) -> String {
     name.to_string()
 }
 
+/// Where a CLI ends up when it isn't on the PATH a GUI app inherits.
+#[cfg(unix)]
+fn install_locations(home: &str) -> Vec<std::path::PathBuf> {
+    [
+        format!("{home}/.local/bin"),
+        "/opt/homebrew/bin".to_string(),
+        "/usr/local/bin".to_string(),
+        format!("{home}/.claude/local"),
+        // Version managers that keep binaries outside any fixed directory.
+        format!("{home}/.volta/bin"),
+        format!("{home}/.bun/bin"),
+        format!("{home}/.asdf/shims"),
+        format!("{home}/.local/share/mise/shims"),
+    ]
+    .into_iter()
+    .map(std::path::PathBuf::from)
+    .collect()
+}
+
+/// The Windows equivalents. `%APPDATA%\npm` is where a global `npm i -g` puts
+/// its shims, and it is routinely missing from the PATH a GUI process inherits
+/// — the same failure this whole function exists for on macOS.
+#[cfg(windows)]
+fn install_locations(home: &str) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        dirs.push(std::path::PathBuf::from(&appdata).join("npm"));
+    }
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        dirs.push(std::path::PathBuf::from(&local).join("Programs"));
+        dirs.push(std::path::PathBuf::from(&local).join("pnpm"));
+        dirs.push(std::path::PathBuf::from(&local).join("Volta").join("bin"));
+    }
+    for tail in [".local/bin", ".claude/local", ".volta/bin", ".bun/bin"] {
+        dirs.push(std::path::Path::new(home).join(tail));
+    }
+    dirs
+}
+
 /// The newest Node version that has this binary.
 ///
 /// Newest rather than first because nvm directories sort by name and versions
 /// don't: `v9.0.0` sorts after `v24.18.0`, so taking the last alphabetically
 /// would pick an ancient Node with no `codex` in it.
 fn newest_nvm_binary(home: &str, name: &str) -> Option<String> {
-    let versions = std::fs::read_dir(format!("{home}/.nvm/versions/node")).ok()?;
     let mut best: Option<((u32, u32, u32), String)> = None;
-    for entry in versions.flatten() {
-        let candidate = entry.path().join("bin").join(name);
-        if !candidate.is_file() {
-            continue;
-        }
-        let version = parse_node_version(&entry.file_name().to_string_lossy());
-        if best.as_ref().is_none_or(|(current, _)| version > *current) {
-            best = Some((version, candidate.to_string_lossy().into_owned()));
+    for (root, subdir) in nvm_roots(home) {
+        let Ok(versions) = std::fs::read_dir(root) else { continue };
+        for entry in versions.flatten() {
+            let dir = match subdir {
+                Some(sub) => entry.path().join(sub),
+                None => entry.path(),
+            };
+            let Some(candidate) = first_existing_in(&dir, name) else { continue };
+            let version = parse_node_version(&entry.file_name().to_string_lossy());
+            if best.as_ref().is_none_or(|(current, _)| version > *current) {
+                best = Some((version, candidate));
+            }
         }
     }
     best.map(|(_, path)| path)
+}
+
+/// Where nvm keeps its per-version directories, and where inside one of them
+/// the binaries live.
+///
+/// The two nvms are unrelated projects that happen to share a name: the Unix
+/// one nests binaries under `bin/`, while nvm-windows puts them straight in the
+/// version directory and installs under `%APPDATA%\nvm` (or wherever `NVM_HOME`
+/// points, which its installer sets).
+#[cfg(unix)]
+fn nvm_roots(home: &str) -> Vec<(std::path::PathBuf, Option<&'static str>)> {
+    vec![(std::path::PathBuf::from(format!("{home}/.nvm/versions/node")), Some("bin"))]
+}
+
+#[cfg(windows)]
+fn nvm_roots(home: &str) -> Vec<(std::path::PathBuf, Option<&'static str>)> {
+    let mut roots = Vec::new();
+    if let Ok(nvm_home) = std::env::var("NVM_HOME") {
+        roots.push((std::path::PathBuf::from(nvm_home), None));
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        roots.push((std::path::PathBuf::from(appdata).join("nvm"), None));
+    }
+    // A WSL-style layout under the Windows home, for anyone who set one up.
+    roots.push((std::path::Path::new(home).join(".nvm/versions/node"), Some("bin")));
+    roots
 }
 
 fn parse_node_version(dir: &str) -> (u32, u32, u32) {
@@ -267,6 +347,7 @@ fn parse_node_version(dir: &str) -> (u32, u32, u32) {
     (parts.next().unwrap_or(0), parts.next().unwrap_or(0), parts.next().unwrap_or(0))
 }
 
+#[cfg(unix)]
 fn ask_login_shell(name: &str) -> Option<String> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let mut cmd = std::process::Command::new(shell);
@@ -280,6 +361,23 @@ fn ask_login_shell(name: &str) -> Option<String> {
         .map(str::trim)
         .find(|line| line.starts_with('/') && std::path::Path::new(line).is_file())
         .map(str::to_string)
+}
+
+/// Windows' own answer to `command -v`.
+///
+/// Deliberately **not** the Unix branch's trick of asking Git bash: bash would
+/// answer with an MSYS path (`/c/Users/...`), which no Windows API can execute,
+/// so a "found" result would be worse than not finding it at all. `where.exe`
+/// answers in native paths and prints one candidate per line, best first.
+#[cfg(windows)]
+fn ask_login_shell(name: &str) -> Option<String> {
+    let mut cmd = std::process::Command::new("where.exe");
+    cmd.arg(name);
+    let output = crate::process_timeout::run_with_timeout(cmd, std::time::Duration::from_secs(10)).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).lines().map(str::trim).find(|line| std::path::Path::new(line).is_file()).map(str::to_string)
 }
 
 /// Everything Hangar needs to run one provider's CLI as a specific account.

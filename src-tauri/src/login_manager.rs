@@ -85,7 +85,7 @@ pub fn pending_dir(app: &AppHandle, login_id: &str) -> Result<std::path::PathBuf
 /// a stale account list) — refusing outright is correct, not disambiguating
 /// with a random suffix the whole point of this change was to get away from.
 fn account_config_dir(name: &str) -> Result<std::path::PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| "no HOME directory".to_string())?;
+    let home = crate::app_data::home_dir().ok_or_else(|| "no home directory".to_string())?;
     account_dir_under(&home, name)
 }
 
@@ -205,7 +205,7 @@ pub fn begin_login(app: AppHandle, provider: String, name: String) -> Result<Log
     for arg in login_args {
         cmd.arg(arg);
     }
-    if let Ok(home) = std::env::var("HOME") {
+    if let Some(home) = crate::app_data::home_dir() {
         cmd.cwd(home);
     }
     for (k, v) in login_env_for(&provider, &config_dir) {

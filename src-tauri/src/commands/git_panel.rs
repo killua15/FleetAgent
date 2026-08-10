@@ -224,20 +224,62 @@ pub async fn git_push(path: String) -> Result<(), String> {
     crate::blocking::run_blocking(move || git_capture(Path::new(&path), &["push"]).map(|_| ())).await?
 }
 
-/// "Open in Finder" is handled entirely on the frontend via the opener
-/// plugin's `revealItemInDir` — only "open in Terminal" needs a real backend
-/// command, since there's no cross-platform plugin API for it and Hangar
-/// already assumes macOS elsewhere (see `resolve_binary`/worktree cleanup).
+/// "Open in Finder" / "Show in Explorer" is handled entirely on the frontend
+/// via the opener plugin's `revealItemInDir` — only "open in Terminal" needs a
+/// real backend command, since there's no cross-platform plugin API for it and
+/// every OS names its terminal something different.
 #[tauri::command]
 pub async fn open_path_in_terminal(path: String) -> Result<(), String> {
-    crate::blocking::run_blocking(move || {
-        let status = Command::new("open").args(["-a", "Terminal", &path]).status().map_err(|e| format!("failed to open Terminal: {e}"))?;
-        if !status.success() {
-            return Err("open -a Terminal failed".to_string());
+    crate::blocking::run_blocking(move || open_terminal_at(&path)).await?
+}
+
+#[cfg(target_os = "macos")]
+fn open_terminal_at(path: &str) -> Result<(), String> {
+    let status = Command::new("open").args(["-a", "Terminal", path]).status().map_err(|e| format!("failed to open Terminal: {e}"))?;
+    if !status.success() {
+        return Err("open -a Terminal failed".to_string());
+    }
+    Ok(())
+}
+
+/// Windows Terminal first, then a plain console window.
+///
+/// `wt.exe` is the modern one and takes a working directory directly, but it
+/// only exists if the user installed it (it ships with Windows 11 and not with
+/// every 10). `cmd /C start` is the fallback that is always there — `start`
+/// needs its first quoted argument to be the *window title*, hence the empty
+/// `""`, or it would swallow the shell path as the title and open nothing.
+#[cfg(target_os = "windows")]
+fn open_terminal_at(path: &str) -> Result<(), String> {
+    if let Ok(status) = Command::new("wt.exe").args(["-d", path]).status() {
+        if status.success() {
+            return Ok(());
         }
-        Ok(())
-    })
-    .await?
+    }
+    let status = Command::new("cmd")
+        .args(["/C", "start", "", "powershell.exe", "-NoExit", "-Command", &format!("Set-Location -LiteralPath '{}'", path.replace('\'', "''"))])
+        .status()
+        .map_err(|e| format!("failed to open a terminal: {e}"))?;
+    if !status.success() {
+        return Err("could not open a terminal window".to_string());
+    }
+    Ok(())
+}
+
+/// `x-terminal-emulator` is Debian's alternatives-system name for "whatever
+/// terminal this machine has", and the rest are the common ones by name. Linux
+/// isn't a target Hangar builds for today, but leaving this arm out would make
+/// the module fail to compile there rather than fail to find a terminal.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn open_terminal_at(path: &str) -> Result<(), String> {
+    for terminal in ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"] {
+        if let Ok(status) = Command::new(terminal).arg("--working-directory").arg(path).status() {
+            if status.success() {
+                return Ok(());
+            }
+        }
+    }
+    Err("no terminal emulator found".to_string())
 }
 
 /// `[ahead N, behind M]` / `[ahead N]` / `[behind M]` / `[gone]` / `` (no
