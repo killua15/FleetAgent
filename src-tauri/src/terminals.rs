@@ -2759,7 +2759,14 @@ mod tests {
 
     /// An API-key provider has no interactive login, and offering one would
     /// open a terminal that runs a command that doesn't exist.
+    ///
+    /// Needs a real `claude` on the machine — Kimi is Claude Code pointed at
+    /// Moonshot, so `account_command_line` checks the binary is installed
+    /// before it ever reaches the refusal this asserts on. Without it the
+    /// error is the truthful "the `claude` CLI isn't installed" instead, which
+    /// is a different correct answer to a different question.
     #[test]
+    #[ignore = "needs the real `claude` CLI installed — see doc comment"]
     fn a_key_only_provider_refuses_a_login_command() {
         let kimi = AccountForTerminal {
             provider: "kimi".to_string(),

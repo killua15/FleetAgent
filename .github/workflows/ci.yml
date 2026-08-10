@@ -51,6 +51,14 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # Several backend tests build a throwaway repo with `git init` and then
+      # push or check out `main`. Git's own default is still `master`, and only
+      # a developer's global config makes those tests pass locally — so they
+      # failed here and nowhere else. Setting it makes the runner match the
+      # machines this is written on.
+      - name: Match the default branch developers have configured
+        run: git config --global init.defaultBranch main
+
       # Deliberately not gating on `cargo fmt --check` or `cargo clippy`: the
       # existing code is not rustfmt-formatted (it uses much wider lines than
       # the default 100), so both would fail across the whole tree on day one
@@ -100,6 +108,9 @@ jobs:
         with:
           workspaces: src-tauri
           key: windows
+
+      - name: Match the default branch developers have configured
+        run: git config --global init.defaultBranch main
 
       - name: Test backend
         working-directory: src-tauri
