@@ -37,6 +37,11 @@ pub enum Capability {
     GitWork,
     /// Open pull requests and read their comments.
     PullRequests,
+    /// The same, on GitLab. A separate capability rather than a second binary
+    /// on `PullRequests`: someone who only works on GitHub must never be told
+    /// to install `glab`, and vice versa — which is the whole point of
+    /// reporting a capability where it is used.
+    MergeRequests,
     /// Install skills from GitHub repositories.
     SkillsFromGitHub,
     /// Build a code knowledge graph.
@@ -134,9 +139,26 @@ pub struct CapabilitySpec {
     /// Without this, Hangar has nothing to offer at all.
     pub essential: bool,
     binaries: &'static [Binary],
-    /// Whether `gh` also has to be logged in. Installed-but-not-authenticated
-    /// fails exactly as hard as absent, so the two live together.
-    needs_gh_auth: bool,
+    /// Which forge CLI also has to be logged in, if any. Installed-but-not-
+    /// authenticated fails exactly as hard as absent, so the two live together.
+    needs_login: NeedsLogin,
+}
+
+/// Which CLI's login a capability depends on.
+///
+/// Was a bare `needs_gh_auth: bool` while GitHub was the only forge. A second
+/// one made the boolean lie: `glab` being logged in says nothing about `gh`,
+/// and a machine can perfectly well have one and not the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NeedsLogin {
+    None,
+    Gh,
+    /// Checked against gitlab.com. A self-hosted instance is authenticated per
+    /// host and can only be asked about once a repo is known, so that check
+    /// lives on the real call path in `forges::gitlab`; this row exists to
+    /// answer the settings screen's "is this set up?", not to gate a specific
+    /// project.
+    Glab,
 }
 
 const GIT: Binary = Binary {
@@ -154,6 +176,15 @@ const GH: Binary = Binary {
         brew: Some("brew install gh"),
         fallback: "See https://cli.github.com for your platform's installer",
         then: Some("Then run `gh auth login` — installed isn't the same as logged in, and Hangar needs both."),
+    },
+    prerequisite: None,
+};
+const GLAB: Binary = Binary {
+    name: "glab",
+    install: Install {
+        brew: Some("brew install glab"),
+        fallback: "See https://gitlab.com/gitlab-org/cli for your platform's installer",
+        then: Some("Then run `glab auth login` — once per instance, so a self-hosted GitLab needs its own."),
     },
     prerequisite: None,
 };
@@ -206,6 +237,7 @@ impl Capability {
         Capability::RunAgents,
         Capability::GitWork,
         Capability::PullRequests,
+        Capability::MergeRequests,
         Capability::SkillsFromGitHub,
         Capability::CodeGraph,
         Capability::GraphToAgents,
@@ -221,63 +253,70 @@ impl Capability {
                 enables: "Terminals, headless turns and account rotation — Hangar's whole reason to exist.",
                 essential: true,
                 binaries: &[CLAUDE],
-                needs_gh_auth: false,
+                needs_login: NeedsLogin::None,
             },
             Capability::GitWork => CapabilitySpec {
                 label: "Work on repositories",
                 enables: "Worktrees, so parallel agents never write the same file. Also every diff, branch and commit view.",
                 essential: true,
                 binaries: &[GIT],
-                needs_gh_auth: false,
+                needs_login: NeedsLogin::None,
             },
             Capability::PullRequests => CapabilitySpec {
                 label: "Pull requests",
                 enables: "Opening PRs from a session and reading their review comments.",
                 essential: false,
                 binaries: &[GIT, GH],
-                needs_gh_auth: true,
+                needs_login: NeedsLogin::Gh,
+            },
+            Capability::MergeRequests => CapabilitySpec {
+                label: "Merge requests",
+                enables: "Opening merge requests from a session and reading their review comments, on GitLab.",
+                essential: false,
+                binaries: &[GIT, GLAB],
+                needs_login: NeedsLogin::Glab,
             },
             Capability::SkillsFromGitHub => CapabilitySpec {
                 label: "Skills from GitHub",
                 enables: "Installing skills straight from a repository, private ones included.",
                 essential: false,
                 binaries: &[GH],
-                needs_gh_auth: true,
+                needs_login: NeedsLogin::Gh,
             },
             Capability::CodeGraph => CapabilitySpec {
                 label: "Code knowledge graph",
                 enables: "A map of your code that agents consult instead of re-deriving it with twenty greps every turn.",
                 essential: false,
                 binaries: &[UV, GRAPHIFY],
-                needs_gh_auth: false,
+                needs_login: NeedsLogin::None,
             },
             Capability::CodexAccounts => CapabilitySpec {
                 label: "Codex accounts",
                 enables: "Running Codex agents alongside your Claude ones, with the same isolation and rotation.",
                 essential: false,
                 binaries: &[CODEX],
-                needs_gh_auth: false,
+                needs_login: NeedsLogin::None,
             },
             Capability::GeminiAccounts => CapabilitySpec {
                 label: "Gemini accounts",
                 enables: "Running Gemini agents alongside your Claude ones.",
                 essential: false,
                 binaries: &[GEMINI],
-                needs_gh_auth: false,
+                needs_login: NeedsLogin::None,
             },
             Capability::GrokAccounts => CapabilitySpec {
                 label: "Grok accounts",
                 enables: "Running Grok agents alongside your Claude ones.",
                 essential: false,
                 binaries: &[GROK],
-                needs_gh_auth: false,
+                needs_login: NeedsLogin::None,
             },
             Capability::GraphToAgents => CapabilitySpec {
                 label: "Graph served to agents",
                 enables: "Handing that graph to agents over MCP. Without it the graph builds but never reaches anyone.",
                 essential: false,
                 binaries: &[UV, GRAPHIFY_MCP],
-                needs_gh_auth: false,
+                needs_login: NeedsLogin::None,
             },
         }
     }
@@ -290,12 +329,13 @@ impl Capability {
     /// that only care whether the tool exists.
     pub fn check(self) -> Result<(), Blocked> {
         self.check_offline()?;
-        if self.spec().needs_gh_auth && !gh_is_authenticated() {
-            return Err(Blocked {
-                capability: self,
-                reason: "the GitHub CLI isn't logged in".to_string(),
-                hint: Some("gh auth login".to_string()),
-            });
+        let (logged_in, reason, hint) = match self.spec().needs_login {
+            NeedsLogin::None => return Ok(()),
+            NeedsLogin::Gh => (gh_is_authenticated(), "the GitHub CLI isn't logged in", "gh auth login"),
+            NeedsLogin::Glab => (crate::forges::gitlab::is_authenticated("gitlab.com"), "the GitLab CLI isn't logged in", "glab auth login"),
+        };
+        if !logged_in {
+            return Err(Blocked { capability: self, reason: reason.to_string(), hint: Some(hint.to_string()) });
         }
         Ok(())
     }
@@ -364,7 +404,7 @@ pub fn prerequisite_of(binary: &str) -> Option<&'static str> {
 }
 
 fn gh_is_authenticated() -> bool {
-    crate::commands::pull_requests::gh_output(None, &["auth", "status"]).is_ok_and(|o| o.status.success())
+    crate::forges::github::gh_output(None, &["auth", "status"]).is_ok_and(|o| o.status.success())
 }
 
 #[cfg(test)]
@@ -429,6 +469,35 @@ mod tests {
 
         assert!(binaries.contains(&"git"), "got: {binaries:?}");
         assert!(binaries.contains(&"gh"), "got: {binaries:?}");
+    }
+
+    /// The GitLab row must ask for `glab` and never for `gh`. Someone who
+    /// works only on GitLab being told to install the GitHub CLI is exactly
+    /// the nagging this module's doc comment rules out — and the reverse
+    /// matters just as much, which is why these are two capabilities and not
+    /// one with four binaries.
+    #[test]
+    fn merge_requests_need_glab_and_never_gh() {
+        let binaries = Capability::MergeRequests.binaries();
+
+        assert!(binaries.contains(&"git"), "got: {binaries:?}");
+        assert!(binaries.contains(&"glab"), "got: {binaries:?}");
+        assert!(!binaries.contains(&"gh"), "a GitLab-only machine must never be asked for the GitHub CLI: {binaries:?}");
+        assert!(!Capability::PullRequests.binaries().contains(&"glab"), "and the reverse: got {:?}", Capability::PullRequests.binaries());
+    }
+
+    /// The login hint has to name the CLI that is actually logged out. Both
+    /// forges reaching for `gh auth login` was the concrete failure the
+    /// `needs_gh_auth` boolean would have caused.
+    #[test]
+    fn a_logged_out_forge_is_told_to_log_into_its_own_cli() {
+        let blocked = Blocked {
+            capability: Capability::MergeRequests,
+            reason: "the GitLab CLI isn't logged in".to_string(),
+            hint: Some("glab auth login".to_string()),
+        };
+
+        assert_eq!(blocked.message(), "the GitLab CLI isn't logged in — run `glab auth login`");
     }
 
     /// Every provider with its own CLI has to be listed, or the panel says

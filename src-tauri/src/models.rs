@@ -358,6 +358,13 @@ pub struct PullRequestInfo {
     /// Recomputed on every discovery pass — being asked to review a PR that
     /// was `other` yesterday is the normal course of a week.
     pub relation: String,
+    /// `github` or `gitlab` — what the screens read to say "merge request"
+    /// and `!42` instead of "pull request" and `#42`.
+    pub forge: String,
+    /// The instance this lives on: `github.com`, `gitlab.acme.com`. Sent to
+    /// the frontend because "which GitLab" is part of identifying a row when a
+    /// team has both a hosted and a self-hosted one.
+    pub host: String,
 }
 
 /// A read-only preview of what `create_pull_request` would produce for a

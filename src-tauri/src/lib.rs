@@ -6,6 +6,7 @@ mod bridge;
 mod commands;
 mod credential_vault;
 mod db;
+mod forges;
 mod git_identity;
 mod graph;
 mod handoff;

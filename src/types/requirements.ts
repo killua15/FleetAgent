@@ -9,6 +9,7 @@ export type CapabilityId =
   | 'run-agents'
   | 'git-work'
   | 'pull-requests'
+  | 'merge-requests'
   | 'skills-from-git-hub'
   | 'code-graph'
   | 'graph-to-agents'

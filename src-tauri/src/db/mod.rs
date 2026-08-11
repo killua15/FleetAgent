@@ -184,6 +184,12 @@ const MIGRATIONS: &[Migration] = &[
         run: turn_usage_graph_marker,
         transactional: true,
     },
+    Migration {
+        version: 22,
+        name: "pull_requests_forge_and_host",
+        run: pull_requests_forge_and_host,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -219,6 +225,41 @@ fn accounts_exhausted_at(conn: &Connection) -> Result<(), String> {
     }
     conn.execute_batch("ALTER TABLE accounts ADD COLUMN exhausted_at TEXT;")
         .map_err(|e| format!("could not add accounts.exhausted_at: {e}"))
+}
+
+/// Says which forge and which instance a tracked change request lives on.
+///
+/// The defaults are correct by construction rather than by guess: before this
+/// column existed the only thing that could be in the table was a github.com
+/// pull request, because that was the only thing Hangar could open or discover.
+///
+/// **No `CHECK` on either column, deliberately.** SQLite can't add one via
+/// `ALTER TABLE`, so getting it would mean rebuilding the table with
+/// `pr_review_comments`' foreign key pointing at it — real risk, bought for
+/// nothing: `forge` is written from exactly one place (`Forge::as_str`), so a
+/// wrong value there is a compile-visible bug, not data drift. It also matters
+/// that the inline tests apply `SCHEMA` directly and never run these
+/// migrations, which makes any divergence between the two paths invisible to
+/// the whole suite — keeping them identical is worth more than the constraint.
+///
+/// The index is replaced rather than kept: `(repo_owner, repo_name, number)`
+/// stopped discriminating the moment two hosts could hold the same project
+/// path. Correctness comes from the `WHERE` clauses that now filter on `host`;
+/// this just makes them cheap.
+fn pull_requests_forge_and_host(conn: &Connection) -> Result<(), String> {
+    if !has_column(conn, "pull_requests", "forge")? {
+        conn.execute_batch("ALTER TABLE pull_requests ADD COLUMN forge TEXT NOT NULL DEFAULT 'github';")
+            .map_err(|e| format!("could not add pull_requests.forge: {e}"))?;
+    }
+    if !has_column(conn, "pull_requests", "host")? {
+        conn.execute_batch("ALTER TABLE pull_requests ADD COLUMN host TEXT NOT NULL DEFAULT 'github.com';")
+            .map_err(|e| format!("could not add pull_requests.host: {e}"))?;
+    }
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_pull_requests_repo_number;
+         CREATE INDEX IF NOT EXISTS idx_pull_requests_host_repo_number ON pull_requests(host, repo_owner, repo_name, number);",
+    )
+    .map_err(|e| format!("could not re-key the pull_requests index on host: {e}"))
 }
 
 /// Remembers which terminals were open so they can be reopened next launch.
@@ -1093,6 +1134,48 @@ mod tests {
         let fresh = fresh_db();
         assert!(has_column(&fresh, "accounts", "exhausted_at").unwrap(), "schema.sql must declare it for new databases");
         accounts_exhausted_at(&fresh).expect("re-running where schema.sql already added it must be a no-op, not a startup failure");
+    }
+
+    /// Every row that could exist before these columns did was a github.com
+    /// pull request, so the defaults are a fact rather than a guess — and an
+    /// existing row must read back that way without being touched.
+    #[test]
+    fn the_forge_migration_defaults_existing_rows_to_github_and_is_idempotent() {
+        let legacy = Connection::open_in_memory().unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE pull_requests (
+                   id TEXT PRIMARY KEY, project_id TEXT NOT NULL, session_id TEXT,
+                   repo_owner TEXT NOT NULL, repo_name TEXT NOT NULL, number INTEGER NOT NULL,
+                   url TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'open',
+                   relation TEXT NOT NULL DEFAULT 'mine', created_at TEXT NOT NULL
+                 );
+                 CREATE INDEX idx_pull_requests_repo_number ON pull_requests(repo_owner, repo_name, number);
+                 INSERT INTO pull_requests (id, project_id, repo_owner, repo_name, number, url, created_at)
+                 VALUES ('pr1','proj1','killua15','Hangar',1,'https://github.com/killua15/Hangar/pull/1','now');",
+            )
+            .unwrap();
+        assert!(!has_column(&legacy, "pull_requests", "forge").unwrap(), "the fixture has to start without the column for this to prove anything");
+
+        pull_requests_forge_and_host(&legacy).unwrap();
+
+        let (forge, host): (String, String) =
+            legacy.query_row("SELECT forge, host FROM pull_requests WHERE id = 'pr1'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((forge.as_str(), host.as_str()), ("github", "github.com"), "an existing row is a github.com PR by construction");
+
+        let index_names: Vec<String> = legacy
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'pull_requests'")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(index_names.iter().any(|n| n == "idx_pull_requests_host_repo_number"), "the host-keyed index must replace the old one: {index_names:?}");
+        assert!(!index_names.iter().any(|n| n == "idx_pull_requests_repo_number"), "the old index no longer discriminates and must go: {index_names:?}");
+
+        let fresh = fresh_db();
+        assert!(has_column(&fresh, "pull_requests", "host").unwrap(), "schema.sql must declare it for new databases");
+        pull_requests_forge_and_host(&fresh).expect("re-running where schema.sql already added it must be a no-op, not a startup failure");
     }
 
     /// A failing migration must leave both the schema *and* the recorded

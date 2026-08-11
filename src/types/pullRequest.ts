@@ -1,6 +1,29 @@
 export type PullRequestState = 'open' | 'closed' | 'merged';
 
-/** What an open PR is to the logged-in `gh` user. `mine` is the only one whose
+/** Which hosting product a repo lives on. Everything else about a change
+ * request is the same shape either way — this only decides what to call it. */
+export type Forge = 'github' | 'gitlab';
+
+export const FORGE_LABEL: Record<Forge, string> = {
+  github: 'GitHub',
+  gitlab: 'GitLab',
+};
+
+/** What each forge calls a change request, short form. */
+export const FORGE_CHANGE_SHORT: Record<Forge, string> = {
+  github: 'PR',
+  gitlab: 'MR',
+};
+
+/** The sigil the forge itself writes before the number. GitLab uses `!` for
+ * merge requests and reserves `#` for issues, so `#42` on a GitLab row would
+ * name a different object entirely. */
+export const FORGE_SIGIL: Record<Forge, string> = {
+  github: '#',
+  gitlab: '!',
+};
+
+/** What an open PR is to the logged-in user. `mine` is the only one whose
  * comments Hangar polls — on someone else's PR the comments are other people
  * reviewing their code, not a queue of yours. Recomputed on every discovery
  * pass, so a PR moves between tabs as reviews get requested. */
@@ -19,8 +42,13 @@ export interface PullRequestInfo {
   /** The session that opened it, when Hangar did. `null` for a discovered PR,
    * which is every PR someone else opened. */
   sessionId: string | null;
+  /** Everything before the project slug: `killua15` on GitHub, or a possibly
+   * nested `group/subgroup` on GitLab. Never shown without `repoName` — the
+   * two are always rendered rejoined with a slash. */
   repoOwner: string;
   repoName: string;
+  /** The forge's own number: GitHub's `number`, GitLab's project-scoped
+   * `iid`. Render it behind `FORGE_SIGIL[forge]`, never a bare `#`. */
   number: number;
   url: string;
   state: PullRequestState;
@@ -40,6 +68,10 @@ export interface PullRequestInfo {
    * which are the user's own. */
   authorLogin: string | null;
   relation: PrRelation;
+  forge: Forge;
+  /** The instance: `github.com`, `gitlab.acme.com`. Part of identifying a row
+   * for a team with both a hosted and a self-hosted GitLab. */
+  host: string;
 }
 
 /** Read-only preview of what `create_pull_request` would produce for a

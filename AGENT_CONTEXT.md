@@ -504,8 +504,12 @@ antiguas. El aviso está en `schema.sql` y en el TRD de Graphify §5.4.
 - **Skills de Codex por bandera** (`-c skills.config`) y confirmar que
   `developer_instructions` cambia el comportamiento. Las dos necesitan cuota de
   Codex.
-- **GitLab y Bitbucket.** `gh skill` es solo GitHub. El plan B ya existe y no hay
-  que construirlo: clonar el repo y usar «abrir carpeta».
+- **Skills desde GitLab y Bitbucket.** `gh skill` es solo GitHub y `glab` no
+  tiene equivalente. El plan B ya existe y no hay que construirlo: clonar el
+  repo y usar «abrir carpeta». Ojo: esto es solo sobre *skills* — los merge
+  requests de GitLab sí están soportados desde que existe `src-tauri/src/forges/`
+  (ver el doc-comment de `forges/mod.rs` para por qué la abstracción tiene esa
+  forma y no la de `ProviderSpec`).
 
 ## 13 · Deuda anotada
 

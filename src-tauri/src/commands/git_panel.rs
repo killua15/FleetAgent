@@ -10,7 +10,7 @@
 //! `#[tauri::command]` runs inline on the IPC-dispatch thread and would
 //! freeze the whole app for as long as the subprocess takes).
 
-use crate::commands::pull_requests::{detect_default_branch, detect_repo_owner_and_name, git_capture, row_to_pull_request, PR_COLUMNS};
+use crate::commands::pull_requests::{detect_default_branch, git_capture, row_to_pull_request, PR_COLUMNS};
 use crate::db::DbConnection;
 use crate::models::{
     BranchInfo, CommitFileChange, CommitFileDiff, CommitInfo, CommitLogPage, FileStatus, ProjectGitOverview, PullRequestInfo, WorktreeGitStatus,
@@ -151,7 +151,7 @@ pub async fn get_git_overview<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Proje
         for row in project_rows {
             let root = Path::new(&row.path);
             let (repo_owner, repo_name, default_branch, current_branch_name, ahead, behind, dirty) = if is_git_repo(root) {
-                let (owner, name) = detect_repo_owner_and_name(root).map(|(o, n)| (Some(o), Some(n))).unwrap_or((None, None));
+                let (owner, name) = crate::forges::detect_repo(root).map(|r| (Some(r.namespace), Some(r.name))).unwrap_or((None, None));
                 let default_branch = owner.as_ref().map(|_| detect_default_branch(root));
                 let fallback_upstream = default_branch.as_deref().map(|b| format!("origin/{b}")).unwrap_or_default();
                 let current = current_branch(root);
@@ -825,6 +825,8 @@ mod tests {
             title: None,
             author_login: None,
             relation: "mine".to_string(),
+            forge: "github".to_string(),
+            host: "github.com".to_string(),
         }
     }
 

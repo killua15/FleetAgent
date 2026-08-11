@@ -8,7 +8,7 @@
 //! pass yet.
 
 use super::{Task, TaskSourceLink};
-use crate::commands::pull_requests::{detect_repo_owner_and_name, gh_available_and_authed, gh_output};
+use crate::forges::github::{available_and_authed as gh_available_and_authed, gh_output};
 use std::path::Path;
 
 /// How many issues to ask for. A board with more than this open *and assigned
@@ -43,10 +43,7 @@ pub fn fetch(link: &TaskSourceLink, project_path: &Path) -> Result<Vec<Task>, St
     // configuration at all.
     let repo = match link.scope_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(scope) => scope.to_string(),
-        None => {
-            let (owner, name) = detect_repo_owner_and_name(project_path)?;
-            format!("{owner}/{name}")
-        }
+        None => crate::forges::detect_repo(project_path)?.path(),
     };
 
     let output = gh_output(
