@@ -574,8 +574,13 @@ pub async fn check_pr_comments(app: AppHandle, session_id: String) -> Result<Vec
     .await?
 }
 
-fn format_pr_comments_prompt(comments: &[PrComment]) -> String {
-    let mut out = String::from("PR review feedback:\n\n");
+/// The feedback, as the agent receives it.
+///
+/// `forge` only decides what to call the thing. It matters because the agent
+/// acts on what it reads: told it is looking at "PR review feedback" on a
+/// project that has no pull requests, a capable agent goes hunting for one.
+fn format_pr_comments_prompt(comments: &[PrComment], forge: Forge) -> String {
+    let mut out = format!("{} review feedback:\n\n", capitalized(forge.change_noun()));
     for c in comments {
         match (&c.path, c.line) {
             (Some(path), Some(line)) => out.push_str(&format!("- {} ({path}:{line}): {}\n", c.author, c.body)),
@@ -934,12 +939,22 @@ pub async fn send_pr_comments_to_session(app: AppHandle, comment_ids: Vec<String
         let account_id = account_for_pr(&db, &pr, None)?;
         let target_session_id = resolve_session_for_pr_branch(&app, &db, &pr, &account_id)?;
 
-        let prompt = format_pr_comments_prompt(&comments);
+        let prompt = format_pr_comments_prompt(&comments, Forge::from_column(&pr.forge));
         crate::commands::sessions::send_message(app.clone(), db.clone(), target_session_id.clone(), prompt)?;
         mark_comments_resolved(&db, &comment_ids, "sent")?;
         Ok(target_session_id)
     })
     .await?
+}
+
+/// `pull request` → `Pull request`. Only ever applied to the two nouns in
+/// `Forge::change_noun`, so there is no wider casing question to answer.
+fn capitalized(noun: &str) -> String {
+    let mut chars = noun.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// Collapses the multi-line comments prompt to a single line, so it can ride
@@ -979,7 +994,7 @@ pub async fn send_pr_comments_to_terminal(
         let account_id = account_for_pr(&db, &pr, account_id)?;
         let target_session_id = resolve_session_for_pr_branch(&app, &db, &pr, &account_id)?;
 
-        let prompt = to_single_line(&format_pr_comments_prompt(&comments));
+        let prompt = to_single_line(&format_pr_comments_prompt(&comments, Forge::from_column(&pr.forge)));
 
         // Already working there: type into it instead of opening a second
         // terminal on the same worktree, where two agents would edit the same
@@ -1497,7 +1512,8 @@ mod tests {
                 line: None,
             },
         ];
-        let prompt = format_pr_comments_prompt(&comments);
+        let prompt = format_pr_comments_prompt(&comments, Forge::Github);
+        assert!(prompt.contains("Pull request review feedback"));
         assert!(prompt.contains("alice: please fix the typo"));
         assert!(prompt.contains("bob: looks good otherwise"));
         assert!(prompt.contains("Please address these."));
@@ -1513,8 +1529,24 @@ mod tests {
             path: Some("BridgeRepository.cs".to_string()),
             line: Some(40),
         }];
-        let prompt = format_pr_comments_prompt(&comments);
+        let prompt = format_pr_comments_prompt(&comments, Forge::Github);
         assert!(prompt.contains("cmoura2 (BridgeRepository.cs:40): this lookup can return null"));
+    }
+
+    /// The agent acts on what it reads. Handed "PR review feedback" while
+    /// sitting in a GitLab worktree, it has been told to work on an object the
+    /// project does not have — so the noun follows the forge, exactly as it
+    /// does in the review prompt and the notifications.
+    #[test]
+    fn the_comments_prompt_uses_the_forges_own_noun() {
+        let comments =
+            vec![PrComment { id: "c1".into(), author: "alice".into(), body: "fix the typo".into(), created_at: "t".into(), path: None, line: None }];
+
+        let gitlab = format_pr_comments_prompt(&comments, Forge::Gitlab);
+        assert!(gitlab.starts_with("Merge request review feedback:"), "got: {gitlab}");
+        assert!(!gitlab.contains("PR "), "nothing in a GitLab prompt should say PR: {gitlab}");
+
+        assert!(format_pr_comments_prompt(&comments, Forge::Github).starts_with("Pull request review feedback:"));
     }
 
     /// The terminal path rides the prompt on a `claude '<prompt>'` command
@@ -1527,7 +1559,7 @@ mod tests {
             PrComment { id: "c1".into(), author: "alice".into(), body: "fix the typo".into(), created_at: "t".into(), path: None, line: None },
             PrComment { id: "c2".into(), author: "bob".into(), body: "rename this".into(), created_at: "t".into(), path: None, line: None },
         ];
-        let line = to_single_line(&format_pr_comments_prompt(&comments));
+        let line = to_single_line(&format_pr_comments_prompt(&comments, Forge::Github));
         assert!(!line.contains('\n'), "the command-line prompt must be a single line: {line}");
         assert!(line.contains("alice: fix the typo"));
         assert!(line.contains("bob: rename this"));
