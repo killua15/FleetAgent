@@ -1,10 +1,10 @@
 {
-  "version": "0.6.0",
-  "notes": "Hangar for Windows, and GitLab merge requests alongside GitHub pull requests.",
-  "pub_date": "2026-08-12T12:11:50.563570Z",
+  "version": "0.6.1",
+  "notes": "Switch between forge instances (GitHub, GitLab, self-hosted), and a Google sign-in to open Hangar.",
+  "pub_date": "2026-08-12T19:41:14.535007Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbFBoWE1Gb21CWkZWYkhyTmlST1ljS2h5K0hCdXhJa0F0eThvamlFQzVqeFBBZmM3cUhEaHFoNzBySFhHV2tROSs0MFhxNVNuR3RzZG83TE9LYUZSSkFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NTM2NzEwCWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKRG1HanRiMkhnUy9zWk12QXlLdVRiYk02OW51R1p6R0F0dnYrMDA0bzdEakxXYmxOdmxnSGZFUjdnUmRWSTZaWVZKUVhQc05mRVJydDZ3Q3poNXR4QUE9PQo=",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbE14Y0hpKzFyelZrQXcrZkhadE5JYVB2UzhOTGl3YW5RaFlORmFzK2NJcC9CZ1NEY2xwSlpMTjhOL3UrT2kvWWNzek5tV0hQaENaTDVJVWVNK2lHN1FZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NTYzNjc0CWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKQzk1VVZXZStxYzFEbDVVTHdFazZneFh3UStsRlBETVBRQ0pnU085VEY1dDVNM3F3KzZySittUXIrSjl4Z3RxWkdWM2RZSkdydzlXM25SZDlHc25uQnc9PQo=",
       "url": "https://api.github.com/repos/killua15/FleetAgent/contents/updates/Hangar.app.tar.gz"
     }
   }
