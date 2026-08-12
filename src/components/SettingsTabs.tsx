@@ -11,6 +11,7 @@ import styles from './SettingsTabs.module.css';
 const TABS: Array<{ screen: ScreenName; label: string }> = [
   { screen: 'general-settings', label: 'general' },
   { screen: 'project-settings', label: 'projects' },
+  { screen: 'forge-settings', label: 'control de versiones' },
   { screen: 'skill-settings', label: 'skills' },
   { screen: 'graph-groups', label: 'graphs' },
   { screen: 'rotation-settings', label: 'rotation' },

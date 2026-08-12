@@ -7,6 +7,9 @@ import { Spinner } from '../components/Spinner';
 import { toastError, toastSuccess } from '../components/ErrorOverlay';
 import { useNavigation } from '../nav/NavigationProvider';
 import { GitIdentityForm } from '../components/GitIdentityForm';
+import { ForgePicker } from '../components/ForgePicker';
+import { useForgeHost } from '../hooks/useForgeHost';
+import { collectForgeHosts, matchesForgeHost, resolveForgeHost } from '../lib/forgeHosts';
 import type { ProjectGitOverview, WorktreeGitStatus } from '../types/gitPanel';
 import { FORGE_CHANGE_SHORT, FORGE_LABEL, FORGE_SIGIL, type PrComment, type ProjectPrInbox } from '../types/pullRequest';
 import styles from './GitPanel.module.css';
@@ -24,6 +27,7 @@ export function GitPanel() {
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState<BusyKey | null>(null);
   const [openCommentsForPr, setOpenCommentsForPr] = useState<string | null>(null);
+  const [forgeHost, setForgeHost] = useForgeHost();
 
   const load = async () => {
     try {
@@ -74,7 +78,20 @@ export function GitPanel() {
     }
   };
 
-  const selected = overview.find((p) => p.projectId === selectedProjectId);
+  const hostOptions = collectForgeHosts(overview);
+  const activeHost = resolveForgeHost(forgeHost, hostOptions);
+  const visibleProjects = overview.filter((p) => matchesForgeHost(p, activeHost));
+
+  // Switching provider must never leave the detail pane on a project the list
+  // no longer shows — same "keep it if it survived, else take the first"
+  // reconciliation `load` does, run again whenever the filter or the data
+  // moves under it.
+  useEffect(() => {
+    setSelectedProjectId((prev) => (prev && visibleProjects.some((p) => p.projectId === prev) ? prev : (visibleProjects[0]?.projectId ?? null)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeHost, overview]);
+
+  const selected = visibleProjects.find((p) => p.projectId === selectedProjectId);
 
   return (
     <div className={styles.screen}>
@@ -95,12 +112,13 @@ export function GitPanel() {
       <div className={styles.body}>
         <div className={styles.projectList}>
           <span className={styles.sectionLabel}>PROJECTS</span>
+          <ForgePicker options={hostOptions} selected={activeHost} onSelect={setForgeHost} total={overview.length} />
           {loading && overview.length === 0 && (
             <div className={styles.dimText}>
               <Spinner label="checking repos…" />
             </div>
           )}
-          {overview.map((p) => {
+          {visibleProjects.map((p) => {
             const isSel = p.projectId === selectedProjectId;
             const activeWorktrees = p.worktrees.length;
             return (

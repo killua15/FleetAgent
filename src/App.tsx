@@ -10,6 +10,7 @@ import { AccountList } from './screens/AccountList';
 import { AgentPanel } from './screens/AgentPanel';
 import { SplitView } from './screens/SplitView';
 import { GeneralSettings } from './screens/GeneralSettings';
+import { ForgeSettings } from './screens/ForgeSettings';
 import { TaskSettings } from './screens/TaskSettings';
 import { TaskBoard } from './screens/TaskBoard';
 import { UpdateBanner } from './components/UpdateBanner';
@@ -98,6 +99,8 @@ function Screens() {
       return <SplitView />;
     case 'general-settings':
       return <GeneralSettings />;
+    case 'forge-settings':
+      return <ForgeSettings />;
     case 'rotation-settings':
       return <RotationSettings />;
     case 'project-settings':

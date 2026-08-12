@@ -190,6 +190,12 @@ const MIGRATIONS: &[Migration] = &[
         run: pull_requests_forge_and_host,
         transactional: true,
     },
+    Migration {
+        version: 23,
+        name: "forge_instances",
+        run: forge_instances_table,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -260,6 +266,22 @@ fn pull_requests_forge_and_host(conn: &Connection) -> Result<(), String> {
          CREATE INDEX IF NOT EXISTS idx_pull_requests_host_repo_number ON pull_requests(host, repo_owner, repo_name, number);",
     )
     .map_err(|e| format!("could not re-key the pull_requests index on host: {e}"))
+}
+
+/// The instances the user has declared. Same shape `schema.sql` declares for a
+/// fresh database, so this is a no-op there and creates the table on an existing
+/// one.
+fn forge_instances_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS forge_instances (
+           host       TEXT PRIMARY KEY,
+           kind       TEXT NOT NULL CHECK (kind IN ('github','gitlab','git_only')),
+           scheme     TEXT NOT NULL DEFAULT 'https' CHECK (scheme IN ('http','https')),
+           label      TEXT NOT NULL DEFAULT '',
+           created_at TEXT NOT NULL
+         );",
+    )
+    .map_err(|e| format!("could not create forge_instances: {e}"))
 }
 
 /// Remembers which terminals were open so they can be reopened next launch.
@@ -1134,6 +1156,49 @@ mod tests {
         let fresh = fresh_db();
         assert!(has_column(&fresh, "accounts", "exhausted_at").unwrap(), "schema.sql must declare it for new databases");
         accounts_exhausted_at(&fresh).expect("re-running where schema.sql already added it must be a no-op, not a startup failure");
+    }
+
+    /// The table has to appear on a database that predates it, survive the
+    /// migration running again, and be a no-op on a fresh database where
+    /// `schema.sql` already declared it — the three shapes every table
+    /// migration here has to hold.
+    #[test]
+    fn the_forge_instances_table_is_created_once_and_then_idempotent() {
+        let legacy = Connection::open_in_memory().unwrap();
+        let declared = |conn: &Connection| {
+            conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='forge_instances'", [], |r| r.get::<_, i64>(0)).unwrap() == 1
+        };
+        assert!(!declared(&legacy), "the fixture has to start without it for this to prove anything");
+
+        forge_instances_table(&legacy).unwrap();
+        assert!(declared(&legacy));
+        forge_instances_table(&legacy).expect("running it twice must not fail startup");
+
+        let fresh = Connection::open_in_memory().unwrap();
+        fresh.execute_batch(SCHEMA).unwrap();
+        assert!(declared(&fresh), "schema.sql must declare it for new databases");
+        forge_instances_table(&fresh).expect("a no-op where schema.sql already created it");
+    }
+
+    /// `git_only` is a declaration the CHECK constraint has to accept — it is
+    /// the whole reason the column isn't just the two forges — and anything
+    /// outside the three has to be refused rather than stored and later
+    /// misread.
+    #[test]
+    fn forge_instances_accepts_the_three_kinds_and_nothing_else() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+
+        for kind in ["github", "gitlab", "git_only"] {
+            conn.execute(
+                "INSERT INTO forge_instances (host, kind, created_at) VALUES (?1, ?2, 'now')",
+                rusqlite::params![format!("{kind}.example.com"), kind],
+            )
+            .unwrap_or_else(|e| panic!("{kind} must be storable: {e}"));
+        }
+
+        conn.execute("INSERT INTO forge_instances (host, kind, created_at) VALUES ('x.example.com','bitbucket','now')", [])
+            .expect_err("a kind no adapter speaks must not reach the table");
     }
 
     /// Every row that could exist before these columns did was a github.com

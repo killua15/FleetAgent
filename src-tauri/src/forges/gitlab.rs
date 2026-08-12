@@ -92,6 +92,138 @@ fn current_username(host: &str) -> Option<String> {
 
 static VIEWER_LOGINS: std::sync::Mutex<std::collections::BTreeMap<String, Option<String>>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
 
+/// Who the API says you are on this instance — the same memoized answer the
+/// snapshot uses to decide whose merge requests are whose, exposed so the
+/// instance screen can show it.
+pub fn viewer_login(host: &str) -> Option<String> {
+    current_username(host)
+}
+
+/// Hands `glab` a token on stdin, so it never reaches argv or a log.
+///
+/// `--stdin` is `glab`'s own affordance for exactly this. The alternative Hangar
+/// used first — opening a terminal with `glab auth login` typed into it — still
+/// exists for whoever prefers the browser flow, but it cannot be completed
+/// without leaving the app, and it cannot be scripted.
+pub fn login_with_token(host: &str, token: &str) -> Result<(), String> {
+    let mut cmd = Command::new(providers::resolve_binary("glab"));
+    cmd.args(["auth", "login", "--hostname", host, "--stdin"]);
+    let output = crate::process_timeout::run_with_stdin(cmd, token, crate::process_timeout::DEFAULT_TIMEOUT)?;
+    if !output.status.success() {
+        // `glab`'s own words, which name the real reason (a scope the token
+        // lacks, an instance that refused it) far better than anything here
+        // could guess.
+        return Err(format!("glab auth login failed on {host}: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    // The memos were taken while this host was logged out.
+    forget_authenticated_hosts();
+    Ok(())
+}
+
+/// The projects this token can see on the instance, newest activity first.
+pub fn list_repos(host: &str) -> Result<Vec<super::InstanceRepo>, String> {
+    let json = glab_api_json(host, "projects?membership=true&order_by=last_activity_at&per_page=100")?;
+    Ok(json
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| {
+            let path = p.get("path_with_namespace")?.as_str()?.to_string();
+            Some(super::InstanceRepo {
+                name: p.get("name").and_then(|v| v.as_str()).unwrap_or(&path).to_string(),
+                path,
+                description: p.get("description").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                web_url: p.get("web_url").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                // ssh first: it is what a self-hosted instance is nearly always
+                // set up for, and it is the one that needs no token to clone.
+                clone_url: p
+                    .get("ssh_url_to_repo")
+                    .or_else(|| p.get("http_url_to_repo"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+        })
+        .filter(|r| !r.clone_url.is_empty())
+        .collect())
+}
+
+/// Throws away both memos, for after the user has run a login.
+///
+/// The comment on [`is_authenticated`] says the answer "cannot change without
+/// the user running a login, at which point they relaunch anyway" — that
+/// assumption stops holding the moment Hangar itself offers the login. Without
+/// this, someone authenticates in the terminal Hangar opened for them and the
+/// app keeps insisting they haven't, which reads as "I did what it said and
+/// nothing happened". `recheck_requirements` clears the binary cache for
+/// exactly the same reason.
+///
+/// `VIEWER_LOGINS` goes too: a fresh login can be a *different user* on the
+/// same instance, and a stale viewer login is what decides whether a merge
+/// request counts as yours.
+pub fn forget_authenticated_hosts() {
+    if let Ok(mut cached) = AUTHED_HOSTS.lock() {
+        cached.clear();
+    }
+    if let Ok(mut cached) = VIEWER_LOGINS.lock() {
+        cached.clear();
+    }
+    if let Ok(mut cached) = SSH_IDENTITIES.lock() {
+        cached.clear();
+    }
+}
+
+/// Who the user's SSH key is on this instance, according to the instance itself.
+///
+/// GitLab answers `ssh -T git@host` with `Welcome to GitLab, @user!`, and that
+/// one line settles two things a token would otherwise be needed for: the host
+/// **is** a GitLab, and this is who you are on it.
+///
+/// What it deliberately does **not** do is replace a token. Measured against a
+/// real self-hosted instance: the SSH key authenticates git perfectly
+/// (`git ls-remote` lists branches) while `GET /api/v4/user` answers **401** —
+/// GitLab's REST API takes a PAT or OAuth token and never an SSH key. Merge
+/// requests are listed through that API, so this can improve the diagnosis and
+/// cannot skip the login.
+///
+/// `BatchMode=yes` matters: without it `ssh` can sit waiting for a passphrase or
+/// a host-key confirmation with nobody at the keyboard, and a hung process is
+/// exactly what [`crate::process_timeout`] exists to stop. Memoized because it
+/// costs a full round trip — measured at ~2s — which is also why no hot path
+/// calls it; only the instance diagnosis does, when the user asks.
+pub fn ssh_identity(host: &str) -> Option<String> {
+    if let Ok(cached) = SSH_IDENTITIES.lock() {
+        if let Some(known) = cached.get(host) {
+            return known.clone();
+        }
+    }
+    let mut cmd = Command::new("ssh");
+    cmd.args(["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new", &format!("git@{host}")]);
+    let answer = crate::process_timeout::run_with_timeout(cmd, crate::process_timeout::DEFAULT_TIMEOUT)
+        .ok()
+        // The greeting arrives on either stream depending on the instance, so
+        // both get read rather than guessing which.
+        .and_then(|o| parse_ssh_greeting(&String::from_utf8_lossy(&o.stdout)).or_else(|| parse_ssh_greeting(&String::from_utf8_lossy(&o.stderr))));
+    if let Ok(mut cached) = SSH_IDENTITIES.lock() {
+        cached.insert(host.to_string(), answer.clone());
+    }
+    answer
+}
+
+static SSH_IDENTITIES: std::sync::Mutex<std::collections::BTreeMap<String, Option<String>>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// The username out of `Welcome to GitLab, @user!`, or `None` for anything that
+/// isn't a GitLab saying hello.
+///
+/// The "GitLab" check is the part that carries weight: any SSH host will answer
+/// something, and only this greeting means the host is a GitLab.
+fn parse_ssh_greeting(output: &str) -> Option<String> {
+    let line = output.lines().find(|l| l.contains("Welcome to GitLab"))?;
+    let after_at = line.split_once('@')?.1;
+    let user = after_at.trim_end().trim_end_matches('!').trim();
+    (!user.is_empty()).then(|| user.to_string())
+}
+
 /// `group/subgroup/project` → `group%2Fsubgroup%2Fproject`, for `projects/:id`.
 ///
 /// A plain slash swap and nothing else, because GitLab restricts every path

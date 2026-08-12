@@ -105,6 +105,15 @@ pub fn run() {
             app.manage(TerminalRegistry::new());
             app.manage(RestoreGuard::new());
 
+            // Before the poller thread below: the user's declarations about which
+            // host is which forge have to be in place for the *first* pass, or it
+            // runs on the heuristics they already overrode. A failure here is not
+            // fatal — the app falls back to guessing, which is what it did before
+            // declarations existed.
+            if let Err(e) = commands::forge_status::load_declared_hosts(&app.state::<DbConnection>()) {
+                log::error!("could not load declared forge instances, falling back to host heuristics: {e}");
+            }
+
             // Background PR-comment poller — Hangar has no public endpoint
             // for a real GitHub webhook, so this is the same shape a
             // desktop app like Conductor uses: poll while the app is open,
@@ -225,6 +234,13 @@ pub fn run() {
             commands::skill_sources::update_installed_skills,
             commands::settings::list_project_account_rotation,
             commands::settings::set_project_account_allowed,
+            commands::forge_status::list_forge_instances,
+            commands::forge_status::recheck_forge_instances,
+            commands::forge_status::save_forge_instance,
+            commands::forge_status::delete_forge_instance,
+            commands::forge_status::authenticate_forge_instance,
+            commands::forge_status::list_instance_repos,
+            commands::forge_status::clone_instance_repo,
             commands::requirements::list_requirements,
             commands::requirements::recheck_requirements,
             commands::requirements::check_capability,

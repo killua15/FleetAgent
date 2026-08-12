@@ -1,4 +1,4 @@
-import type { PullRequestInfo } from './pullRequest';
+import type { Forge, PullRequestInfo } from './pullRequest';
 
 /** One active worktree (linked `git worktree` or copied folder) branched off
  * a project, with its live git status — matches `WorktreeGitStatus` in
@@ -24,6 +24,11 @@ export interface ProjectGitOverview {
   projectPath: string;
   repoOwner: string | null;
   repoName: string | null;
+  /** Which hosting product `origin` points at, and which instance — the same
+   * pair `PullRequestInfo` carries, so both screens filter by one value. Null
+   * for a project that isn't a git repo, or whose host can't be placed. */
+  forge: Forge | null;
+  host: string | null;
   defaultBranch: string | null;
   currentBranch: string | null;
   ahead: number;
