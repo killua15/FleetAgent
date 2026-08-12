@@ -28,6 +28,7 @@ export type ScreenName =
   | 'pr-modal'
   | 'pr-reviews'
   | 'general-settings'
+  | 'forge-settings'
   | 'tree-canvas'
   | 'tree-columns'
   | 'tree-outline'

@@ -499,3 +499,37 @@ CREATE TABLE IF NOT EXISTS paired_device (
   -- si eso cambia, y hoy nadie lo lee.
   push_token     TEXT
 );
+
+-- A forge instance the user has declared, rather than one Hangar guessed at.
+--
+-- Exists because every other route to "what is this host" is a heuristic about
+-- somebody else's server: the hostname containing `gitlab`, or `glab` happening
+-- to have a session on it. Neither can see a GitHub Enterprise on a vanity
+-- domain, and neither can tell a plain git host from a forge whose login has
+-- simply expired. The user knows, so this is where they say it, and
+-- `forges::Forge::for_host` consults it before any guess.
+--
+-- `host` is the primary key and carries a port when the remote was http/https
+-- (`10.0.0.5:3000`) — see `forges::split_remote_url` for why that asymmetry is
+-- correct. Lowercased on write, since every host lookup in the app is
+-- case-insensitive.
+--
+-- `kind = 'git_only'` is a real declaration and not an absence: it means git
+-- works here and there is no API to ask, which is what stops the poller probing
+-- the host on every pass forever.
+--
+-- No token column, deliberately. Credentials live in `gh`/`glab`'s own stores
+-- and in the OS keyring; a database gets copied into a backup and a keyring does
+-- not.
+CREATE TABLE IF NOT EXISTS forge_instances (
+  host       TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL CHECK (kind IN ('github','gitlab','git_only')),
+  -- How the API is reached. Only meaningful for the two real forges, and only
+  -- `http` for an instance served without TLS on a private network.
+  scheme     TEXT NOT NULL DEFAULT 'https' CHECK (scheme IN ('http','https')),
+  -- What the user calls it, for a screen that would otherwise list bare IPs.
+  -- Empty rather than NULL: there is no difference between "no label" and "an
+  -- empty label", and modelling one invites two ways to mean nothing.
+  label      TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);

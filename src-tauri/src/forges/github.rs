@@ -270,6 +270,59 @@ pub fn default_branch(cwd: &Path) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// Who `gh` is signed in as on this instance.
+pub fn viewer_login(host: &str) -> Option<String> {
+    let output = gh_output(None, &["api", "user", "--hostname", host, "--jq", ".login"]).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let login = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!login.is_empty()).then_some(login)
+}
+
+/// Hands `gh` a token on stdin, so it never reaches argv or a log.
+///
+/// `--with-token` reads exactly one line from stdin and is `gh`'s own affordance
+/// for a scripted login.
+pub fn login_with_token(host: &str, token: &str) -> Result<(), String> {
+    let mut cmd = std::process::Command::new(providers::resolve_binary("gh"));
+    cmd.args(["auth", "login", "--hostname", host, "--with-token"]);
+    let output = crate::process_timeout::run_with_stdin(cmd, token, crate::process_timeout::DEFAULT_TIMEOUT)?;
+    if !output.status.success() {
+        return Err(format!("gh auth login failed on {host}: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    Ok(())
+}
+
+/// The repositories this login can see, most recently pushed first.
+///
+/// `user/repos` rather than `search`: it needs no query, it includes private
+/// repos and organisation ones the user is a member of, and it is the same
+/// endpoint on github.com and on Enterprise.
+pub fn list_repos(host: &str) -> Result<Vec<super::InstanceRepo>, String> {
+    let output = gh_output(None, &["api", "user/repos?per_page=100&sort=pushed", "--hostname", host])?;
+    if !output.status.success() {
+        return Err(format!("gh api user/repos failed on {host}: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    let json: Value = serde_json::from_slice(&output.stdout).map_err(|e| format!("gh returned unparseable JSON: {e}"))?;
+    Ok(json
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| {
+            let path = r.get("full_name")?.as_str()?.to_string();
+            Some(super::InstanceRepo {
+                name: r.get("name").and_then(|v| v.as_str()).unwrap_or(&path).to_string(),
+                path,
+                description: r.get("description").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                web_url: r.get("html_url").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                clone_url: r.get("ssh_url").or_else(|| r.get("clone_url")).and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            })
+        })
+        .filter(|r| !r.clone_url.is_empty())
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

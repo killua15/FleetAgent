@@ -150,15 +150,23 @@ pub async fn get_git_overview<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Proje
         let mut overviews = Vec::with_capacity(project_rows.len());
         for row in project_rows {
             let root = Path::new(&row.path);
-            let (repo_owner, repo_name, default_branch, current_branch_name, ahead, behind, dirty) = if is_git_repo(root) {
-                let (owner, name) = crate::forges::detect_repo(root).map(|r| (Some(r.namespace), Some(r.name))).unwrap_or((None, None));
-                let default_branch = owner.as_ref().map(|_| detect_default_branch(root));
+            let is_repo = is_git_repo(root);
+            // Whole `RepoRef`, not just the owner/name half of it: the forge and
+            // the instance are what the provider picker groups these projects by,
+            // and `detect_repo` has already worked both out from `origin`.
+            let repo = is_repo.then(|| crate::forges::detect_repo(root).ok()).flatten();
+            let (default_branch, current_branch_name, ahead, behind, dirty) = if is_repo {
+                let default_branch = repo.as_ref().map(|_| detect_default_branch(root));
                 let fallback_upstream = default_branch.as_deref().map(|b| format!("origin/{b}")).unwrap_or_default();
                 let current = current_branch(root);
                 let (ahead, behind) = ahead_behind_vs_upstream(root, &fallback_upstream);
-                (owner, name, default_branch, current, ahead, behind, is_dirty(root))
+                (default_branch, current, ahead, behind, is_dirty(root))
             } else {
-                (None, None, None, None, 0, 0, false)
+                (None, None, 0, 0, false)
+            };
+            let (repo_owner, repo_name, forge, host) = match repo {
+                Some(r) => (Some(r.namespace), Some(r.name), Some(r.forge.as_str().to_string()), Some(r.host)),
+                None => (None, None, None, None),
             };
 
             let fallback_upstream = default_branch.as_deref().map(|b| format!("origin/{b}")).unwrap_or_default();
@@ -193,6 +201,8 @@ pub async fn get_git_overview<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Proje
                 project_path: row.path,
                 repo_owner,
                 repo_name,
+                forge,
+                host,
                 default_branch,
                 current_branch: current_branch_name,
                 ahead,

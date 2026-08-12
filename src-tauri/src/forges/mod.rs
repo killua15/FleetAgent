@@ -67,8 +67,17 @@ impl Forge {
     /// vanity domain is not detected at all, and returning `None` is the
     /// honest answer: the project is skipped rather than pointed at a server
     /// that isn't GitHub.
+    ///
+    /// **A declaration beats all of that.** Everything below the registry check
+    /// is a guess about someone else's server, and the user knows. That is also
+    /// what makes [`DeclaredKind::GitOnly`] worth having: a plain git host
+    /// (Gitea, a bare repo over ssh) otherwise pays a `glab auth status` spawn on
+    /// every poll pass, forever, to fail exactly the same way.
     pub fn for_host(host: &str) -> Option<Forge> {
         let host = host.to_ascii_lowercase();
+        if let Some(declared) = declared_kind(&host) {
+            return declared.forge();
+        }
         if host == "github.com" {
             return Some(Forge::Github);
         }
@@ -107,6 +116,106 @@ impl Forge {
     }
 }
 
+/// What the user has said an instance is.
+///
+/// Deliberately **not** a variant on [`Forge`]. `Forge` answers "which adapter
+/// drives this", and every arm of it must have one — a `Forge::GitOnly` would
+/// have to be matched, and faked, in all seven dispatch functions at the bottom
+/// of this file. `GitOnly` is the absence of an adapter, which is a different
+/// statement and belongs in a different type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclaredKind {
+    Github,
+    Gitlab,
+    /// Git and nothing else: no pull requests, no merge requests, no API to ask.
+    /// Declaring this is how a Gitea or a plain ssh remote stops being probed.
+    GitOnly,
+}
+
+impl DeclaredKind {
+    /// The adapter this declaration selects, or `None` for a host that has none.
+    pub fn forge(self) -> Option<Forge> {
+        match self {
+            DeclaredKind::Github => Some(Forge::Github),
+            DeclaredKind::Gitlab => Some(Forge::Gitlab),
+            DeclaredKind::GitOnly => None,
+        }
+    }
+
+    /// The value stored in `forge_instances.kind`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeclaredKind::Github => "github",
+            DeclaredKind::Gitlab => "gitlab",
+            DeclaredKind::GitOnly => "git_only",
+        }
+    }
+
+    /// Reads the column back. `None` for a value nothing recognises — unlike
+    /// `Forge::from_column`, which can safely assume GitHub for a legacy row,
+    /// there is no safe default here: guessing a forge for a host the user
+    /// declared as something else would point Hangar at the wrong API.
+    pub fn from_column(value: &str) -> Option<DeclaredKind> {
+        match value {
+            "github" => Some(DeclaredKind::Github),
+            "gitlab" => Some(DeclaredKind::Gitlab),
+            "git_only" => Some(DeclaredKind::GitOnly),
+            _ => None,
+        }
+    }
+}
+
+/// The instances the user has declared, by host.
+///
+/// A process-wide registry rather than a lookup through `DbConnection`, because
+/// [`Forge::for_host`] is called from `detect_repo` on paths that have no handle
+/// on the database — the poller's, among them. Loaded once at startup
+/// (`load_declared_hosts`) and rewritten whenever the user saves or deletes one.
+static DECLARED_HOSTS: std::sync::Mutex<Option<std::collections::BTreeMap<String, DeclaredKind>>> = std::sync::Mutex::new(None);
+
+/// What the user declared this host to be, if anything.
+pub fn declared_kind(host: &str) -> Option<DeclaredKind> {
+    let guard = DECLARED_HOSTS.lock().ok()?;
+    guard.as_ref()?.get(&host.to_ascii_lowercase()).copied()
+}
+
+/// Replaces the registry wholesale.
+///
+/// Whole-map rather than per-entry so there is never a window where the registry
+/// disagrees with the table it came from: a delete followed by a save would
+/// otherwise leave the removed host live until the next write.
+pub fn set_declared_hosts(hosts: std::collections::BTreeMap<String, DeclaredKind>) {
+    if let Ok(mut guard) = DECLARED_HOSTS.lock() {
+        *guard = Some(hosts);
+    }
+    // A host's kind changing invalidates every memo taken under the old
+    // assumption — including "this host has no glab session", which is exactly
+    // what a fresh declaration is meant to override.
+    gitlab::forget_authenticated_hosts();
+}
+
+/// Whether the registry has been loaded at all. `false` means startup hasn't run
+/// yet, which is different from "loaded and empty" — and only the first is worth
+/// warning about.
+pub fn declarations_loaded() -> bool {
+    DECLARED_HOSTS.lock().is_ok_and(|g| g.is_some())
+}
+
+/// Serializes the tests that write the registry.
+///
+/// It is process-wide state and `cargo test` runs in threads, so two tests each
+/// setting it up and tearing it down will read each other's teardown — which
+/// they did, as a failure that only appeared once a second such test existed.
+#[cfg(test)]
+pub(crate) static DECLARATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Takes that lock, ignoring poisoning: a panicking test has already failed and
+/// should not cascade into every other one.
+#[cfg(test)]
+pub(crate) fn lock_declarations_for_test() -> std::sync::MutexGuard<'static, ()> {
+    DECLARATION_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Which forge, which instance, which project — everything needed to address
 /// one repository.
 ///
@@ -116,8 +225,13 @@ impl Forge {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoRef {
     pub forge: Forge,
-    /// Bare hostname — no scheme, no port, no trailing slash: `github.com`,
+    /// Bare hostname, no scheme and no trailing slash: `github.com`,
     /// `gitlab.acme.com`.
+    ///
+    /// **Carries a port when, and only when, the remote was `http`/`https`** —
+    /// `10.0.0.5:3000`. There the port is the endpoint, so two ports on one
+    /// machine are two instances; over ssh it is only how git got there, and the
+    /// same server answers its API on 443 either way. See [`split_remote_url`].
     pub host: String,
     /// Everything before the project slug: `killua15` on GitHub, or
     /// `group/subgroup` for a nested GitLab project. Persisted as `repo_owner`.
@@ -227,6 +341,49 @@ pub struct PrFacts {
     pub viewer_login: Option<String>,
 }
 
+/// One repository on an instance, as the "browse and clone" screen needs it.
+///
+/// Same normalization job [`SnapshotPr`] does for change requests: GitHub's
+/// `full_name`/`clone_url` and GitLab's `path_with_namespace`/`ssh_url_to_repo`
+/// are the same four facts under different names, and the screen should not have
+/// to know which forge it is looking at.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceRepo {
+    /// `group/subgroup/project` — what identifies it, and what the folder is
+    /// named after.
+    pub path: String,
+    /// The short name, for a list that would otherwise repeat the namespace on
+    /// every row.
+    pub name: String,
+    pub description: String,
+    pub web_url: String,
+    /// What `git clone` is handed. SSH where the forge offers it: on a
+    /// self-hosted instance that is nearly always what is actually configured,
+    /// and it clones without a token.
+    pub clone_url: String,
+}
+
+/// The repositories this instance's login can see.
+pub fn list_repos(host: &str) -> Result<Vec<InstanceRepo>, String> {
+    match Forge::for_host(host) {
+        Some(Forge::Github) => github::list_repos(host),
+        Some(Forge::Gitlab) => gitlab::list_repos(host),
+        // Not a refusal to be helpful: a git-only host has no API to ask, and a
+        // host nothing has placed cannot be asked in any particular dialect.
+        None => Err(format!("{host} has no API Hangar can browse — declare it as GitHub or GitLab first")),
+    }
+}
+
+/// Signs the instance's CLI in with a token, passed on stdin.
+pub fn login_with_token(host: &str, token: &str) -> Result<(), String> {
+    match Forge::for_host(host) {
+        Some(Forge::Github) => github::login_with_token(host, token),
+        Some(Forge::Gitlab) => gitlab::login_with_token(host, token),
+        None => Err(format!("{host} isn't declared as a forge, so there is no CLI to sign in")),
+    }
+}
+
 /// What to open, for [`create_change_request`].
 pub struct NewChangeRequest<'a> {
     pub title: &'a str,
@@ -249,10 +406,24 @@ pub struct CreatedChangeRequest {
 /// `git@host:path` and `ssh://git@host:2222/path`. Deliberately string
 /// surgery rather than a URL crate — the scp-like `git@host:path` form is not
 /// a URL at all, so a parser would have to be special-cased for it anyway.
+///
+/// **The port survives only on `http`/`https`**, and the asymmetry is the whole
+/// point. An SSH port says nothing about where the instance's API lives: a
+/// GitLab cloned over `ssh://git@gitlab.acme.com:2222/…` still answers its API
+/// on `https://gitlab.acme.com`, so carrying `:2222` into the host would invent
+/// a second instance for the same server. An HTTP port is the opposite — it
+/// *is* the endpoint. A forge on `http://10.0.0.5:3000` has its API at
+/// `http://10.0.0.5:3000/api/…` and nowhere else, so dropping the port leaves a
+/// host that addresses a different machine's port 443.
 fn split_remote_url(url: &str) -> Option<(String, String)> {
     let trimmed = url.trim().trim_end_matches('/').trim_end_matches(".git");
-    // Strip the scheme, then any `user@` in front of the host.
-    let after_scheme = trimmed.split_once("://").map(|(_, rest)| rest).unwrap_or(trimmed);
+    // Read the scheme before stripping it: it decides whether a port is part of
+    // the instance's identity or just how git got there.
+    let (scheme, after_scheme) = match trimmed.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme.to_ascii_lowercase()), rest),
+        None => (None, trimmed),
+    };
+    let port_is_identity = matches!(scheme.as_deref(), Some("http") | Some("https"));
     let after_user = after_scheme.rsplit_once('@').map(|(_, rest)| rest).unwrap_or(after_scheme);
 
     // `:` separates host from path in the scp form and host from port in the
@@ -261,13 +432,33 @@ fn split_remote_url(url: &str) -> Option<(String, String)> {
         Some(idx) => (&after_user[..idx], &after_user[idx + 1..]),
         None => return None,
     };
+    // Only a `:` can have introduced a port. Without this a numeric first path
+    // segment reads as one — `https://host/1234/proj` would lose `1234` and then
+    // fail the "must contain a slash" check below, rejecting a perfectly good
+    // remote.
+    let separated_by_colon = after_user.as_bytes().get(host_part.len()) == Some(&b':');
     let (host, path) = match path.split_once('/') {
-        Some((maybe_port, rest)) if !maybe_port.is_empty() && maybe_port.chars().all(|c| c.is_ascii_digit()) => (host_part, rest),
-        _ => (host_part, path),
+        Some((maybe_port, rest)) if separated_by_colon && !maybe_port.is_empty() && maybe_port.chars().all(|c| c.is_ascii_digit()) => {
+            let host = if port_is_identity { format!("{host_part}:{maybe_port}") } else { host_part.to_string() };
+            (host, rest)
+        }
+        _ => (host_part.to_string(), path),
     };
 
     let path = path.trim_start_matches('/');
     (!host.is_empty() && path.contains('/')).then(|| (host.to_ascii_lowercase(), path.to_string()))
+}
+
+/// Just the instance a remote URL names, with no opinion about whether Hangar
+/// can speak to it.
+///
+/// [`parse_repo_from_url`] answers `None` for a host it can't place, which is
+/// right for "which repo is this" and useless for "which instances do this
+/// user's projects live on" — the unplaceable ones are precisely the ones worth
+/// reporting. Same parse either way, so the scp/ssh handling stays in one
+/// place.
+pub fn parse_host_from_url(url: &str) -> Option<String> {
+    split_remote_url(url).map(|(host, _)| host)
 }
 
 /// The repository a remote URL points at, or `None` when it points at
@@ -415,10 +606,134 @@ mod tests {
         assert_eq!(Forge::for_host("code.gitlab.acme.internal"), Some(Forge::Gitlab));
     }
 
+    /// The host comes back for **any** remote, including one on a vanity domain
+    /// no adapter claims — which is the only reason this exists next to
+    /// `parse_repo_from_url`. An instance has to be *reportable* before it is
+    /// usable, and `parse_repo_from_url` answers `None` for exactly the hosts
+    /// worth reporting.
+    ///
+    /// Deliberately asserts nothing about which forge these hosts *are*: that
+    /// depends on whether `glab` happens to have a session on the machine
+    /// running the test, and a test whose result moves with the developer's
+    /// login state is worse than no test.
+    #[test]
+    fn parse_host_from_url_answers_for_hosts_no_adapter_claims() {
+        assert_eq!(parse_host_from_url("git@git.acme.com:tms-3.0/TMS-server.git").as_deref(), Some("git.acme.com"));
+        assert_eq!(parse_host_from_url("https://github.com/killua15/Hangar.git").as_deref(), Some("github.com"));
+        assert_eq!(parse_host_from_url("ssh://git@gitlab.acme.com:2222/group/sub/proj.git").as_deref(), Some("gitlab.acme.com"), "the port is transport, not identity");
+        assert_eq!(parse_host_from_url("not a url"), None);
+        assert_eq!(parse_host_from_url("https://github.com/killua15").as_deref(), None, "a host with no project path is not a remote");
+    }
+
+    /// **The port asymmetry, both halves.**
+    ///
+    /// An HTTP port is the endpoint: a forge on `http://10.0.0.5:3000` answers
+    /// its API there and nowhere else, so two ports on one machine are two
+    /// instances and dropping the port addresses a different server entirely. An
+    /// SSH port is only how git got there — the same GitLab answers its API on
+    /// 443 whether it was cloned over 22 or 2222 — so keeping it would invent a
+    /// second instance for one server.
+    #[test]
+    fn a_port_belongs_to_the_instance_over_http_and_to_the_transport_over_ssh() {
+        // The live case: a forge on a bare IP and a non-default port.
+        let http = parse_host_from_url("http://52.188.59.199:3000/WPLANNING/wplanning-app-mobile.git");
+        assert_eq!(http.as_deref(), Some("52.188.59.199:3000"), "an http port is part of the instance");
+        assert_eq!(parse_host_from_url("https://gitlab.acme.com:8443/g/p").as_deref(), Some("gitlab.acme.com:8443"));
+
+        // Same server, reached over ssh: no port in the identity.
+        assert_eq!(parse_host_from_url("ssh://git@gitlab.acme.com:2222/g/p").as_deref(), Some("gitlab.acme.com"));
+        assert_eq!(parse_host_from_url("git@gitlab.acme.com:g/p").as_deref(), Some("gitlab.acme.com"));
+
+        // And two ports on one machine stay apart.
+        assert_ne!(parse_host_from_url("http://10.0.0.5:3000/g/p"), parse_host_from_url("http://10.0.0.5:3001/g/p"));
+    }
+
+    /// The default port isn't written out, so an https remote with no port keeps
+    /// a bare host — otherwise the same instance would have two identities
+    /// depending on how thoroughly someone typed the URL.
+    #[test]
+    fn a_default_port_leaves_the_host_bare() {
+        assert_eq!(parse_host_from_url("https://gitlab.com/group/proj.git").as_deref(), Some("gitlab.com"));
+    }
+
+    /// A numeric first path segment is not a port. Without the `:` check it read
+    /// as one, and the remote was then rejected outright for having no slash
+    /// left in its path.
+    #[test]
+    fn a_numeric_namespace_is_not_mistaken_for_a_port() {
+        let repo = parse_repo_from_url("https://gitlab.com/1234/proj.git").expect("a numeric group is still a group");
+
+        assert_eq!(repo.host, "gitlab.com", "no port was in that URL at all");
+        assert_eq!(repo.path(), "1234/proj");
+    }
+
     #[test]
     fn repo_ref_path_rejoins_namespace_and_name() {
         let repo = RepoRef { forge: Forge::Github, host: "github.com".into(), namespace: "killua15".into(), name: "Hangar".into() };
         assert_eq!(repo.path(), "killua15/Hangar");
+    }
+
+    /// Tests share one process, and the registry is process-wide — so anything
+    /// touching it has to hold the lock and put it back, or it both leaks into
+    /// and is trampled by whatever runs beside it.
+    fn with_declarations<T>(hosts: &[(&str, DeclaredKind)], body: impl FnOnce() -> T) -> T {
+        let _guard = lock_declarations_for_test();
+        let before = DECLARED_HOSTS.lock().unwrap().clone();
+        set_declared_hosts(hosts.iter().map(|(h, k)| (h.to_string(), *k)).collect());
+        let out = body();
+        *DECLARED_HOSTS.lock().unwrap() = before;
+        out
+    }
+
+    /// **The precedence rule.** Everything `for_host` does without a declaration
+    /// is a guess about someone else's server; the user's word settles it. The
+    /// case that matters: a GitHub Enterprise on a vanity domain, which no
+    /// heuristic can reach at all.
+    #[test]
+    fn a_declaration_beats_every_heuristic() {
+        with_declarations(&[("git.acme.com", DeclaredKind::Github)], || {
+            assert_eq!(Forge::for_host("git.acme.com"), Some(Forge::Github), "no heuristic finds a GHE on a vanity domain");
+        });
+
+        // Even against the hostname heuristic, which would have said GitLab.
+        with_declarations(&[("gitlab.acme.com", DeclaredKind::Github)], || {
+            assert_eq!(Forge::for_host("gitlab.acme.com"), Some(Forge::Github), "the name is a guess; the declaration is not");
+        });
+    }
+
+    /// The point of `GitOnly`: `for_host` answers `None` **without** probing. Left
+    /// undeclared, this host pays a `glab auth status` spawn on every poll pass,
+    /// forever, to fail identically each time.
+    #[test]
+    fn a_git_only_declaration_stops_the_probing() {
+        with_declarations(&[("52.188.59.199:3000", DeclaredKind::GitOnly)], || {
+            assert_eq!(Forge::for_host("52.188.59.199:3000"), None);
+        });
+    }
+
+    #[test]
+    fn declarations_are_matched_case_insensitively_like_every_other_host_lookup() {
+        with_declarations(&[("git.acme.com", DeclaredKind::Gitlab)], || {
+            assert_eq!(Forge::for_host("Git.Acme.COM"), Some(Forge::Gitlab));
+        });
+    }
+
+    #[test]
+    fn declared_kind_round_trips_through_its_column() {
+        for kind in [DeclaredKind::Github, DeclaredKind::Gitlab, DeclaredKind::GitOnly] {
+            assert_eq!(DeclaredKind::from_column(kind.as_str()), Some(kind));
+        }
+        // No safe default: guessing a forge for a host declared as something
+        // else would point Hangar at the wrong API.
+        assert_eq!(DeclaredKind::from_column("bitbucket"), None);
+        assert_eq!(DeclaredKind::from_column(""), None);
+    }
+
+    #[test]
+    fn only_github_and_gitlab_declarations_select_an_adapter() {
+        assert_eq!(DeclaredKind::Github.forge(), Some(Forge::Github));
+        assert_eq!(DeclaredKind::Gitlab.forge(), Some(Forge::Gitlab));
+        assert_eq!(DeclaredKind::GitOnly.forge(), None, "git-only means there is no adapter, not that there is a third one");
     }
 
     #[test]

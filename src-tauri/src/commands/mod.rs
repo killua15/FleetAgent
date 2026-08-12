@@ -1,6 +1,7 @@
 pub mod accounts;
 pub mod agent_nodes;
 pub mod attachments;
+pub mod forge_status;
 pub mod git_panel;
 pub mod graph;
 pub mod login;

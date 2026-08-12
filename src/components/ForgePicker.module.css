@@ -1,0 +1,36 @@
+.picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 4px 10px;
+}
+
+.option,
+.optionActive {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--mut);
+  font: 500 11px var(--font-ui);
+  cursor: pointer;
+}
+
+.option:hover {
+  border-color: var(--line2);
+  color: var(--txt);
+}
+
+.optionActive {
+  border-color: var(--acc);
+  background: var(--accD);
+  color: var(--acc);
+}
+
+.count {
+  font: 500 9.5px var(--font-mono);
+  opacity: 0.75;
+}

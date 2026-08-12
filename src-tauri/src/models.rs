@@ -460,6 +460,13 @@ pub struct ProjectGitOverview {
     /// branch/ahead-behind info.
     pub repo_owner: Option<String>,
     pub repo_name: Option<String>,
+    /// Which hosting product `origin` points at (`github`/`gitlab`) and which
+    /// instance — the same pair `pull_requests.forge`/`.host` stores, so the
+    /// git panel and the PR inbox can be filtered by one shared value. `None`
+    /// when the project isn't a git repo, or when the host says nothing about
+    /// itself (see `forges::Forge::for_host`).
+    pub forge: Option<String>,
+    pub host: Option<String>,
     pub default_branch: Option<String>,
     pub current_branch: Option<String>,
     pub ahead: i64,

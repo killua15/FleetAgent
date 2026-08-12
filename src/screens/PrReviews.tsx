@@ -7,6 +7,9 @@ import { Spinner } from '../components/Spinner';
 import { toastError } from '../components/ErrorOverlay';
 import { useNavigation } from '../nav/NavigationProvider';
 import { AccountPickerButton } from '../components/AccountPickerButton';
+import { ForgePicker } from '../components/ForgePicker';
+import { useForgeHost } from '../hooks/useForgeHost';
+import { collectForgeHosts, matchesForgeHost, resolveForgeHost } from '../lib/forgeHosts';
 import { FORGE_LABEL, FORGE_SIGIL, PR_RELATION_LABEL, type PrComment, type PrInboxEntry, type PrRelation, type ProjectPrInbox } from '../types/pullRequest';
 import type { TerminalInfo } from '../types/terminal';
 import styles from './PrReviews.module.css';
@@ -36,6 +39,7 @@ export function PrReviews() {
   const [sendingAllPrId, setSendingAllPrId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<PrRelation>('mine');
   const [secondsUntilAutoCheck, setSecondsUntilAutoCheck] = useState(AUTO_CHECK_INTERVAL_SECONDS);
+  const [forgeHost, setForgeHost] = useForgeHost();
 
   const load = async () => {
     setLoading(true);
@@ -168,7 +172,25 @@ export function PrReviews() {
     }
   };
 
-  const selected = inbox.find((p) => p.projectId === selectedProjectId);
+  const hostOptions = collectForgeHosts(inbox.flatMap((p) => p.entries.map((e) => e.pullRequest)));
+  const activeHost = resolveForgeHost(forgeHost, hostOptions);
+  // Filtered per entry, not per project: a project's own repo says which
+  // instance it lives on, but this list is built from the change requests
+  // themselves, so they're what carries the answer here.
+  const visibleInbox = inbox
+    .map((p) => ({ ...p, entries: p.entries.filter((e) => matchesForgeHost(e.pullRequest, activeHost)) }))
+    .filter((p) => p.entries.length > 0);
+  const totalOpen = inbox.reduce((sum, p) => sum + p.entries.length, 0);
+
+  // Switching provider must never leave the detail pane on a project the list
+  // no longer shows — the same reconciliation `load` does, run again whenever
+  // the filter or the data moves under it.
+  useEffect(() => {
+    setSelectedProjectId((prev) => (prev && visibleInbox.some((p) => p.projectId === prev) ? prev : (visibleInbox[0]?.projectId ?? null)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeHost, inbox]);
+
+  const selected = visibleInbox.find((p) => p.projectId === selectedProjectId);
   // Only your own PRs carry pending comments (they're the only ones polled),
   // so this count keeps meaning "things waiting on you" now that the list is
   // no longer only yours.
@@ -197,6 +219,7 @@ export function PrReviews() {
       <div className={styles.body}>
         <div className={styles.projectList}>
           <span className={styles.sectionLabel}>PROJECTS</span>
+          <ForgePicker options={hostOptions} selected={activeHost} onSelect={setForgeHost} total={totalOpen} />
           {loading && inbox.length === 0 && (
             <div className={styles.dimText}>
               {/* No forge is named: the list spans every project, and they need not
@@ -204,7 +227,7 @@ export function PrReviews() {
               <Spinner label="checking for open PRs…" />
             </div>
           )}
-          {inbox.map((p) => {
+          {visibleInbox.map((p) => {
             const isSel = p.projectId === selectedProjectId;
             const pending = totalPending(p);
             const hasError = p.entries.some((e) => e.pullRequest.lastCheckError);
