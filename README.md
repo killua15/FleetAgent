@@ -48,6 +48,35 @@ cd src-tauri && cargo test
 
 Tests marked `#[ignore]` spawn the real `claude` CLI — run them with `cargo test -- --ignored`.
 
+### Building for Windows from a Mac
+
+Tagged releases build Windows on a `windows-latest` runner, but the whole installer can also be
+produced locally — useful when CI isn't an option:
+
+```sh
+brew install llvm nsis && cargo install cargo-xwin
+rustup target add x86_64-pc-windows-msvc
+export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
+npx tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis \
+  --config '{"bundle":{"createUpdaterArtifacts":false}}'
+```
+
+Out comes `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/Hangar_<version>_x64-setup.exe`.
+
+Two things are deliberate. `--bundles nsis`, because `bundle.targets` is `"all"` and the `.msi`
+half of that needs WiX, which only runs on Windows. And the `createUpdaterArtifacts` override,
+because signing updater artifacts needs `TAURI_SIGNING_PRIVATE_KEY` — a GitHub secret, not
+something a local build has; it's passed as a flag so the committed config CI relies on stays put.
+
+The installer is unsigned, so SmartScreen warns once on first run. The app needs
+[Git for Windows](https://git-scm.com/download/win) — not only for worktrees, but because its
+`bash.exe` is the shell Hangar's terminals run in (`terminals.rs`, `user_shell`).
+
+`cargo test` cannot run on Windows at all: `tauri-build` doesn't give test binaries the manifest
+that pins `comctl32.dll` to v6, so they die before `main` with `STATUS_ENTRYPOINT_NOT_FOUND`
+([upstream bug](https://github.com/tauri-apps/tauri/issues/13419)). CI compiles them there and
+runs them on macOS.
+
 ## Layout
 
 | Path | What's in it |

@@ -294,10 +294,15 @@ pub(crate) fn ensure_worktree_dir_ignored(project_path: &str) {
     let _ = std::fs::write(&gitignore_path, updated);
 }
 
+/// Runs a project's setup command in a fresh worktree.
+///
+/// The shell comes from `terminals::user_shell` rather than a hardcoded `sh`
+/// so that a setup command written for a terminal runs in the same shell the
+/// terminal would have used — on Windows that's Git's bash, which is what
+/// keeps a `npm ci && cp .env.example .env` working there at all.
 fn run_setup_command(worktree_dir: &Path, command: &str) -> Result<String, String> {
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(command)
+    let output = Command::new(crate::terminals::user_shell())
+        .args(crate::terminals::shell_command_args(command))
         .current_dir(worktree_dir)
         .output()
         .map_err(|e| format!("failed to run setup command: {e}"))?;

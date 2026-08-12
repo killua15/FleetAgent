@@ -27,12 +27,27 @@ jobs:
           # Two macOS bundles rather than one universal binary: Tauri's
           # universal target builds both architectures anyway, and shipping them
           # separately halves what an Apple Silicon user downloads.
+          #
+          # `extraArgs` is per-entry because the macOS signing override below is
+          # meaningless on Windows *and* unquotable there: the runner's default
+          # shell is PowerShell, which doesn't treat single quotes the way the
+          # macOS runners' bash does, so the JSON would arrive mangled.
           - platform: macos-latest
             target: aarch64-apple-darwin
             label: macOS (Apple Silicon)
+            extraArgs: --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
           - platform: macos-latest
             target: x86_64-apple-darwin
             label: macOS (Intel)
+            extraArgs: --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
+          # Windows x64 only — no ARM64. `bundle.targets: "all"` turns this into
+          # an NSIS `-setup.exe` plus an `.msi`. Unsigned, like the macOS ones:
+          # there's no Authenticode certificate for this project, so SmartScreen
+          # will warn on first run the way Gatekeeper does.
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: Windows (x64)
+            extraArgs: ''
 
     runs-on: ${{ matrix.platform }}
     name: ${{ matrix.label }}
@@ -80,25 +95,30 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          # `matrix.extraArgs` carries the macOS-only signing override. On those
+          # runners it is `--config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'`:
           # `tauri.conf.json`'s `bundle.macOS.signingIdentity` is hardcoded to
           # "Hangar" — a real identity in the *local* keychain this repo's
           # manual `release: vX.Y.Z` commits were built with. A CI runner's
           # keychain has no such identity and `codesign` fails outright
-          # ("no identity found") rather than falling back to unsigned. This
-          # `--config` overrides just that one field for this invocation —
+          # ("no identity found") rather than falling back to unsigned. That
+          # `--config` overrides just the one field for this invocation —
           # `-` is codesign's own ad-hoc signing, no certificate needed —
           # without touching the committed config a local build still uses.
-          args: --target ${{ matrix.target }} --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
+          args: --target ${{ matrix.target }} ${{ matrix.extraArgs }}
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}-dev', github.run_number) }}
           releaseName: Hangar ${{ github.ref_type == 'tag' && github.ref_name || 'dev build' }}
           releaseBody: |
             Mission control for your coding agents — parallel agent terminals, each in its own git
             worktree, each under its own account, with rotation when one runs out of quota.
 
-            Download the build for your Mac: **Apple Silicon** (`aarch64`) or **Intel** (`x86_64`).
+            **macOS** — Apple Silicon (`aarch64`) or Intel (`x86_64`).
+            **Windows** — the `-setup.exe` (x64). Requires [Git for Windows](https://git-scm.com/download/win),
+            which Hangar uses both for worktrees and as the shell its terminals run in.
 
-            > Unsigned builds: macOS will say the app can't be verified. Right-click the app →
-            > Open → Open, once. This goes away when the release is signed and notarized.
+            > Unsigned builds. macOS will say the app can't be verified: right-click the app →
+            > Open → Open, once. Windows SmartScreen will say "unrecognized app": More info →
+            > Run anyway. Both go away when the releases are signed.
           # Draft, so a release is reviewed before the world sees it — and so a
           # half-finished matrix (one arch uploaded, the other still building)
           # is never briefly public as a complete release.

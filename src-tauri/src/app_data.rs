@@ -39,7 +39,9 @@ const LEGACY_DB_FILE: &str = "fleet.db";
 /// build viejo salta las que no conoce— así que el problema no es el formato,
 /// es la concurrencia.
 ///
-///     HANGAR_DATA_DIR=~/.hangar-dev npm run tauri dev
+/// ```text
+/// HANGAR_DATA_DIR=~/.hangar-dev npm run tauri dev
+/// ```
 ///
 /// Solo se lee del entorno, así que un build instalado nunca lo tiene puesto.
 pub const DATA_DIR_ENV: &str = "HANGAR_DATA_DIR";
@@ -50,9 +52,24 @@ pub fn root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, Str
     use tauri::Manager;
     let fallback = || app.path().app_data_dir().map_err(|e| format!("could not resolve the app data directory: {e}"));
     match std::env::var(DATA_DIR_ENV) {
-        Ok(raw) => Ok(expand_home(&raw, std::env::var("HOME").ok().as_deref())),
+        Ok(raw) => Ok(expand_home(&raw, home_dir().as_deref())),
         Err(_) => fallback(),
     }
+}
+
+/// The user's home directory, whatever the platform calls it.
+///
+/// `HOME` is the only name a Unix process needs, and it's what every call site
+/// here used to read directly. Windows doesn't set it — the variable is
+/// `USERPROFILE` — and a bare `var("HOME")` there returns `Err`, which turned
+/// into "no HOME directory" errors on account creation and an empty string
+/// silently poisoning every path built from it.
+///
+/// `HOME` still wins when both are set: Git Bash and MSYS define it, and a
+/// terminal that already agreed on a home is a better answer than the one
+/// Windows would have picked.
+pub(crate) fn home_dir() -> Option<String> {
+    std::env::var("HOME").ok().or_else(|| std::env::var("USERPROFILE").ok()).filter(|home| !home.is_empty())
 }
 
 /// `~/` es lo que uno teclea, y `PathBuf` no lo expande: sin esto acabas con un

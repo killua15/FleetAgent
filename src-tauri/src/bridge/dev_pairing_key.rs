@@ -27,7 +27,7 @@ fn key_file(dir: &Path, credential_ref: &str) -> PathBuf {
 /// `None` es la señal de "seguir yendo al Keychain real".
 fn resolved_dir() -> Option<PathBuf> {
     let raw = std::env::var(crate::app_data::DATA_DIR_ENV).ok()?;
-    Some(crate::app_data::expand_home(&raw, std::env::var("HOME").ok().as_deref()))
+    Some(crate::app_data::expand_home(&raw, crate::app_data::home_dir().as_deref()))
 }
 
 pub fn store(credential_ref: &str, secret: &str) -> Result<(), String> {

@@ -51,6 +51,14 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # Several backend tests build a throwaway repo with `git init` and then
+      # push or check out `main`. Git's own default is still `master`, and only
+      # a developer's global config makes those tests pass locally — so they
+      # failed here and nowhere else. Setting it makes the runner match the
+      # machines this is written on.
+      - name: Match the default branch developers have configured
+        run: git config --global init.defaultBranch main
+
       # Deliberately not gating on `cargo fmt --check` or `cargo clippy`: the
       # existing code is not rustfmt-formatted (it uses much wider lines than
       # the default 100), so both would fail across the whole tree on day one
@@ -62,3 +70,65 @@ jobs:
         # installed here — see their doc comments. Run them locally with
         # `cargo test -- --ignored`.
         run: cargo test
+
+  # Windows is a *shipped* target (see `release.yml`) but not the one anyone
+  # develops on, so nothing here would catch a `#[cfg(windows)]` arm that stopped
+  # compiling — until a tag was cut and the release job failed. This job exists
+  # to move that discovery to the pull request.
+  #
+  # No bundling and no frontend tests: the macOS job above already covers
+  # everything platform-independent, and what's genuinely at risk on Windows is
+  # the Rust that only compiles there.
+  windows:
+    runs-on: windows-latest
+    name: Windows (compile)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # Same ordering constraint as the macOS job: `tauri-build` resolves
+      # `frontendDist` (../dist) at compile time, so the crate cannot be built
+      # against a tree with no `dist/`.
+      - name: Build frontend
+        run: npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: windows
+
+      # Compiled but not run, and that limit is real rather than laziness.
+      #
+      # `tauri-build` embeds a Windows manifest into the app binary and not into
+      # test binaries. That manifest is what pins `comctl32.dll` to version 6,
+      # and without it the loader binds the v5 copy in system32, which lacks the
+      # window-subclassing entry points Tauri imports — so the test executable
+      # dies before `main` with STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139) and
+      # every test "fails" at once with no output. It's an open upstream bug:
+      # https://github.com/tauri-apps/tauri/issues/13419
+      #
+      # The obvious fix — having `build.rs` emit `rustc-link-arg-tests` with the
+      # manifest — does not work here: Cargo rejects that instruction outright
+      # unless the package declares a test target, and this crate's tests all
+      # live in `#[cfg(test)]` modules inside `src/`, which don't count. Verified
+      # by trying it; `cargo test` failed the same way `cargo build` did.
+      #
+      # So this compiles the tests and stops. That still catches what this job
+      # exists for — a `#[cfg(windows)]` arm that no longer builds — and the
+      # platform-independent behaviour is covered by the macOS job, which runs
+      # the same tests for real.
+      - name: Compile backend and its tests
+        working-directory: src-tauri
+        run: cargo test --no-run
