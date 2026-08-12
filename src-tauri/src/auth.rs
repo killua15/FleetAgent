@@ -18,6 +18,9 @@
 //! for a session. The listener also serves exactly one request and then stops.
 
 use crate::credential_vault;
+use crate::db::DbConnection;
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use rusqlite::{params, OptionalExtension};
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::time::Duration;
@@ -37,6 +40,21 @@ const CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
 /// the default for `supabase-js` and is readable by anything running in the
 /// webview.
 const REFRESH_TOKEN_REF: &str = "hangar.auth.refresh_token";
+
+/// When the session was last checked against Supabase, in `app_settings`.
+///
+/// Hangar needs an account to open at all, and that would otherwise mean a
+/// laptop on a plane is a laptop that can't run the local CLIs it was bought
+/// for. So a session that checked out recently is trusted while the server is
+/// unreachable, and this is the stamp that "recently" is measured against.
+const LAST_VERIFIED_KEY: &str = "auth.last_verified_at";
+
+/// How long a verified session survives without reaching the server.
+///
+/// A week: long enough for a holiday or a stretch of bad hotel wifi, short
+/// enough that revoking someone's access takes effect while they still
+/// remember asking for it.
+const GRACE: ChronoDuration = ChronoDuration::days(7);
 
 fn callback_page(message: &str) -> String {
     let body = format!(
@@ -171,6 +189,65 @@ pub fn clear_refresh_token() -> Result<(), String> {
     credential_vault::delete(REFRESH_TOKEN_REF)
 }
 
+/// Stamps "the server said this session is good, just now".
+///
+/// Called after a successful refresh, not after a successful launch: the point
+/// is to record contact with Supabase, and an offline launch that coasted on
+/// the grace window must not extend that window by another week.
+#[tauri::command]
+pub fn record_auth_check(db: tauri::State<DbConnection>) -> Result<String, String> {
+    store_auth_check(&db, Utc::now())
+}
+
+/// Split from the command so the tests don't have to conjure a `State` — the
+/// same cut `set_machine_name` makes in `bridge::session`.
+fn store_auth_check(db: &DbConnection, now: DateTime<Utc>) -> Result<String, String> {
+    let stamp = now.to_rfc3339();
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+        params![LAST_VERIFIED_KEY, stamp],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(stamp)
+}
+
+/// The stamp, or none on a machine that has never reached the server.
+///
+/// Never having checked is not the same as having checked long ago, and the
+/// frontend treats it as such: no stamp means no grace to spend.
+#[tauri::command]
+pub fn last_auth_check(db: tauri::State<DbConnection>) -> Option<String> {
+    read_auth_check(&db)
+}
+
+fn read_auth_check(db: &DbConnection) -> Option<String> {
+    db.0.lock()
+        .ok()
+        .and_then(|conn| conn.query_row("SELECT value FROM app_settings WHERE key = ?1", params![LAST_VERIFIED_KEY], |row| row.get::<_, String>(0)).optional().ok().flatten())
+        .filter(|stamp| !stamp.trim().is_empty())
+}
+
+/// Whether an offline launch still counts as signed in.
+///
+/// A stamp in the future is refused rather than trusted: it can only come from
+/// a clock that was wrong or a file that was edited, and neither is evidence
+/// that the server ever agreed.
+pub fn within_grace(last_verified: &str, now: DateTime<Utc>) -> bool {
+    let Ok(stamp) = DateTime::parse_from_rfc3339(last_verified) else {
+        return false;
+    };
+    let elapsed = now.signed_duration_since(stamp.with_timezone(&Utc));
+    elapsed >= ChronoDuration::zero() && elapsed <= GRACE
+}
+
+/// Exposed so the gate in the frontend asks one question instead of parsing
+/// timestamps and re-deriving the window on its own.
+#[tauri::command]
+pub fn auth_grace_is_live(db: tauri::State<DbConnection>) -> bool {
+    read_auth_check(&db).is_some_and(|stamp| within_grace(&stamp, Utc::now()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +273,55 @@ mod tests {
     fn a_malformed_percent_escape_is_left_alone_rather_than_dropping_the_message() {
         assert_eq!(urldecode("100%+sure"), "100% sure");
         assert_eq!(urldecode("trailing%"), "trailing%");
+    }
+
+    fn seeded() -> DbConnection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        crate::db::run_migrations(&conn).unwrap();
+        DbConnection(std::sync::Mutex::new(conn))
+    }
+
+    #[test]
+    fn the_stamp_survives_being_written_and_read_back() {
+        let db = seeded();
+        assert_eq!(read_auth_check(&db), None, "a fresh machine has never checked in");
+
+        let written = store_auth_check(&db, Utc::now()).unwrap();
+        assert_eq!(read_auth_check(&db).as_deref(), Some(written.as_str()));
+
+        // Checking in again replaces the stamp rather than accumulating rows —
+        // `app_settings` is keyed, and a second insert would otherwise fail.
+        let later = store_auth_check(&db, Utc::now() + ChronoDuration::seconds(1)).unwrap();
+        assert_eq!(read_auth_check(&db).as_deref(), Some(later.as_str()));
+    }
+
+    /// The window is the whole feature: a day offline is fine, a fortnight is
+    /// not, and the boundary has to fall where the constant says it does.
+    #[test]
+    fn a_recent_check_grants_grace_and_an_old_one_does_not() {
+        let now = Utc::now();
+        assert!(within_grace(&now.to_rfc3339(), now));
+        assert!(within_grace(&(now - ChronoDuration::days(6)).to_rfc3339(), now));
+        assert!(within_grace(&(now - GRACE + ChronoDuration::minutes(1)).to_rfc3339(), now));
+        assert!(!within_grace(&(now - GRACE - ChronoDuration::minutes(1)).to_rfc3339(), now));
+        assert!(!within_grace(&(now - ChronoDuration::days(30)).to_rfc3339(), now));
+    }
+
+    /// A stamp from the future is not a very recent check — it's a wrong clock
+    /// or an edited file, and neither means Supabase ever agreed.
+    #[test]
+    fn a_stamp_in_the_future_buys_nothing() {
+        let now = Utc::now();
+        assert!(!within_grace(&(now + ChronoDuration::days(1)).to_rfc3339(), now));
+    }
+
+    /// Garbage in the settings table has to read as "never checked", not panic
+    /// and not pass.
+    #[test]
+    fn an_unparseable_stamp_is_refused_rather_than_trusted() {
+        assert!(!within_grace("not a timestamp", Utc::now()));
+        assert!(!within_grace("", Utc::now()));
     }
 }

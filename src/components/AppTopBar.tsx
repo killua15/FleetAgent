@@ -59,16 +59,17 @@ function useDelayedBusy(count: number, delayMs: number): boolean {
 
 /** Hangar's own account, at the far end of the bar.
  *
- * Signed out it's an invitation, not a wall — everything in the app works
- * without it. Signed in it's how you reach backup and the team plan. */
+ * The bar only renders behind the gate, so there is no signed-out case to
+ * handle here any more — the one way to be inside without an email is the
+ * offline grace window, and saying so is more use than an inert button. */
 function AccountButton() {
-  const { email, entitlement, signingIn, error, signIn, signOut } = useAuth();
+  const { email, entitlement, signOut } = useAuth();
 
   if (!email) {
     return (
-      <IconTooltip label={error ? `Sign-in failed: ${error}` : 'Sign in to back up your setup across machines — everything else works signed out'}>
-        <Button variant="outline" size="sm" disabled={signingIn} onClick={signIn} style={error ? { color: 'var(--amber)' } : undefined}>
-          {signingIn ? <Spinner label="signing in…" /> : 'Sign in'}
+      <IconTooltip label="Running on a recent sign-in — Hangar hasn't been able to reach the server. It'll catch up on its own once you're back online.">
+        <Button variant="outline" size="sm" disabled style={{ color: 'var(--mut)' }}>
+          offline
         </Button>
       </IconTooltip>
     );

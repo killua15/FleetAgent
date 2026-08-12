@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ThemeProvider, useTheme } from './theme/ThemeProvider';
 import { NavigationProvider, useNavigation } from './nav/NavigationProvider';
 import { AuthProvider } from './auth/AuthProvider';
+import { SignInGate } from './auth/SignInGate';
 import { JumpPalette } from './components/JumpPalette';
 import { Landing } from './screens/Landing';
 import { MainView } from './screens/MainView';
@@ -147,19 +148,24 @@ export default function App() {
       <ThemeProvider>
         <TooltipProvider>
           <AuthProvider>
-            <NavigationProvider>
-              <GlobalShortcuts />
-              <MobileBridge />
-              {/* Above every screen and outside the router: an update is true
-                  wherever you happen to be, and it must not vanish because you
-                  navigated. */}
-              <div className={appShell}>
-                <UpdateBanner />
-                <div className={appBody}>
-                  <Screens />
-                </div>
+            {/* Above every screen and outside the router: an update is true
+                wherever you happen to be, and it must not vanish because you
+                navigated. */}
+            <div className={appShell}>
+              <UpdateBanner />
+              {/* Inside the shell, under the banner: someone the gate turns
+                  away because their build is too old still has to be able to
+                  see and take the update that lets them in. */}
+              <div className={appBody}>
+                <SignInGate>
+                  <NavigationProvider>
+                    <GlobalShortcuts />
+                    <MobileBridge />
+                    <Screens />
+                  </NavigationProvider>
+                </SignInGate>
               </div>
-            </NavigationProvider>
+            </div>
           </AuthProvider>
         </TooltipProvider>
       </ThemeProvider>

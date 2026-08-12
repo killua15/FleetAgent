@@ -351,6 +351,9 @@ pub fn run() {
             auth::store_refresh_token,
             auth::load_refresh_token,
             auth::clear_refresh_token,
+            auth::record_auth_check,
+            auth::last_auth_check,
+            auth::auth_grace_is_live,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
