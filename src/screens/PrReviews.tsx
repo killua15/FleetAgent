@@ -7,7 +7,7 @@ import { Spinner } from '../components/Spinner';
 import { toastError } from '../components/ErrorOverlay';
 import { useNavigation } from '../nav/NavigationProvider';
 import { AccountPickerButton } from '../components/AccountPickerButton';
-import { PR_RELATION_LABEL, type PrComment, type PrInboxEntry, type PrRelation, type ProjectPrInbox } from '../types/pullRequest';
+import { FORGE_LABEL, FORGE_SIGIL, PR_RELATION_LABEL, type PrComment, type PrInboxEntry, type PrRelation, type ProjectPrInbox } from '../types/pullRequest';
 import type { TerminalInfo } from '../types/terminal';
 import styles from './PrReviews.module.css';
 
@@ -199,7 +199,9 @@ export function PrReviews() {
           <span className={styles.sectionLabel}>PROJECTS</span>
           {loading && inbox.length === 0 && (
             <div className={styles.dimText}>
-              <Spinner label="checking GitHub for open PRs…" />
+              {/* No forge is named: the list spans every project, and they need not
+                  all be on the same one. */}
+              <Spinner label="checking for open PRs…" />
             </div>
           )}
           {inbox.map((p) => {
@@ -326,8 +328,11 @@ function PrEntryCard({
             {collapsed ? '▸' : '▾'}
           </button>
         )}
-        <button className={styles.prLink} onClick={onOpenPr} title="Open on GitHub">
-          {entry.pullRequest.repoOwner}/{entry.pullRequest.repoName} #{entry.pullRequest.number} ↗
+        {/* `!42` on GitLab, `#42` on GitHub — the forge's own notation, since
+            `#` names an issue on GitLab, not a merge request. */}
+        <button className={styles.prLink} onClick={onOpenPr} title={`Open on ${FORGE_LABEL[entry.pullRequest.forge]}`}>
+          {entry.pullRequest.repoOwner}/{entry.pullRequest.repoName} {FORGE_SIGIL[entry.pullRequest.forge]}
+          {entry.pullRequest.number} ↗
         </button>
         {entry.pullRequest.title && <span className={styles.prTitle}>{entry.pullRequest.title}</span>}
         {/* Whose PR this is: the session for one of yours, the author for

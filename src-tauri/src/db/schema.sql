@@ -173,8 +173,24 @@ CREATE TABLE IF NOT EXISTS pull_requests (
   -- a discovered PR — including every PR of someone else's. SET NULL rather
   -- than CASCADE: the PR still exists on GitHub after its session is deleted.
   session_id            TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+  -- Which forge this change request lives on: 'github' or 'gitlab'. Derivable
+  -- from `host` (one host is one forge, always) and stored anyway, so the
+  -- frontend can pick its own copy — "pull request" vs "merge request", `#42`
+  -- vs `!42` — without shipping a host-to-forge table of its own.
+  forge                 TEXT NOT NULL DEFAULT 'github',
+  -- The instance: `github.com`, `gitlab.com`, `gitlab.acme.com`. This, not
+  -- `forge`, is the discriminator every lookup needs — `group/proj !7` on
+  -- gitlab.com and on a self-hosted instance are different merge requests, and
+  -- before this column they were the same row.
+  host                  TEXT NOT NULL DEFAULT 'github.com',
+  -- Everything before the project slug: `killua15` on GitHub, or a possibly
+  -- nested `group/subgroup` on GitLab. Nothing reads this without immediately
+  -- rejoining it to `repo_name` with a slash, which is what lets a nested group
+  -- live here rather than in a column of its own.
   repo_owner            TEXT NOT NULL,
   repo_name             TEXT NOT NULL,
+  -- The forge's own number: GitHub's repo-wide `number`, GitLab's
+  -- project-scoped `iid`. Both are what their URLs and CLIs address.
   number                INTEGER NOT NULL,
   url                   TEXT NOT NULL,
   state                 TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','closed','merged')),
@@ -211,7 +227,7 @@ CREATE TABLE IF NOT EXISTS pull_requests (
   created_at            TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_pull_requests_repo_number ON pull_requests(repo_owner, repo_name, number);
+CREATE INDEX IF NOT EXISTS idx_pull_requests_host_repo_number ON pull_requests(host, repo_owner, repo_name, number);
 
 -- Every PR comment/review Hangar has ever fetched from someone other than the
 -- logged-in `gh` user, persisted so the PR review inbox screen survives

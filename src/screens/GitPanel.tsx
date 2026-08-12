@@ -8,7 +8,7 @@ import { toastError, toastSuccess } from '../components/ErrorOverlay';
 import { useNavigation } from '../nav/NavigationProvider';
 import { GitIdentityForm } from '../components/GitIdentityForm';
 import type { ProjectGitOverview, WorktreeGitStatus } from '../types/gitPanel';
-import type { PrComment, ProjectPrInbox } from '../types/pullRequest';
+import { FORGE_CHANGE_SHORT, FORGE_LABEL, FORGE_SIGIL, type PrComment, type ProjectPrInbox } from '../types/pullRequest';
 import styles from './GitPanel.module.css';
 
 /** One in-flight git action, keyed by path+verb — lets each worktree's own
@@ -319,8 +319,13 @@ function WorktreeCard({
           {worktree.sessionName}
         </button>
         {onOpenPr && (
-          <button className={styles.prLink} onClick={onOpenPr} title="Open the linked PR on GitHub">
-            PR #{worktree.linkedPr!.number} ↗
+          <button
+            className={styles.prLink}
+            onClick={onOpenPr}
+            title={`Open the linked ${FORGE_CHANGE_SHORT[worktree.linkedPr!.forge]} on ${FORGE_LABEL[worktree.linkedPr!.forge]}`}
+          >
+            {FORGE_CHANGE_SHORT[worktree.linkedPr!.forge]} {FORGE_SIGIL[worktree.linkedPr!.forge]}
+            {worktree.linkedPr!.number} ↗
           </button>
         )}
         {onOpenComments && pendingComments.length > 0 && (

@@ -6,7 +6,7 @@ import { Highlight, themes } from 'prism-react-renderer';
 import { useNavigation } from '../nav/NavigationProvider';
 import { useTheme } from '../theme/ThemeProvider';
 import type { Account } from '../types/account';
-import type { PrComment, PullRequestInfo, PullRequestPreview } from '../types/pullRequest';
+import { FORGE_CHANGE_SHORT, FORGE_LABEL, FORGE_SIGIL, type PrComment, type PullRequestInfo, type PullRequestPreview } from '../types/pullRequest';
 import {
   EFFORT_OPTIONS,
   MODE_LABEL,
@@ -946,9 +946,10 @@ export function AgentPanelBody({
               variant="outline"
               className={styles.thinkingBtn}
               onClick={() => openUrl(pullRequest.url)}
-              title={`Open PR #${pullRequest.number} on GitHub`}
+              title={`Open ${FORGE_CHANGE_SHORT[pullRequest.forge]} ${FORGE_SIGIL[pullRequest.forge]}${pullRequest.number} on ${FORGE_LABEL[pullRequest.forge]}`}
             >
-              PR #{pullRequest.number} ↗
+              {FORGE_CHANGE_SHORT[pullRequest.forge]} {FORGE_SIGIL[pullRequest.forge]}
+              {pullRequest.number} ↗
             </Button>
             <Button
               variant="outline"

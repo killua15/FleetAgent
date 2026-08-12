@@ -8,11 +8,11 @@
 
 use crate::commands::sessions::{ensure_worktree_dir_ignored, slugify, unique_worktree_dir};
 use crate::db::DbConnection;
+use crate::forges::{self, Forge, PrFacts, RawPrComment, RepoPrSnapshot, RepoRef};
 use crate::models::{PrComment, PullRequestInfo, PullRequestPreview};
 use crate::providers;
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
-use serde_json::Value;
 use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
@@ -46,31 +46,9 @@ pub(crate) fn git_capture_with_env(cwd: &Path, args: &[&str], env: &[(String, St
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Every `gh` call in this file goes through here — a hung `gh` process
-/// (dead network, an interactive re-auth prompt) would otherwise block
-/// whichever `run_blocking` thread called it forever, see
-/// `process_timeout` for why that matters.
-pub(crate) fn gh_output(cwd: Option<&Path>, args: &[&str]) -> Result<std::process::Output, String> {
-    let mut cmd = Command::new(providers::resolve_binary("gh"));
-    cmd.args(args);
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
-    }
-    crate::process_timeout::run_with_timeout(cmd, crate::process_timeout::DEFAULT_TIMEOUT).map_err(|e| format!("gh {}: {e}", args.join(" ")))
-}
-
-/// Clear, actionable error instead of letting a bare `gh pr create` failure
-/// (missing binary or expired login) surface as a cryptic exit-code message.
-pub(crate) fn gh_available_and_authed() -> Result<(), String> {
-    // Now one line, because the knowledge moved to where every feature can ask
-    // the same question: `gh` present *and* logged in, since installed-but-not-
-    // authenticated fails exactly as hard as absent.
-    crate::capabilities::Capability::PullRequests.check().map_err(|b| b.message())
-}
-
 /// `origin/HEAD`'s target if the remote's default branch was ever resolved
-/// locally, else `gh repo view`, else a plain `"main"` guess — always
-/// returns something rather than failing, since every caller has a
+/// locally, else whatever the forge says, else a plain `"main"` guess —
+/// always returns something rather than failing, since every caller has a
 /// reasonable fallback path anyway.
 pub(crate) fn detect_default_branch(cwd: &Path) -> String {
     if let Ok(full) = git_capture(cwd, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]) {
@@ -78,12 +56,9 @@ pub(crate) fn detect_default_branch(cwd: &Path) -> String {
             return name.to_string();
         }
     }
-    if let Ok(output) = gh_output(Some(cwd), &["repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"]) {
-        if output.status.success() {
-            let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !name.is_empty() {
-                return name;
-            }
+    if let Ok(repo) = forges::detect_repo(cwd) {
+        if let Some(name) = forges::default_branch(&repo, cwd) {
+            return name;
         }
     }
     "main".to_string()
@@ -101,22 +76,6 @@ pub(crate) fn local_branch_exists(cwd: &Path, branch: &str) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
-}
-
-pub(crate) fn parse_owner_repo_from_url(url: &str) -> Option<(String, String)> {
-    let trimmed = url.trim().trim_end_matches(".git");
-    let idx = trimmed.find("github.com")?;
-    let after_host = &trimmed[idx + "github.com".len()..];
-    let cleaned = after_host.trim_start_matches(':').trim_start_matches('/');
-    let mut parts = cleaned.splitn(2, '/');
-    let owner = parts.next()?.to_string();
-    let repo = parts.next()?.to_string();
-    (!owner.is_empty() && !repo.is_empty()).then_some((owner, repo))
-}
-
-pub(crate) fn detect_repo_owner_and_name(cwd: &Path) -> Result<(String, String), String> {
-    let url = git_capture(cwd, &["remote", "get-url", "origin"])?;
-    parse_owner_repo_from_url(&url).ok_or_else(|| format!("could not parse an owner/repo out of remote url: {url}"))
 }
 
 /// Splits `git diff --name-status` output into (added, modified, removed) —
@@ -171,8 +130,11 @@ fn generate_pr_title_and_body(cwd: &Path, base: &str, branch: &str, session_name
 /// The columns `row_to_pull_request` reads, in its exact order. One constant
 /// rather than the same list spelled out at five call sites, where adding a
 /// column meant finding every one of them or getting a silent off-by-one.
+/// New columns go on the **end**, never in the middle: `row_to_pull_request`
+/// and `list_pr_review_inbox_impl` both read by position, and the latter
+/// derives its own offset from this list's length.
 pub(crate) const PR_COLUMNS: &str =
-    "id, project_id, session_id, repo_owner, repo_name, number, url, state, last_comment_seen_at, created_at, last_check_error, last_seen_updated_at, head_branch, base_branch, title, author_login, relation";
+    "id, project_id, session_id, repo_owner, repo_name, number, url, state, last_comment_seen_at, created_at, last_check_error, last_seen_updated_at, head_branch, base_branch, title, author_login, relation, forge, host";
 
 /// `PR_COLUMNS` qualified with a table alias, for the queries that join.
 pub(crate) fn pr_columns_from(alias: &str) -> String {
@@ -198,7 +160,20 @@ pub(crate) fn row_to_pull_request(row: &rusqlite::Row) -> rusqlite::Result<PullR
         title: row.get(14)?,
         author_login: row.get(15)?,
         relation: row.get(16)?,
+        forge: row.get(17)?,
+        host: row.get(18)?,
     })
+}
+
+/// The repository a tracked change request belongs to — the single place that
+/// reconstructs a [`RepoRef`] from a persisted row.
+fn repo_ref_for_pr(pr: &PullRequestInfo) -> RepoRef {
+    RepoRef {
+        forge: Forge::from_column(&pr.forge),
+        host: pr.host.clone(),
+        namespace: pr.repo_owner.clone(),
+        name: pr.repo_name.clone(),
+    }
 }
 
 /// The most recent PR for a session — correct only when a session has at
@@ -338,13 +313,16 @@ pub async fn preview_pull_request<R: Runtime>(app: AppHandle<R>, session_id: Str
 pub async fn create_pull_request<R: Runtime>(app: AppHandle<R>, session_id: String, title: Option<String>) -> Result<PullRequestInfo, String> {
     crate::blocking::run_blocking(move || {
         let db = app.state::<DbConnection>();
-        gh_available_and_authed()?;
 
         let (cwd, session_name) = resolve_session_cwd_and_name(&db, &session_id)?;
         let cwd_path = Path::new(&cwd);
         if !cwd_path.is_dir() {
             return Err(format!("working directory {cwd} does not exist"));
         }
+        // Which forge first, then whether its CLI is usable: asking the other
+        // way round would refuse a GitLab project for not having `gh`.
+        let repo = forges::detect_repo(cwd_path)?;
+        forges::available_and_authed(&repo)?;
 
         // The project's own identity and credential, if it has one — otherwise
         // the machine's default, which is the pre-existing behaviour.
@@ -356,16 +334,16 @@ pub async fn create_pull_request<R: Runtime>(app: AppHandle<R>, session_id: Stri
         let git_env = crate::git_identity::git_env_for_project(&app, &project_id_for_git);
         let (branch, base) = prepare_branch_for_pr(cwd_path, &session_name, &git_env)?;
 
-        let (owner, repo) = detect_repo_owner_and_name(cwd_path)?;
         let (default_title, body) = generate_pr_title_and_body(cwd_path, &base, &branch, &session_name)?;
         let title = title.unwrap_or(default_title);
 
-        let output = gh_output(Some(cwd_path), &["pr", "create", "--title", &title, "--body", &body, "--base", &base, "--head", &branch])?;
-        if !output.status.success() {
-            return Err(format!("gh pr create failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
-        }
-        let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let number: i64 = url.rsplit('/').next().and_then(|s| s.parse().ok()).ok_or_else(|| format!("could not parse a PR number out of: {url}"))?;
+        let created = forges::create_change_request(
+            &repo,
+            cwd_path,
+            &forges::NewChangeRequest { title: &title, body: &body, base: &base, head: &branch },
+        )?;
+        let (url, number) = (created.url, created.number);
+        let (owner, repo_name) = (repo.namespace.clone(), repo.name.clone());
 
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
@@ -375,9 +353,9 @@ pub async fn create_pull_request<R: Runtime>(app: AppHandle<R>, session_id: Stri
                 .query_row("SELECT project_id FROM sessions WHERE id = ?1", params![session_id], |row| row.get(0))
                 .map_err(|e| format!("session lookup failed: {e}"))?;
             conn.execute(
-                "INSERT INTO pull_requests (id, project_id, session_id, repo_owner, repo_name, number, url, state, last_comment_seen_at, created_at, head_branch, base_branch, title, relation)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open', NULL, ?8, ?9, ?10, ?11, 'mine')",
-                params![id, project_id, session_id, owner, repo, number, url, now, branch, base, title],
+                "INSERT INTO pull_requests (id, project_id, session_id, repo_owner, repo_name, number, url, state, last_comment_seen_at, created_at, head_branch, base_branch, title, relation, forge, host)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open', NULL, ?8, ?9, ?10, ?11, 'mine', ?12, ?13)",
+                params![id, project_id, session_id, owner, repo_name, number, url, now, branch, base, title, repo.forge.as_str(), repo.host],
             )
             .map_err(|e| e.to_string())?;
             project_id
@@ -387,7 +365,7 @@ pub async fn create_pull_request<R: Runtime>(app: AppHandle<R>, session_id: Stri
             project_id,
             session_id: Some(session_id),
             repo_owner: owner,
-            repo_name: repo,
+            repo_name,
             number,
             url,
             state: "open".to_string(),
@@ -398,10 +376,12 @@ pub async fn create_pull_request<R: Runtime>(app: AppHandle<R>, session_id: Stri
             head_branch: Some(branch),
             base_branch: Some(base),
             title: Some(title),
-            // Hangar just opened it as the `gh`-authenticated user, so there's
-            // nothing to discover: it's mine by construction.
+            // Hangar just opened it as the logged-in user, so there's nothing
+            // to discover: it's mine by construction.
             author_login: None,
             relation: "mine".to_string(),
+            forge: repo.forge.as_str().to_string(),
+            host: repo.host,
         })
     })
     .await?
@@ -410,266 +390,6 @@ pub async fn create_pull_request<R: Runtime>(app: AppHandle<R>, session_id: Stri
 #[tauri::command]
 pub fn get_pull_request(db: State<DbConnection>, session_id: String) -> Result<Option<PullRequestInfo>, String> {
     fetch_pull_request(&db, &session_id)
-}
-
-/// Same shape as `PrComment` minus `id` — nothing has a real
-/// `pr_review_comments` row yet at parse time, that only happens once we've
-/// decided which of these are actually new and not our own. `external_id` is
-/// GitHub's own id for the comment/review (a GraphQL node id for
-/// `comments`/`reviews`, a plain REST id for inline diff comments) — the
-/// actual "have we already seen this one" key. Not a timestamp: a PR's
-/// history can grow a source of comments Hangar couldn't previously fetch
-/// (inline diff comments were invisible before this was added) — if
-/// "already surfaced" were tracked as "newer than the latest timestamp seen
-/// so far", any such backfilled source would stay permanently invisible the
-/// moment a single newer comment from any other source had already advanced
-/// that watermark. Identity-based dedup has no such blind spot: a comment
-/// is new exactly when Hangar has never persisted its id before.
-#[derive(Debug, Clone, PartialEq)]
-struct RawPrComment {
-    external_id: String,
-    author: String,
-    body: String,
-    created_at: String,
-    path: Option<String>,
-    line: Option<i64>,
-}
-
-/// The PR fields every GraphQL query here asks for, as a fragment shared by
-/// the repo-wide and single-PR queries so the two can never drift.
-///
-/// **The `id` choices are a compatibility contract, not a preference.**
-/// `external_id` values already in the database came from `gh pr view --json
-/// comments,reviews` (GraphQL node ids like `PRR_kwDO…`, verified identical to
-/// what `id` returns here) and from the REST inline-comments endpoint (numeric
-/// ids). So: `id` for comments and reviews, `databaseId` for review-thread
-/// comments. Getting this wrong wouldn't fail loudly — it would make every
-/// comment ever seen look new and flood the inbox on the first pass.
-const PR_FIELDS_FRAGMENT: &str = r#"
-fragment prFields on PullRequest {
-  number url title createdAt updatedAt state
-  author { login }
-  assignees(first: 10) { nodes { login } }
-  headRefName baseRefName
-  comments(last: 50) { nodes { id body createdAt author { login } } }
-  reviews(last: 50) { nodes { id body submittedAt author { login } } }
-  reviewThreads(last: 50) { nodes { comments(first: 20) { nodes { databaseId body createdAt path line originalLine author { login } } } } }
-}"#;
-
-/// Everything one poll pass needs about one repo, in a single round trip: the
-/// open PRs with their comments, who the viewer is, and which PRs GitHub
-/// itself says are waiting on the viewer's review.
-///
-/// This replaces a fan-out that cost, per pass: two `gh` calls per repo plus
-/// one to three per tracked PR (a state probe, a comments fetch, and a REST
-/// call for inline comments), each a process spawn of ~0.5-0.9s. Measured on
-/// this machine: 11-21 processes and 10-20 seconds became one 0.4-0.8s call per
-/// repo. `viewer { login }` also folds in what used to be a separate
-/// `gh api user` per PR.
-#[derive(Debug, Clone, PartialEq)]
-struct RepoPrSnapshot {
-    /// The `gh`-authenticated user, or `None` when GitHub didn't say — see
-    /// `classify_pr` for why that isn't treated as "everything is mine".
-    viewer_login: Option<String>,
-    review_requested: HashSet<i64>,
-    prs: Vec<SnapshotPr>,
-}
-
-/// One open PR as GitHub returned it, with its comments already normalized.
-#[derive(Debug, Clone, PartialEq)]
-struct SnapshotPr {
-    number: i64,
-    url: String,
-    title: Option<String>,
-    created_at: String,
-    updated_at: String,
-    /// `open` / `closed` / `merged`, lowercased to match the `state` column.
-    state: String,
-    author_login: Option<String>,
-    assignees: Vec<String>,
-    head_branch: Option<String>,
-    base_branch: Option<String>,
-    comments: Vec<RawPrComment>,
-}
-
-/// What `check_pr_comments_with` needs to judge one PR, from either source:
-/// a repo-wide snapshot (the poller) or a single-PR query (the per-session
-/// "check now"). Splitting this out is what lets one repo query serve every
-/// tracked PR in it instead of one query each.
-#[derive(Debug, Clone, PartialEq)]
-struct PrFacts {
-    state: String,
-    updated_at: String,
-    comments: Vec<RawPrComment>,
-    viewer_login: Option<String>,
-}
-
-/// Pulls the three comment sources out of one PR's GraphQL node and merges
-/// them into one list, oldest first.
-///
-/// Same rules as the two REST parsers this replaces: bodyless reviews (a bare
-/// "approve" with nothing to act on) are dropped, and an inline comment's
-/// `line` falls back to `originalLine`, which is what GitHub leaves once the
-/// commented line has scrolled out of the current diff.
-fn parse_graphql_pr_comments(pr: &Value) -> Vec<RawPrComment> {
-    let mut out = Vec::new();
-
-    let mut push_simple = |nodes: Option<&Vec<Value>>, date_field: &str| {
-        for c in nodes.into_iter().flatten() {
-            let body = c.get("body").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            if body.trim().is_empty() {
-                continue;
-            }
-            out.push(RawPrComment {
-                external_id: c.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                author: c.pointer("/author/login").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
-                body,
-                created_at: c.get(date_field).and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                path: None,
-                line: None,
-            });
-        }
-    };
-    push_simple(pr.pointer("/comments/nodes").and_then(|v| v.as_array()), "createdAt");
-    push_simple(pr.pointer("/reviews/nodes").and_then(|v| v.as_array()), "submittedAt");
-
-    for thread in pr.pointer("/reviewThreads/nodes").and_then(|v| v.as_array()).into_iter().flatten() {
-        for c in thread.pointer("/comments/nodes").and_then(|v| v.as_array()).into_iter().flatten() {
-            let body = c.get("body").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            if body.trim().is_empty() {
-                continue;
-            }
-            out.push(RawPrComment {
-                // `databaseId`, not `id`: this is the source whose ids were
-                // persisted as REST numerics.
-                external_id: c.get("databaseId").and_then(|v| v.as_i64()).map(|n| n.to_string()).unwrap_or_default(),
-                author: c.pointer("/author/login").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
-                body,
-                created_at: c.get("createdAt").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                path: c.get("path").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                line: c.get("line").and_then(|v| v.as_i64()).or_else(|| c.get("originalLine").and_then(|v| v.as_i64())),
-            });
-        }
-    }
-
-    out.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-    out
-}
-
-fn parse_graphql_pr(pr: &Value) -> Option<SnapshotPr> {
-    Some(SnapshotPr {
-        number: pr.get("number").and_then(|v| v.as_i64())?,
-        url: pr.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        title: pr.get("title").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        created_at: pr.get("createdAt").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        updated_at: pr.get("updatedAt").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        state: pr.get("state").and_then(|v| v.as_str()).unwrap_or("OPEN").to_lowercase(),
-        author_login: pr.pointer("/author/login").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        assignees: pr
-            .pointer("/assignees/nodes")
-            .and_then(|v| v.as_array())
-            .map(|list| list.iter().filter_map(|a| a.get("login").and_then(|v| v.as_str()).map(|s| s.to_string())).collect())
-            .unwrap_or_default(),
-        head_branch: pr.get("headRefName").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        base_branch: pr.get("baseRefName").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        comments: parse_graphql_pr_comments(pr),
-    })
-}
-
-/// Parses the repo-wide query's response. Pure, so the whole shape of a poll
-/// pass is testable against a fixture instead of a live repo.
-fn parse_repo_snapshot(json: &Value) -> RepoPrSnapshot {
-    RepoPrSnapshot {
-        viewer_login: json.pointer("/data/viewer/login").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        review_requested: json
-            .pointer("/data/reviewRequested/nodes")
-            .and_then(|v| v.as_array())
-            .map(|rows| rows.iter().filter_map(|r| r.get("number").and_then(|v| v.as_i64())).collect())
-            .unwrap_or_default(),
-        prs: json
-            .pointer("/data/repository/pullRequests/nodes")
-            .and_then(|v| v.as_array())
-            .map(|nodes| nodes.iter().filter_map(parse_graphql_pr).collect())
-            .unwrap_or_default(),
-    }
-}
-
-/// One round trip for one repo. `limit` caps the open PRs pulled in — see
-/// `DISCOVERY_PR_LIMIT`.
-fn fetch_repo_pr_snapshot(owner: &str, repo: &str, limit: usize) -> Result<RepoPrSnapshot, String> {
-    let query = format!(
-        r#"query($owner:String!, $name:String!, $limit:Int!, $search:String!) {{
-  viewer {{ login }}
-  repository(owner:$owner, name:$name) {{
-    pullRequests(states: OPEN, first: $limit, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ ...prFields }} }}
-  }}
-  reviewRequested: search(query: $search, type: ISSUE, first: 100) {{ nodes {{ ... on PullRequest {{ number }} }} }}
-}}{PR_FIELDS_FRAGMENT}"#
-    );
-    let search = format!("repo:{owner}/{repo} is:pr is:open review-requested:@me");
-    let limit = limit.to_string();
-    let output = gh_output(
-        None,
-        &[
-            "api",
-            "graphql",
-            "-f",
-            &format!("query={query}"),
-            "-F",
-            &format!("owner={owner}"),
-            "-F",
-            &format!("name={repo}"),
-            "-F",
-            &format!("limit={limit}"),
-            "-f",
-            &format!("search={search}"),
-        ],
-    )?;
-    if !output.status.success() {
-        return Err(format!("gh api graphql failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
-    }
-    let json: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
-    Ok(parse_repo_snapshot(&json))
-}
-
-/// One PR, for the paths that don't have a repo snapshot to hand: the
-/// per-session "check now", and the poller resolving a tracked PR that has
-/// dropped off the open list (merged or closed — the repo query only returns
-/// open ones, so absence is the signal but not the reason).
-fn fetch_single_pr_facts(pr: &PullRequestInfo) -> Result<PrFacts, String> {
-    let query = format!(
-        r#"query($owner:String!, $name:String!, $number:Int!) {{
-  viewer {{ login }}
-  repository(owner:$owner, name:$name) {{ pullRequest(number:$number) {{ ...prFields }} }}
-}}{PR_FIELDS_FRAGMENT}"#
-    );
-    let output = gh_output(
-        None,
-        &[
-            "api",
-            "graphql",
-            "-f",
-            &format!("query={query}"),
-            "-F",
-            &format!("owner={}", pr.repo_owner),
-            "-F",
-            &format!("name={}", pr.repo_name),
-            "-F",
-            &format!("number={}", pr.number),
-        ],
-    )?;
-    if !output.status.success() {
-        return Err(format!("gh api graphql failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
-    }
-    let json: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
-    let node = json.pointer("/data/repository/pullRequest").ok_or_else(|| "gh returned no pull request".to_string())?;
-    let parsed = parse_graphql_pr(node).ok_or_else(|| "gh returned a pull request with no number".to_string())?;
-    Ok(PrFacts {
-        state: parsed.state,
-        updated_at: parsed.updated_at,
-        comments: parsed.comments,
-        viewer_login: json.pointer("/data/viewer/login").and_then(|v| v.as_str()).map(|s| s.to_string()),
-    })
 }
 
 /// Of everything fetched, keep only comments that are (a) not already
@@ -739,7 +459,7 @@ fn check_pr_comments_impl(db: &DbConnection, session_id: &str) -> Result<Vec<PrC
 /// everything else stays in the database until the user explicitly
 /// sends/dismisses a comment, or the PR itself gets merged.
 fn check_pr_comments_for(db: &DbConnection, pr: PullRequestInfo) -> Result<Vec<PrComment>, String> {
-    let facts = fetch_single_pr_facts(&pr);
+    let facts = forges::fetch_single_pr_facts(&repo_ref_for_pr(&pr), pr.number);
     check_pr_comments_with(db, pr, facts)
 }
 
@@ -788,6 +508,19 @@ fn check_pr_comments_with(db: &DbConnection, pr: PullRequestInfo, facts: Result<
         }
         CheckOutcome::NeedsFullFetch => {}
     }
+
+    // Only now, once the cheap probe says something actually changed. On a
+    // forge whose snapshot can't carry comments this is a real round trip, and
+    // it is the whole reason `PendingComments` is lazy. A failure here is the
+    // same kind of failure as the fetch above, and gets the same treatment.
+    let all_comments = match all_comments.resolve() {
+        Ok(comments) => comments,
+        Err(e) => {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            conn.execute("UPDATE pull_requests SET last_check_error = ?2 WHERE id = ?1", params![pr.id, e]).map_err(|e| e.to_string())?;
+            return Ok(vec![]);
+        }
+    };
 
     let mut persisted = Vec::new();
     {
@@ -841,8 +574,13 @@ pub async fn check_pr_comments(app: AppHandle, session_id: String) -> Result<Vec
     .await?
 }
 
-fn format_pr_comments_prompt(comments: &[PrComment]) -> String {
-    let mut out = String::from("PR review feedback:\n\n");
+/// The feedback, as the agent receives it.
+///
+/// `forge` only decides what to call the thing. It matters because the agent
+/// acts on what it reads: told it is looking at "PR review feedback" on a
+/// project that has no pull requests, a capable agent goes hunting for one.
+fn format_pr_comments_prompt(comments: &[PrComment], forge: Forge) -> String {
+    let mut out = format!("{} review feedback:\n\n", capitalized(forge.change_noun()));
     for c in comments {
         match (&c.path, c.line) {
             (Some(path), Some(line)) => out.push_str(&format!("- {} ({path}:{line}): {}\n", c.author, c.body)),
@@ -922,17 +660,7 @@ fn resolve_session_for_pr_branch<R: Runtime>(app: &AppHandle<R>, db: &DbConnecti
     let head_branch = match &pr.head_branch {
         Some(b) if !b.is_empty() => b.clone(),
         _ => {
-            let repo = format!("{}/{}", pr.repo_owner, pr.repo_name);
-            let output = gh_output(None, &["pr", "view", &pr.number.to_string(), "--repo", &repo, "--json", "headRefName"])?;
-            if !output.status.success() {
-                return Err(format!("gh pr view failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
-            }
-            let json: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
-            let branch = json
-                .get("headRefName")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "gh did not return a headRefName".to_string())?
-                .to_string();
+            let branch = forges::fetch_head_branch(&repo_ref_for_pr(pr), pr.number)?;
             let conn = db.0.lock().map_err(|e| e.to_string())?;
             conn.execute("UPDATE pull_requests SET head_branch = ?2 WHERE id = ?1", params![pr.id, branch]).map_err(|e| e.to_string())?;
             branch
@@ -1211,12 +939,22 @@ pub async fn send_pr_comments_to_session(app: AppHandle, comment_ids: Vec<String
         let account_id = account_for_pr(&db, &pr, None)?;
         let target_session_id = resolve_session_for_pr_branch(&app, &db, &pr, &account_id)?;
 
-        let prompt = format_pr_comments_prompt(&comments);
+        let prompt = format_pr_comments_prompt(&comments, Forge::from_column(&pr.forge));
         crate::commands::sessions::send_message(app.clone(), db.clone(), target_session_id.clone(), prompt)?;
         mark_comments_resolved(&db, &comment_ids, "sent")?;
         Ok(target_session_id)
     })
     .await?
+}
+
+/// `pull request` → `Pull request`. Only ever applied to the two nouns in
+/// `Forge::change_noun`, so there is no wider casing question to answer.
+fn capitalized(noun: &str) -> String {
+    let mut chars = noun.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// Collapses the multi-line comments prompt to a single line, so it can ride
@@ -1256,7 +994,7 @@ pub async fn send_pr_comments_to_terminal(
         let account_id = account_for_pr(&db, &pr, account_id)?;
         let target_session_id = resolve_session_for_pr_branch(&app, &db, &pr, &account_id)?;
 
-        let prompt = to_single_line(&format_pr_comments_prompt(&comments));
+        let prompt = to_single_line(&format_pr_comments_prompt(&comments, Forge::from_column(&pr.forge)));
 
         // Already working there: type into it instead of opening a second
         // terminal on the same worktree, where two agents would edit the same
@@ -1290,12 +1028,17 @@ pub async fn send_pr_comments_to_terminal(
 /// name. Posting a review is a message to another person — it's the user's to
 /// send, from the terminal, once they've read what the agent found.
 fn format_pr_review_prompt(pr: &PullRequestInfo) -> String {
-    let title = pr.title.clone().unwrap_or_else(|| format!("PR #{}", pr.number));
+    // The agent is told the forge's own words for what it is looking at: a
+    // prompt that calls a merge request "pull request #7" invites it to go
+    // looking for something under a name the project does not use.
+    let forge = Forge::from_column(&pr.forge);
+    let (noun, sigil) = (forge.change_noun(), forge.number_sigil());
+    let title = pr.title.clone().unwrap_or_else(|| format!("{noun} {sigil}{}", pr.number));
     let author = pr.author_login.clone().unwrap_or_else(|| "someone else".to_string());
     let base = pr.base_branch.clone().unwrap_or_else(|| "the base branch".to_string());
     format!(
-        "Review pull request #{} of {}/{} — \"{title}\", opened by {author}. \
-         This worktree is checked out on the PR's branch; read the diff against `origin/{base}` and review it: \
+        "Review {noun} {sigil}{} of {}/{} — \"{title}\", opened by {author}. \
+         This worktree is checked out on the {noun}'s branch; read the diff against `origin/{base}` and review it: \
          correctness bugs first, then anything risky or unclear. \
          Do not push, comment, or post a review — just tell me what you find.",
         pr.number, pr.repo_owner, pr.repo_name
@@ -1420,6 +1163,8 @@ fn list_pr_review_inbox_impl(db: &DbConnection) -> Result<Vec<crate::models::Pro
                     title: row.get(PR_AT + 14)?,
                     author_login: row.get(PR_AT + 15)?,
                     relation: row.get(PR_AT + 16)?,
+                    forge: row.get(PR_AT + 17)?,
+                    host: row.get(PR_AT + 18)?,
                 },
                 comment: match comment_id {
                     Some(id) => Some(PrComment {
@@ -1493,18 +1238,18 @@ fn record_open_prs_for_project<R: Runtime>(
     app: &AppHandle<R>,
     db: &DbConnection,
     project_id: &str,
-    owner: &str,
-    repo: &str,
+    repo: &RepoRef,
     snapshot: &RepoPrSnapshot,
 ) -> Result<(), String> {
     if snapshot.prs.is_empty() {
         return Ok(());
     }
+    let (owner, repo_name) = (&repo.namespace, &repo.name);
     let self_login = snapshot.viewer_login.as_deref();
     let still_open: Vec<i64> = snapshot.prs.iter().map(|pr| pr.number).collect();
 
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    prune_closed_foreign_prs(&conn, owner, repo, &still_open)?;
+    prune_closed_foreign_prs(&conn, repo, &still_open)?;
     for pr in &snapshot.prs {
         let assigned_to_me = pr.assignees.iter().any(|a| Some(a.as_str()) == self_login);
         let relation = classify_pr(pr.author_login.as_deref(), self_login, snapshot.review_requested.contains(&pr.number), assigned_to_me);
@@ -1516,8 +1261,8 @@ fn record_open_prs_for_project<R: Runtime>(
         let updated = conn
             .execute(
                 "UPDATE pull_requests SET relation = ?4, author_login = ?5, title = ?6, head_branch = COALESCE(?7, head_branch), base_branch = COALESCE(?8, base_branch)
-                 WHERE repo_owner = ?1 AND repo_name = ?2 AND number = ?3",
-                params![owner, repo, pr.number, relation, pr.author_login, pr.title, pr.head_branch, pr.base_branch],
+                 WHERE host = ?9 AND repo_owner = ?1 AND repo_name = ?2 AND number = ?3",
+                params![owner, repo_name, pr.number, relation, pr.author_login, pr.title, pr.head_branch, pr.base_branch, repo.host],
             )
             .map_err(|e| e.to_string())?;
         if updated > 0 {
@@ -1525,13 +1270,13 @@ fn record_open_prs_for_project<R: Runtime>(
         }
 
         conn.execute(
-            "INSERT INTO pull_requests (id, project_id, session_id, repo_owner, repo_name, number, url, state, created_at, head_branch, base_branch, title, author_login, relation)
-             VALUES (?1,?2,NULL,?3,?4,?5,?6,'open',?7,?8,?9,?10,?11,?12)",
+            "INSERT INTO pull_requests (id, project_id, session_id, repo_owner, repo_name, number, url, state, created_at, head_branch, base_branch, title, author_login, relation, forge, host)
+             VALUES (?1,?2,NULL,?3,?4,?5,?6,'open',?7,?8,?9,?10,?11,?12,?13,?14)",
             params![
                 Uuid::new_v4().to_string(),
                 project_id,
                 owner,
-                repo,
+                repo_name,
                 pr.number,
                 pr.url,
                 pr.created_at,
@@ -1539,7 +1284,9 @@ fn record_open_prs_for_project<R: Runtime>(
                 pr.base_branch,
                 pr.title,
                 pr.author_login,
-                relation
+                relation,
+                repo.forge.as_str(),
+                repo.host
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -1548,11 +1295,18 @@ fn record_open_prs_for_project<R: Runtime>(
         // not news, and this would otherwise fire every time an agent finishes
         // one. Shares the comments toggle: both are "a PR needs your attention".
         if relation != "mine" {
+            // Named after the forge's own vocabulary: a macOS notification is
+            // read out of context, and "New pull request" for something that
+            // is a merge request reads as a bug in the app.
+            let title = match repo.forge {
+                Forge::Github => "New pull request",
+                Forge::Gitlab => "New merge request",
+            };
             crate::notifications::notify_if_enabled(
                 app,
                 |s| s.notify_pr_comments,
-                "New pull request",
-                &format!("{}/{} #{}: {}", owner, repo, pr.number, pr.title.as_deref().unwrap_or("(untitled)")),
+                title,
+                &format!("{} {}{}: {}", repo.path(), repo.forge.number_sigil(), pr.number, pr.title.as_deref().unwrap_or("(untitled)")),
             );
         }
     }
@@ -1570,15 +1324,20 @@ fn record_open_prs_for_project<R: Runtime>(
 /// Skipped when the list came back full: at the limit there may be open PRs
 /// that simply didn't fit, and deleting those would churn them in and out on
 /// every pass.
-fn prune_closed_foreign_prs(conn: &rusqlite::Connection, owner: &str, repo: &str, still_open: &[i64]) -> Result<(), String> {
+fn prune_closed_foreign_prs(conn: &rusqlite::Connection, repo: &RepoRef, still_open: &[i64]) -> Result<(), String> {
     if still_open.len() >= DISCOVERY_PR_LIMIT {
         return Ok(());
     }
     let placeholders = std::iter::repeat_n("?", still_open.len()).collect::<Vec<_>>().join(",");
+    // `host` is not optional here. A project path says nothing about which
+    // server it is on, so without it a pass over `gitlab.acme.com/foo/bar`
+    // would delete the tracked rows of `github.com/foo/bar` — a silent data
+    // loss that looks exactly like the pruning working.
     let sql = format!(
-        "DELETE FROM pull_requests WHERE repo_owner = ?1 AND repo_name = ?2 AND relation != 'mine' AND number NOT IN ({placeholders})"
+        "DELETE FROM pull_requests WHERE host = ?3 AND repo_owner = ?1 AND repo_name = ?2 AND relation != 'mine' AND number NOT IN ({placeholders})"
     );
-    let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(owner.to_string()), Box::new(repo.to_string())];
+    let mut args: Vec<Box<dyn rusqlite::ToSql>> =
+        vec![Box::new(repo.namespace.clone()), Box::new(repo.name.clone()), Box::new(repo.host.clone())];
     args.extend(still_open.iter().map(|n| Box::new(*n) as Box<dyn rusqlite::ToSql>));
     conn.execute(&sql, rusqlite::params_from_iter(args.iter().map(|a| a.as_ref()))).map_err(|e| e.to_string())?;
     Ok(())
@@ -1615,13 +1374,13 @@ fn classify_pr(author: Option<&str>, self_login: Option<&str>, review_requested:
 /// repo, checking them all would mean parsing and writing dozens of PRs' comment
 /// histories every five minutes to badge things nobody asked to be notified
 /// about.
-fn tracked_open_prs_for_repo(conn: &rusqlite::Connection, owner: &str, repo: &str) -> Vec<(String, i64)> {
-    let Ok(mut stmt) =
-        conn.prepare("SELECT id, number FROM pull_requests WHERE repo_owner = ?1 AND repo_name = ?2 AND state = 'open' AND relation = 'mine'")
+fn tracked_open_prs_for_repo(conn: &rusqlite::Connection, repo: &RepoRef) -> Vec<(String, i64)> {
+    let Ok(mut stmt) = conn
+        .prepare("SELECT id, number FROM pull_requests WHERE host = ?3 AND repo_owner = ?1 AND repo_name = ?2 AND state = 'open' AND relation = 'mine'")
     else {
         return Vec::new();
     };
-    let Ok(rows) = stmt.query_map(params![owner, repo], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))) else {
+    let Ok(rows) = stmt.query_map(params![repo.namespace, repo.name, repo.host], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))) else {
         return Vec::new();
     };
     rows.filter_map(Result::ok).collect()
@@ -1646,23 +1405,26 @@ pub fn poll_all_open_prs<R: Runtime>(app: &AppHandle<R>) {
     };
 
     for (project_id, project_path) in projects {
-        let Ok((owner, repo)) = detect_repo_owner_and_name(Path::new(&project_path)) else {
-            continue; // no git remote — nothing to discover, and not an error
+        let Ok(repo) = forges::detect_repo(Path::new(&project_path)) else {
+            // No git remote, or one on a host no adapter speaks — nothing to
+            // discover either way, and neither is an error.
+            continue;
         };
-        let snapshot = match fetch_repo_pr_snapshot(&owner, &repo, DISCOVERY_PR_LIMIT) {
+        let path = repo.path();
+        let snapshot = match forges::fetch_repo_snapshot(&repo, DISCOVERY_PR_LIMIT) {
             Ok(snapshot) => snapshot,
             Err(e) => {
-                log::error!("poll_all_open_prs: snapshot failed for {owner}/{repo}: {e}");
+                log::error!("poll_all_open_prs: snapshot failed for {path}: {e}");
                 continue;
             }
         };
-        if let Err(e) = record_open_prs_for_project(app, &db, &project_id, &owner, &repo, &snapshot) {
-            log::error!("poll_all_open_prs: recording {owner}/{repo}'s PRs failed: {e}");
+        if let Err(e) = record_open_prs_for_project(app, &db, &project_id, &repo, &snapshot) {
+            log::error!("poll_all_open_prs: recording {path}'s PRs failed: {e}");
         }
 
         let tracked = {
             let Ok(conn) = db.0.lock() else { return };
-            tracked_open_prs_for_repo(&conn, &owner, &repo)
+            tracked_open_prs_for_repo(&conn, &repo)
         };
         // A merge is exactly when the base branch moved under every worktree,
         // which is the moment a code graph stops describing the repo. Noted
@@ -1685,7 +1447,7 @@ pub fn poll_all_open_prs<R: Runtime>(app: &AppHandle<R>) {
                     comments: found.comments.clone(),
                     viewer_login: snapshot.viewer_login.clone(),
                 }),
-                None => fetch_single_pr_facts(&pr),
+                None => forges::fetch_single_pr_facts(&repo, number),
             };
             match check_pr_comments_with(&db, pr, facts) {
                 Ok(comments) if !comments.is_empty() => {
@@ -1693,8 +1455,8 @@ pub fn poll_all_open_prs<R: Runtime>(app: &AppHandle<R>) {
                     crate::notifications::notify_if_enabled(
                         app,
                         |s| s.notify_pr_comments,
-                        "New PR comments",
-                        &format!("{} new comment(s) on a PR Hangar opened", comments.len()),
+                        "New review comments",
+                        &format!("{} new comment(s) on a {} Hangar opened on {}", comments.len(), repo.forge.change_noun(), repo.forge.display_name()),
                     );
                 }
                 Ok(_) => {}
@@ -1712,19 +1474,6 @@ pub fn poll_all_open_prs<R: Runtime>(app: &AppHandle<R>) {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-
-    #[test]
-    fn parse_owner_repo_from_url_handles_https_and_ssh_forms() {
-        assert_eq!(parse_owner_repo_from_url("https://github.com/killua15/Hangar.git"), Some(("killua15".to_string(), "Hangar".to_string())));
-        assert_eq!(parse_owner_repo_from_url("https://github.com/killua15/Hangar"), Some(("killua15".to_string(), "Hangar".to_string())));
-        assert_eq!(parse_owner_repo_from_url("git@github.com:killua15/Hangar.git"), Some(("killua15".to_string(), "Hangar".to_string())));
-    }
-
-    #[test]
-    fn parse_owner_repo_from_url_rejects_non_github_urls() {
-        assert_eq!(parse_owner_repo_from_url("https://gitlab.com/killua15/Hangar.git"), None);
-        assert_eq!(parse_owner_repo_from_url("not a url"), None);
-    }
 
     #[test]
     fn group_name_status_buckets_by_a_m_d() {
@@ -1763,7 +1512,8 @@ mod tests {
                 line: None,
             },
         ];
-        let prompt = format_pr_comments_prompt(&comments);
+        let prompt = format_pr_comments_prompt(&comments, Forge::Github);
+        assert!(prompt.contains("Pull request review feedback"));
         assert!(prompt.contains("alice: please fix the typo"));
         assert!(prompt.contains("bob: looks good otherwise"));
         assert!(prompt.contains("Please address these."));
@@ -1779,8 +1529,24 @@ mod tests {
             path: Some("BridgeRepository.cs".to_string()),
             line: Some(40),
         }];
-        let prompt = format_pr_comments_prompt(&comments);
+        let prompt = format_pr_comments_prompt(&comments, Forge::Github);
         assert!(prompt.contains("cmoura2 (BridgeRepository.cs:40): this lookup can return null"));
+    }
+
+    /// The agent acts on what it reads. Handed "PR review feedback" while
+    /// sitting in a GitLab worktree, it has been told to work on an object the
+    /// project does not have — so the noun follows the forge, exactly as it
+    /// does in the review prompt and the notifications.
+    #[test]
+    fn the_comments_prompt_uses_the_forges_own_noun() {
+        let comments =
+            vec![PrComment { id: "c1".into(), author: "alice".into(), body: "fix the typo".into(), created_at: "t".into(), path: None, line: None }];
+
+        let gitlab = format_pr_comments_prompt(&comments, Forge::Gitlab);
+        assert!(gitlab.starts_with("Merge request review feedback:"), "got: {gitlab}");
+        assert!(!gitlab.contains("PR "), "nothing in a GitLab prompt should say PR: {gitlab}");
+
+        assert!(format_pr_comments_prompt(&comments, Forge::Github).starts_with("Pull request review feedback:"));
     }
 
     /// The terminal path rides the prompt on a `claude '<prompt>'` command
@@ -1793,114 +1559,11 @@ mod tests {
             PrComment { id: "c1".into(), author: "alice".into(), body: "fix the typo".into(), created_at: "t".into(), path: None, line: None },
             PrComment { id: "c2".into(), author: "bob".into(), body: "rename this".into(), created_at: "t".into(), path: None, line: None },
         ];
-        let line = to_single_line(&format_pr_comments_prompt(&comments));
+        let line = to_single_line(&format_pr_comments_prompt(&comments, Forge::Github));
         assert!(!line.contains('\n'), "the command-line prompt must be a single line: {line}");
         assert!(line.contains("alice: fix the typo"));
         assert!(line.contains("bob: rename this"));
         assert!(line.contains("Please address these."));
-    }
-
-    // -- the one-query-per-repo snapshot ------------------------------------
-
-    /// A response in the exact shape the real query returns (verified against
-    /// `cli/cli` before this was written): one PR with all three comment
-    /// sources, an empty-bodied approval, and an inline comment whose `line`
-    /// GitHub has nulled out.
-    fn snapshot_json() -> Value {
-        serde_json::from_str(
-            r#"{
-              "data": {
-                "viewer": {"login": "killua15"},
-                "repository": {"pullRequests": {"nodes": [
-                  {
-                    "number": 128, "url": "https://github.com/killua15/Hangar/pull/128",
-                    "title": "Fix billing rounding", "createdAt": "2026-01-01T00:00:00Z",
-                    "updatedAt": "2026-01-02T00:00:00Z", "state": "OPEN",
-                    "author": {"login": "alice"},
-                    "assignees": {"nodes": [{"login": "killua15"}]},
-                    "headRefName": "feat/billing", "baseRefName": "main",
-                    "comments": {"nodes": [
-                      {"id": "IC_kwDOaaa", "body": "please fix the typo", "createdAt": "2026-01-01T00:00:00Z", "author": {"login": "alice"}}
-                    ]},
-                    "reviews": {"nodes": [
-                      {"id": "PRR_kwDObbb", "body": "", "submittedAt": "2026-01-01T00:01:00Z", "author": {"login": "bob"}},
-                      {"id": "PRR_kwDOccc", "body": "one more thing", "submittedAt": "2026-01-01T00:02:00Z", "author": {"login": "carol"}}
-                    ]},
-                    "reviewThreads": {"nodes": [
-                      {"comments": {"nodes": [
-                        {"databaseId": 4772643945, "body": "this lookup can return null", "createdAt": "2026-01-01T00:03:00Z", "path": "src/billing.rs", "line": 40, "originalLine": 40, "author": {"login": "dave"}},
-                        {"databaseId": 4772643946, "body": "and a null check here", "createdAt": "2026-01-01T00:04:00Z", "path": "src/billing.rs", "line": null, "originalLine": 62, "author": {"login": "dave"}}
-                      ]}}
-                    ]}
-                  }
-                ]}},
-                "reviewRequested": {"nodes": [{"number": 128}]}
-              }
-            }"#,
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn the_snapshot_carries_the_viewer_the_review_requests_and_the_prs() {
-        let snapshot = parse_repo_snapshot(&snapshot_json());
-        assert_eq!(snapshot.viewer_login.as_deref(), Some("killua15"), "the viewer comes free in the same query — no separate `gh api user`");
-        assert!(snapshot.review_requested.contains(&128));
-        assert_eq!(snapshot.prs.len(), 1);
-
-        let pr = &snapshot.prs[0];
-        assert_eq!(pr.number, 128);
-        assert_eq!(pr.state, "open", "GitHub says OPEN; the column stores lowercase");
-        assert_eq!(pr.author_login.as_deref(), Some("alice"));
-        assert_eq!(pr.assignees, vec!["killua15".to_string()]);
-        assert_eq!(pr.base_branch.as_deref(), Some("main"));
-    }
-
-    /// The three comment sources GitHub keeps apart arrive merged, oldest
-    /// first, with bodyless reviews dropped — the same contract the two REST
-    /// parsers used to provide between them.
-    #[test]
-    fn one_query_returns_all_three_comment_sources_merged_and_ordered() {
-        let snapshot = parse_repo_snapshot(&snapshot_json());
-        let comments = &snapshot.prs[0].comments;
-
-        assert_eq!(comments.len(), 4, "1 comment + 1 review with a body + 2 thread comments; the empty approval is dropped");
-        let authors: Vec<&str> = comments.iter().map(|c| c.author.as_str()).collect();
-        assert_eq!(authors, vec!["alice", "carol", "dave", "dave"], "oldest first");
-
-        assert_eq!(comments[2].path.as_deref(), Some("src/billing.rs"));
-        assert_eq!(comments[2].line, Some(40));
-        assert_eq!(comments[3].line, Some(62), "must fall back to originalLine once GitHub nulls out line");
-    }
-
-    /// **The migration hazard.** `external_id` is how dedup works, and rows
-    /// already in the database were written from `gh pr view --json
-    /// comments,reviews` (GraphQL node ids) and from the REST inline endpoint
-    /// (numeric ids). If GraphQL's field choice produced different strings,
-    /// every comment ever seen would look new and the inbox would flood on the
-    /// first pass. Verified against real API responses: `gh pr view`'s
-    /// `reviews[].id` is byte-identical to GraphQL's `id`.
-    #[test]
-    fn comment_ids_keep_the_shape_already_persisted_so_nothing_looks_new() {
-        let snapshot = parse_repo_snapshot(&snapshot_json());
-        let ids: Vec<&str> = snapshot.prs[0].comments.iter().map(|c| c.external_id.as_str()).collect();
-
-        assert_eq!(ids[0], "IC_kwDOaaa", "issue comments keep the node id");
-        assert_eq!(ids[1], "PRR_kwDOccc", "reviews keep the node id");
-        assert_eq!(ids[2], "4772643945", "inline comments keep the REST numeric id, via databaseId");
-        assert_eq!(ids[3], "4772643946");
-    }
-
-    /// A repo with nothing open must parse to an empty snapshot rather than
-    /// failing — that's the steady state of most projects.
-    #[test]
-    fn an_empty_repo_parses_to_an_empty_snapshot() {
-        let json: Value =
-            serde_json::from_str(r#"{"data":{"viewer":{"login":"killua15"},"repository":{"pullRequests":{"nodes":[]}},"reviewRequested":{"nodes":[]}}}"#).unwrap();
-        let snapshot = parse_repo_snapshot(&json);
-        assert!(snapshot.prs.is_empty());
-        assert!(snapshot.review_requested.is_empty());
-        assert_eq!(snapshot.viewer_login.as_deref(), Some("killua15"));
     }
 
     fn raw(external_id: &str, author: &str, body: &str, created_at: &str) -> RawPrComment {
@@ -1961,6 +1624,11 @@ mod tests {
             "updated_at moved since the last check"
         );
         assert_eq!(decide_check_outcome("open", "2026-01-02T00:00:00Z", None), CheckOutcome::NeedsFullFetch, "never checked before");
+    }
+
+    /// The repo every seeded row below belongs to.
+    fn hangar_repo() -> RepoRef {
+        RepoRef { forge: Forge::Github, host: "github.com".into(), namespace: "killua15".into(), name: "Hangar".into() }
     }
 
     /// In-memory sqlite with the real schema, plus one project → session →
@@ -2243,7 +1911,7 @@ mod tests {
         insert_someone_elses_pr(&db, "proj1", "pr3", 3, "bob", "other");
 
         let conn = db.0.lock().unwrap();
-        let checked: Vec<String> = tracked_open_prs_for_repo(&conn, "killua15", "Hangar").into_iter().map(|(id, _)| id).collect();
+        let checked: Vec<String> = tracked_open_prs_for_repo(&conn, &hangar_repo()).into_iter().map(|(id, _)| id).collect();
         assert_eq!(checked, vec!["pr1".to_string()]);
     }
 
@@ -2257,7 +1925,7 @@ mod tests {
 
         let conn = db.0.lock().unwrap();
         // GitHub still lists #3; #2 has been merged since the last pass.
-        prune_closed_foreign_prs(&conn, "killua15", "Hangar", &[3]).unwrap();
+        prune_closed_foreign_prs(&conn, &hangar_repo(), &[3]).unwrap();
 
         let left: Vec<String> = conn
             .prepare("SELECT id FROM pull_requests ORDER BY id")
@@ -2276,10 +1944,44 @@ mod tests {
     fn pruning_never_touches_your_own_prs() {
         let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
         let conn = db.0.lock().unwrap();
-        prune_closed_foreign_prs(&conn, "killua15", "Hangar", &[]).unwrap();
+        prune_closed_foreign_prs(&conn, &hangar_repo(), &[]).unwrap();
 
         let left: i64 = conn.query_row("SELECT COUNT(*) FROM pull_requests WHERE id = 'pr1'", [], |r| r.get(0)).unwrap();
         assert_eq!(left, 1);
+    }
+
+    /// **The migration's sharpest edge.** A project path says nothing about
+    /// which server it is on: `foo/bar` exists on github.com and on any
+    /// self-hosted GitLab at once. Before `host` joined the `WHERE` clause, a
+    /// discovery pass over one of them deleted the other's tracked rows — a
+    /// silent data loss indistinguishable from the pruning working correctly.
+    #[test]
+    fn pruning_one_host_leaves_the_same_project_path_on_another_host_alone() {
+        let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
+        insert_someone_elses_pr(&db, "proj1", "pr-github", 7, "alice", "review");
+        {
+            let conn = db.0.lock().unwrap();
+            conn.execute(
+                "INSERT INTO pull_requests (id, project_id, session_id, repo_owner, repo_name, number, url, state, author_login, relation, created_at, forge, host)
+                 VALUES ('mr-gitlab','proj1',NULL,'killua15','Hangar',7,'https://gitlab.acme.com/killua15/Hangar/-/merge_requests/7','open','alice','review','now','gitlab','gitlab.acme.com')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let conn = db.0.lock().unwrap();
+        // github.com says #7 is gone. The identically-numbered merge request on
+        // the self-hosted GitLab was never asked about and must survive.
+        prune_closed_foreign_prs(&conn, &hangar_repo(), &[]).unwrap();
+
+        let left: Vec<String> = conn
+            .prepare("SELECT id FROM pull_requests ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(left, vec!["mr-gitlab".to_string(), "pr1".to_string()], "only the GitHub row is pruned");
     }
 
     /// At the limit the list is a page, not the whole truth — pruning against
@@ -2291,7 +1993,7 @@ mod tests {
 
         let conn = db.0.lock().unwrap();
         let full_page: Vec<i64> = (100..100 + DISCOVERY_PR_LIMIT as i64).collect();
-        prune_closed_foreign_prs(&conn, "killua15", "Hangar", &full_page).unwrap();
+        prune_closed_foreign_prs(&conn, &hangar_repo(), &full_page).unwrap();
 
         let left: i64 = conn.query_row("SELECT COUNT(*) FROM pull_requests WHERE id = 'pr2'", [], |r| r.get(0)).unwrap();
         assert_eq!(left, 1, "a truncated list is not evidence that anything closed");

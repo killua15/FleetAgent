@@ -14,7 +14,7 @@
 //! sin aviso. Por eso el parseo de su salida vive en un solo sitio, con tests:
 //! el día que cambie el formato, falla aquí y no en seis pantallas.
 
-use crate::commands::pull_requests::{gh_available_and_authed, gh_output};
+use crate::forges::github::{available_and_authed as gh_available_and_authed, gh_output};
 use crate::db::DbConnection;
 use chrono::Utc;
 use rusqlite::params;
