@@ -1,10 +1,10 @@
 {
-  "version": "0.6.1",
+  "version": "0.6.2",
   "notes": "Switch between forge instances (GitHub, GitLab, self-hosted), and a Google sign-in to open Hangar.",
-  "pub_date": "2026-08-12T19:41:14.535007Z",
+  "pub_date": "2026-08-12T19:45:50.558844Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbE14Y0hpKzFyelZrQXcrZkhadE5JYVB2UzhOTGl3YW5RaFlORmFzK2NJcC9CZ1NEY2xwSlpMTjhOL3UrT2kvWWNzek5tV0hQaENaTDVJVWVNK2lHN1FZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NTYzNjc0CWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKQzk1VVZXZStxYzFEbDVVTHdFazZneFh3UStsRlBETVBRQ0pnU085VEY1dDVNM3F3KzZySittUXIrSjl4Z3RxWkdWM2RZSkdydzlXM25SZDlHc25uQnc9PQo=",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbEZOMjZZT041V05meklRQXlOZHI4VWJPeEJrWnYzaGlNUWM4bUkvcXR2S2hoWDI3VzhzbXc2enZVa1FoUTBmTUJ2ZXlFdzZuWi9SYVNOaGZsRlN2K0FzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NTYzOTUwCWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKTzhvTFBuRmQ4OGpuN3pRSlVqbUQxcTJaTUxyT3BTSHdGZ0FzbXBNb0VqVHd2Zm53cTlTamowblo3bXNmLzlRMHhJYWpkbERkWGI1UkpIRWtCaExERFE9PQo=",
       "url": "https://api.github.com/repos/killua15/FleetAgent/contents/updates/Hangar.app.tar.gz"
     }
   }
