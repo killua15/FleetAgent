@@ -1280,6 +1280,74 @@ mod tests {
         assert_eq!(found, "sess1");
     }
 
+    /// Reproduces the real production crash this guards against: a
+    /// `pull_requests` table from before the GitLab `host`/`forge` columns
+    /// existed. `CREATE TABLE IF NOT EXISTS` in schema.sql is a no-op against
+    /// that pre-existing table, so an unconditional `CREATE INDEX ...
+    /// ON pull_requests(host, ...)` left directly in schema.sql (rather than
+    /// in `pull_requests_forge_and_host`, after the `ALTER TABLE ADD COLUMN`
+    /// that actually adds `host`) crashed `conn.execute_batch(SCHEMA)` on
+    /// every launch of an install predating migration 22 — before
+    /// `run_migrations` ever got a chance to run and fix it forward. Also
+    /// confirms a pre-existing PR row survives the migration untouched.
+    #[test]
+    fn execute_batch_schema_does_not_crash_on_a_pre_host_pull_requests_table() {
+        let conn = Connection::open_in_memory().unwrap();
+
+        // The exact `pull_requests` shape from before `host`/`forge` existed.
+        conn.execute_batch(
+            "CREATE TABLE pull_requests (
+               id                    TEXT PRIMARY KEY,
+               project_id            TEXT NOT NULL,
+               session_id            TEXT,
+               repo_owner            TEXT NOT NULL,
+               repo_name             TEXT NOT NULL,
+               number                INTEGER NOT NULL,
+               url                   TEXT NOT NULL,
+               state                 TEXT NOT NULL DEFAULT 'open',
+               title                 TEXT,
+               author_login          TEXT,
+               relation              TEXT NOT NULL DEFAULT 'mine',
+               last_comment_seen_at  TEXT,
+               last_check_error      TEXT,
+               last_seen_updated_at  TEXT,
+               head_branch           TEXT,
+               base_branch           TEXT,
+               created_at            TEXT NOT NULL
+             );
+             INSERT INTO pull_requests (id, project_id, repo_owner, repo_name, number, url, created_at)
+             VALUES ('pr1', 'proj1', 'killua15', 'Fleet-Agent', 42, 'https://github.com/killua15/Fleet-Agent/pull/42', 'now');",
+        )
+        .unwrap();
+
+        // This must NOT fail — this is the exact call sequence `db::init` makes.
+        conn.execute_batch(SCHEMA).expect("schema batch must succeed against a pre-host pull_requests table");
+        run_migrations(&conn).expect("migrations must succeed against a pre-host pull_requests table");
+
+        let sql: String =
+            conn.query_row("SELECT sql FROM sqlite_master WHERE name='pull_requests'", [], |r| r.get(0)).unwrap();
+        assert!(sql.contains("host"), "host must exist after migration");
+        assert!(sql.contains("forge"), "forge must exist after migration");
+
+        let indexed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_pull_requests_host_repo_number'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexed, 1, "the host-keyed index must exist after migrating an old database");
+
+        let (host, forge, repo_owner): (String, String, String) = conn
+            .query_row("SELECT host, forge, repo_owner FROM pull_requests WHERE id = 'pr1'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(host, "github.com", "pre-existing rows must default to github.com, not lose data");
+        assert_eq!(forge, "github");
+        assert_eq!(repo_owner, "killua15", "pre-existing row data must survive the migration untouched");
+    }
+
     /// Rebuilds the exact scenario that shipped in early dev databases: a
     /// `sessions` table with the old `ON DELETE RESTRICT`, holding a real
     /// row for an account — then confirms migration + cascading delete

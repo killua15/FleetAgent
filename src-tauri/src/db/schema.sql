@@ -227,7 +227,13 @@ CREATE TABLE IF NOT EXISTS pull_requests (
   created_at            TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_pull_requests_host_repo_number ON pull_requests(host, repo_owner, repo_name, number);
+-- idx_pull_requests_host_repo_number is created in pull_requests_forge_and_host
+-- (db::run_migrations) instead of here, for the same reason as
+-- idx_sessions_parent below: on an existing database, the CREATE TABLE IF NOT
+-- EXISTS above is a no-op that does NOT retroactively add `host`, so an
+-- unconditional index on it here would crash startup for any pre-existing
+-- install (the ALTER TABLE ADD COLUMN that actually adds `host` only runs
+-- after this whole schema batch succeeds).
 
 -- Every PR comment/review Hangar has ever fetched from someone other than the
 -- logged-in `gh` user, persisted so the PR review inbox screen survives
