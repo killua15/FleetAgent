@@ -45,6 +45,18 @@ const SCROLLBACK_LIMIT_BYTES: usize = 256 * 1024;
 /// see `push_scrollback`.
 const READ_CHUNK_BYTES: usize = 8 * 1024;
 
+/// How often a terminal's pending output is handed to the pane displaying it.
+/// One frame at 60Hz: below what anyone can see, and it turns an unbounded
+/// number of IPC round trips per second into at most 60 — see `TerminalSink`.
+pub const OUTPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
+
+/// Ceiling on output waiting to be handed to a pane. Reached only when the
+/// webview can't keep up with the PTY, at which point the oldest bytes are
+/// dropped rather than growing the buffer without limit — the same trade
+/// `push_scrollback` makes with `SCROLLBACK_LIMIT_BYTES`, and the same one a
+/// terminal emulator makes when a program outruns its screen.
+const PENDING_OUTPUT_LIMIT_BYTES: usize = 512 * 1024;
+
 /// How long to wait for a new shell to print its first prompt before typing
 /// an init command anyway. Generous because a login shell sourcing a heavy
 /// profile (nvm, rbenv, a slow prompt) can take a moment, and the cost of
@@ -199,6 +211,27 @@ pub struct TerminalChunk {
     pub base64: String,
 }
 
+/// Where a terminal's output is going, plus what hasn't gone yet.
+///
+/// The bytes wait here instead of being sent per read because every `send` is
+/// an IPC round trip: a `TerminalChunk` carrying 8 KiB of base64 is past
+/// Tauri's `MAX_JSON_DIRECT_EXECUTE_THRESHOLD`, so each one costs a
+/// `webview.eval` *and* a `fetch` back — on the thread that draws the window.
+/// A talkative agent was buying ~128 of those a second, per terminal, and the
+/// window stopped repainting. `tick_terminal_output` drains this on a timer
+/// instead, which caps the traffic at one message per tick no matter how fast
+/// the PTY talks.
+///
+/// Channel and buffer share one mutex so `attach_terminal` can install a sink
+/// with nothing pending in the same critical section where it snapshots the
+/// scrollback — two locks would leave a gap in which the reader could append
+/// bytes that the snapshot already carried, and the pane would print them
+/// twice.
+struct TerminalSink {
+    channel: Channel<TerminalChunk>,
+    pending: Vec<u8>,
+}
+
 struct TerminalHandle {
     /// Kept alive purely so `resize` has something to call: dropping the
     /// master closes the PTY out from under the child.
@@ -211,7 +244,7 @@ struct TerminalHandle {
     /// The channel of whoever is currently displaying this terminal, or
     /// `None` while nobody is. The reader thread keeps filling `scrollback`
     /// either way, so a background terminal never loses output.
-    sink: Arc<Mutex<Option<Channel<TerminalChunk>>>>,
+    sink: Arc<Mutex<Option<TerminalSink>>>,
     /// Live state, written by the reader thread and by the watcher that ages
     /// `Working` into `Waiting`. Shared rather than stored on `info` because
     /// both of those run outside any command.
@@ -817,8 +850,29 @@ fn resolve_target_with_project(conn: &rusqlite::Connection, target: &TerminalTar
     }
 }
 
+/// Opens a terminal from the frontend.
+///
+/// A thin `async` shell over `open_terminal_blocking` so the work lands on the
+/// blocking pool: spawning a PTY means SQLite lookups, a shell process and
+/// `git` for a session's worktree, and a synchronous command would do all of
+/// that on the thread that draws the window (see `crate::blocking`). Callers
+/// inside Rust use the blocking form directly — they are already off that
+/// thread, and several of them open terminals in a loop.
 #[tauri::command]
-pub fn open_terminal<R: Runtime>(
+pub async fn open_terminal<R: Runtime>(
+    app: AppHandle<R>,
+    target: TerminalTarget,
+    account_id: Option<String>,
+    init: Option<InitCommand>,
+    session_uuid: Option<String>,
+    init_prompt: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> Result<TerminalInfo, String> {
+    crate::blocking::run_blocking(move || open_terminal_blocking(app, target, account_id, init, session_uuid, init_prompt, cols, rows)).await?
+}
+
+pub(crate) fn open_terminal_blocking<R: Runtime>(
     app: AppHandle<R>,
     target: TerminalTarget,
     account_id: Option<String>,
@@ -981,7 +1035,7 @@ pub fn open_terminal<R: Runtime>(
     };
 
     let scrollback = Arc::new(Mutex::new(VecDeque::new()));
-    let sink: Arc<Mutex<Option<Channel<TerminalChunk>>>> = Arc::new(Mutex::new(None));
+    let sink: Arc<Mutex<Option<TerminalSink>>> = Arc::new(Mutex::new(None));
     let activity = Arc::new(Mutex::new(Activity::new()));
     let mobile_tail = Arc::new(Mutex::new(crate::bridge::redact::PtyTail::new(rows.max(1), cols.max(1))));
 
@@ -999,9 +1053,32 @@ pub fn open_terminal<R: Runtime>(
                     Ok(0) => break,
                     Ok(n) => {
                         let chunk = &buf[..n];
+                        // The sink is taken *before* the scrollback and held
+                        // across both, which is the order `attach_terminal`
+                        // takes them in. It has to be: attach snapshots the
+                        // scrollback and installs an empty sink as one step, so
+                        // a reader that could slip between those two would put
+                        // this chunk in the snapshot *and* in the new sink's
+                        // queue, and the pane would print it twice. Same order
+                        // on both sides means one of them simply waits.
+                        let mut sink_guard = sink.lock();
                         if let Ok(mut buffer) = scrollback.lock() {
                             push_scrollback(&mut buffer, chunk);
                         }
+                        // Queued, not sent: `tick_terminal_output` does the
+                        // sending, one message per tick per terminal, so a
+                        // program printing fast can't flood the UI thread.
+                        if let Ok(sink) = sink_guard.as_mut() {
+                            if let Some(sink) = sink.as_mut() {
+                                sink.pending.extend_from_slice(chunk);
+                                if sink.pending.len() > PENDING_OUTPUT_LIMIT_BYTES {
+                                    let excess = sink.pending.len() - PENDING_OUTPUT_LIMIT_BYTES;
+                                    sink.pending.drain(..excess);
+                                    log::warn!("terminal {id}: dropped {excess} bytes the pane couldn't keep up with");
+                                }
+                            }
+                        }
+                        drop(sink_guard);
                         // Output means the agent is doing something. The title,
                         // when there is one, comes from the same bytes — no
                         // extra channel, no hook, no configuration.
@@ -1013,12 +1090,6 @@ pub fn open_terminal<R: Runtime>(
                             if act.state != TerminalState::Working {
                                 act.state = TerminalState::Working;
                                 emit_state(&app_for_reader, &id, TerminalState::Working, act.title.clone());
-                            }
-                        }
-                        if let Ok(sink) = sink.lock() {
-                            if let Some(channel) = sink.as_ref() {
-                                let payload = TerminalChunk { base64: base64::engine::general_purpose::STANDARD.encode(chunk) };
-                                let _ = channel.send(payload);
                             }
                         }
                         // Redacted mobile tail — see `bridge::redact`. Fed
@@ -1148,7 +1219,9 @@ pub fn attach_terminal<R: Runtime>(app: AppHandle<R>, id: String, channel: Chann
     let mut sink = handle.sink.lock().map_err(|e| e.to_string())?;
     let buffer = handle.scrollback.lock().map_err(|e| e.to_string())?;
     let snapshot: Vec<u8> = buffer.iter().copied().collect();
-    *sink = Some(channel);
+    // Nothing pending: the snapshot above already carries everything printed so
+    // far, and this is the one place where "so far" is unambiguous.
+    *sink = Some(TerminalSink { channel, pending: Vec::new() });
 
     Ok(base64::engine::general_purpose::STANDARD.encode(snapshot))
 }
@@ -1243,8 +1316,15 @@ struct PersistedTerminal {
 /// gone, its account deleted, its worktree removed — is dropped without
 /// aborting the rest. Reopening re-persists a fresh row (via `open_terminal`),
 /// so the set survives the *next* restart too.
+/// Off the UI thread because it reopens *every* terminal the last session had
+/// open, one after another — each with its own PTY spawn and SQLite lookups.
+/// As a synchronous command this froze the window for the whole restore.
 #[tauri::command]
-pub fn restore_terminals<R: Runtime>(app: AppHandle<R>, cols: u16, rows: u16) -> Result<Vec<TerminalInfo>, String> {
+pub async fn restore_terminals<R: Runtime>(app: AppHandle<R>, cols: u16, rows: u16) -> Result<Vec<TerminalInfo>, String> {
+    crate::blocking::run_blocking(move || restore_terminals_blocking(app, cols, rows)).await?
+}
+
+fn restore_terminals_blocking<R: Runtime>(app: AppHandle<R>, cols: u16, rows: u16) -> Result<Vec<TerminalInfo>, String> {
     if let Some(guard) = app.try_state::<RestoreGuard>() {
         if guard.0.swap(true, Ordering::SeqCst) {
             return list_terminals(app);
@@ -1280,7 +1360,7 @@ pub fn restore_terminals<R: Runtime>(app: AppHandle<R>, cols: u16, rows: u16) ->
         };
         let (init, session_uuid) = decide_restore_init(&app, &row);
         let target = TerminalTarget { kind, id: row.source_id.clone() };
-        match open_terminal(app.clone(), target, row.account_id.clone(), init, session_uuid, None, cols, rows) {
+        match open_terminal_blocking(app.clone(), target, row.account_id.clone(), init, session_uuid, None, cols, rows) {
             Ok(mut info) => {
                 // The name the user gave this panel is part of what "restore"
                 // means — without it, three panels on one project come back
@@ -1442,7 +1522,7 @@ fn reopen_with_account_inner<R: Runtime>(app: AppHandle<R>, id: String, account_
     // Open before closing: if the new shell can't start, the user keeps the one
     // they had rather than losing both. `session_uuid` carries the conversation
     // when `plan_conversation_handoff` set up a resume.
-    let info = open_terminal(app.clone(), target, Some(account_id.clone()), init, session_uuid, None, cols, rows)?;
+    let info = open_terminal_blocking(app.clone(), target, Some(account_id.clone()), init, session_uuid, None, cols, rows)?;
     close_terminal(app.clone(), id)?;
 
     // Best-effort ledger write — the user already has their new terminal, so a
@@ -1515,7 +1595,7 @@ pub async fn fan_out_prompt<R: Runtime>(
             }
         };
         let target = TerminalTarget { kind: TargetKind::Session, id: session.id };
-        match open_terminal(
+        match open_terminal_blocking(
             app.clone(),
             target,
             Some(branch.account_id),
@@ -1708,6 +1788,33 @@ pub fn tick_mobile_tail<R: Runtime>(app: &AppHandle<R>) {
     };
     for (id, text) in due {
         emit_tail(app, &id, text);
+    }
+}
+
+/// Hands each attached pane whatever its PTY has printed since the last tick,
+/// in one message per terminal — see `TerminalSink` for why the reader thread
+/// no longer sends directly.
+///
+/// The bytes are taken out from under the lock and encoded outside it: base64
+/// of half a megabyte is real work, and holding the sink while doing it would
+/// stall the reader thread that wants to append the next chunk.
+pub fn tick_terminal_output<R: Runtime>(app: &AppHandle<R>) {
+    let Some(registry) = app.try_state::<TerminalRegistry>() else { return };
+    let due: Vec<(Channel<TerminalChunk>, Vec<u8>)> = {
+        let Ok(map) = registry.0.lock() else { return };
+        map.values()
+            .filter_map(|handle| {
+                let mut sink = handle.sink.lock().ok()?;
+                let sink = sink.as_mut()?;
+                if sink.pending.is_empty() {
+                    return None;
+                }
+                Some((sink.channel.clone(), std::mem::take(&mut sink.pending)))
+            })
+            .collect()
+    };
+    for (channel, bytes) in due {
+        let _ = channel.send(TerminalChunk { base64: base64::engine::general_purpose::STANDARD.encode(bytes) });
     }
 }
 
@@ -1937,7 +2044,7 @@ pub async fn open_task_worktrees<R: Runtime>(
         };
 
         let target = TerminalTarget { kind: TargetKind::Session, id: session.id };
-        match open_terminal(app.clone(), target, Some(task.account_id), Some(InitCommand::Start), None, prompt, cols, rows) {
+        match open_terminal_blocking(app.clone(), target, Some(task.account_id), Some(InitCommand::Start), None, prompt, cols, rows) {
             Ok(info) => opened.push(info),
             Err(e) => failures.push(format!("{}: {e}", task.branch)),
         }
@@ -2784,7 +2891,7 @@ mod tests {
         app.manage(crate::db::DbConnection(Mutex::new(seed())));
         app.manage(TerminalRegistry::new());
 
-        let result = open_terminal(
+        let result = open_terminal_blocking(
             app.handle().clone(),
             TerminalTarget { kind: TargetKind::Project, id: "proj1".into() },
             None,
@@ -2807,7 +2914,7 @@ mod tests {
         // `seed` points proj1 at /repo/casablanca, which doesn't exist — the
         // real-world version of this is a worktree deleted off disk while its
         // session row still names it.
-        let result = open_terminal(app.handle().clone(), TerminalTarget { kind: TargetKind::Project, id: "proj1".into() }, None, None, None, None, 80, 24);
+        let result = open_terminal_blocking(app.handle().clone(), TerminalTarget { kind: TargetKind::Project, id: "proj1".into() }, None, None, None, None, 80, 24);
         assert!(result.is_err(), "a vanished working directory must be reported, not silently spawned somewhere else");
         assert!(result.unwrap_err().contains("no longer exists"));
     }
@@ -2837,7 +2944,7 @@ mod tests {
         app.manage(TerminalRegistry::new());
         let handle = app.handle().clone();
 
-        let info = open_terminal(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp".into() }, None, None, None, None, 80, 24)
+        let info = open_terminal_blocking(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp".into() }, None, None, None, None, 80, 24)
             .expect("opening a terminal in a real directory must succeed");
         assert_eq!(info.cwd, dir.to_string_lossy());
 
@@ -2871,6 +2978,102 @@ mod tests {
         close_terminal(handle.clone(), info.id.clone()).unwrap();
         assert!(list_terminals(handle).unwrap().is_empty(), "a closed terminal must leave the registry");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Attaching hands over the scrollback *and* the pane must not then be sent
+    /// the same bytes again by the next flush.
+    ///
+    /// This is the one thing the batching could plausibly get wrong: output is
+    /// queued on the sink now instead of being sent per read, so a sink
+    /// installed with anything already pending would print the tail of the
+    /// snapshot twice. `attach_terminal` starts it empty under the same lock
+    /// the reader appends through, and this pins that.
+    #[test]
+    fn attaching_replays_the_scrollback_without_the_pane_seeing_it_twice() {
+        use std::time::{Duration, Instant};
+
+        let dir = std::env::temp_dir().join(format!("hangar-test-batch-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let conn = seed();
+        conn.execute(
+            "INSERT INTO projects (id, name, path, created_at) VALUES ('tmp','Temp',?1,'now')",
+            rusqlite::params![dir.to_string_lossy().to_string()],
+        )
+        .unwrap();
+
+        let app = tauri::test::mock_app();
+        app.manage(crate::db::DbConnection(Mutex::new(conn)));
+        app.manage(TerminalRegistry::new());
+        let handle = app.handle().clone();
+
+        let info = open_terminal_blocking(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp".into() }, None, None, None, None, 80, 24).unwrap();
+
+        // Printed *before* anyone is watching, so it can only reach a pane
+        // through the scrollback `attach_terminal` returns.
+        write_terminal(handle.clone(), info.id.clone(), "echo hangar-before-attach\n".to_string()).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut in_scrollback = false;
+        while Instant::now() < deadline {
+            let registry = handle.state::<TerminalRegistry>();
+            let map = registry.0.lock().unwrap();
+            let buffer = map.get(&info.id).unwrap().scrollback.lock().unwrap();
+            let text = String::from_utf8_lossy(&buffer.iter().copied().collect::<Vec<_>>()).to_string();
+            drop(buffer);
+            drop(map);
+            // Twice: the shell echoes the command line, then runs it.
+            if text.matches("hangar-before-attach").count() >= 2 {
+                in_scrollback = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(in_scrollback, "the marker must be in the scrollback before attaching");
+
+        let received = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink_log = received.clone();
+        let channel = Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+                let encoded = value["base64"].as_str().unwrap_or_default();
+                let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap_or_default();
+                sink_log.lock().unwrap().push(String::from_utf8_lossy(&bytes).to_string());
+            }
+            Ok(())
+        });
+
+        let snapshot = attach_terminal(handle.clone(), info.id.clone(), channel).unwrap();
+        let replayed = String::from_utf8_lossy(&base64::engine::general_purpose::STANDARD.decode(snapshot).unwrap()).to_string();
+        assert!(replayed.contains("hangar-before-attach"), "attach must replay what the terminal printed while nobody watched");
+
+        // Whatever the flusher sends from here on is new output only.
+        for _ in 0..5 {
+            std::thread::sleep(OUTPUT_FLUSH_INTERVAL);
+            tick_terminal_output(&handle);
+        }
+        let after_attach = received.lock().unwrap().concat();
+        assert!(
+            !after_attach.contains("hangar-before-attach"),
+            "the pane must not be sent bytes the scrollback snapshot already carried, got: {after_attach:?}"
+        );
+
+        // And the batched path does deliver what comes next.
+        write_terminal(handle.clone(), info.id.clone(), "echo hangar-after-attach\n".to_string()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut delivered = false;
+        while Instant::now() < deadline {
+            tick_terminal_output(&handle);
+            if received.lock().unwrap().concat().matches("hangar-after-attach").count() >= 2 {
+                delivered = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(delivered, "output printed while attached must reach the pane through the flush tick");
+
+        close_terminal(handle, info.id).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2912,7 +3115,7 @@ mod tests {
         app.manage(TerminalRegistry::new());
         let handle = app.handle().clone();
 
-        let info = open_terminal(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp2".into() }, Some("sub1".to_string()), None, None, None, 80, 24)
+        let info = open_terminal_blocking(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp2".into() }, Some("sub1".to_string()), None, None, None, 80, 24)
             .expect("opening against an account must succeed");
         assert_eq!(info.account_name.as_deref(), Some("Personal"), "the pane header has to show whose credentials this shell carries");
         assert_eq!(list_terminals(handle.clone()).unwrap().len(), 1);
@@ -3013,7 +3216,7 @@ mod tests {
         app.manage(TerminalRegistry::new());
         let handle = app.handle().clone();
 
-        let old = open_terminal(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp2".into() }, Some("sub1".to_string()), None, None, None, 80, 24).unwrap();
+        let old = open_terminal_blocking(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp2".into() }, Some("sub1".to_string()), None, None, None, 80, 24).unwrap();
         assert_eq!(
             account_terminals(&handle),
             vec![("project", "tmp2".to_string(), "sub1".to_string())],
@@ -3129,7 +3332,7 @@ mod tests {
         app.manage(TerminalRegistry::new());
         let handle = app.handle().clone();
 
-        let old = open_terminal(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp2".into() }, Some("sub1".to_string()), None, None, None, 80, 24).unwrap();
+        let old = open_terminal_blocking(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp2".into() }, Some("sub1".to_string()), None, None, None, 80, 24).unwrap();
 
         // An account that doesn't exist, rather than one whose CLI is missing:
         // the invariant under test is the rollback, and tying it to which CLIs

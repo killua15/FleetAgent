@@ -158,6 +158,19 @@ pub fn run() {
                 terminals::tick_mobile_tail(&mobile_tail_handle);
             });
 
+            // Hands PTY output to the panes displaying it, in one message per
+            // terminal per frame — the reader threads only queue it (see
+            // `terminals::TerminalSink`). A steady 60Hz rather than backing off
+            // when idle: the first bytes after a quiet spell are usually the
+            // echo of a keystroke, and anything slower than a frame reads as a
+            // laggy terminal. Each tick is a mutex check and nothing else when
+            // no terminal has spoken.
+            let output_handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(terminals::OUTPUT_FLUSH_INTERVAL);
+                terminals::tick_terminal_output(&output_handle);
+            });
+
             let usage_handle = app.handle().clone();
             std::thread::spawn(move || loop {
                 terminals::poll_account_usage(&usage_handle);

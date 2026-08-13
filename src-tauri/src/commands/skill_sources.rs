@@ -136,24 +136,31 @@ pub fn remove_skill_source(db: State<DbConnection>, id: String) -> Result<(), St
 
 // ------------------------------------------------------------------- gh skill
 
+// Every command below runs `gh` over the network, which `process_timeout`
+// caps at 25 seconds. Synchronous, that ceiling was 25 seconds of a window
+// that doesn't repaint — so they all hand the work to the blocking pool (see
+// `crate::blocking`).
 #[tauri::command]
-pub fn list_source_skills<R: tauri::Runtime>(app: tauri::AppHandle<R>, repo: String) -> Result<Vec<RemoteSkill>, String> {
-    gh_available_and_authed()?;
-    let repo = normalize_repo(&repo)?;
-    // Sin nombre de skill, `gh skill install` no instala: lista.
-    let output = gh_output(None, &["skill", "install", &repo])?;
-    if !output.status.success() {
-        return Err(format!("no se pudo leer {repo}: {}", String::from_utf8_lossy(&output.stderr).trim()));
-    }
-    let installed = crate::commands::skills::list_skills(app)?;
-    Ok(parse_skill_listing(&String::from_utf8_lossy(&output.stdout))
-        .into_iter()
-        .map(|(name, description)| RemoteSkill {
-            installed: installed.iter().any(|s| s.name == name),
-            name,
-            description,
-        })
-        .collect())
+pub async fn list_source_skills<R: tauri::Runtime>(app: tauri::AppHandle<R>, repo: String) -> Result<Vec<RemoteSkill>, String> {
+    crate::blocking::run_blocking(move || {
+        gh_available_and_authed()?;
+        let repo = normalize_repo(&repo)?;
+        // Sin nombre de skill, `gh skill install` no instala: lista.
+        let output = gh_output(None, &["skill", "install", &repo])?;
+        if !output.status.success() {
+            return Err(format!("no se pudo leer {repo}: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        }
+        let installed = crate::commands::skills::list_skills(app)?;
+        Ok(parse_skill_listing(&String::from_utf8_lossy(&output.stdout))
+            .into_iter()
+            .map(|(name, description)| RemoteSkill {
+                installed: installed.iter().any(|s| s.name == name),
+                name,
+                description,
+            })
+            .collect())
+    })
+    .await?
 }
 
 /// El árbol de ficheros y el contenido de una skill, **antes** de instalarla.
@@ -164,14 +171,17 @@ pub fn list_source_skills<R: tauri::Runtime>(app: tauri::AppHandle<R>, repo: Str
 /// firma lo que publica; una búsqueda de código en GitHub no revisa nada, así
 /// que esta pantalla es lo único que hay entre el usuario y esa diferencia.
 #[tauri::command]
-pub fn preview_source_skill(repo: String, skill: String) -> Result<String, String> {
-    gh_available_and_authed()?;
-    let repo = normalize_repo(&repo)?;
-    let output = gh_output(None, &["skill", "preview", &repo, &skill])?;
-    if !output.status.success() {
-        return Err(format!("no se pudo previsualizar {skill}: {}", String::from_utf8_lossy(&output.stderr).trim()));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+pub async fn preview_source_skill(repo: String, skill: String) -> Result<String, String> {
+    crate::blocking::run_blocking(move || {
+        gh_available_and_authed()?;
+        let repo = normalize_repo(&repo)?;
+        let output = gh_output(None, &["skill", "preview", &repo, &skill])?;
+        if !output.status.success() {
+            return Err(format!("no se pudo previsualizar {skill}: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    })
+    .await?
 }
 
 fn gh_with_timeout(args: &[&str], timeout: std::time::Duration) -> Result<std::process::Output, String> {
@@ -181,20 +191,23 @@ fn gh_with_timeout(args: &[&str], timeout: std::time::Duration) -> Result<std::p
 }
 
 #[tauri::command]
-pub fn install_source_skill<R: tauri::Runtime>(app: tauri::AppHandle<R>, repo: String, skill: String) -> Result<(), String> {
-    gh_available_and_authed()?;
-    let repo = normalize_repo(&repo)?;
-    let library = crate::commands::skills::library_dir(&crate::app_data::root(&app)?);
-    std::fs::create_dir_all(&library).map_err(|e| format!("could not create {}: {e}", library.display()))?;
-    let dir = library.to_string_lossy().to_string();
+pub async fn install_source_skill<R: tauri::Runtime>(app: tauri::AppHandle<R>, repo: String, skill: String) -> Result<(), String> {
+    crate::blocking::run_blocking(move || {
+        gh_available_and_authed()?;
+        let repo = normalize_repo(&repo)?;
+        let library = crate::commands::skills::library_dir(&crate::app_data::root(&app)?);
+        std::fs::create_dir_all(&library).map_err(|e| format!("could not create {}: {e}", library.display()))?;
+        let dir = library.to_string_lossy().to_string();
 
-    // `--force` porque la UI ya preguntó: llegar hasta aquí significa que el
-    // usuario vio el preview y confirmó.
-    let output = gh_with_timeout(&["skill", "install", &repo, &skill, "--dir", &dir, "--force"], INSTALL_TIMEOUT)?;
-    if !output.status.success() {
-        return Err(format!("no se pudo instalar {skill}: {}", String::from_utf8_lossy(&output.stderr).trim()));
-    }
-    Ok(())
+        // `--force` porque la UI ya preguntó: llegar hasta aquí significa que el
+        // usuario vio el preview y confirmó.
+        let output = gh_with_timeout(&["skill", "install", &repo, &skill, "--dir", &dir, "--force"], INSTALL_TIMEOUT)?;
+        if !output.status.success() {
+            return Err(format!("no se pudo instalar {skill}: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        }
+        Ok(())
+    })
+    .await?
 }
 
 /// Qué cambió en el origen, **sin tocar nada**.
@@ -204,34 +217,40 @@ pub fn install_source_skill<R: tauri::Runtime>(app: tauri::AppHandle<R>, repo: S
 /// tu comportamiento sin avisar— pero significa que hace falta una forma de
 /// preguntar, y esta es.
 #[tauri::command]
-pub fn check_skill_updates<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<String, String> {
-    gh_available_and_authed()?;
-    let library = crate::commands::skills::library_dir(&crate::app_data::root(&app)?);
-    if !library.is_dir() {
-        return Ok(String::new());
-    }
-    let dir = library.to_string_lossy().to_string();
-    let output = gh_output(None, &["skill", "update", "--dir", &dir, "--dry-run"])?;
-    // `gh` escribe el informe en stdout y las notas en stderr; se muestran los
-    // dos, porque «no hay nada que actualizar» a veces sale por el segundo.
-    let mut report = String::from_utf8_lossy(&output.stdout).to_string();
-    let notes = String::from_utf8_lossy(&output.stderr);
-    if !notes.trim().is_empty() {
-        report.push_str(notes.trim());
-    }
-    Ok(report)
+pub async fn check_skill_updates<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<String, String> {
+    crate::blocking::run_blocking(move || {
+        gh_available_and_authed()?;
+        let library = crate::commands::skills::library_dir(&crate::app_data::root(&app)?);
+        if !library.is_dir() {
+            return Ok(String::new());
+        }
+        let dir = library.to_string_lossy().to_string();
+        let output = gh_output(None, &["skill", "update", "--dir", &dir, "--dry-run"])?;
+        // `gh` escribe el informe en stdout y las notas en stderr; se muestran los
+        // dos, porque «no hay nada que actualizar» a veces sale por el segundo.
+        let mut report = String::from_utf8_lossy(&output.stdout).to_string();
+        let notes = String::from_utf8_lossy(&output.stderr);
+        if !notes.trim().is_empty() {
+            report.push_str(notes.trim());
+        }
+        Ok(report)
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn update_installed_skills<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<String, String> {
-    gh_available_and_authed()?;
-    let library = crate::commands::skills::library_dir(&crate::app_data::root(&app)?);
-    let dir = library.to_string_lossy().to_string();
-    let output = gh_with_timeout(&["skill", "update", "--dir", &dir, "--all"], INSTALL_TIMEOUT)?;
-    if !output.status.success() {
-        return Err(format!("no se pudieron actualizar: {}", String::from_utf8_lossy(&output.stderr).trim()));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+pub async fn update_installed_skills<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<String, String> {
+    crate::blocking::run_blocking(move || {
+        gh_available_and_authed()?;
+        let library = crate::commands::skills::library_dir(&crate::app_data::root(&app)?);
+        let dir = library.to_string_lossy().to_string();
+        let output = gh_with_timeout(&["skill", "update", "--dir", &dir, "--all"], INSTALL_TIMEOUT)?;
+        if !output.status.success() {
+            return Err(format!("no se pudieron actualizar: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    })
+    .await?
 }
 
 #[cfg(test)]

@@ -164,13 +164,18 @@ pub fn get_project_graph(app: AppHandle, db: State<DbConnection>, project_id: St
 
 /// Builds (or rebuilds) a project's graph.
 ///
-/// Synchronous on purpose for Phase 1: the spike measured 6 s for this repo,
-/// which is a spinner, not a background job. If a real monorepo proves that
-/// wrong, this becomes a task — but building the machinery for a wait nobody
-/// has yet is how you get a progress bar that lies.
+/// One call the user waits on with a spinner rather than a background job with
+/// progress: the spike measured 6 s for this repo, and machinery for a wait
+/// nobody has yet is how you get a progress bar that lies. What it can't be is
+/// a *synchronous* command — 6 s of running `graphify` on the thread that draws
+/// the window is 6 s of a frozen app, so the wait happens on the blocking pool.
 #[tauri::command]
-pub fn build_project_graph(app: AppHandle, db: State<DbConnection>, project_id: String) -> Result<GraphState, String> {
-    build_project_graph_inner(&app, &db, &project_id)
+pub async fn build_project_graph(app: AppHandle, project_id: String) -> Result<GraphState, String> {
+    crate::blocking::run_blocking(move || {
+        let db = app.state::<DbConnection>();
+        build_project_graph_inner(&app, &db, &project_id)
+    })
+    .await?
 }
 
 /// `build_project_graph`'s body, reachable without a command invocation so the
@@ -539,8 +544,15 @@ pub fn get_graph_bridges(app: AppHandle, group_id: String) -> Result<Vec<graph::
 
 /// Builds a group's graph: one `extract` per member, then graphify's own
 /// `merge-graphs`, then our bridges (§5.6, §5.7).
+/// Off the UI thread for the same reason as `build_project_graph`, and more so:
+/// this runs one `extract` per member project before merging them.
 #[tauri::command]
-pub fn build_graph_group(app: AppHandle, db: State<DbConnection>, group_id: String) -> Result<GraphState, String> {
+pub async fn build_graph_group(app: AppHandle, group_id: String) -> Result<GraphState, String> {
+    crate::blocking::run_blocking(move || build_graph_group_blocking(app, group_id)).await?
+}
+
+fn build_graph_group_blocking(app: AppHandle, group_id: String) -> Result<GraphState, String> {
+    let db = app.state::<DbConnection>();
     let binary = graph::detect()
         .ok_or_else(|| format!("graphify isn't installed — run `{}` and reopen this screen", graph::INSTALL_HINT))?;
     let app_data = crate::app_data::root(&app)?;

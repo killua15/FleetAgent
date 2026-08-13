@@ -263,25 +263,32 @@ pub fn create_account(
 /// Re-runs the same check `login_manager` uses during login, scoped to an
 /// already-created account — so AccountList can show real "logged in" state
 /// instead of trusting a snapshot from creation time.
+/// Off the UI thread: `auth_status_for` falls back to running the provider's
+/// CLI when there's no marker file on disk, and AccountList asks this once per
+/// account as it mounts.
 #[tauri::command]
-pub fn check_account_auth(db: State<DbConnection>, id: String) -> Result<login_manager::AuthStatus, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let (provider, billing, config_dir_path): (String, String, String) = conn
-        .query_row(
-            "SELECT provider, billing, config_dir_path FROM accounts WHERE id = ?1",
-            params![id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .map_err(|e| e.to_string())?;
-    drop(conn);
+pub async fn check_account_auth(app: AppHandle, id: String) -> Result<login_manager::AuthStatus, String> {
+    crate::blocking::run_blocking(move || {
+        let db = app.state::<DbConnection>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let (provider, billing, config_dir_path): (String, String, String) = conn
+            .query_row(
+                "SELECT provider, billing, config_dir_path FROM accounts WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|e| e.to_string())?;
+        drop(conn);
 
-    if billing == "key" {
-        return Ok(login_manager::AuthStatus { logged_in: true, auth_method: "api_key".to_string(), email: None, subscription_type: None });
-    }
-    if provider != "claude" {
-        return Ok(login_manager::AuthStatus { logged_in: false, auth_method: "unsupported".to_string(), email: None, subscription_type: None });
-    }
-    login_manager::auth_status_for(&provider, &config_dir_path)
+        if billing == "key" {
+            return Ok(login_manager::AuthStatus { logged_in: true, auth_method: "api_key".to_string(), email: None, subscription_type: None });
+        }
+        if provider != "claude" {
+            return Ok(login_manager::AuthStatus { logged_in: false, auth_method: "unsupported".to_string(), email: None, subscription_type: None });
+        }
+        login_manager::auth_status_for(&provider, &config_dir_path)
+    })
+    .await?
 }
 
 /// A Claude Code config directory already on disk with a working login, that

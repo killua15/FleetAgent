@@ -12,7 +12,7 @@ use chrono::Utc;
 use rusqlite::params;
 use std::collections::HashSet;
 use std::path::Path;
-use tauri::{AppHandle, Runtime, State};
+use tauri::{AppHandle, Manager, Runtime, State};
 use uuid::Uuid;
 
 /// The only account field Settings/General needs to edit after creation —
@@ -379,8 +379,15 @@ pub fn import_discovered_memory_file(db: State<DbConnection>, project_id: String
 /// review prompt immediately (unlike a normal new session, which waits for
 /// the user to type the first message). `mode: Mode::Plan` so the reviewer
 /// can only read/report, never edit.
+/// Off the UI thread: it ends in `spawn_turn`, which starts the reviewer's
+/// process (see `send_message`, which had the same problem).
 #[tauri::command]
-pub fn trigger_review<R: Runtime>(app: AppHandle<R>, db: State<DbConnection>, session_id: String) -> Result<Session, String> {
+pub async fn trigger_review<R: Runtime>(app: AppHandle<R>, session_id: String) -> Result<Session, String> {
+    crate::blocking::run_blocking(move || trigger_review_blocking(app, session_id)).await?
+}
+
+fn trigger_review_blocking<R: Runtime>(app: AppHandle<R>, session_id: String) -> Result<Session, String> {
+    let db = app.state::<DbConnection>();
     let settings = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         read_app_settings(&conn)?
@@ -451,14 +458,15 @@ pub fn trigger_review<R: Runtime>(app: AppHandle<R>, db: State<DbConnection>, se
     };
     // A review reads the diff and the repo it sits in, so it gets the same
     // graph the working session gets — or nothing, which is the common case.
-    // Resolved before `app` moves into the request below.
     let mcp_config = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         crate::commands::graph::mcp_config_for_project(&app, &conn, &project_id)
     };
 
+    // Cloned rather than moved: `db` is borrowed from this handle and is still
+    // needed below, to read back the session this just created.
     turn_runner::spawn_turn(TurnRequest {
-        app,
+        app: app.clone(),
         session_id: new_session_id.clone(),
         account_id: reviewer_account_id,
         provider,
@@ -697,8 +705,7 @@ mod tests {
     #[test]
     fn trigger_review_fails_clearly_when_reviewer_disabled() {
         let (app, _acc1, _acc2, _proj1) = setup_test_app();
-        let db = app.state::<DbConnection>();
-        let err = trigger_review(app.handle().clone(), db, "sess1".to_string()).unwrap_err();
+        let err = trigger_review_blocking(app.handle().clone(), "sess1".to_string()).unwrap_err();
         assert!(err.contains("disabled"));
     }
 
@@ -707,7 +714,7 @@ mod tests {
         let (app, _acc1, _acc2, _proj1) = setup_test_app();
         let db = app.state::<DbConnection>();
         set_app_settings(db.clone(), AppSettings { reviewer_enabled: true, reviewer_account_id: None, ..Default::default() }).unwrap();
-        let err = trigger_review(app.handle().clone(), db, "sess1".to_string()).unwrap_err();
+        let err = trigger_review_blocking(app.handle().clone(), "sess1".to_string()).unwrap_err();
         assert!(err.contains("no reviewer account"));
     }
 }
