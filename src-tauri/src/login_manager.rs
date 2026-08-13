@@ -310,13 +310,19 @@ pub fn auth_status_for(provider: &str, config_dir: &str) -> Result<AuthStatus, S
 /// - `claude auth status --json` answers `loggedIn: false`. Real validation, so
 ///   asking it is what lets an expired Claude account be noticed at all.
 /// - `codex login status` answers "Logged in using ChatGPT" for any `auth.json`
-///   that merely exists. Its probe is no stronger than the marker file, so
-///   bypassing the marker changes nothing for Codex — an expired-but-present
-///   Codex credential cannot be detected by anything Hangar can ask today.
+///   that merely exists. Its probe is no stronger than the marker file, so for
+///   Codex this changes nothing either way: an expired-but-present Codex
+///   credential cannot be detected by anything Hangar can ask today.
 ///
 /// The split is still right: it's what makes the Claude case work, and it puts
 /// the seam in the correct place for the day Codex's CLI learns to answer
 /// honestly. It just isn't a fix for Codex, and shouldn't be described as one.
+///
+/// Skipping the marker did briefly make Codex *worse* rather than neutral —
+/// it exposed a probe that only read stdout, while `codex` answers on stderr,
+/// so every healthy Codex account reported as signed out. That was a bug in
+/// the probe, now fixed and pinned by `text_probe_says_logged_in`'s tests; it
+/// wasn't a reason to keep trusting the file.
 #[derive(Clone, Copy, PartialEq)]
 pub enum TrustMarkerFile {
     Yes,
@@ -361,6 +367,7 @@ pub fn auth_status_with(provider: &str, config_dir: &str, trust_marker: TrustMar
 
     let output = crate::process_timeout::run_with_timeout(cmd, crate::process_timeout::DEFAULT_TIMEOUT)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
 
     match spec.auth_status {
         crate::providers::AuthStatusProbe::Json(_) => {
@@ -377,13 +384,34 @@ pub fn auth_status_with(provider: &str, config_dir: &str, trust_marker: TrustMar
         // or plan to report and the UI shows the name the user typed rather
         // than inventing detail it doesn't have.
         crate::providers::AuthStatusProbe::Text { logged_marker, .. } => Ok(AuthStatus {
-            logged_in: stdout.contains(logged_marker),
-            auth_method: stdout.trim().to_string(),
+            logged_in: text_probe_says_logged_in(&stdout, &stderr, logged_marker),
+            auth_method: probe_sentence(&stdout, &stderr),
             email: None,
             subscription_type: None,
         }),
         crate::providers::AuthStatusProbe::None => unreachable!("handled above"),
     }
+}
+
+/// Whether a sentence-printing CLI said it is logged in — looking at **both**
+/// streams.
+///
+/// `codex login status` prints "Logged in using ChatGPT" on *stderr* and leaves
+/// stdout empty. Reading only stdout made every healthy Codex account report as
+/// signed out, which the re-login banner then announced on every launch. Which
+/// stream a CLI picks for its answer is its business; for this question both
+/// are the answer.
+///
+/// Pure so the case that caused that bug can be pinned in a test — the reason
+/// it escaped review is that seeing it needed the real binary.
+pub(crate) fn text_probe_says_logged_in(stdout: &str, stderr: &str, logged_marker: &str) -> bool {
+    stdout.contains(logged_marker) || stderr.contains(logged_marker)
+}
+
+/// The sentence to show for a text probe: whichever stream actually carried it.
+fn probe_sentence(stdout: &str, stderr: &str) -> String {
+    let spoken = if stdout.trim().is_empty() { stderr } else { stdout };
+    spoken.trim().to_string()
 }
 
 pub fn check_login_status<R: Runtime>(app: &AppHandle<R>, login_id: &str) -> Result<AuthStatus, String> {
@@ -480,6 +508,37 @@ pub fn adopt(app: &AppHandle, login_id: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// The exact shape that shipped a false "signed out" banner in 0.6.5.
+    ///
+    /// Verified against the installed CLI: `codex login status` writes its
+    /// answer to stderr and leaves stdout empty. Reading one stream is reading
+    /// a coin flip about which one a given CLI chose.
+    #[test]
+    fn a_probe_answering_on_stderr_still_counts_as_logged_in() {
+        assert!(
+            text_probe_says_logged_in("", "Logged in using ChatGPT\n", "Logged in"),
+            "codex answers on stderr — missing that reported every healthy Codex account as signed out"
+        );
+        assert!(text_probe_says_logged_in("Logged in using ChatGPT\n", "", "Logged in"), "and on stdout, for a CLI that chooses the other stream");
+    }
+
+    /// The negative has to keep working on both streams too, or the fix would
+    /// trade a false alarm for a silent failure — which is worse, because
+    /// nothing would ever tell you to sign in again.
+    #[test]
+    fn not_logged_in_stays_not_logged_in() {
+        assert!(!text_probe_says_logged_in("", "Not logged in\n", "Logged in"));
+        assert!(!text_probe_says_logged_in("", "", "Logged in"));
+    }
+
+    /// Whichever stream spoke is the sentence worth showing — the accounts
+    /// screen puts it in a tooltip, and an empty tooltip explains nothing.
+    #[test]
+    fn the_sentence_comes_from_whichever_stream_carried_it() {
+        assert_eq!(probe_sentence("", "Logged in using ChatGPT\n"), "Logged in using ChatGPT");
+        assert_eq!(probe_sentence("Logged in using ChatGPT\n", "some warning"), "Logged in using ChatGPT");
+    }
+
     #[test]
     fn login_env_overrides_config_dir_and_sets_term() {
         let env = login_env("/tmp/some-isolated-dir");
@@ -546,6 +605,34 @@ mod tests {
         std::fs::write(dir.join("auth.json"), "{}").unwrap();
         let filled = auth_status_for("codex", path).expect("the marker file alone is enough");
         assert!(filled.logged_in, "a codex home holding auth.json is logged in");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same answer when the marker file is *not* trusted — which is the
+    /// path the background login check takes.
+    ///
+    /// This is the regression 0.6.5 shipped: skipping the marker fell through
+    /// to the CLI, the CLI answers on stderr, the probe read only stdout, and
+    /// every healthy Codex account was announced as signed out. Against the
+    /// real binary, because the bug lived entirely in which stream got read —
+    /// no amount of pure-function testing would have caught it alone.
+    #[test]
+    #[ignore = "needs the real `codex` CLI installed — see doc comment"]
+    fn revalidating_a_codex_dir_agrees_with_the_marker_file() {
+        let dir = std::env::temp_dir().join(format!("hangar-test-codex-revalidate-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.to_str().unwrap();
+
+        let empty = auth_status_with("codex", path, TrustMarkerFile::No).expect("an empty codex home must still answer");
+        assert!(!empty.logged_in, "no credential, no session");
+
+        std::fs::write(dir.join("auth.json"), "{}").unwrap();
+        let filled = auth_status_with("codex", path, TrustMarkerFile::No).expect("the CLI must answer for a dir holding auth.json");
+        assert!(
+            filled.logged_in,
+            "asking the CLI must agree with the marker file — disagreeing is what put a false 'signed out' banner on every launch"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

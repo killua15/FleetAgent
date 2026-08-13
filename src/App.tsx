@@ -18,10 +18,11 @@ import { UpdateBanner } from './components/UpdateBanner';
 import { ReloginBanner } from './components/ReloginBanner';
 import { useBridge } from './bridge/useBridge';
 
-// Inline rather than a module: two rules that exist only to let the banner sit
+// Inline rather than a module: rules that exist only to let the banners sit
 // above a screen that expects the full viewport height.
 const appShell = 'hangar-shell';
 const appBody = 'hangar-body';
+const appStack = 'hangar-stack';
 import { Changes } from './screens/Changes';
 import { RotationSettings } from './screens/RotationSettings';
 import { ProjectSettings } from './screens/ProjectSettings';
@@ -165,13 +166,22 @@ export default function App() {
                   <NavigationProvider>
                     <GlobalShortcuts />
                     <MobileBridge />
-                    {/* Inside the router, unlike the update banner above it:
-                        its button opens a terminal and navigates there, so it
-                        needs the navigation it sits in. Behind the gate too —
-                        a provider login is only worth mentioning to someone
-                        already inside. */}
-                    <ReloginBanner />
-                    <Screens />
+                    {/* One element, not two siblings. `.hangar-body > *` gives
+                        every direct child `height: 100%`, and neither the gate
+                        (a fragment) nor the provider (a context) creates an
+                        element of its own — so a bare banner beside the screen
+                        became a full-height box with its content floating in
+                        the middle, and pushed the whole app out of view. The
+                        wrapper takes that 100% and shares it out: banner first
+                        at its natural height, screen with the rest.
+
+                        Inside the router, unlike the update banner above it:
+                        the banner's button opens a terminal and navigates
+                        there, so it needs the navigation it sits in. */}
+                    <div className={appStack}>
+                      <ReloginBanner />
+                      <Screens />
+                    </div>
                   </NavigationProvider>
                 </SignInGate>
               </div>

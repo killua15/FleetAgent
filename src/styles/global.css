@@ -142,3 +142,19 @@ button {
 .hangar-body > * {
   height: 100%;
 }
+
+/* Inside the body: a banner that may or may not be there, then the screen.
+   The screen still gets a full-height box when no banner is showing, and gives
+   up exactly the banner's height when one is — rather than the banner stealing
+   the whole body, which is what happened when both were direct children of
+   `.hangar-body` and the rule above sized each of them to 100%. */
+.hangar-stack {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.hangar-stack > :last-child {
+  flex: 1;
+  min-height: 0;
+}
