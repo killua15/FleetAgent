@@ -1,10 +1,10 @@
 {
-  "version": "0.6.5",
-  "notes": "Hangar now notices when a provider signs an account out, and gives you a one-click way to sign in again.",
-  "pub_date": "2026-08-13T17:19:31.550044Z",
+  "version": "0.6.6",
+  "notes": "Fixes 0.6.5: Codex accounts are no longer reported as signed out, and the re-login banner no longer covers the app.",
+  "pub_date": "2026-08-13T18:09:22.534377Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbE42aUhKaXo2aTBSRnIwQ2p4RVJoZUluT2JOWitQZG5kdDVQM1ljd3FJTmxhV2gvejRtaDhFRnNUdkFqaUhyVUdITG9XOUUxQjlSNHN3Mi9pUStGaXdvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NjQxNTcxCWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKeXhMS1JxM3hZSWxVSVMvQ0pzMFdET2NwVXd5Uks5VFcyUWQ5Wm9vTmdTK21pZklGYld3WnVOMU5QejFvK3hOcUF1UFEwRDBsWmhFbEJ2c0d6ZzdBREE9PQo=",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbEZ3cm50dGtUOExRU0lhVnI0RnNXaGF5WnZBUDRmNVNoWWZtekFqcTFQMXZKVkRtY0poRlJVQ2JnYXJsOFBqeTJvSG1ad2ZMMktmeU9VUkI4VmdJOGdNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NjQ0NTYyCWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKVkp2eThqSWFMWEFhQ1htMWZvZjg5bFkrSDJnZ05QQmNMOWJ3M25wV2hKUXZweXpJMkJ1WXp2TDk2VkxGTU5wZTg1b2RSeDZwK2l2QzdoV1dYMXdlQ3c9PQo=",
       "url": "https://api.github.com/repos/killua15/FleetAgent/contents/updates/Hangar.app.tar.gz"
     }
   }
