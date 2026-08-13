@@ -850,6 +850,41 @@ fn resolve_target_with_project(conn: &rusqlite::Connection, target: &TerminalTar
     }
 }
 
+/// Re-authenticates one account, in a real terminal the user can watch.
+///
+/// `InitCommand::Login` has been able to do this all along — it builds
+/// `<CONFIG_DIR_ENV>=<the account's own dir> <cli> auth login`, which is the
+/// only path that recovers an expired account without deleting and re-adding
+/// it. What was missing was any way to ask for it: `open_terminal` takes an
+/// `init`, and every caller passed `None`.
+///
+/// The working directory is incidental here — a login talks to the provider,
+/// not to a repo — so it takes any project rather than making the user choose
+/// one for a question that doesn't depend on the answer. The account's config
+/// dir, which *is* what matters, comes from the account row either way.
+#[tauri::command]
+pub async fn open_login_terminal<R: Runtime>(app: AppHandle<R>, account_id: String, cols: u16, rows: u16) -> Result<TerminalInfo, String> {
+    crate::blocking::run_blocking(move || {
+        let project_id: String = {
+            let db = app.state::<DbConnection>();
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            conn.query_row("SELECT id FROM projects ORDER BY created_at ASC LIMIT 1", [], |row| row.get(0))
+                .map_err(|_| "add a project first — a terminal has to open somewhere, even to log in".to_string())?
+        };
+        open_terminal_blocking(
+            app,
+            TerminalTarget { kind: TargetKind::Project, id: project_id },
+            Some(account_id),
+            Some(InitCommand::Login),
+            None,
+            None,
+            cols,
+            rows,
+        )
+    })
+    .await?
+}
+
 /// Opens a terminal from the frontend.
 ///
 /// A thin `async` shell over `open_terminal_blocking` so the work lands on the

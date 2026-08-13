@@ -32,7 +32,7 @@ use login_manager::LoginRegistry;
 use permission_bridge::PendingApprovals;
 use process_manager::ProcessRegistry;
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use terminals::{RestoreGuard, TerminalRegistry};
 use turn_runner::{CancelledTurns, SpendCapNotified, TurnRegistry};
 use usage_scraper::UsageCache;
@@ -147,6 +147,32 @@ pub fn run() {
                 }
             });
 
+            // Background login check — providers expire an account's login
+            // every so often, and until this existed Hangar found out the way
+            // the user did: by opening a terminal and watching the agent refuse
+            // to start.
+            //
+            // Every account that can be asked, not just the ones in use: a
+            // login that lapsed on an idle account matters *before* you reach
+            // for it, which is the whole point of announcing it. Half an hour
+            // because logins last days — polling harder would spawn a CLI per
+            // account for an answer that changes about once a month.
+            //
+            // First pass after a short delay rather than immediately: launch is
+            // already busy, and this is the least urgent thing competing for it.
+            let login_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(20));
+                loop {
+                    if commands::accounts::refresh_account_logins(&login_handle) {
+                        // The banner and the accounts screen both read the
+                        // table this just wrote.
+                        let _ = login_handle.emit("account-logins-checked", ());
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(1800));
+                }
+            });
+
             // Background account-usage poller — checks `/usage` for the
             // accounts that currently have a terminal open, flags the ones out
             // of quota, and clears the flag when they recover. That's what
@@ -212,6 +238,8 @@ pub fn run() {
             commands::accounts::create_account,
             commands::accounts::check_account_auth,
             commands::accounts::list_account_auth,
+            commands::accounts::list_accounts_needing_login,
+            commands::accounts::recheck_account_login,
             commands::accounts::list_discoverable_logins,
             commands::accounts::set_account_config_dir,
             commands::accounts::delete_account,
@@ -340,6 +368,7 @@ pub fn run() {
             commands::agent_nodes::delete_agent_node,
             commands::agent_nodes::run_agent_tree,
             terminals::open_terminal,
+            terminals::open_login_terminal,
             terminals::attach_terminal,
             terminals::detach_terminal,
             terminals::write_terminal,

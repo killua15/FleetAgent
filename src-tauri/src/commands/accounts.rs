@@ -283,7 +283,12 @@ pub async fn check_account_auth(app: AppHandle, id: String) -> Result<login_mana
         if billing == "key" {
             return Ok(login_manager::AuthStatus { logged_in: true, auth_method: "api_key".to_string(), email: None, subscription_type: None });
         }
-        if provider != "claude" {
+        // "Can this provider be asked at all", read from its spec — the same
+        // question `list_account_auth` asks. It used to be hardcoded to Claude,
+        // which reported every healthy Codex account as signed out: false, and
+        // now visibly contradicted by the re-login banner, which knows better.
+        let probeable = crate::providers::spec(&provider).is_some_and(|s| !matches!(s.auth_status, crate::providers::AuthStatusProbe::None));
+        if !probeable {
             return Ok(login_manager::AuthStatus { logged_in: false, auth_method: "unsupported".to_string(), email: None, subscription_type: None });
         }
         login_manager::auth_status_for(&provider, &config_dir_path)
@@ -415,6 +420,20 @@ pub async fn set_account_config_dir<R: Runtime>(app: AppHandle<R>, id: String, c
     .await?
 }
 
+/// One account whose provider login has expired, for the re-login banner.
+///
+/// Carries `checked_at` because the banner is claiming something about the
+/// world at a moment in time, and a claim with no timestamp can't be judged —
+/// especially on a laptop that was asleep for two days.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountNeedsLogin {
+    pub account_id: String,
+    pub name: String,
+    pub provider: String,
+    pub checked_at: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountAuth {
@@ -513,6 +532,150 @@ pub async fn list_account_auth(app: AppHandle) -> Result<Vec<AccountAuth>, Strin
     .await?
 }
 
+/// Which accounts can be asked whether they are still logged in.
+///
+/// The three exclusions are the whole point of doing this here rather than in a
+/// query: a key-billed account carries its own proof, a provider with no status
+/// probe cannot be asked at all (and must not be reported either way), and an
+/// account whose config dir is gone would have the CLI answer about somebody
+/// else's credentials.
+fn probeable_accounts(conn: &rusqlite::Connection) -> Result<Vec<(String, String, String, String)>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, name, provider, config_dir_path FROM accounts WHERE billing = 'sub' ORDER BY created_at ASC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    Ok(rows
+        .into_iter()
+        .filter(|(_, _, provider, config_dir)| {
+            let probeable = crate::providers::spec(provider).is_some_and(|s| !matches!(s.auth_status, crate::providers::AuthStatusProbe::None));
+            probeable && std::path::Path::new(config_dir).is_dir()
+        })
+        .collect())
+}
+
+/// Re-checks every account that can be asked, and records the answers.
+///
+/// Providers expire a login every so often. Before this, Hangar found out the
+/// way the user did — by opening a terminal and watching the agent refuse to
+/// start — so this runs on its own slow cycle and feeds the re-login banner.
+///
+/// `TrustMarkerFile::No` asks the CLI instead of trusting the credential file's
+/// existence — which is what makes an expired Claude login detectable at all.
+/// It does *not* rescue Codex: its own `login status` reports any `auth.json`
+/// that exists as a live session, so a stale Codex account still reads as
+/// healthy here. See `TrustMarkerFile` for the measurements behind both claims.
+pub fn refresh_account_logins<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let Some(db) = app.try_state::<DbConnection>() else { return false };
+    let accounts = match db.0.lock().map_err(|e| e.to_string()).and_then(|conn| probeable_accounts(&conn)) {
+        Ok(accounts) => accounts,
+        Err(e) => {
+            log::warn!("login check: could not read accounts: {e}");
+            return false;
+        }
+    };
+    if accounts.is_empty() {
+        return false;
+    }
+
+    // One thread per account, like `list_account_auth`: these are independent
+    // subprocess calls, so the wall-clock cost is one probe rather than their
+    // sum.
+    let handles: Vec<_> = accounts
+        .into_iter()
+        .map(|(id, _name, provider, config_dir)| {
+            std::thread::spawn(move || {
+                let result = login_manager::auth_status_with(&provider, &config_dir, login_manager::TrustMarkerFile::No);
+                (id, result)
+            })
+        })
+        .collect();
+
+    let mut changed = false;
+    for handle in handles {
+        let Ok((id, result)) = handle.join() else { continue };
+        let (logged_in, error) = match result {
+            Ok(status) => (status.logged_in, None),
+            // A probe that couldn't run says nothing about the credential. It's
+            // recorded as an error and *not* as a logout, so a machine with no
+            // network doesn't get told to sign in again.
+            Err(e) => {
+                log::warn!("login check: probe failed for account {id}: {e}");
+                (true, Some(e))
+            }
+        };
+        if let Ok(conn) = db.0.lock() {
+            let previous: Option<bool> = conn
+                .query_row("SELECT logged_in FROM account_login_checks WHERE account_id = ?1", params![id], |row| row.get::<_, i64>(0))
+                .ok()
+                .map(|v| v != 0);
+            if previous != Some(logged_in) {
+                changed = true;
+            }
+            if let Err(e) = conn.execute(
+                "INSERT INTO account_login_checks (account_id, checked_at, logged_in, error) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(account_id) DO UPDATE SET checked_at = excluded.checked_at, logged_in = excluded.logged_in, error = excluded.error",
+                params![id, Utc::now().to_rfc3339(), logged_in as i64, error],
+            ) {
+                log::warn!("login check: could not record account {id}: {e}");
+            }
+        }
+    }
+    changed
+}
+
+/// The accounts whose provider login has expired — what the banner renders.
+///
+/// Read from the table rather than probed here: the screen asking must not wait
+/// on a CLI round trip per account, and the background cycle has already paid
+/// for the answer.
+#[tauri::command]
+pub fn list_accounts_needing_login(db: State<DbConnection>) -> Result<Vec<AccountNeedsLogin>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT a.id, a.name, a.provider, c.checked_at
+             FROM account_login_checks c JOIN accounts a ON a.id = c.account_id
+             WHERE c.logged_in = 0
+             ORDER BY a.created_at ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(AccountNeedsLogin { account_id: row.get(0)?, name: row.get(1)?, provider: row.get(2)?, checked_at: row.get(3)? })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// Re-checks one account now — for the moment a login terminal exits, so the
+/// banner clears without waiting for the next cycle.
+#[tauri::command]
+pub async fn recheck_account_login(app: AppHandle, id: String) -> Result<bool, String> {
+    crate::blocking::run_blocking(move || {
+        let db = app.state::<DbConnection>();
+        let (provider, config_dir): (String, String) = {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            conn.query_row("SELECT provider, config_dir_path FROM accounts WHERE id = ?1", params![id], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(|e| format!("account lookup failed: {e}"))?
+        };
+        let status = login_manager::auth_status_with(&provider, &config_dir, login_manager::TrustMarkerFile::No)?;
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO account_login_checks (account_id, checked_at, logged_in, error) VALUES (?1, ?2, ?3, NULL)
+             ON CONFLICT(account_id) DO UPDATE SET checked_at = excluded.checked_at, logged_in = excluded.logged_in, error = NULL",
+            params![id, Utc::now().to_rfc3339(), status.logged_in as i64],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(status.logged_in)
+    })
+    .await?
+}
+
 #[tauri::command]
 pub async fn delete_account(app: AppHandle, id: String) -> Result<(), String> {
     crate::blocking::run_blocking(move || {
@@ -588,6 +751,50 @@ mod tests {
         .unwrap();
         app.manage(DbConnection(StdMutex::new(conn)));
         app
+    }
+
+    /// Who gets asked "are you still logged in", and who must not be.
+    ///
+    /// Each exclusion is a way the banner could lie. An API key is its own
+    /// proof, so probing one would report a logout that never happens. A
+    /// provider with no status probe cannot be asked at all — reporting it
+    /// either way would be invention. And a config dir that's gone would have
+    /// the CLI answer about whatever credentials it finds instead, which is
+    /// somebody else's account.
+    #[test]
+    fn only_accounts_that_can_honestly_be_asked_are_probed() {
+        let dir = std::env::temp_dir().join(format!("hangar-test-login-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let present = dir.to_string_lossy().to_string();
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+
+        let mut add = |id: &str, provider: &str, billing: &str, config_dir: &str| {
+            conn.execute(
+                "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, status, created_at, updated_at)
+                 VALUES (?1,?2,?3,?1,'personal','',?4,?1,'healthy','now','now')",
+                params![id, provider, billing, config_dir],
+            )
+            .unwrap();
+        };
+        add("claude-sub", "claude", "sub", &present);
+        add("codex-sub", "codex", "sub", &present);
+        add("claude-key", "claude", "key", &present);
+        add("gemini-sub", "gemini", "sub", &present);
+        add("claude-gone", "claude", "sub", "/nonexistent/hangar-test");
+
+        let probeable = probeable_accounts(&conn).unwrap();
+        let ids: Vec<&str> = probeable.iter().map(|(id, _, _, _)| id.as_str()).collect();
+
+        assert!(ids.contains(&"claude-sub"), "a subscription account with a real config dir is the whole point");
+        assert!(ids.contains(&"codex-sub"), "codex has a status probe too");
+        assert!(!ids.contains(&"claude-key"), "an API key is its own proof of auth");
+        assert!(!ids.contains(&"gemini-sub"), "gemini has no status probe — it can't be reported either way");
+        assert!(!ids.contains(&"claude-gone"), "a missing config dir would make the CLI answer about someone else");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn stored_config_dir(app: &tauri::App<tauri::test::MockRuntime>) -> String {

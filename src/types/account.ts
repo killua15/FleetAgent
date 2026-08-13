@@ -33,6 +33,20 @@ export interface AccountAuth {
   command: string | null;
 }
 
+/** An account whose provider login has expired — from
+ * `list_accounts_needing_login`, filled by the background check.
+ *
+ * Only providers with a real status probe can appear here: Gemini, Kimi and
+ * Grok have no way to be asked, so they're absent rather than assumed fine. */
+export interface AccountNeedsLogin {
+  accountId: string;
+  name: string;
+  provider: Provider;
+  /** When the check ran. The banner is claiming something about the world at a
+   * moment in time, and on a laptop that was asleep for two days that matters. */
+  checkedAt: string;
+}
+
 export interface NewAccount {
   provider: Provider;
   billing: Billing;

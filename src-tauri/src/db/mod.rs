@@ -202,6 +202,12 @@ const MIGRATIONS: &[Migration] = &[
         run: pr_host_checks_table,
         transactional: true,
     },
+    Migration {
+        version: 25,
+        name: "account_login_checks",
+        run: account_login_checks_table,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -306,6 +312,30 @@ fn pr_host_checks_table(conn: &Connection) -> Result<(), String> {
          );",
     )
     .map_err(|e| format!("could not create pr_host_checks: {e}"))
+}
+
+/// Whether each account's provider login still works, as of when it was asked.
+///
+/// Not a column on `accounts`: `status` carries a
+/// `CHECK (status IN ('healthy','cooling_down','exhausted'))`, and SQLite can't
+/// widen a CHECK without rebuilding the table — a real risk to run against
+/// everyone's database for a fact that isn't part of what an account *is*.
+/// Being logged out is a property of the credential on disk, not of the row.
+///
+/// `error` is kept apart from `logged_in` on purpose: a probe that failed
+/// because the CLI wasn't reachable is not the same as one that answered "no",
+/// and treating them alike would raise the banner on a machine that is merely
+/// offline.
+fn account_login_checks_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS account_login_checks (
+           account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+           checked_at TEXT NOT NULL,
+           logged_in  INTEGER NOT NULL,
+           error      TEXT
+         );",
+    )
+    .map_err(|e| format!("could not create account_login_checks: {e}"))
 }
 
 /// Remembers which terminals were open so they can be reopened next launch.

@@ -3,6 +3,7 @@ import { invoke } from '../lib/invoke';
 import { useNavigation } from '../nav/NavigationProvider';
 import { PROVIDER_META, type Account } from '../types/account';
 import type { AuthStatus } from '../types/login';
+import type { TerminalInfo } from '../types/terminal';
 import { Button } from '../components/ui/button';
 import { ConfirmDeleteDialog } from '../components/ConfirmDeleteDialog';
 import { PickConfigDirDialog } from '../components/PickConfigDirDialog';
@@ -37,6 +38,7 @@ export function AccountList() {
   const [authByAccount, setAuthByAccount] = useState<Record<string, AuthStatus>>({});
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [relogginId, setRelogginId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
@@ -54,6 +56,21 @@ export function AccountList() {
   useEffect(() => {
     load();
   }, []);
+
+  /** Opens the provider's login in a real terminal — the only path that
+   * recovers an expired account without deleting and re-adding it — and takes
+   * you there, since a login that starts off screen is a login nobody finishes. */
+  const relogin = async (accountId: string) => {
+    setRelogginId(accountId);
+    try {
+      const info = await invoke<TerminalInfo>('open_login_terminal', { accountId, cols: 80, rows: 24 });
+      navigate('terminals', { focusTerminalId: info.id });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setRelogginId(null);
+    }
+  };
 
   const handleConfirmDelete = async (acc: Account) => {
     setError(null);
@@ -145,6 +162,14 @@ export function AccountList() {
               <span className={styles.statusPill} style={{ color: STATUS_COLOR[acc.status] }}>
                 {acc.status.replace('_', ' ')}
               </span>
+              {/* The row already said "signed out"; until now that was all it
+                  did. This is the way back — the same login the banner runs,
+                  against this account's own config dir. */}
+              {authByAccount[acc.id]?.loggedIn === false && authByAccount[acc.id]?.authMethod !== 'unsupported' && (
+                <Button variant="outline" disabled={relogginId === acc.id} onClick={() => relogin(acc.id)}>
+                  {relogginId === acc.id ? 'opening…' : 'sign in again'}
+                </Button>
+              )}
               <ConfirmDeleteDialog
                 trigger={
                   <Button variant="outline" className={styles.deleteBtn} disabled={deletingId === acc.id}>

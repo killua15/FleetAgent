@@ -294,15 +294,48 @@ pub fn auth_status_for_dir(config_dir: &str) -> Result<AuthStatus, String> {
 /// never seen. It answered "logged out", correctly, and the wizard waited for a
 /// state that could never arrive.
 pub fn auth_status_for(provider: &str, config_dir: &str) -> Result<AuthStatus, String> {
+    auth_status_with(provider, config_dir, TrustMarkerFile::Yes)
+}
+
+/// Whether the on-disk credential file counts as proof on its own.
+///
+/// It does while a login is in progress — the file appearing *is* the login
+/// finishing, and for a CLI with no status probe that's the only signal there
+/// is. It does not when the question is "is this credential still valid": an
+/// expired token is still a file on disk.
+///
+/// **What this buys, measured rather than assumed.** Against the installed
+/// CLIs, with a bogus credential planted in a scratch config dir:
+///
+/// - `claude auth status --json` answers `loggedIn: false`. Real validation, so
+///   asking it is what lets an expired Claude account be noticed at all.
+/// - `codex login status` answers "Logged in using ChatGPT" for any `auth.json`
+///   that merely exists. Its probe is no stronger than the marker file, so
+///   bypassing the marker changes nothing for Codex — an expired-but-present
+///   Codex credential cannot be detected by anything Hangar can ask today.
+///
+/// The split is still right: it's what makes the Claude case work, and it puts
+/// the seam in the correct place for the day Codex's CLI learns to answer
+/// honestly. It just isn't a fix for Codex, and shouldn't be described as one.
+#[derive(Clone, Copy, PartialEq)]
+pub enum TrustMarkerFile {
+    Yes,
+    /// Ask the CLI, whatever is on disk.
+    No,
+}
+
+pub fn auth_status_with(provider: &str, config_dir: &str, trust_marker: TrustMarkerFile) -> Result<AuthStatus, String> {
     let Some(spec) = crate::providers::spec(provider) else {
         return Err(format!("Hangar doesn't know a provider called '{provider}'"));
     };
 
     // On disk before on the CLI: it's free, it can't time out, and it's what
     // the credential actually *is* rather than a sentence about it.
-    if let Some(marker) = crate::providers::auth_marker_file(provider) {
-        if std::path::Path::new(config_dir).join(marker).is_file() {
-            return Ok(AuthStatus { logged_in: true, auth_method: "oauth".to_string(), email: None, subscription_type: None });
+    if trust_marker == TrustMarkerFile::Yes {
+        if let Some(marker) = crate::providers::auth_marker_file(provider) {
+            if std::path::Path::new(config_dir).join(marker).is_file() {
+                return Ok(AuthStatus { logged_in: true, auth_method: "oauth".to_string(), email: None, subscription_type: None });
+            }
         }
     }
 
