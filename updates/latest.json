@@ -1,10 +1,10 @@
 {
-  "version": "0.6.2",
-  "notes": "Switch between forge instances (GitHub, GitLab, self-hosted), and a Google sign-in to open Hangar.",
-  "pub_date": "2026-08-12T19:45:50.558844Z",
+  "version": "0.6.3",
+  "notes": "The window stays responsive while agents are talking, and screens no longer freeze while git, gh or a terminal is working.",
+  "pub_date": "2026-08-13T12:32:09.575764Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbEZOMjZZT041V05meklRQXlOZHI4VWJPeEJrWnYzaGlNUWM4bUkvcXR2S2hoWDI3VzhzbXc2enZVa1FoUTBmTUJ2ZXlFdzZuWi9SYVNOaGZsRlN2K0FzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NTYzOTUwCWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKTzhvTFBuRmQ4OGpuN3pRSlVqbUQxcTJaTUxyT3BTSHdGZ0FzbXBNb0VqVHd2Zm53cTlTamowblo3bXNmLzlRMHhJYWpkbERkWGI1UkpIRWtCaExERFE9PQo=",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbEs1dWNKcGFPSXczYVhVWFlNdHFtK3VmenYxM1Fac3BPUFNVQytpTHlMMTFuNzIwUkQxRUpCdEo0VTdqanRYWG9FM0EwVGtUazRWVkRMd1pUUS9PRlEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NjI0MzI5CWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKOVIvakRxMWlBekRzTktuTlc3ZVplT2hNb1IxUVhVNWtzNFZJbkM3cmNLWS81aC9JYXpXTXIydmZGM2FUOXM0ZmRFZHRPWFBuNmZ3YTBzaTVQbFk1Qnc9PQo=",
       "url": "https://api.github.com/repos/killua15/FleetAgent/contents/updates/Hangar.app.tar.gz"
     }
   }
