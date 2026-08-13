@@ -48,6 +48,82 @@
   color: var(--dim);
 }
 
+/* -- the Hangar account: who is signed in, on which plan ------------------- */
+
+.profileRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--bd);
+}
+
+/* Stands in for the picture when the identity provider sends none: initials on
+   the same footprint, so the row doesn't reflow depending on who signed in. */
+.avatarFallback {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--bd);
+  background: var(--panel);
+  font: 600 13px var(--font-ui);
+  color: var(--mut);
+}
+
+.profileText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* Pushes the plan and the sign-out button to the far end of the row. */
+.profileSpacer {
+  flex: 1;
+}
+
+.profileName {
+  font: 600 13px var(--font-ui);
+  color: var(--txt);
+}
+
+.profileEmail {
+  font: 400 11px var(--font-mono);
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.planBadge,
+.planBadgePaid,
+.planBadgeAttention {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--bd);
+  font: 600 10px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mut);
+}
+
+.planBadgePaid {
+  border-color: var(--grn);
+  color: var(--grn);
+}
+
+.planBadgeAttention {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
 .themeRow {
   display: flex;
   gap: 8px;

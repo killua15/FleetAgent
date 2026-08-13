@@ -4,12 +4,10 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke, useInFlightCount } from '../lib/invoke';
 import { useNavigation, type ScreenName } from '../nav/NavigationProvider';
 import type { ProjectPrInbox } from '../types/pullRequest';
-import { Button } from './ui/button';
 import { IconTooltip } from './ui/tooltip';
 import { Spinner } from './Spinner';
 import { AccountsIcon, BranchIcon, FilesIcon, HomeIcon, MenuIcon, PullRequestIcon, SettingsIcon, TasksIcon, TerminalIcon, UsageIcon } from './NavIcons';
 import { UsageModal } from './UsageModal';
-import { useAuth } from '../auth/AuthProvider';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu';
 import styles from './AppTopBar.module.css';
 
@@ -55,34 +53,6 @@ function useDelayedBusy(count: number, delayMs: number): boolean {
     return () => window.clearTimeout(id);
   }, [count, delayMs]);
   return busy;
-}
-
-/** Hangar's own account, at the far end of the bar.
- *
- * The bar only renders behind the gate, so there is no signed-out case to
- * handle here any more — the one way to be inside without an email is the
- * offline grace window, and saying so is more use than an inert button. */
-function AccountButton() {
-  const { email, entitlement, signOut } = useAuth();
-
-  if (!email) {
-    return (
-      <IconTooltip label="Running on a recent sign-in — Hangar hasn't been able to reach the server. It'll catch up on its own once you're back online.">
-        <Button variant="outline" size="sm" disabled style={{ color: 'var(--mut)' }}>
-          offline
-        </Button>
-      </IconTooltip>
-    );
-  }
-
-  return (
-    <IconTooltip label={`Signed in as ${email}${entitlement ? ` · ${entitlement.plan}` : ''} — click to sign out`}>
-      <Button variant="outline" size="sm" onClick={signOut}>
-        {email.split('@')[0]}
-        {entitlement && entitlement.plan !== 'free' && <span style={{ marginLeft: 6, color: 'var(--grn)' }}>{entitlement.plan}</span>}
-      </Button>
-    </IconTooltip>
-  );
 }
 
 export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; primaryAction?: ReactNode }) {
@@ -233,7 +203,9 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
        * same "find a terminal" job against live data. `CommandPalette.tsx`,
        * its route, and the ⌘K shortcut in `App.tsx` are untouched; restoring
        * this is putting the button back and fixing the underlying query. */}
-      <AccountButton />
+      {/* Who is signed in used to sit here. It lives in Settings → general now,
+       * with the plan and the way out — the bar is for where you're going, not
+       * for who you are. */}
       {primaryAction}
       {usageOpen && <UsageModal onClose={() => setUsageOpen(false)} />}
     </div>

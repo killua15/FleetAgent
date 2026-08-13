@@ -8,6 +8,11 @@ import { resolveAccess, type Access } from './access';
 
 interface AuthContextValue {
   email: string | null;
+  /** The name the identity provider knows this person by, when it sends one.
+   * Google does; a future provider might not, which is why the email is what
+   * the account section falls back to rather than the other way round. */
+  displayName: string | null;
+  avatarUrl: string | null;
   entitlement: Entitlement | null;
   /** Whether this launch may use the app — see `access.ts`. */
   access: Access;
@@ -36,6 +41,8 @@ const AuthContext = createContext<AuthContextValue | null>(null);
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [email, setEmail] = useState<string | null>(null);
+  const [displayName, setDisplayName] = useState<string | null>(null);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
   const [access, setAccess] = useState<Access>('checking');
   const [signingIn, setSigningIn] = useState(false);
@@ -108,6 +115,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // a credential Supabase has already retired, every launch, forever.
       await invoke('clear_refresh_token').catch(() => {});
       setEmail(null);
+      setDisplayName(null);
+      setAvatarUrl(null);
       setEntitlement(null);
       setAccess(resolveAccess({ hasSession: false, approved: null, hasStoredToken: false, serverReachable: true, graceIsLive }));
       return;
@@ -115,6 +124,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const session = data.session;
     setEmail(session.user.email ?? null);
+    // Whatever the provider chose to send. Google fills `full_name` and
+    // `avatar_url`; the `name`/`picture` pair is what the raw OIDC claim uses,
+    // so both spellings are read rather than betting on one.
+    const metadata = session.user.user_metadata ?? {};
+    setDisplayName(typeof metadata.full_name === 'string' ? metadata.full_name : typeof metadata.name === 'string' ? metadata.name : null);
+    setAvatarUrl(typeof metadata.avatar_url === 'string' ? metadata.avatar_url : typeof metadata.picture === 'string' ? metadata.picture : null);
     await invoke('store_refresh_token', { token: session.refresh_token }).catch(() => {});
 
     const { data: profile } = await supabase.from('profiles').select('approved').eq('id', session.user.id).maybeSingle();
@@ -190,6 +205,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await supabase.auth.signOut().catch(() => {});
     await invoke('clear_refresh_token').catch(() => {});
     setEmail(null);
+    setDisplayName(null);
+    setAvatarUrl(null);
     setEntitlement(null);
     setAccess('signed-out');
   }, []);
@@ -201,7 +218,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [check]);
 
   return (
-    <AuthContext.Provider value={{ email, entitlement, access, signingIn, error, signIn, signOut, recheck }}>
+    <AuthContext.Provider value={{ email, displayName, avatarUrl, entitlement, access, signingIn, error, signIn, signOut, recheck }}>
       {children}
     </AuthContext.Provider>
   );

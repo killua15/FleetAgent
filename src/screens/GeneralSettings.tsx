@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useAuth } from '../auth/AuthProvider';
+import { summarizePlan } from '../auth/plan';
 import { invoke } from '../lib/invoke';
 import { toastError } from '../components/ErrorOverlay';
 import { check } from '@tauri-apps/plugin-updater';
@@ -25,6 +26,9 @@ import styles from './GeneralSettings.module.css';
 /** Los grupos del raíl. General era un cajón de sastre de once secciones; esto
  * es lo que tienen en común, no un reparto por tamaño. */
 const PANES = [
+  // First, and named for the person rather than for the thing: "Cuentas" below
+  // is the CLI logins Hangar drives, which is a different subject entirely.
+  { id: 'profile', label: 'Perfil' },
   { id: 'machine', label: 'Máquina' },
   { id: 'appearance', label: 'Apariencia' },
   { id: 'accounts', label: 'Cuentas' },
@@ -148,6 +152,13 @@ export function GeneralSettings() {
           ))}
         </nav>
         <div className={styles.body}>
+          <Pane id="profile" active={pane}>
+          <section className={styles.section}>
+            <span className={styles.sectionLabel}>TU CUENTA DE HANGAR</span>
+            <AccountRow />
+          </section>
+          </Pane>
+
           <Pane id="machine" active={pane}>
           <section className={styles.sectionWide}>
             <span className={styles.sectionLabel}>WHAT HANGAR NEEDS</span>
@@ -413,6 +424,101 @@ export function GeneralSettings() {
  */
 function Pane({ id, active, children }: { id: PaneId; active: PaneId; children: ReactNode }) {
   return id === active ? <>{children}</> : null;
+}
+
+/**
+ * Who is signed in to Hangar, on which plan, and the way out.
+ *
+ * This used to be a button in the top bar that showed a name and signed you out
+ * when clicked. Signing out on a stray click is a poor trade for a bar you
+ * click all day, and one line had nowhere to say what the plan actually means —
+ * so identity moved here, where there is room for it and where the paid tiers
+ * will eventually be explained.
+ */
+function AccountRow() {
+  const { email, displayName, avatarUrl, entitlement, signOut, recheck } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const plan = summarizePlan(entitlement);
+
+  // No email while a recent sign-in is coasting offline — the grace window in
+  // `access.ts`. Nothing about the person is known then, so say that instead of
+  // drawing an empty profile.
+  if (!email) {
+    return (
+      <div className={styles.profileRow}>
+        <div className={styles.profileText}>
+          <span className={styles.profileName}>Sin conexión</span>
+          <span className={styles.hint}>
+            Hangar sigue abierto con una sesión reciente, pero no ha podido hablar con el servidor. Se pondrá al día solo en cuanto vuelva la red.
+          </span>
+        </div>
+        <span className={styles.profileSpacer} />
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await recheck();
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? 'comprobando…' : 'reintentar'}
+        </Button>
+      </div>
+    );
+  }
+
+  const initials = (displayName ?? email)
+    .split(/[\s@.]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? '')
+    .join('');
+
+  return (
+    <>
+      <div className={styles.profileRow}>
+        {avatarUrl ? (
+          <img className={styles.avatar} src={avatarUrl} alt="" referrerPolicy="no-referrer" />
+        ) : (
+          <span className={styles.avatarFallback} aria-hidden="true">
+            {initials}
+          </span>
+        )}
+        <div className={styles.profileText}>
+          <span className={styles.profileName}>{displayName ?? email.split('@')[0]}</span>
+          <span className={styles.profileEmail}>{email}</span>
+        </div>
+        <span className={styles.profileSpacer} />
+        <span className={plan.needsAttention ? styles.planBadgeAttention : plan.paid ? styles.planBadgePaid : styles.planBadge}>{plan.label}</span>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await signOut();
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          cerrar sesión
+        </Button>
+      </div>
+      {plan.note && <span className={styles.hint}>{plan.note}</span>}
+      {!plan.paid && (
+        // Deliberately not a call to action: there is nothing to sell yet. It
+        // names what the plan gates today so the badge above means something.
+        <span className={styles.hint}>El plan gratuito incluye todo salvo el emparejamiento con el teléfono.</span>
+      )}
+    </>
+  );
 }
 
 /**
