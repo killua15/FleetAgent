@@ -1,6 +1,6 @@
 [package]
 name = "hangar"
-version = "0.6.2"
+version = "0.6.3"
 description = "Hangar — mission control for your coding agents"
 authors = ["you"]
 edition = "2021"
