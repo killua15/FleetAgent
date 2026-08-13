@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ALL_HOSTS, collectForgeHosts, forgeHostLabel, matchesForgeHost, resolveForgeHost, type ForgeHosted } from './forgeHosts';
+import { ALL_HOSTS, collectForgeHosts, forgeHostLabel, matchesForgeHost, resolveForgeHost, toForgeHostOptions, type ForgeHosted } from './forgeHosts';
 
 // Shaped after the case this exists for: a team on github.com, on gitlab.com
 // and on its own self-hosted GitLab at once, plus a repo whose host says
@@ -59,6 +59,47 @@ describe('forgeHostLabel', () => {
   it('needs nothing but the host and the forge', () => {
     const option = { host: 'gitlab.com', forge: 'gitlab' as const, count: 7 };
     expect(forgeHostLabel(option)).toBe('GitLab');
+  });
+
+  /** A hostname is what's left when nobody has said anything better. Once
+   * they have — by declaring the instance — that name wins, which is the
+   * whole reason declaring one is offered. */
+  it('prefers the name the user gave the instance', () => {
+    expect(forgeHostLabel({ host: 'gl.internal', forge: 'gitlab', label: 'Acme GitLab' })).toBe('Acme GitLab');
+  });
+
+  it('falls back to the hostname for an instance nothing places', () => {
+    expect(forgeHostLabel({ host: 'code.example', forge: null })).toBe('code.example');
+  });
+});
+
+describe('toForgeHostOptions', () => {
+  // What `list_forge_hosts` returns: instances read from the projects' remotes
+  // and from what the user declared, with no PR loaded anywhere yet.
+  const fromBackend = [
+    { host: 'gitlab.acme.com', forge: 'gitlab' as const, label: 'Acme', projectCount: 2 },
+    { host: 'github.com', forge: 'github' as const, label: '', projectCount: 5 },
+    { host: 'code.example', forge: null, label: '', projectCount: 1 },
+  ];
+
+  /** The point of the whole change: the picker has to offer a choice on a
+   * screen that has deliberately loaded nothing, so its options can't be
+   * derived from loaded items the way `collectForgeHosts` does it. */
+  it('builds options without any items loaded', () => {
+    expect(toForgeHostOptions(fromBackend).map((o) => [o.host, o.count])).toEqual([
+      ['github.com', 5],
+      ['code.example', 1],
+      ['gitlab.acme.com', 2],
+    ]);
+  });
+
+  it('keeps an instance nothing places, since projects still point at it', () => {
+    expect(toForgeHostOptions(fromBackend).some((o) => o.host === 'code.example' && o.forge === null)).toBe(true);
+  });
+
+  it('carries the declared name through to the label', () => {
+    const acme = toForgeHostOptions(fromBackend).find((o) => o.host === 'gitlab.acme.com')!;
+    expect(forgeHostLabel(acme)).toBe('Acme');
   });
 });
 

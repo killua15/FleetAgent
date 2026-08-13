@@ -40,6 +40,23 @@ pub struct ForgeInstanceProject {
     pub name: String,
 }
 
+/// One instance, named and counted and nothing more — what a picker needs.
+///
+/// Deliberately not `ForgeInstanceStatus`: everything that struct adds about
+/// logins costs a network probe, and this is answered from the database and a
+/// local `git` call.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ForgeHost {
+    pub host: String,
+    /// `None` for a host nothing places — still a real choice, since projects
+    /// point at it.
+    pub forge: Option<String>,
+    /// What the user called it when declaring it. Empty otherwise.
+    pub label: String,
+    pub project_count: usize,
+}
+
 /// One instance, and whether it is usable.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -103,6 +120,60 @@ pub fn load_declared_hosts(db: &DbConnection) -> Result<(), String> {
 #[tauri::command]
 pub fn list_forge_instances(db: State<DbConnection>) -> Result<Vec<ForgeInstanceStatus>, String> {
     list_forge_instances_impl(&db)
+}
+
+/// Just the instances and how many projects sit on each — no login probing.
+///
+/// `list_forge_instances` above answers "is this usable and how do I fix it",
+/// and pays for it: `place()` runs `gh auth status`, `glab auth status`, and an
+/// SSH round trip per host. A picker only needs the names, and asking it that
+/// question on a screen that hasn't loaded anything yet would put a network
+/// wait exactly where we just removed one. `group_by_host` was already split
+/// out for being the half that touches nothing.
+#[tauri::command]
+pub async fn list_forge_hosts<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Vec<ForgeHost>, String> {
+    // Still `run_blocking`: reading each project's `origin` is a `git` call per
+    // project, which is local and quick but not free.
+    crate::blocking::run_blocking(move || {
+        let db = app.state::<DbConnection>();
+        let declarations = read_declarations(&db)?;
+        let projects: Vec<(String, String, String)> = {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare("SELECT id, name, path FROM projects ORDER BY name").map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            rows
+        };
+
+        let mut grouped = group_by_host(projects);
+        // A declared instance with no project on it yet still belongs in the
+        // picker — same reason `list_forge_instances` includes it.
+        for host in declarations.keys() {
+            if !grouped.iter().any(|(known, _)| known == host) {
+                grouped.push((host.clone(), Vec::new()));
+            }
+        }
+
+        Ok(grouped
+            .into_iter()
+            .map(|(host, projects)| {
+                // The declaration when there is one, the hostname's own answer
+                // otherwise — both free. An instance nothing can place still
+                // gets listed: it has projects on it, so it is a real choice.
+                let forge = declarations
+                    .get(&host)
+                    .and_then(|d| d.kind.forge())
+                    .or_else(|| forges::Forge::for_host(&host))
+                    .map(|f| f.as_str().to_string());
+                let label = declarations.get(&host).map(|d| d.label.clone()).unwrap_or_default();
+                ForgeHost { host, forge, label, project_count: projects.len() }
+            })
+            .collect())
+    })
+    .await?
 }
 
 /// The same, after throwing away what was memoized about who is logged in

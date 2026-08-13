@@ -1090,20 +1090,28 @@ pub fn dismiss_pr_comments(db: State<DbConnection>, comment_ids: Vec<String>) ->
 /// Every open PR Hangar is tracking, grouped by project, each with its still-
 /// unresolved review comments (if any) — the PR review inbox screen's one
 /// data source. Reads straight from the local database; it does NOT itself
-/// discover new PRs or re-check GitHub (`check_all_open_prs_now`/the
-/// background poller do that) — call one of those first if a PR you know
-/// exists on GitHub hasn't shown up yet. Shows every open PR (not just ones
-/// with pending comments) so a project's PRs are visible at a glance; the
-/// pending-comment count is what actually needs attention.
+/// discover new PRs or re-check GitHub (`check_open_prs_now`/the background
+/// poller do that) — call one of those first if a PR you know exists on GitHub
+/// hasn't shown up yet. Shows every open PR (not just ones with pending
+/// comments) so a project's PRs are visible at a glance; the pending-comment
+/// count is what actually needs attention.
+///
+/// `host` scopes the answer to one forge instance. The screen asks for exactly
+/// the provider it is showing, rather than taking everything and hiding the
+/// rest: filtering in the query is what keeps a person with four instances
+/// from paying for three of them on every render.
 #[tauri::command]
-pub fn list_pr_review_inbox(db: State<DbConnection>) -> Result<Vec<crate::models::ProjectPrInbox>, String> {
-    list_pr_review_inbox_impl(&db)
+pub fn list_pr_review_inbox(db: State<DbConnection>, host: Option<String>) -> Result<Vec<crate::models::ProjectPrInbox>, String> {
+    list_pr_review_inbox_impl(&db, host.as_deref())
 }
 
-fn list_pr_review_inbox_impl(db: &DbConnection) -> Result<Vec<crate::models::ProjectPrInbox>, String> {
+fn list_pr_review_inbox_impl(db: &DbConnection, host: Option<&str>) -> Result<Vec<crate::models::ProjectPrInbox>, String> {
     use crate::models::{PrInboxEntry, ProjectPrInbox};
 
     let conn = db.0.lock().map_err(|e| e.to_string())?;
+    // Hosts are stored lowercased, and every lookup in the app is
+    // case-insensitive — see `forge_instances` in `schema.sql`.
+    let host = host.map(|h| h.trim().to_ascii_lowercase());
     // The project comes from the PR's own `project_id`, and the session is a
     // LEFT JOIN: a PR opened by someone else has no session, and joining
     // through one is what used to make it unshowable.
@@ -1116,7 +1124,7 @@ fn list_pr_review_inbox_impl(db: &DbConnection) -> Result<Vec<crate::models::Pro
              JOIN projects p ON p.id = pr.project_id
              LEFT JOIN sessions s ON s.id = pr.session_id
              LEFT JOIN pr_review_comments c ON c.pull_request_id = pr.id AND c.resolved_at IS NULL
-             WHERE pr.state = 'open'
+             WHERE pr.state = 'open' AND (?1 IS NULL OR pr.host = ?1)
              ORDER BY p.name, pr.relation, pr.created_at, c.comment_created_at",
             pr_columns_from("pr")
         ))
@@ -1135,7 +1143,7 @@ fn list_pr_review_inbox_impl(db: &DbConnection) -> Result<Vec<crate::models::Pro
     const PR_AT: usize = 4;
     let comment_at = PR_AT + PR_COLUMNS.split(", ").count();
     let rows: Vec<Row> = stmt
-        .query_map([], |row| {
+        .query_map(params![host], |row| {
             let comment_id: Option<String> = row.get(comment_at)?;
             Ok(Row {
                 project_id: row.get(0)?,
@@ -1224,6 +1232,46 @@ pub async fn check_all_open_prs_now(app: AppHandle) -> Result<(), String> {
         poll_all_open_prs(&app);
     })
     .await
+}
+
+/// The same check for one instance — what the PR screen runs, because it only
+/// ever shows one provider at a time.
+#[tauri::command]
+pub async fn check_open_prs_now(app: AppHandle, host: String) -> Result<(), String> {
+    crate::blocking::run_blocking(move || {
+        poll_open_prs_for_host(&app, Some(&host));
+    })
+    .await
+}
+
+/// When each instance was last polled, and what failed if anything did.
+///
+/// Its own command rather than a field on the inbox: the screen shows this
+/// while the inbox is empty, which is exactly when there would be no entry to
+/// hang it off.
+#[tauri::command]
+pub fn list_pr_host_checks(db: State<DbConnection>) -> Result<Vec<crate::models::PrHostCheck>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT host, checked_at, error FROM pr_host_checks").map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(crate::models::PrHostCheck { host: row.get(0)?, checked_at: row.get(1)?, error: row.get(2)? })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// Stamps one instance as polled just now. Overwrites: this is a freshness
+/// marker, not a log (see `pr_host_checks` in `schema.sql`).
+fn record_host_check(db: &DbConnection, host: &str, error: Option<&str>) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO pr_host_checks (host, checked_at, error) VALUES (?1, ?2, ?3)
+         ON CONFLICT(host) DO UPDATE SET checked_at = excluded.checked_at, error = excluded.error",
+        params![host.to_ascii_lowercase(), Utc::now().to_rfc3339(), error],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Records every open PR on one project's repo — yours, the ones waiting on
@@ -1396,6 +1444,43 @@ fn tracked_open_prs_for_repo(conn: &rusqlite::Connection, repo: &RepoRef) -> Vec
 /// measured on this machine, 11-21 processes and 10-20 seconds for three
 /// projects. Now it's one 0.4-0.8s call per repo.
 pub fn poll_all_open_prs<R: Runtime>(app: &AppHandle<R>) {
+    poll_open_prs_for_host(app, None);
+}
+
+/// The distinct instances the registered projects point at.
+///
+/// What the background poller fans out over. Read from the projects' own
+/// remotes rather than from `pull_requests`, so an instance whose PRs have
+/// never been fetched still gets a pass — otherwise nothing would ever fetch
+/// them and the emptiness would be self-fulfilling.
+pub fn hosts_with_projects<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
+    let Some(db) = app.try_state::<DbConnection>() else { return Vec::new() };
+    let paths: Vec<String> = {
+        let Ok(conn) = db.0.lock() else { return Vec::new() };
+        let Ok(mut stmt) = conn.prepare("SELECT path FROM projects") else { return Vec::new() };
+        let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) else { return Vec::new() };
+        rows.filter_map(Result::ok).collect()
+    };
+
+    let mut hosts: Vec<String> = Vec::new();
+    for path in paths {
+        let Ok(repo) = forges::detect_repo(Path::new(&path)) else { continue };
+        if !hosts.iter().any(|known| known.eq_ignore_ascii_case(&repo.host)) {
+            hosts.push(repo.host);
+        }
+    }
+    hosts
+}
+
+/// The same pass, restricted to the projects whose repo lives on `host` —
+/// `None` means every one of them.
+///
+/// Scoping by host is what lets each instance be polled on its own thread and
+/// what lets the PR screen ask about the provider the user is actually looking
+/// at: a GitLab that is slow, or not logged in, no longer delays the GitHub
+/// that answers. A project belongs to exactly one host, so the per-project
+/// merge debounce below is unaffected by the split.
+pub fn poll_open_prs_for_host<R: Runtime>(app: &AppHandle<R>, host: Option<&str>) {
     let Some(db) = app.try_state::<DbConnection>() else { return };
     let projects: Vec<(String, String)> = {
         let Ok(conn) = db.0.lock() else { return };
@@ -1404,20 +1489,30 @@ pub fn poll_all_open_prs<R: Runtime>(app: &AppHandle<R>) {
         rows.filter_map(Result::ok).collect()
     };
 
+    // What to stamp on `pr_host_checks` when this returns. Recorded per host
+    // even on the unscoped pass, so "when was this provider last checked" has
+    // an answer however the poll was started.
+    let mut visited: Vec<(String, Option<String>)> = Vec::new();
+
     for (project_id, project_path) in projects {
         let Ok(repo) = forges::detect_repo(Path::new(&project_path)) else {
             // No git remote, or one on a host no adapter speaks — nothing to
             // discover either way, and neither is an error.
             continue;
         };
+        if host.is_some_and(|wanted| !repo.host.eq_ignore_ascii_case(wanted)) {
+            continue;
+        }
         let path = repo.path();
         let snapshot = match forges::fetch_repo_snapshot(&repo, DISCOVERY_PR_LIMIT) {
             Ok(snapshot) => snapshot,
             Err(e) => {
-                log::error!("poll_all_open_prs: snapshot failed for {path}: {e}");
+                log::error!("poll_open_prs: snapshot failed for {path}: {e}");
+                note_host_visit(&mut visited, &repo.host, Some(e.to_string()));
                 continue;
             }
         };
+        note_host_visit(&mut visited, &repo.host, None);
         if let Err(e) = record_open_prs_for_project(app, &db, &project_id, &repo, &snapshot) {
             log::error!("poll_all_open_prs: recording {path}'s PRs failed: {e}");
         }
@@ -1467,6 +1562,29 @@ pub fn poll_all_open_prs<R: Runtime>(app: &AppHandle<R>) {
         if merged_something {
             crate::commands::graph::rebuild_after_merge(app, &project_id);
         }
+    }
+
+    // After the work, not before: a stamp written up front would claim a
+    // freshness the pass hadn't earned yet if it died halfway.
+    for (host, error) in &visited {
+        if let Err(e) = record_host_check(&db, host, error.as_deref()) {
+            log::warn!("poll_open_prs: could not stamp {host}: {e}");
+        }
+    }
+    let _ = app.emit("pr-hosts-checked", serde_json::json!({ "hosts": visited.iter().map(|(h, _)| h).collect::<Vec<_>>() }));
+}
+
+/// Remembers that this pass reached `host`, keeping the first error it hit
+/// there. First rather than last because it's the one that explains why the
+/// rest of that instance's projects went unchecked.
+fn note_host_visit(visited: &mut Vec<(String, Option<String>)>, host: &str, error: Option<String>) {
+    match visited.iter_mut().find(|(known, _)| known == host) {
+        Some((_, seen)) => {
+            if seen.is_none() {
+                *seen = error;
+            }
+        }
+        None => visited.push((host.to_string(), error)),
     }
 }
 
@@ -1686,6 +1804,51 @@ mod tests {
         .unwrap();
     }
 
+    /// The inbox answers for one instance at a time, so a person with a GitHub
+    /// and a self-hosted GitLab pays for the one they're looking at.
+    ///
+    /// The screen used to take everything and hide the rest in the browser,
+    /// which is what this replaces — so the filter has to be the query's, not
+    /// the caller's.
+    #[test]
+    fn the_inbox_is_scoped_to_one_forge_instance() {
+        let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
+        {
+            let conn = db.0.lock().unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, name, path, created_at) VALUES ('proj2','On GitLab','/tmp/proj2','now')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO pull_requests (id, project_id, repo_owner, repo_name, number, url, state, relation, created_at, forge, host)
+                 VALUES ('pr2','proj2','team','app',7,'https://gitlab.acme.com/team/app/-/merge_requests/7','open','mine','now','gitlab','gitlab.acme.com')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let everything = list_pr_review_inbox_impl(&db, None).unwrap();
+        assert_eq!(everything.len(), 2, "no host means every instance, the way the mobile bridge still asks for it");
+
+        let github = list_pr_review_inbox_impl(&db, Some("github.com")).unwrap();
+        assert_eq!(github.len(), 1);
+        assert_eq!(github[0].project_name, "Project One");
+
+        let gitlab = list_pr_review_inbox_impl(&db, Some("gitlab.acme.com")).unwrap();
+        assert_eq!(gitlab.len(), 1);
+        assert_eq!(gitlab[0].project_name, "On GitLab");
+
+        // Hosts are stored lowercased and every lookup in the app is
+        // case-insensitive; a picker echoing back `GitLab.acme.com` must not
+        // come back empty.
+        let shouted = list_pr_review_inbox_impl(&db, Some("GitLab.acme.com")).unwrap();
+        assert_eq!(shouted.len(), 1, "the host filter has to be case-insensitive");
+
+        let nowhere = list_pr_review_inbox_impl(&db, Some("bitbucket.example")).unwrap();
+        assert!(nowhere.is_empty(), "an instance with nothing on it is empty, not everything");
+    }
+
     /// Adds another open PR sharing an existing session — the shape a project
     /// gets when its one session opens several PRs.
     fn insert_open_pr_sharing_session(db: &DbConnection, session_id: &str, pr_id: &str, number: i64, created_at: &str) {
@@ -1751,7 +1914,7 @@ mod tests {
         insert_review_comment(&db, "c1", "pr1", "alice", "please fix the typo");
         insert_review_comment(&db, "c2", "pr1", "bob", "one more thing");
 
-        let inbox = list_pr_review_inbox_impl(&db).unwrap();
+        let inbox = list_pr_review_inbox_impl(&db, None).unwrap();
         assert_eq!(inbox.len(), 1);
         assert_eq!(inbox[0].project_name, "Project One");
         assert_eq!(inbox[0].entries.len(), 1);
@@ -1768,7 +1931,7 @@ mod tests {
         insert_review_comment(&db, "c1", "pr1", "alice", "already handled");
         mark_comments_resolved(&db, &["c1".to_string()], "dismissed").unwrap();
 
-        let inbox = list_pr_review_inbox_impl(&db).unwrap();
+        let inbox = list_pr_review_inbox_impl(&db, None).unwrap();
         assert_eq!(inbox.len(), 1, "the open PR must still appear even with nothing pending");
         assert_eq!(inbox[0].entries.len(), 1);
         assert!(inbox[0].entries[0].comments.is_empty(), "the resolved comment must not count as pending");
@@ -1783,7 +1946,7 @@ mod tests {
         insert_open_pr(&db, "proj1", "pr2");
         insert_review_comment(&db, "c1", "pr1", "alice", "please fix the typo");
 
-        let inbox = list_pr_review_inbox_impl(&db).unwrap();
+        let inbox = list_pr_review_inbox_impl(&db, None).unwrap();
         assert_eq!(inbox.len(), 1);
         assert_eq!(inbox[0].entries.len(), 2, "both open PRs must appear, not just the one with a pending comment");
         let with_comment = inbox[0].entries.iter().find(|e| e.pull_request.id == "pr1").unwrap();
@@ -1803,7 +1966,7 @@ mod tests {
             conn.execute("UPDATE pull_requests SET last_check_error = 'gh pr view failed: some real reason' WHERE id = 'pr1'", []).unwrap();
         }
 
-        let inbox = list_pr_review_inbox_impl(&db).unwrap();
+        let inbox = list_pr_review_inbox_impl(&db, None).unwrap();
         assert_eq!(inbox[0].entries.len(), 1);
         assert_eq!(inbox[0].entries[0].pull_request.last_check_error.as_deref(), Some("gh pr view failed: some real reason"));
         assert!(inbox[0].entries[0].comments.is_empty(), "no comments and a check error can coexist — that's the whole point");
@@ -1816,7 +1979,7 @@ mod tests {
 
         mark_comments_resolved(&db, &["c1".to_string()], "dismissed").unwrap();
 
-        let inbox = list_pr_review_inbox_impl(&db).unwrap();
+        let inbox = list_pr_review_inbox_impl(&db, None).unwrap();
         assert_eq!(inbox.len(), 1, "the PR itself stays in the inbox");
         assert!(inbox[0].entries[0].comments.is_empty(), "the dismissed comment must no longer count as pending");
     }
@@ -1892,7 +2055,7 @@ mod tests {
         let db = setup_db_with_open_pr("proj1", "Project One", "pr1");
         insert_someone_elses_pr(&db, "proj1", "pr2", 2, "alice", "review");
 
-        let inbox = list_pr_review_inbox_impl(&db).unwrap();
+        let inbox = list_pr_review_inbox_impl(&db, None).unwrap();
         assert_eq!(inbox.len(), 1, "both PRs belong to the same project");
         let theirs = inbox[0].entries.iter().find(|e| e.pull_request.id == "pr2").expect("a session-less PR must still be listed");
         assert_eq!(theirs.pull_request.author_login.as_deref(), Some("alice"));

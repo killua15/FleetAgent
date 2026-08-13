@@ -118,10 +118,33 @@ pub fn run() {
             // for a real GitHub webhook, so this is the same shape a
             // desktop app like Conductor uses: poll while the app is open,
             // plus the "check now" command for an immediate refresh.
+            //
+            // One thread per forge instance, fanned out fresh on every cycle.
+            // Per instance because that is the unit that can be slow or logged
+            // out, and a `glab` that hangs on a self-hosted GitLab used to
+            // delay every GitHub project queued behind it. Re-read each cycle
+            // rather than spawned once, so an instance added after launch is
+            // picked up and one whose last project went away stops being
+            // polled — a fixed set of threads would do neither.
+            //
+            // The PR screen reads the database these fill, so what they really
+            // buy is a screen that paints with no network in its way.
             let poll_handle = app.handle().clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_secs(300));
-                commands::pull_requests::poll_all_open_prs(&poll_handle);
+                let hosts = commands::pull_requests::hosts_with_projects(&poll_handle);
+                let mut passes = Vec::new();
+                for host in hosts {
+                    let handle = poll_handle.clone();
+                    passes.push(std::thread::spawn(move || {
+                        commands::pull_requests::poll_open_prs_for_host(&handle, Some(&host));
+                    }));
+                }
+                // Joined before sleeping again: overlapping cycles would have
+                // two passes writing the same instance's rows at once.
+                for pass in passes {
+                    let _ = pass.join();
+                }
             });
 
             // Background account-usage poller — checks `/usage` for the
@@ -248,6 +271,7 @@ pub fn run() {
             commands::settings::list_project_account_rotation,
             commands::settings::set_project_account_allowed,
             commands::forge_status::list_forge_instances,
+            commands::forge_status::list_forge_hosts,
             commands::forge_status::recheck_forge_instances,
             commands::forge_status::save_forge_instance,
             commands::forge_status::delete_forge_instance,
@@ -296,6 +320,8 @@ pub fn run() {
             commands::pull_requests::dismiss_pr_comments,
             commands::pull_requests::list_pr_review_inbox,
             commands::pull_requests::check_all_open_prs_now,
+            commands::pull_requests::check_open_prs_now,
+            commands::pull_requests::list_pr_host_checks,
             commands::git_panel::get_git_overview,
             commands::git_panel::git_fetch,
             commands::git_panel::git_pull,

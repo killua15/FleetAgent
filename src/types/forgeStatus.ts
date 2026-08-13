@@ -7,6 +7,31 @@ export interface ForgeInstanceProject {
   name: string;
 }
 
+/** One instance, named and counted and nothing more — matches `ForgeHost` in
+ * `commands/forge_status.rs`.
+ *
+ * What the PR screen's picker runs on. `ForgeInstanceStatus` below answers a
+ * bigger question and pays for it with a login probe per host, which is a
+ * network wait on a screen whose whole point is not having one. */
+export interface ForgeHost {
+  host: string;
+  /** Null for a host nothing places — still a real choice, since projects
+   * point at it. */
+  forge: Forge | null;
+  /** What the user called it when declaring it. Empty otherwise. */
+  label: string;
+  projectCount: number;
+}
+
+/** When one instance was last polled for open PRs — matches `PrHostCheck` in
+ * `models.rs`. It's what lets a screen painted from the local database say how
+ * old what it's showing is. */
+export interface PrHostCheck {
+  host: string;
+  checkedAt: string;
+  error: string | null;
+}
+
 /** One forge instance the registered projects point at, and whether Hangar can
  * talk to it. Matches `ForgeInstanceStatus` in `commands/forge_status.rs`. */
 export interface ForgeInstanceStatus {

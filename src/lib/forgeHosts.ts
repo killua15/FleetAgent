@@ -15,8 +15,13 @@ export interface ForgeHosted {
  * "GitLab" would hide which one a merge request is on. */
 export interface ForgeHostOption {
   host: string;
-  forge: Forge;
+  /** Null only when the option came from the backend's instance list and
+   * nothing places that host — a real instance with projects on it, which is
+   * why it's offered rather than dropped. */
+  forge: Forge | null;
   count: number;
+  /** What the user called it when declaring it, when they did. */
+  label?: string;
 }
 
 /** Every host, the way `NO_FILTER` works on the task board: an unset filter
@@ -60,18 +65,37 @@ export function collectForgeHosts(items: ForgeHosted[]): ForgeHostOption[] {
 }
 
 function isCanonical(option: NamedInstance): boolean {
-  return CANONICAL_HOSTS[option.forge] === option.host;
+  return option.forge !== null && CANONICAL_HOSTS[option.forge] === option.host;
 }
 
 /** An instance Hangar has placed — enough to name it, without the count a
  * picker option carries. */
-type NamedInstance = { host: string; forge: Forge };
+type NamedInstance = { host: string; forge: Forge | null; label?: string };
 
-/** What to call an instance. `github.com` is just "GitHub"; a self-hosted
- * instance is its own hostname, because that's the only thing distinguishing
- * it from every other GitLab. */
+/** What to call an instance: the name the user gave it when declaring one,
+ * otherwise "GitHub"/"GitLab" for the instances the forges run themselves, and
+ * the bare hostname for anything else — that hostname being the only thing
+ * distinguishing it from every other GitLab. */
 export function forgeHostLabel(option: NamedInstance): string {
-  return isCanonical(option) ? FORGE_LABEL[option.forge] : option.host;
+  if (option.label) return option.label;
+  return isCanonical(option) && option.forge ? FORGE_LABEL[option.forge] : option.host;
+}
+
+/**
+ * The instances the backend knows about, as picker options.
+ *
+ * The counterpart to `collectForgeHosts`: that one derives the list from items
+ * already loaded, which is exactly what a screen can't do before it has loaded
+ * anything. This one comes from `list_forge_hosts`, so the PR screen can offer
+ * a choice while showing nothing at all.
+ */
+export function toForgeHostOptions(hosts: { host: string; forge: Forge | null; label: string; projectCount: number }[]): ForgeHostOption[] {
+  return hosts
+    .map((h) => ({ host: h.host, forge: h.forge, count: h.projectCount, label: h.label || undefined }))
+    .sort((a, b) => {
+      const canonical = Number(isCanonical(b)) - Number(isCanonical(a));
+      return canonical !== 0 ? canonical : a.host.localeCompare(b.host);
+    });
 }
 
 /** Whether one item survives the current selection. */

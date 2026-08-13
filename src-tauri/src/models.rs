@@ -417,6 +417,18 @@ pub struct PrInboxEntry {
     pub comments: Vec<PrComment>,
 }
 
+/// When one forge instance was last polled for open PRs.
+///
+/// What lets the PR screen paint from the database and still say how old that
+/// is — and, when `error` is set, say why it isn't newer.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrHostCheck {
+    pub host: String,
+    pub checked_at: String,
+    pub error: Option<String>,
+}
+
 /// One project's group in the PR review inbox — every open PR that project
 /// has, each with its pending (unresolved) comments.
 #[derive(Debug, Clone, Serialize)]
