@@ -211,15 +211,18 @@ pub fn delete_skill<R: tauri::Runtime>(app: tauri::AppHandle<R>, db: State<DbCon
 /// fails, because a path the user can paste somewhere still solves their
 /// problem.
 #[tauri::command]
-pub fn reveal_skill_directory<R: tauri::Runtime>(app: tauri::AppHandle<R>, name: String) -> Result<String, String> {
-    valid_name(&name)?;
-    let dir = library_dir(&crate::app_data::root(&app)?).join(&name);
-    if !dir.is_dir() {
-        return Err(format!("'{name}' has no folder yet — save it first"));
-    }
-    let path = dir.to_string_lossy().to_string();
-    std::process::Command::new("open").arg(&dir).spawn().map_err(|e| format!("could not open {path}: {e}"))?;
-    Ok(path)
+pub async fn reveal_skill_directory<R: tauri::Runtime>(app: tauri::AppHandle<R>, name: String) -> Result<String, String> {
+    crate::blocking::run_blocking(move || {
+        valid_name(&name)?;
+        let dir = library_dir(&crate::app_data::root(&app)?).join(&name);
+        if !dir.is_dir() {
+            return Err(format!("'{name}' has no folder yet — save it first"));
+        }
+        let path = dir.to_string_lossy().to_string();
+        std::process::Command::new("open").arg(&dir).spawn().map_err(|e| format!("could not open {path}: {e}"))?;
+        Ok(path)
+    })
+    .await?
 }
 
 // -------------------------------------------------------------- selection

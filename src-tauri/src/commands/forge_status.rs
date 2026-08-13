@@ -380,15 +380,20 @@ pub fn delete_forge_instance(db: State<DbConnection>, host: String) -> Result<Ve
 /// stored by Hangar: `gh` and `glab` keep it in the OS keyring, which is where
 /// it belongs — a database gets copied into a backup and a keyring does not.
 #[tauri::command]
-pub fn authenticate_forge_instance(db: State<DbConnection>, host: String, token: String) -> Result<Vec<ForgeInstanceStatus>, String> {
-    let host = host.trim().to_ascii_lowercase();
-    if token.trim().is_empty() {
-        return Err("a token is required".to_string());
-    }
-    forges::login_with_token(&host, token.trim())?;
-    // The login just changed what every memo was taken under.
-    forges::gitlab::forget_authenticated_hosts();
-    list_forge_instances_impl(&db)
+pub async fn authenticate_forge_instance<R: tauri::Runtime>(app: tauri::AppHandle<R>, host: String, token: String) -> Result<Vec<ForgeInstanceStatus>, String> {
+    // `run_blocking` like its neighbours: the login is a CLI round trip over the
+    // network, and as a synchronous command it held the UI thread for it.
+    crate::blocking::run_blocking(move || {
+        let host = host.trim().to_ascii_lowercase();
+        if token.trim().is_empty() {
+            return Err("a token is required".to_string());
+        }
+        forges::login_with_token(&host, token.trim())?;
+        // The login just changed what every memo was taken under.
+        forges::gitlab::forget_authenticated_hosts();
+        list_forge_instances_impl(&app.state::<DbConnection>())
+    })
+    .await?
 }
 
 /// The repositories an instance's login can see.

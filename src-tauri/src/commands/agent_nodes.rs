@@ -292,7 +292,7 @@ fn run_node_recursive(app: &AppHandle, nodes: &HashMap<String, LoadedNode>, node
 
     let db = app.state::<DbConnection>();
     let session_id = ensure_session_for_node(&db, node_id, node)?;
-    crate::commands::sessions::send_message(app.clone(), db.clone(), session_id.clone(), full_prompt)?;
+    crate::commands::sessions::send_message_blocking(app.clone(), session_id.clone(), full_prompt)?;
     wait_for_turn_to_finish(&db, &session_id)?;
     fetch_last_output(&db, &session_id)
 }

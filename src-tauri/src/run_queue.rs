@@ -318,7 +318,7 @@ fn start_run<R: Runtime>(app: &AppHandle<R>, db: &DbConnection, run: &QueuedRun,
         None,
     ))?;
 
-    let info = crate::terminals::open_terminal(
+    let info = crate::terminals::open_terminal_blocking(
         app.clone(),
         crate::terminals::TerminalTarget { kind: crate::terminals::TargetKind::Session, id: session.id.clone() },
         Some(account_id.to_string()),

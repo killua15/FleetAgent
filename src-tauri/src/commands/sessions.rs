@@ -731,8 +731,16 @@ pub fn list_workspace_sessions(db: State<DbConnection>) -> Result<Vec<SessionVie
 /// Runs one turn against an existing session: fetches its account/project/
 /// mode, resolves credentials + config dir isolation, and hands off to the
 /// provider's turn runner (only Claude Code is wired so far).
+/// Off the UI thread: this ends in `spawn_turn`, which starts the provider's
+/// process, and it's reached from the one place where a frozen window is most
+/// obvious — pressing Enter on a prompt.
 #[tauri::command]
-pub fn send_message(app: AppHandle, db: State<DbConnection>, session_id: String, text: String) -> Result<(), String> {
+pub async fn send_message(app: AppHandle, session_id: String, text: String) -> Result<(), String> {
+    crate::blocking::run_blocking(move || send_message_blocking(app, session_id, text)).await?
+}
+
+pub(crate) fn send_message_blocking(app: AppHandle, session_id: String, text: String) -> Result<(), String> {
+    let db = app.state::<DbConnection>();
     // Failover before anything else reads the session row: if this session's
     // account is rate-limited and the project allows rotating, this repoints
     // it at a usable account (and clears the now-meaningless `--resume` id)
@@ -1172,17 +1180,26 @@ fn resolve_session_cwd(conn: &Connection, session_id: &str) -> Result<String, St
 /// Live file tree for a session's working directory, colored by git status
 /// where available, or by "touched in this session" for copy-kind
 /// subsessions with no git history.
+///
+/// Off the UI thread: `git_status_map` shells out to `git status` and
+/// `build_file_tree` walks the working directory, and AgentPanel asks for this
+/// the moment it mounts — on a large repo that was the screen freezing as you
+/// entered it.
 #[tauri::command]
-pub fn list_session_files(db: State<DbConnection>, session_id: String) -> Result<Vec<FileTreeNode>, String> {
+pub async fn list_session_files(app: AppHandle, session_id: String) -> Result<Vec<FileTreeNode>, String> {
+    crate::blocking::run_blocking(move || list_session_files_blocking(&app.state::<DbConnection>(), &session_id)).await?
+}
+
+fn list_session_files_blocking(db: &DbConnection, session_id: &str) -> Result<Vec<FileTreeNode>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let cwd = resolve_session_cwd(&conn, &session_id)?;
+    let cwd = resolve_session_cwd(&conn, session_id)?;
 
     if !Path::new(&cwd).is_dir() {
         return Ok(Vec::new());
     }
 
     let is_git = project_is_git_repo(&cwd);
-    let statuses = if is_git { git_status_map(Path::new(&cwd)) } else { touched_status_map(&conn, &session_id, &cwd)? };
+    let statuses = if is_git { git_status_map(Path::new(&cwd)) } else { touched_status_map(&conn, session_id, &cwd)? };
     drop(conn);
 
     let mut tree = build_file_tree(Path::new(&cwd), "", &statuses)?;
@@ -1270,7 +1287,11 @@ pub(crate) fn parse_worktree_list(output: &str) -> Vec<(String, String)> {
 /// most likely already open is the user's own main clone — precisely because
 /// that's the branch they were working on.
 #[tauri::command]
-pub fn check_branch_availability(db: State<DbConnection>, project_id: String, branch: String) -> Result<BranchAvailability, String> {
+pub async fn check_branch_availability(app: AppHandle, project_id: String, branch: String) -> Result<BranchAvailability, String> {
+    crate::blocking::run_blocking(move || check_branch_availability_blocking(&app.state::<DbConnection>(), &project_id, branch)).await?
+}
+
+fn check_branch_availability_blocking(db: &DbConnection, project_id: &str, branch: String) -> Result<BranchAvailability, String> {
     let project_path: String = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         conn.query_row("SELECT path FROM projects WHERE id = ?1", params![project_id], |row| row.get(0))
@@ -1290,26 +1311,30 @@ pub fn check_branch_availability(db: State<DbConnection>, project_id: String, br
 /// own target: the screen exists for projects, and a session is just the other
 /// kind of working directory. Statuses come from git when there is a repo.
 #[tauri::command]
-pub fn list_files(db: State<DbConnection>, target: crate::terminals::TerminalTarget) -> Result<Vec<FileTreeNode>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let (cwd, _) = crate::terminals::resolve_target_for_files(&conn, &target)?;
-    if !Path::new(&cwd).is_dir() {
-        return Ok(Vec::new());
-    }
+pub async fn list_files(app: AppHandle, target: crate::terminals::TerminalTarget) -> Result<Vec<FileTreeNode>, String> {
+    crate::blocking::run_blocking(move || {
+        let db = app.state::<DbConnection>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let (cwd, _) = crate::terminals::resolve_target_for_files(&conn, &target)?;
+        if !Path::new(&cwd).is_dir() {
+            return Ok(Vec::new());
+        }
 
-    let is_git = project_is_git_repo(&cwd);
-    let statuses = if is_git { git_status_map(Path::new(&cwd)) } else { HashMap::new() };
-    drop(conn);
+        let is_git = project_is_git_repo(&cwd);
+        let statuses = if is_git { git_status_map(Path::new(&cwd)) } else { HashMap::new() };
+        drop(conn);
 
-    let mut tree = build_file_tree(Path::new(&cwd), "", &statuses)?;
-    if is_git {
-        for (path, status) in &statuses {
-            if *status == FileStatus::Deleted {
-                insert_deleted_path(&mut tree, path);
+        let mut tree = build_file_tree(Path::new(&cwd), "", &statuses)?;
+        if is_git {
+            for (path, status) in &statuses {
+                if *status == FileStatus::Deleted {
+                    insert_deleted_path(&mut tree, path);
+                }
             }
         }
-    }
-    Ok(tree)
+        Ok(tree)
+    })
+    .await?
 }
 
 /// One file's current content plus, when git has one, the committed version it
@@ -1346,11 +1371,16 @@ pub fn read_file(db: State<DbConnection>, target: crate::terminals::TerminalTarg
 /// interactive picker available to a headless caller, so Hangar reads the
 /// same on-disk transcripts (`<config_dir>/projects/<slug>/<id>.jsonl`) the
 /// real picker draws from.
+/// Off the UI thread: it opens every transcript under the account's `projects`
+/// directory to describe it, which grows with how much the user has used the
+/// provider's CLI, not with anything Hangar controls.
 #[tauri::command]
-pub fn list_resumable_conversations(
-    db: State<DbConnection>,
-    session_id: String,
-) -> Result<Vec<ResumableConversation>, String> {
+pub async fn list_resumable_conversations(app: AppHandle, session_id: String) -> Result<Vec<ResumableConversation>, String> {
+    crate::blocking::run_blocking(move || list_resumable_conversations_blocking(app, session_id)).await?
+}
+
+fn list_resumable_conversations_blocking(app: AppHandle, session_id: String) -> Result<Vec<ResumableConversation>, String> {
+    let db = app.state::<DbConnection>();
     let (config_dir_path, project_path, current_provider_session_id): (String, String, Option<String>) = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let (account_id, project_id, resume, worktree_path): (String, String, Option<String>, Option<String>) = conn
@@ -1708,19 +1738,19 @@ mod subsession_tests {
         let db = app.state::<DbConnection>();
 
         // T2 exists and nobody holds it: free to take.
-        let free = check_branch_availability(db.clone(), project_id.clone(), "T2".to_string()).unwrap();
+        let free = check_branch_availability_blocking(&db, &project_id, "T2".to_string()).unwrap();
         assert!(free.exists);
         assert_eq!(free.checked_out_at, None);
 
         // The branch the main clone is on cannot go anywhere else.
-        let current = check_branch_availability(db.clone(), project_id.clone(), "main".to_string())
-            .or_else(|_| check_branch_availability(db.clone(), project_id.clone(), "master".to_string()))
+        let current = check_branch_availability_blocking(&db, &project_id, "main".to_string())
+            .or_else(|_| check_branch_availability_blocking(&db, &project_id, "master".to_string()))
             .unwrap();
         assert!(current.checked_out_at.is_some(), "the checked-out branch must report where it's held");
 
         // A name nobody has used yet is neither existing nor held — the
         // "create it" case.
-        let fresh = check_branch_availability(db.clone(), project_id, "T7".to_string()).unwrap();
+        let fresh = check_branch_availability_blocking(&db, &project_id, "T7".to_string()).unwrap();
         assert!(!fresh.exists);
         assert_eq!(fresh.checked_out_at, None);
 
@@ -2075,7 +2105,7 @@ mod subsession_tests {
         let (app, _account_id, _project_id) = setup_test_app_with_account_and_project(project_dir.to_str().unwrap());
         let db = app.state::<DbConnection>();
 
-        let tree = list_session_files(db.clone(), "parent1".to_string()).expect("list_session_files should succeed");
+        let tree = list_session_files_blocking(&db, "parent1").expect("list_session_files should succeed");
         let find = |name: &str| tree.iter().find(|n| n.name == name);
 
         assert_eq!(find("tracked.txt").map(|n| n.status), Some(Some(FileStatus::Modified)));
@@ -2106,7 +2136,7 @@ mod subsession_tests {
             .unwrap();
         }
 
-        let tree = list_session_files(db.clone(), "parent1".to_string()).expect("list_session_files should succeed without git");
+        let tree = list_session_files_blocking(&db, "parent1").expect("list_session_files should succeed without git");
         let find = |name: &str| tree.iter().find(|n| n.name == name);
 
         assert_eq!(find("app.txt").map(|n| n.status), Some(Some(FileStatus::Touched)));
@@ -2127,7 +2157,7 @@ mod subsession_tests {
         let (app, _account_id, _project_id) = setup_test_app_with_account_and_project(project_dir.to_str().unwrap());
         let db = app.state::<DbConnection>();
 
-        let tree = list_session_files(db.clone(), "parent1".to_string()).unwrap();
+        let tree = list_session_files_blocking(&db, "parent1").unwrap();
         assert!(!tree.iter().any(|n| n.name == "node_modules"), "node_modules must be excluded from the tree");
         assert!(tree.iter().any(|n| n.name == "real.txt"));
 

@@ -940,7 +940,7 @@ pub async fn send_pr_comments_to_session(app: AppHandle, comment_ids: Vec<String
         let target_session_id = resolve_session_for_pr_branch(&app, &db, &pr, &account_id)?;
 
         let prompt = format_pr_comments_prompt(&comments, Forge::from_column(&pr.forge));
-        crate::commands::sessions::send_message(app.clone(), db.clone(), target_session_id.clone(), prompt)?;
+        crate::commands::sessions::send_message_blocking(app.clone(), target_session_id.clone(), prompt)?;
         mark_comments_resolved(&db, &comment_ids, "sent")?;
         Ok(target_session_id)
     })
@@ -1004,7 +1004,7 @@ pub async fn send_pr_comments_to_terminal(
             mark_comments_resolved(&db, &comment_ids, "sent")?;
             return Ok(existing);
         }
-        let info = crate::terminals::open_terminal(
+        let info = crate::terminals::open_terminal_blocking(
             app.clone(),
             crate::terminals::TerminalTarget { kind: crate::terminals::TargetKind::Session, id: target_session_id },
             Some(account_id),
@@ -1066,7 +1066,7 @@ pub async fn open_pr_review_terminal(app: AppHandle, pr_id: String, account_id: 
             return Ok(existing);
         }
 
-        crate::terminals::open_terminal(
+        crate::terminals::open_terminal_blocking(
             app.clone(),
             crate::terminals::TerminalTarget { kind: crate::terminals::TargetKind::Session, id: target_session_id },
             Some(account_id),
