@@ -11,7 +11,7 @@ import { IconTooltip } from '../components/ui/tooltip';
 import { BaseBranchPicker, useBaseBranch } from '../components/BaseBranchPicker';
 import { useNavigation } from '../nav/NavigationProvider';
 import { autoGridColumns } from '../lib/gridLayout';
-import { formatHoursLeft, PROVIDER_META, type Account, type AccountAuth, type FanOutProjection } from '../types/account';
+import { formatHoursLeft, PROVIDER_META, type Account, type AccountAuth, type AccountNeedsLogin, type FanOutProjection } from '../types/account';
 import type { Project, Session } from '../types/session';
 import { TERMINAL_STATE_META, type FanOutBranch, type InitCommand, type SuggestedAccount, type TerminalActivity, type TerminalInfo, type TerminalTarget } from '../types/terminal';
 import styles from './Terminals.module.css';
@@ -76,6 +76,8 @@ export function Terminals() {
   // `opening`: the swap takes a few seconds (a transcript copy and a new CLI
   // coming up) and the feedback belongs on the panel it's happening to.
   const [switchingId, setSwitchingId] = useState<string | null>(null);
+  const [needsLogin, setNeedsLogin] = useState<AccountNeedsLogin[]>([]);
+  const [relogginId, setRelogginId] = useState<string | null>(null);
   // Live agent state per terminal, keyed by id. Seeded once and then driven by
   // events — polling six PTYs for "are you done" would be the wrong shape.
   const [activity, setActivity] = useState<Record<string, TerminalActivity>>({});
@@ -138,6 +140,21 @@ export function Terminals() {
     const unlisten = listen('terminal-accounts-updated', () => {
       loadAccounts().catch(() => {});
     });
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, []);
+
+  // Same idea for expired logins, on its own event: the background check writes
+  // the table, this re-reads it, and each panel decides whether to say so.
+  useEffect(() => {
+    const load = () => {
+      invoke<AccountNeedsLogin[]>('list_accounts_needing_login')
+        .then(setNeedsLogin)
+        .catch(() => {});
+    };
+    load();
+    const unlisten = listen('account-logins-checked', load);
     return () => {
       unlisten.then((f) => f());
     };
@@ -371,6 +388,21 @@ export function Terminals() {
   };
 
   const exhaustedAccountIds = new Set(accounts.filter((a) => a.status === 'exhausted').map((a) => a.id));
+  const needsLoginAccountIds = new Set(needsLogin.map((a) => a.accountId));
+
+  /** Opens the provider's own login in a terminal, against this account's
+   * config dir. Same command the banner at the top of the app runs. */
+  const reloginAccount = async (accountId: string) => {
+    setRelogginId(accountId);
+    try {
+      const info = await invoke<TerminalInfo>('open_login_terminal', { accountId, cols: 80, rows: 24 });
+      setTerminals((prev) => [...prev, info]);
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setRelogginId(null);
+    }
+  };
 
   // Hidden terminals no longer need their own list: the sidebar shows every
   // terminal and marks which ones have a panel on screen.
@@ -657,6 +689,12 @@ export function Terminals() {
                   {t.accountId && exhaustedAccountIds.has(t.accountId) && (
                     <OutOfQuotaBanner terminal={t} busy={switchingId === t.id} onReopen={(accountId) => reopenWithAccount(t, accountId)} />
                   )}
+                  {/* Out of quota and signed out look identical from here — the
+                      agent won't run — so the panel has to say which, since the
+                      fix is different: wait, or sign in again. */}
+                  {t.accountId && needsLoginAccountIds.has(t.accountId) && (
+                    <NeedsLoginBanner terminal={t} busy={relogginId === t.accountId} onRelogin={() => reloginAccount(t.accountId!)} />
+                  )}
                   {/* Keyed by id so React never recycles one pane's xterm
                       instance for a different terminal. */}
                   <TerminalPane terminalId={t.id} className={styles.term} />
@@ -712,6 +750,28 @@ function OutOfQuotaBanner({ terminal, busy, onReopen }: { terminal: TerminalInfo
           {busy ? '…' : `Reopen in ${suggestion.accountName}`}
         </Button>
       )}
+    </div>
+  );
+}
+
+/** Shown on a panel whose account the provider has signed out.
+ *
+ * Deliberately not the out-of-quota banner with different words: they look the
+ * same from the outside — the agent won't run — but the remedies are opposites.
+ * Out of quota, another account helps and waiting works; signed out, no other
+ * account is involved and waiting never fixes it. Offering "reopen elsewhere"
+ * here would send someone to spend a second account for no reason. */
+function NeedsLoginBanner({ terminal, busy, onRelogin }: { terminal: TerminalInfo; busy: boolean; onRelogin: () => void }) {
+  return (
+    <div className={styles.quotaBanner}>
+      <span className={styles.quotaDot} />
+      <span className={styles.quotaText}>
+        {terminal.accountName ?? 'This account'} is signed out — the provider ended its session. Signing in again brings it back; nothing else will.
+      </span>
+      <span className={styles.spacer} />
+      <Button size="sm" disabled={busy} onClick={onRelogin}>
+        {busy ? '…' : 'Sign in again'}
+      </Button>
     </div>
   );
 }

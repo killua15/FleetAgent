@@ -549,3 +549,26 @@ CREATE TABLE IF NOT EXISTS pr_host_checks (
   checked_at TEXT NOT NULL,
   error      TEXT
 );
+
+-- Whether each account's provider login still works, as of when it was asked.
+--
+-- Providers expire a login every so often, and until this table existed the app
+-- found out the way the user did: by opening a terminal and watching the agent
+-- refuse to start. The background check writes here and the re-login banner
+-- reads it, so the answer survives a restart instead of being re-derived on
+-- every launch.
+--
+-- Not a column on `accounts`, because widening that table's `status` CHECK
+-- means rebuilding it — and because being logged out is a fact about the
+-- credential on disk, not about the row.
+--
+-- `error` is separate from `logged_in`: a probe that couldn't run is not a
+-- probe that answered "no", and conflating them would raise the banner on a
+-- machine that is only offline. Only accounts whose provider can actually be
+-- asked appear here at all (see `AuthStatusProbe::None`).
+CREATE TABLE IF NOT EXISTS account_login_checks (
+  account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+  checked_at TEXT NOT NULL,
+  logged_in  INTEGER NOT NULL,
+  error      TEXT
+);

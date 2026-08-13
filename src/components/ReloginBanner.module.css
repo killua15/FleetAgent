@@ -1,0 +1,41 @@
+/* Mirrors UpdateBanner's shape so the two read as the same kind of message,
+   in amber rather than accent: this one is something that stopped working,
+   not something new that's available. */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--amber) 16%, transparent);
+  font: 400 11.5px var(--font-ui);
+  color: var(--txt);
+}
+
+.provider {
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--amber);
+  color: #14121c;
+  font: 600 10px var(--font-mono);
+}
+
+.text {
+  color: var(--txt);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.dismiss {
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.dismiss:hover {
+  color: var(--txt);
+}

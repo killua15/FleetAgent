@@ -15,6 +15,7 @@ import { ForgeSettings } from './screens/ForgeSettings';
 import { TaskSettings } from './screens/TaskSettings';
 import { TaskBoard } from './screens/TaskBoard';
 import { UpdateBanner } from './components/UpdateBanner';
+import { ReloginBanner } from './components/ReloginBanner';
 import { useBridge } from './bridge/useBridge';
 
 // Inline rather than a module: two rules that exist only to let the banner sit
@@ -164,6 +165,12 @@ export default function App() {
                   <NavigationProvider>
                     <GlobalShortcuts />
                     <MobileBridge />
+                    {/* Inside the router, unlike the update banner above it:
+                        its button opens a terminal and navigates there, so it
+                        needs the navigation it sits in. Behind the gate too —
+                        a provider login is only worth mentioning to someone
+                        already inside. */}
+                    <ReloginBanner />
                     <Screens />
                   </NavigationProvider>
                 </SignInGate>
