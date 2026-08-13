@@ -533,3 +533,19 @@ CREATE TABLE IF NOT EXISTS forge_instances (
   label      TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
+
+-- When each instance was last polled for open pull requests.
+--
+-- The PR screen paints from `pull_requests` without waiting on the network, so
+-- it needs somewhere to read how old that answer is. Without this row, "this
+-- instance has no open PRs" and "this instance has never been reached" are the
+-- same empty list, and the screen would have to lie about one of them.
+--
+-- One row per host, overwritten on each pass: this is a freshness marker, not a
+-- history, and a log of every poll would grow forever to answer a question
+-- nobody asks.
+CREATE TABLE IF NOT EXISTS pr_host_checks (
+  host       TEXT PRIMARY KEY,
+  checked_at TEXT NOT NULL,
+  error      TEXT
+);

@@ -196,6 +196,12 @@ const MIGRATIONS: &[Migration] = &[
         run: forge_instances_table,
         transactional: true,
     },
+    Migration {
+        version: 24,
+        name: "pr_host_checks",
+        run: pr_host_checks_table,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -282,6 +288,24 @@ fn forge_instances_table(conn: &Connection) -> Result<(), String> {
          );",
     )
     .map_err(|e| format!("could not create forge_instances: {e}"))
+}
+
+/// When each forge instance was last polled for open PRs, and what went wrong
+/// if anything did.
+///
+/// Exists so the PR screen can paint from the database and still be honest
+/// about how old what it's showing is. Without it, "no open PRs on this
+/// instance" and "never managed to ask" look identical, which is the worst
+/// thing a local-first screen can do.
+fn pr_host_checks_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS pr_host_checks (
+           host       TEXT PRIMARY KEY,
+           checked_at TEXT NOT NULL,
+           error      TEXT
+         );",
+    )
+    .map_err(|e| format!("could not create pr_host_checks: {e}"))
 }
 
 /// Remembers which terminals were open so they can be reopened next launch.

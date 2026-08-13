@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { invoke } from '../lib/invoke';
 import { listen } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -9,7 +9,8 @@ import { useNavigation } from '../nav/NavigationProvider';
 import { AccountPickerButton } from '../components/AccountPickerButton';
 import { ForgePicker } from '../components/ForgePicker';
 import { useForgeHost } from '../hooks/useForgeHost';
-import { collectForgeHosts, matchesForgeHost, resolveForgeHost } from '../lib/forgeHosts';
+import { ALL_HOSTS, toForgeHostOptions } from '../lib/forgeHosts';
+import type { ForgeHost, PrHostCheck } from '../types/forgeStatus';
 import { FORGE_LABEL, FORGE_SIGIL, PR_RELATION_LABEL, type PrComment, type PrInboxEntry, type PrRelation, type ProjectPrInbox } from '../types/pullRequest';
 import type { TerminalInfo } from '../types/terminal';
 import styles from './PrReviews.module.css';
@@ -18,89 +19,116 @@ import styles from './PrReviews.module.css';
  * finish, what someone asked you to look at, then the rest of the repo. */
 const RELATION_TABS: PrRelation[] = ['mine', 'review', 'other'];
 
-// Mirrors the background poller's interval in `lib.rs` (`Duration::from_secs(300)`)
-// — purely a countdown display, doesn't drive the actual poll.
-const AUTO_CHECK_INTERVAL_SECONDS = 300;
-
-function formatCountdown(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}:${String(s).padStart(2, '0')}`;
+/**
+ * How old what's on screen is.
+ *
+ * This replaced a countdown to the next background pass. A countdown answered
+ * the wrong question: the list is painted from the local database now, so what
+ * matters is when this instance was last reached — and, when it wasn't, that
+ * being said out loud instead of shown as an empty list.
+ */
+function freshnessText(check: PrHostCheck | undefined, checking: boolean): string {
+  if (checking) return 'checking…';
+  if (!check) return 'not checked yet';
+  if (check.error) return 'last check failed';
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(check.checkedAt).getTime()) / 1000));
+  if (seconds < 60) return 'checked just now';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `checked ${minutes}m ago`;
+  return `checked ${Math.round(minutes / 60)}h ago`;
 }
 
 export function PrReviews() {
   const { navigate, back, canGoBack } = useNavigation();
   const [inbox, setInbox] = useState<ProjectPrInbox[]>([]);
+  const [hosts, setHosts] = useState<ForgeHost[] | null>(null);
+  const [checks, setChecks] = useState<PrHostCheck[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [checkingNow, setCheckingNow] = useState(false);
   const [busyCommentId, setBusyCommentId] = useState<string | null>(null);
   const [reviewingPrId, setReviewingPrId] = useState<string | null>(null);
   const [sendingAllPrId, setSendingAllPrId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<PrRelation>('mine');
-  const [secondsUntilAutoCheck, setSecondsUntilAutoCheck] = useState(AUTO_CHECK_INTERVAL_SECONDS);
   const [forgeHost, setForgeHost] = useForgeHost();
 
-  const load = async () => {
+  // The stored choice is shared with the git panel, which does offer "All".
+  // Here that reads as "nothing chosen yet": this screen fetches per instance,
+  // so every provider at once is precisely what it must not do on its own.
+  const activeHost = forgeHost === ALL_HOSTS ? null : forgeHost;
+
+  // What the screen is showing *right now*, readable from inside a promise
+  // that started before the last switch. A `gh` check can take seconds, and
+  // without this the answer for the provider you just left would land on top
+  // of the one you just picked.
+  const showing = useRef(activeHost);
+  showing.current = activeHost;
+
+  /** From the local database — no network, so this is what paints first. */
+  const load = async (host: string) => {
     setLoading(true);
     try {
-      const result = await invoke<ProjectPrInbox[]>('list_pr_review_inbox');
+      const result = await invoke<ProjectPrInbox[]>('list_pr_review_inbox', { host });
+      const stamps = await invoke<PrHostCheck[]>('list_pr_host_checks');
+      if (showing.current !== host) return;
       setInbox(result);
       setSelectedProjectId((prev) => (prev && result.some((p) => p.projectId === prev) ? prev : (result[0]?.projectId ?? null)));
+      setChecks(stamps);
     } finally {
-      setLoading(false);
+      if (showing.current === host) setLoading(false);
     }
   };
 
-  // `list_pr_review_inbox` only reads what Hangar already knows about —
-  // discovering PRs opened outside Hangar (or new comments) needs a real
-  // `gh` round-trip, so both the first load and the manual button run the
-  // full check rather than just re-reading the local database.
-  const runFullCheck = async () => {
-    try {
-      await invoke('check_all_open_prs_now');
-      setSecondsUntilAutoCheck(AUTO_CHECK_INTERVAL_SECONDS);
-    } catch (e) {
-      toastError(String(e));
-    } finally {
-      // Reload from the local DB either way — even if the real `gh` check
-      // failed, this at least shows whatever Hangar already had tracked,
-      // and clears the loading spinner instead of leaving it stuck.
-      await load();
-    }
-  };
+  /** Re-read the provider on screen after an action changed something. A no-op
+   * without one, which can't happen from the buttons that call it — they only
+   * exist once a provider is showing. */
+  const reload = () => (activeHost ? load(activeHost) : Promise.resolve());
 
-  const handleCheckNow = async () => {
-    if (checkingNow) return;
+  // The database only holds what some pass has already fetched — a PR opened
+  // on the forge five minutes ago needs a real `gh`/`glab` round trip to show
+  // up. So this runs *after* the local read has painted, never in front of it,
+  // and only ever for the instance on screen.
+  const refreshFromForge = async (host: string) => {
     setCheckingNow(true);
     try {
-      await runFullCheck();
+      await invoke('check_open_prs_now', { host });
+    } catch (e) {
+      if (showing.current === host) toastError(String(e));
     } finally {
-      setCheckingNow(false);
+      if (showing.current === host) setCheckingNow(false);
+      // Either way: a failed check still leaves whatever was already tracked,
+      // and the stamp below is what explains the gap.
+      await load(host);
     }
   };
 
   useEffect(() => {
-    runFullCheck();
-    const unlisten = listen('pr-comments-found', () => {
-      load();
-      setSecondsUntilAutoCheck(AUTO_CHECK_INTERVAL_SECONDS);
-    });
+    invoke<ForgeHost[]>('list_forge_hosts')
+      .then(setHosts)
+      .catch(() => setHosts([]));
+  }, []);
+
+  // Everything below hangs off the chosen instance: no choice, no work. This
+  // is the whole point of the screen — opening the tab costs nothing until
+  // someone says which provider they mean.
+  useEffect(() => {
+    if (!activeHost) {
+      setInbox([]);
+      setSelectedProjectId(null);
+      return;
+    }
+    load(activeHost).then(() => refreshFromForge(activeHost));
+    const unlisten = listen('pr-comments-found', () => load(activeHost));
     return () => {
       unlisten.then((f) => f());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [activeHost]);
 
-  // Purely cosmetic countdown to the background poller's next 5-minute pass
-  // — resets on a real check (manual or poller-signaled), floors at 0 rather
-  // than going negative if a cycle runs long.
-  useEffect(() => {
-    const id = setInterval(() => {
-      setSecondsUntilAutoCheck((s) => Math.max(0, s - 1));
-    }, 1000);
-    return () => clearInterval(id);
-  }, []);
+  const handleCheckNow = async () => {
+    if (checkingNow || !activeHost) return;
+    await refreshFromForge(activeHost);
+  };
 
   const handleSend = async (comment: PrComment, accountId: string) => {
     setBusyCommentId(comment.id);
@@ -110,7 +138,7 @@ export function PrReviews() {
       // `claude` already working on the comments. 80x24 is the shell's initial
       // size; the pane's first fit() corrects it.
       const info = await invoke<TerminalInfo>('send_pr_comments_to_terminal', { commentIds: [comment.id], accountId, cols: 80, rows: 24 });
-      await load();
+      await reload();
       // Restores the panel if it was minimized, and scrolls it into view —
       // without this the comment lands in a terminal the user never sees.
       navigate('terminals', { focusTerminalId: info.id });
@@ -136,7 +164,7 @@ export function PrReviews() {
         cols: 80,
         rows: 24,
       });
-      await load();
+      await reload();
       navigate('terminals', { focusTerminalId: info.id });
     } catch (e) {
       toastError(String(e));
@@ -164,7 +192,7 @@ export function PrReviews() {
     setBusyCommentId(comment.id);
     try {
       await invoke('dismiss_pr_comments', { commentIds: [comment.id] });
-      await load();
+      await reload();
     } catch (e) {
       toastError(String(e));
     } finally {
@@ -172,23 +200,11 @@ export function PrReviews() {
     }
   };
 
-  const hostOptions = collectForgeHosts(inbox.flatMap((p) => p.entries.map((e) => e.pullRequest)));
-  const activeHost = resolveForgeHost(forgeHost, hostOptions);
-  // Filtered per entry, not per project: a project's own repo says which
-  // instance it lives on, but this list is built from the change requests
-  // themselves, so they're what carries the answer here.
-  const visibleInbox = inbox
-    .map((p) => ({ ...p, entries: p.entries.filter((e) => matchesForgeHost(e.pullRequest, activeHost)) }))
-    .filter((p) => p.entries.length > 0);
-  const totalOpen = inbox.reduce((sum, p) => sum + p.entries.length, 0);
-
-  // Switching provider must never leave the detail pane on a project the list
-  // no longer shows — the same reconciliation `load` does, run again whenever
-  // the filter or the data moves under it.
-  useEffect(() => {
-    setSelectedProjectId((prev) => (prev && visibleInbox.some((p) => p.projectId === prev) ? prev : (visibleInbox[0]?.projectId ?? null)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeHost, inbox]);
+  const hostOptions = toForgeHostOptions(hosts ?? []);
+  // No client-side filtering left: `list_pr_review_inbox` was asked for this
+  // instance and answered with only its projects.
+  const visibleInbox = inbox;
+  const activeCheck = checks.find((c) => c.host === activeHost);
 
   const selected = visibleInbox.find((p) => p.projectId === selectedProjectId);
   // Only your own PRs carry pending comments (they're the only ones polled),
@@ -209,22 +225,29 @@ export function PrReviews() {
         <span className={styles.title}>PR reviews</span>
         <span className={styles.subtitle}>Open pull requests by project, with any new review comments from other people.</span>
         <span className={styles.spacer} />
-        <span className={styles.countdown}>next auto-check in {formatCountdown(secondsUntilAutoCheck)}</span>
-        <Button variant="outline" size="sm" disabled={checkingNow} onClick={handleCheckNow}>
-          {checkingNow ? <Spinner label="checking…" /> : '↻ check now'}
-        </Button>
+        {activeHost && <span className={styles.countdown}>{freshnessText(activeCheck, checkingNow)}</span>}
+        {activeHost && (
+          <Button variant="outline" size="sm" disabled={checkingNow} onClick={handleCheckNow}>
+            {checkingNow ? <Spinner label="checking…" /> : '↻ check now'}
+          </Button>
+        )}
       </div>
 
 
       <div className={styles.body}>
         <div className={styles.projectList}>
-          <span className={styles.sectionLabel}>PROJECTS</span>
-          <ForgePicker options={hostOptions} selected={activeHost} onSelect={setForgeHost} total={totalOpen} />
-          {loading && inbox.length === 0 && (
+          <span className={styles.sectionLabel}>PROVIDER</span>
+          <ForgePicker options={hostOptions} selected={forgeHost} onSelect={setForgeHost} allowAll={false} countTitle="projects on this instance" />
+          {/* Nothing is fetched until a provider is picked — that choice is the
+              screen's first step, not a filter over something already loaded. */}
+          {!activeHost && hosts !== null && (
+            <span className={styles.dimText}>
+              {hostOptions.length === 0 ? 'No forge instance yet — add a project with a git remote.' : 'Pick a provider to see its open PRs.'}
+            </span>
+          )}
+          {activeHost && loading && inbox.length === 0 && (
             <div className={styles.dimText}>
-              {/* No forge is named: the list spans every project, and they need not
-                  all be on the same one. */}
-              <Spinner label="checking for open PRs…" />
+              <Spinner label={`reading ${activeHost}…`} />
             </div>
           )}
           {visibleInbox.map((p) => {
@@ -245,7 +268,19 @@ export function PrReviews() {
               </button>
             );
           })}
-          {!loading && inbox.length === 0 && <span className={styles.dimText}>No open PRs yet.</span>}
+          {/* "Nothing here" and "never managed to ask" are different answers,
+              and the stamp is what tells them apart. */}
+          {activeHost && !loading && inbox.length === 0 && (
+            <span className={styles.dimText}>
+              {checkingNow
+                ? `Nothing recorded for ${activeHost} yet — checking…`
+                : activeCheck?.error
+                  ? `Couldn't reach ${activeHost}: ${activeCheck.error}`
+                  : activeCheck
+                    ? `No open PRs on ${activeHost}.`
+                    : `${activeHost} hasn't been checked yet.`}
+            </span>
+          )}
         </div>
 
         <div className={styles.detail}>
@@ -282,6 +317,8 @@ export function PrReviews() {
               ))}
               {visibleEntries.length === 0 && <span className={styles.dimText}>{emptyTabText(activeTab)}</span>}
             </>
+          ) : !activeHost ? (
+            <span className={styles.dimText}>Pick a provider on the left. Nothing is fetched until you do.</span>
           ) : loading ? (
             <div className={styles.dimText}>
               <Spinner label="loading…" />
