@@ -1,10 +1,10 @@
 {
-  "version": "0.6.7",
-  "notes": "Hangar stops spawning a full Claude every five minutes to read your quota, and Codex accounts are no longer reported as signed out.",
-  "pub_date": "2026-08-14T12:16:47.471233Z",
+  "version": "0.6.8",
+  "notes": "Spend history now survives deleting a project or an account, the usage view covers any period instead of seven days, and two Macs on one profile finally add up.",
+  "pub_date": "2026-08-14T16:06:09.526713Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbEZwTW9IeXpBWktOLzgrTnhlTXpNNnZuNGo0NTdCYUdCOVA4cVREbHBOSzV3SGJMTDNqRE93YmtnYldRTjBBYm9LZHhkZWwzbEYzd2pBQUFxZEV0Qmc0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NzA5ODA3CWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKT3NCN0c5dkZ4ZWFaRHpCK3hQVDNEM0xZcHdCY05qRnNlSXZSUWZCc2tuN21pUk5SVTJNL2Z3MzJGY0lVWFdveWJOQVQxN0VadFlxbmN2bnphK01LREE9PQo=",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbEg1dy9JRENHR3RxdStVRnlwQ1ZYV2h5YUpZeVFhUTRLOEh6NmR1SjFvUDg1UENsUVd5UCtWbFZLemNTb2Q5T1d2TnRSTjJsd1hucmhzZWFFVE5PQlFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NzIzNTY5CWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKTUxzNTFiM2Q3SXMzNUY1Q2FOU3dLU1U5TzFLWEFqTk9KVjIxdFMrSjZPR01aLzRhUmwySi9NY0Z0V0ZPWmpIeFRLdUw3Uk1RZ2lldTcyZzRMSDIyRFE9PQo=",
       "url": "https://api.github.com/repos/killua15/FleetAgent/contents/updates/Hangar.app.tar.gz"
     }
   }
