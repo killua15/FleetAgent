@@ -27,7 +27,59 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State};
 
+/// How long a reading stays good when the account is near its limit.
+///
+/// Every miss here starts a whole Claude Code — ~456 MB and 20% of a core,
+/// measured — so the question is not "how fresh could this be" but "how much is
+/// freshness worth right now". Near the limit it's worth a lot: the difference
+/// between 88% and 94% decides whether the next turn gets benched.
 const CACHE_TTL: Duration = Duration::from_secs(300);
+
+/// And how long it stays good when the account is nowhere near it. A reading at
+/// 15% cannot become a reading at 100% in half an hour of normal work, so
+/// paying half a gigabyte every five minutes to watch it crawl is waste.
+const RELAXED_TTL: Duration = Duration::from_secs(1800);
+const MIDDLE_TTL: Duration = Duration::from_secs(900);
+
+/// Past this, treat the account as close enough to the limit to want the fast
+/// cadence. Below the lower mark, the slow one.
+const NEAR_LIMIT_PCT: f64 = 75.0;
+const FAR_FROM_LIMIT_PCT: f64 = 50.0;
+
+/// How much longer a reading lasts while the machine is already paging. Not a
+/// switch: a laptop that swaps permanently would otherwise never refresh its
+/// quota again and the out-of-quota banner would quietly stop working. See
+/// `memory_pressure`.
+const PRESSURE_MULTIPLIER: u32 = 4;
+
+/// How long the cached reading for this account stays good.
+///
+/// Two inputs, both cheap: how close the last reading was to the limit, and
+/// whether the machine can currently afford the spike.
+fn cache_ttl(cached: &RealUsageStats) -> Duration {
+    let base = base_ttl(cached);
+    if crate::memory_pressure::under_pressure() {
+        base * PRESSURE_MULTIPLIER
+    } else {
+        base
+    }
+}
+
+/// The half that depends only on the reading — split out so it can be tested
+/// without the answer changing with whatever the machine's swap happens to be
+/// doing while the test runs.
+fn base_ttl(cached: &RealUsageStats) -> Duration {
+    // The higher of the two bars decides — a session at 90% matters even if the
+    // week is at 10%, because it's the session that blocks the next turn.
+    let worst = cached.session_pct.unwrap_or(0.0).max(cached.weekly_pct.unwrap_or(0.0));
+    if worst >= NEAR_LIMIT_PCT {
+        CACHE_TTL
+    } else if worst >= FAR_FROM_LIMIT_PCT {
+        MIDDLE_TTL
+    } else {
+        RELAXED_TTL
+    }
+}
 /// How quiet the terminal has to go before we accept that the CLI has finished
 /// booting and will hear a slash command. Generous because a real config dir
 /// loads MCP servers and plugins first, and typing into that is typing into
@@ -46,6 +98,47 @@ pub struct RealUsageStats {
     pub context_pct: Option<f64>,
     pub raw_text: String,
     pub fetched_at: String,
+}
+
+/// Wall-clock time of the last real scrape per account, so the poller can ask
+/// the database whether anything has been spent since.
+///
+/// Wall clock rather than the cache's `Instant` because it gets compared
+/// against `turn_usage.created_at`, which is a timestamp on disk. In memory
+/// rather than persisted: after a restart the first cycle scrapes once, which
+/// is the right answer anyway — the app has no idea what happened while it was
+/// closed.
+static LAST_SCRAPE: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+fn note_scrape(account_id: &str) {
+    if let Ok(mut guard) = LAST_SCRAPE.lock() {
+        guard.get_or_insert_with(HashMap::new).insert(account_id.to_string(), chrono::Utc::now().to_rfc3339());
+    }
+}
+
+/// Whether this account has recorded any spend since its last quota reading.
+///
+/// The point of the whole check: a quota percentage moves when turns are spent
+/// and at no other time. Two terminals sitting idle waiting for you cannot have
+/// changed it, so starting a 456 MB process to confirm that is pure waste — and
+/// on a machine already paging, the kind of waste that shows up as a window
+/// that stops responding.
+///
+/// `true` when there is no previous reading: never having asked is exactly when
+/// asking is worth it.
+pub fn spend_since_last_scrape(db: &crate::db::DbConnection, account_id: &str) -> bool {
+    let Some(last) = LAST_SCRAPE.lock().ok().and_then(|g| g.as_ref().and_then(|m| m.get(account_id).cloned())) else {
+        return true;
+    };
+    let Ok(conn) = db.0.lock() else { return true };
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM turn_usage WHERE account_id = ?1 AND created_at > ?2)",
+        rusqlite::params![account_id, last],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|exists| exists != 0)
+    // A database that won't answer is not a reason to skip a real check.
+    .unwrap_or(true)
 }
 
 pub struct UsageCache(pub Mutex<HashMap<String, (Instant, RealUsageStats)>>);
@@ -325,7 +418,7 @@ pub fn cached_usage_stats<R: tauri::Runtime>(app: &AppHandle<R>, account_id: &st
         if let Some(cache) = app.try_state::<UsageCache>() {
             if let Ok(map) = cache.0.lock() {
                 if let Some((fetched, stats)) = map.get(account_id) {
-                    if fetched.elapsed() < CACHE_TTL {
+                    if fetched.elapsed() < cache_ttl(stats) {
                         return Ok(stats.clone());
                     }
                 }
@@ -334,6 +427,7 @@ pub fn cached_usage_stats<R: tauri::Runtime>(app: &AppHandle<R>, account_id: &st
     }
 
     let stats = fetch_usage_stats(config_dir)?;
+    note_scrape(account_id);
 
     if let Some(cache) = app.try_state::<UsageCache>() {
         if let Ok(mut map) = cache.0.lock() {
@@ -360,6 +454,42 @@ pub fn fetch_real_usage(app: AppHandle, db: State<DbConnection>, account_id: Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stats_at(session: f64, weekly: f64) -> RealUsageStats {
+        RealUsageStats {
+            session_pct: Some(session),
+            weekly_pct: Some(weekly),
+            context_pct: None,
+            raw_text: String::new(),
+            fetched_at: String::new(),
+        }
+    }
+
+    /// A reading costs a whole Claude Code (~456 MB measured), so how long it
+    /// stays good has to depend on how much a fresher one would be worth.
+    #[test]
+    fn a_reading_far_from_the_limit_lasts_longer_than_one_near_it() {
+        assert_eq!(base_ttl(&stats_at(5.0, 15.0)), RELAXED_TTL, "nothing near the limit: half an hour is plenty");
+        assert_eq!(base_ttl(&stats_at(10.0, 60.0)), MIDDLE_TTL);
+        assert_eq!(base_ttl(&stats_at(10.0, 88.0)), CACHE_TTL, "close to the limit is where freshness decides whether a turn runs");
+    }
+
+    /// The session bar and the weekly bar block turns independently, so the
+    /// cadence follows whichever is worse — a session at 90% matters even on a
+    /// quiet week.
+    #[test]
+    fn the_worse_of_the_two_bars_sets_the_pace() {
+        assert_eq!(base_ttl(&stats_at(90.0, 10.0)), CACHE_TTL);
+        assert_eq!(base_ttl(&stats_at(10.0, 90.0)), CACHE_TTL);
+    }
+
+    /// A reading with no numbers in it (a scrape that came back empty) must not
+    /// be treated as "near the limit" and re-fetched every five minutes.
+    #[test]
+    fn a_reading_with_no_numbers_is_treated_as_far_from_the_limit() {
+        let empty = RealUsageStats { session_pct: None, weekly_pct: None, context_pct: None, raw_text: String::new(), fetched_at: String::new() };
+        assert_eq!(base_ttl(&empty), RELAXED_TTL);
+    }
 
     #[test]
     fn strip_ansi_removes_csi_sequences_but_keeps_text() {

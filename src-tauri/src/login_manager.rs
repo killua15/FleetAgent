@@ -158,7 +158,41 @@ pub(crate) fn login_env_for(provider: &str, config_dir: &str) -> Vec<(String, St
     if !env.iter().any(|(k, _)| k == "TERM") {
         env.push(("TERM".to_string(), "xterm-256color".to_string()));
     }
+    if let Some(binary) = crate::providers::spec(provider).map(|s| s.binary) {
+        if let Some(path) = path_including_binary_dir(binary, env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v.as_str())) {
+            env.retain(|(k, _)| k != "PATH");
+            env.push(("PATH".to_string(), path));
+        }
+    }
     env
+}
+
+/// `PATH` with the resolved binary's own directory in front.
+///
+/// A GUI app inherits launchd's `PATH=/usr/bin:/bin:/usr/sbin:/sbin` — the
+/// running app was measured with exactly that — while a terminal gets the
+/// user's. `resolve_binary` bridges half the gap by finding the executable at
+/// an absolute path, but that isn't enough for a CLI that is a *script*:
+/// `codex` starts with `#!/usr/bin/env node`, so launching it still needs
+/// `node` on the child's `PATH`, and without it the child prints
+/// `env: node: No such file or directory` and exits 127.
+///
+/// The fix is one directory: an nvm-installed `codex` sits in the same `bin`
+/// as the `node` that runs it. So the child gets to see its own neighbours,
+/// which is what a login shell would have done for it.
+fn path_including_binary_dir(binary: &str, current: Option<&str>) -> Option<String> {
+    let resolved = crate::providers::resolve_binary(binary);
+    let dir = std::path::Path::new(&resolved).parent()?.to_str()?.to_string();
+    // `resolve_binary` returns the bare name when it found nothing to resolve;
+    // its "parent" is then the empty string, which would only poison `PATH`.
+    if dir.is_empty() {
+        return None;
+    }
+    match current {
+        Some(path) if path.split(':').any(|entry| entry == dir) => None,
+        Some(path) => Some(format!("{dir}:{path}")),
+        None => Some(dir),
+    }
 }
 
 /// Starts an interactive `claude auth login` for a brand-new account.
@@ -383,12 +417,20 @@ pub fn auth_status_with(provider: &str, config_dir: &str, trust_marker: TrustMar
         // Coarser by necessity: the CLI prints a sentence, so there's no email
         // or plan to report and the UI shows the name the user typed rather
         // than inventing detail it doesn't have.
-        crate::providers::AuthStatusProbe::Text { logged_marker, .. } => Ok(AuthStatus {
-            logged_in: text_probe_says_logged_in(&stdout, &stderr, logged_marker),
-            auth_method: probe_sentence(&stdout, &stderr),
-            email: None,
-            subscription_type: None,
-        }),
+        crate::providers::AuthStatusProbe::Text { logged_marker, logged_out_marker, .. } => match read_text_probe(&stdout, &stderr, logged_marker, logged_out_marker) {
+            Some(logged_in) => Ok(AuthStatus {
+                logged_in,
+                auth_method: probe_sentence(&stdout, &stderr),
+                email: None,
+                subscription_type: None,
+            }),
+            None => Err(format!(
+                "`{} {}` answered neither '{logged_marker}' nor '{logged_out_marker}' — got: {}",
+                spec.binary,
+                args.join(" "),
+                probe_sentence(&stdout, &stderr).chars().take(200).collect::<String>()
+            )),
+        },
         crate::providers::AuthStatusProbe::None => unreachable!("handled above"),
     }
 }
@@ -406,6 +448,32 @@ pub fn auth_status_with(provider: &str, config_dir: &str, trust_marker: TrustMar
 /// it escaped review is that seeing it needed the real binary.
 pub(crate) fn text_probe_says_logged_in(stdout: &str, stderr: &str, logged_marker: &str) -> bool {
     stdout.contains(logged_marker) || stderr.contains(logged_marker)
+}
+
+/// What a sentence-printing CLI actually said: `Some(true)` logged in,
+/// `Some(false)` logged out, **`None` when it said neither**.
+///
+/// That third case is the one this exists for. `codex` is a Node script, and
+/// the app runs with launchd's bare `PATH=/usr/bin:/bin:/usr/sbin:/sbin` — no
+/// `node`. The child printed `env: node: No such file or directory` and exited
+/// 127, and a check that only looked for the positive marker read that as
+/// "signed out" and raised the re-login banner on a perfectly good account.
+///
+/// The exit code is deliberately not consulted: both CLIs exit 1 for a real
+/// "not logged in", so a failing status is a normal answer here. What separates
+/// an answer from a non-answer is whether the output is one of the two
+/// sentences this CLI is known to print.
+///
+/// The negative is checked first: "Not logged in" contains "logged in", and one
+/// day a marker pair will differ only by case. Order makes that harmless.
+pub(crate) fn read_text_probe(stdout: &str, stderr: &str, logged_marker: &str, logged_out_marker: &str) -> Option<bool> {
+    if stdout.contains(logged_out_marker) || stderr.contains(logged_out_marker) {
+        return Some(false);
+    }
+    if text_probe_says_logged_in(stdout, stderr, logged_marker) {
+        return Some(true);
+    }
+    None
 }
 
 /// The sentence to show for a text probe: whichever stream actually carried it.
@@ -529,6 +597,76 @@ mod tests {
     fn not_logged_in_stays_not_logged_in() {
         assert!(!text_probe_says_logged_in("", "Not logged in\n", "Logged in"));
         assert!(!text_probe_says_logged_in("", "", "Logged in"));
+    }
+
+    /// The exact output that shipped a false banner in 0.6.6.
+    ///
+    /// `codex` is a Node script; the app runs on launchd's bare PATH with no
+    /// `node`, so the child printed this and exited 127. Read as "signed out",
+    /// it told the user to re-authenticate an account that was working.
+    /// Output that is neither sentence is not an answer.
+    #[test]
+    fn output_that_is_neither_sentence_is_not_an_answer() {
+        assert_eq!(
+            read_text_probe("", "env: node: No such file or directory\n", "Logged in", "Not logged in"),
+            None,
+            "a CLI that could not start has not said this account is signed out"
+        );
+        assert_eq!(read_text_probe("", "", "Logged in", "Not logged in"), None, "silence is not an answer either");
+    }
+
+    #[test]
+    fn a_real_answer_is_still_read_on_either_stream() {
+        assert_eq!(read_text_probe("", "Logged in using ChatGPT\n", "Logged in", "Not logged in"), Some(true));
+        assert_eq!(read_text_probe("Logged in using ChatGPT\n", "", "Logged in", "Not logged in"), Some(true));
+        assert_eq!(read_text_probe("", "Not logged in\n", "Logged in", "Not logged in"), Some(false));
+    }
+
+    /// "Not logged in" contains "logged in". Checking the negative first is
+    /// what keeps a marker pair that differs only by case from reading as a
+    /// success.
+    #[test]
+    fn the_negative_wins_when_one_sentence_contains_the_other() {
+        assert_eq!(read_text_probe("", "Not logged in\n", "logged in", "Not logged in"), Some(false));
+    }
+
+    /// The whole point, on a real machine: with launchd's bare `PATH` — which
+    /// is what the running app was measured to have — the directory this adds
+    /// has to be the one holding `node`, or a script CLI still can't start.
+    ///
+    /// Ignored because it needs `codex` installed via a version manager, which
+    /// is the situation it exists to protect.
+    #[test]
+    #[ignore = "needs a script-based CLI (nvm-installed `codex`) on this machine"]
+    fn the_added_directory_is_the_one_holding_node() {
+        const LAUNCHD_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+        let Some(path) = path_including_binary_dir("codex", Some(LAUNCHD_PATH)) else {
+            panic!("nothing was added — `codex` did not resolve to a real directory on this machine");
+        };
+        let added = path.split(':').next().unwrap();
+        assert!(
+            std::path::Path::new(added).join("node").exists(),
+            "the child needs its interpreter: {added} holds no `node`, so `#!/usr/bin/env node` will still fail"
+        );
+    }
+
+    /// The child has to be able to find its own interpreter: an nvm-installed
+    /// `codex` is a script whose `node` lives in the same `bin`.
+    #[test]
+    fn the_binarys_own_directory_goes_on_the_path() {
+        let path = path_including_binary_dir("claude", Some("/usr/bin:/bin"));
+        match path {
+            // Resolved somewhere real: its directory has to come first, and the
+            // inherited entries have to survive behind it.
+            Some(path) => {
+                assert!(path.ends_with(":/usr/bin:/bin"), "the inherited PATH must be kept: {path}");
+                assert!(!path.starts_with(':'), "an empty directory would poison PATH: {path}");
+            }
+            // Nothing to resolve on this machine — then there is nothing to add.
+            None => {}
+        }
+        // Already present: nothing to do, rather than a duplicated entry.
+        assert_eq!(path_including_binary_dir("claude", Some("/usr/bin")).is_some(), !crate::providers::resolve_binary("claude").starts_with("/usr/bin/"));
     }
 
     /// Whichever stream spoke is the sentence worth showing — the accounts

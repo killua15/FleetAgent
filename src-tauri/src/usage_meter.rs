@@ -14,6 +14,7 @@ use crate::db::DbConnection;
 use rusqlite::params;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::io::{Read, Seek, SeekFrom};
 use std::sync::Mutex;
 use uuid::Uuid;
 
@@ -45,17 +46,31 @@ pub fn read_claude_transcript(config_dir: &str, session_uuid: &str) -> Vec<TurnC
     let key = path.to_string_lossy().to_string();
     let start = OFFSETS.lock().ok().and_then(|map| map.get(&key).copied()).unwrap_or(0);
 
-    let Ok(text) = std::fs::read_to_string(&path) else { return Vec::new() };
+    // Seek to the offset and read only what's new. This used to be
+    // `read_to_string` of the whole file followed by a slice, which meant
+    // allocating the entire transcript to look at its last few kilobytes — and
+    // these grow: 50 MB for one session on the machine this was written on,
+    // 326 MB across all of them. On a laptop already paging, doing that every
+    // time an agent finishes a turn is how a background job turns into a window
+    // that stops responding.
+    let Ok(mut file) = std::fs::File::open(&path) else { return Vec::new() };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
     // A shrinking file means it was replaced — a transfer between accounts does
-    // exactly that — so start over rather than slicing from a stale offset and
+    // exactly that — so start over rather than reading from a stale offset and
     // landing mid-line.
-    let from = if (text.len() as u64) < start { 0 } else { start as usize };
-    let fresh = &text[from..];
+    let from = if len < start { 0 } else { start };
+    if from > 0 && file.seek(SeekFrom::Start(from)).is_err() {
+        return Vec::new();
+    }
+    let mut fresh = String::new();
+    if file.read_to_string(&mut fresh).is_err() {
+        return Vec::new();
+    }
 
     if let Ok(mut map) = OFFSETS.lock() {
-        map.insert(key, text.len() as u64);
+        map.insert(key, len);
     }
-    parse_claude_usage(fresh)
+    parse_claude_usage(&fresh)
 }
 
 /// The pure half, so the shape of a real transcript can be tested without one.
@@ -222,6 +237,18 @@ pub fn record_turns(db: &DbConnection, account_id: &str, project_id: Option<&str
     // than derived later, so building one next week doesn't rewrite this
     // week's history and flatter the comparison (Phase 3).
     let with_graph = project_id.is_some_and(|id| crate::commands::graph::graph_available_for_project(&conn, id));
+
+    // One transaction for the batch, not one per row. Every statement outside a
+    // transaction is its own commit, and a commit is an fsync — measured at
+    // 1.7s for the ~5,900 rows a first read of a long transcript produces, all
+    // of it holding the one database lock the whole app shares. Inside a
+    // transaction the same batch is tens of milliseconds.
+    //
+    // `unchecked_transaction` because the connection is behind a shared lock
+    // and we only have `&Connection`. On error we carry on without one: a slow
+    // write beats no write.
+    let tx = conn.unchecked_transaction().ok();
+
     let mut written = 0;
     for turn in turns {
         let cost = estimate_cost_usd(turn);
@@ -247,6 +274,18 @@ pub fn record_turns(db: &DbConnection, account_id: &str, project_id: Option<&str
             ],
         );
         written += result.unwrap_or(0);
+    }
+
+    if let Some(tx) = tx {
+        if let Err(e) = tx.commit() {
+            // These turns are gone until the transcript is read from the start
+            // again, because `read_claude_transcript` has already advanced its
+            // offset past them. Loud for that reason — it is silent data loss,
+            // not a retry — though it takes a full disk or a corrupt database
+            // to get here.
+            log::error!("usage: could not commit {written} recorded turn(s), they will not be counted: {e}");
+            return 0;
+        }
     }
     written
 }
@@ -570,6 +609,50 @@ mod tests {
 
     /// Shaped from a real transcript line, cache fields and all.
     const REAL_LINE: &str = r#"{"type":"assistant","timestamp":"2026-07-21T11:38:20.992Z","message":{"id":"msg_01ABC","model":"claude-sonnet-5","usage":{"input_tokens":2,"cache_creation_input_tokens":23510,"cache_read_input_tokens":28220,"output_tokens":4095}}}"#;
+
+    /// The reader seeks to where it stopped instead of loading the file.
+    ///
+    /// It used to `read_to_string` the whole transcript and slice off the tail —
+    /// 50 MB allocated to look at two lines, every time an agent finished a
+    /// turn, on transcripts that only grow. This pins the behaviour that
+    /// replaced it: same turns out, only the new ones on the second pass, and a
+    /// truncated file starts over instead of reading from a stale offset and
+    /// landing mid-line.
+    #[test]
+    fn the_transcript_is_tailed_from_where_it_stopped() {
+        use std::io::Write;
+
+        let dir = std::env::temp_dir().join(format!("hangar-tail-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("projects/slug")).unwrap();
+        let session = Uuid::new_v4().to_string();
+        let path = dir.join("projects/slug").join(format!("{session}.jsonl"));
+        let config_dir = dir.to_string_lossy().to_string();
+
+        std::fs::write(&path, format!("{REAL_LINE}\n")).unwrap();
+        let first = read_claude_transcript(&config_dir, &session);
+        assert_eq!(first.len(), 1, "the first read returns what is there");
+
+        // Nothing appended: nothing new to report.
+        assert!(read_claude_transcript(&config_dir, &session).is_empty(), "re-reading an unchanged file must return nothing");
+
+        // Appended: only the new line comes back, not the whole file again.
+        let second = REAL_LINE.replace("msg_01ABC", "msg_01DEF");
+        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{second}").unwrap();
+        drop(file);
+        let third = read_claude_transcript(&config_dir, &session);
+        assert_eq!(third.len(), 1, "only the appended turn");
+        assert_eq!(third[0].message_id, "msg_01DEF");
+
+        // Replaced by something shorter — what an account transfer does. The
+        // stored offset is past the end now, so it has to start over.
+        std::fs::write(&path, format!("{REAL_LINE}\n")).unwrap();
+        let fourth = read_claude_transcript(&config_dir, &session);
+        assert_eq!(fourth.len(), 1, "a shrunken file is read from the beginning");
+        assert_eq!(fourth[0].message_id, "msg_01ABC");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_turn_is_read_with_its_four_token_kinds() {

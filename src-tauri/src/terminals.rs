@@ -2174,6 +2174,12 @@ fn refresh_account_status<R: Runtime>(app: &AppHandle<R>, account_id: &str) -> b
     if !std::path::Path::new(&config_dir).is_dir() {
         return false;
     }
+    // Nothing spent since the last reading means the reading is still true. A
+    // quota moves when turns are spent and at no other time, so two idle
+    // terminals must not cost a Claude Code launch every five minutes.
+    if !crate::usage_scraper::spend_since_last_scrape(&db, account_id) {
+        return false;
+    }
 
     let stats = match crate::usage_scraper::cached_usage_stats(app, account_id, &config_dir, false) {
         Ok(s) => s,

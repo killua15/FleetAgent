@@ -1504,14 +1504,18 @@ pub fn poll_open_prs_for_host<R: Runtime>(app: &AppHandle<R>, host: Option<&str>
             continue;
         }
         let path = repo.path();
+        if is_benched(&path) {
+            continue;
+        }
         let snapshot = match forges::fetch_repo_snapshot(&repo, DISCOVERY_PR_LIMIT) {
             Ok(snapshot) => snapshot,
             Err(e) => {
-                log::error!("poll_open_prs: snapshot failed for {path}: {e}");
+                note_snapshot_failure(&path, &e);
                 note_host_visit(&mut visited, &repo.host, Some(e.to_string()));
                 continue;
             }
         };
+        clear_snapshot_failures(&path);
         note_host_visit(&mut visited, &repo.host, None);
         if let Err(e) = record_open_prs_for_project(app, &db, &project_id, &repo, &snapshot) {
             log::error!("poll_all_open_prs: recording {path}'s PRs failed: {e}");
@@ -1572,6 +1576,54 @@ pub fn poll_open_prs_for_host<R: Runtime>(app: &AppHandle<R>, host: Option<&str>
         }
     }
     let _ = app.emit("pr-hosts-checked", serde_json::json!({ "hosts": visited.iter().map(|(h, _)| h).collect::<Vec<_>>() }));
+}
+
+/// Repos whose snapshot keeps failing, and how many times in a row.
+///
+/// A repo that has been renamed, deleted, or made private fails identically
+/// forever. Without this, the poller spent a `gh api graphql` every five
+/// minutes asking a question already answered — the log for one such repo ran
+/// for hours, one identical ERROR per cycle — and the noise buried the failures
+/// that do mean something.
+///
+/// In memory, so relaunching retries: the fix for most of these is on the
+/// forge's side ("I renamed it back"), and a user who restarts after fixing it
+/// deserves an immediate answer rather than a persisted grudge.
+static SNAPSHOT_FAILURES: std::sync::Mutex<Option<std::collections::HashMap<String, u32>>> = std::sync::Mutex::new(None);
+
+/// After this many identical failures, stop asking until the next launch.
+const BENCH_AFTER_FAILURES: u32 = 3;
+
+fn note_snapshot_failure(path: &str, error: &str) {
+    let Ok(mut guard) = SNAPSHOT_FAILURES.lock() else {
+        log::error!("poll_open_prs: snapshot failed for {path}: {error}");
+        return;
+    };
+    let map = guard.get_or_insert_with(std::collections::HashMap::new);
+    let count = map.entry(path.to_string()).or_insert(0);
+    *count += 1;
+    // Loud the first times, once more when giving up, then silence.
+    if *count < BENCH_AFTER_FAILURES {
+        log::error!("poll_open_prs: snapshot failed for {path}: {error}");
+    } else if *count == BENCH_AFTER_FAILURES {
+        log::error!("poll_open_prs: snapshot failed for {path}: {error} — giving up on this repo until the next launch");
+    }
+}
+
+fn clear_snapshot_failures(path: &str) {
+    if let Ok(mut guard) = SNAPSHOT_FAILURES.lock() {
+        if let Some(map) = guard.as_mut() {
+            map.remove(path);
+        }
+    }
+}
+
+fn is_benched(path: &str) -> bool {
+    SNAPSHOT_FAILURES
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().and_then(|m| m.get(path).copied()))
+        .is_some_and(|count| count >= BENCH_AFTER_FAILURES)
 }
 
 /// Remembers that this pass reached `host`, keeping the first error it hit
@@ -1802,6 +1854,28 @@ mod tests {
             params![pr_id, project_id, session_id],
         )
         .unwrap();
+    }
+
+    /// A repo that has been renamed, deleted or made private fails the same way
+    /// forever. The log for one such repo ran for hours at one identical ERROR
+    /// every five minutes, and each of those was a `gh api graphql` spent on a
+    /// question already answered.
+    #[test]
+    fn a_repo_that_keeps_failing_gets_benched_and_stops_being_asked() {
+        let path = format!("bench-test/{}", Uuid::new_v4());
+        assert!(!is_benched(&path), "a repo nobody has failed on is fair game");
+
+        for _ in 0..BENCH_AFTER_FAILURES - 1 {
+            note_snapshot_failure(&path, "could not resolve to a Repository");
+        }
+        assert!(!is_benched(&path), "a couple of failures can be a flaky network");
+
+        note_snapshot_failure(&path, "could not resolve to a Repository");
+        assert!(is_benched(&path), "past the threshold it stops being asked");
+
+        // And a repo that starts answering again is forgiven without a restart.
+        clear_snapshot_failures(&path);
+        assert!(!is_benched(&path));
     }
 
     /// The inbox answers for one instance at a time, so a person with a GitHub

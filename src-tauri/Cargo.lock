@@ -1612,6 +1612,7 @@ dependencies = [
  "chrono",
  "crypto_secretbox",
  "keyring",
+ "libc",
  "log",
  "portable-pty",
  "rand 0.8.7",
