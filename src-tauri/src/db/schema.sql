@@ -24,7 +24,14 @@ CREATE TABLE IF NOT EXISTS accounts (
   -- The pool never holds credentials: it records that the account exists and
   -- who is using it right now, so two people don't spend the same subscription
   -- at once. NULL for a purely local account, which is all of them by default.
-  team_account_id  TEXT
+  team_account_id  TEXT,
+  -- The subscription's own email, as the provider's CLI reports it. The one
+  -- identifier that means the same thing on two machines: `accounts.id` is a
+  -- UUID minted per install and `name` is whatever the user typed, so neither
+  -- can join "the same subscription" across Macs. Filled by the login check,
+  -- which already asks for it and used to throw it away. Empty for providers
+  -- whose CLI does not report one (Codex among them).
+  provider_email   TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -278,11 +285,25 @@ CREATE TABLE IF NOT EXISTS turn_usage (
   id                    TEXT PRIMARY KEY,
   -- Nullable: a terminal opened on a project has no session row, and that's
   -- where most of the real spending happens.
-  session_id            TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+  -- All four are `SET NULL`, never CASCADE: this is a ledger. Deleting an
+  -- account or a session must not un-spend what it spent — that used to remove
+  -- 57% of the history on one click. The ids are for joining against things
+  -- that still exist; identity lives in the `*_name` columns below.
+  session_id            TEXT REFERENCES sessions(id) ON DELETE SET NULL,
   -- Who paid. The only question anyone actually asks of this table.
-  account_id            TEXT REFERENCES accounts(id) ON DELETE CASCADE,
+  account_id            TEXT REFERENCES accounts(id) ON DELETE SET NULL,
   project_id            TEXT REFERENCES projects(id) ON DELETE SET NULL,
   block_id              TEXT REFERENCES session_blocks(id) ON DELETE SET NULL,
+  -- Written once, at the moment of the turn, and never resolved again. A name
+  -- fetched by JOIN at read time dies with its parent; these are what let a
+  -- deleted project still show its spend under its own name.
+  project_name          TEXT NOT NULL DEFAULT '',
+  account_name          TEXT NOT NULL DEFAULT '',
+  provider              TEXT NOT NULL DEFAULT '',
+  -- Which Mac spent it. Same stable id `bridge::session` mints for the phone
+  -- bridge, so one person's two machines can be told apart in one report.
+  machine_id            TEXT NOT NULL DEFAULT '',
+  machine_name          TEXT NOT NULL DEFAULT '',
   model                 TEXT,
   -- The CLI's own id for the message these numbers came from. Unique, because
   -- the numbers are read by re-tailing a transcript the CLI keeps appending to:

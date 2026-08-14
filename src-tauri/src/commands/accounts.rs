@@ -598,16 +598,30 @@ pub fn refresh_account_logins<R: Runtime>(app: &AppHandle<R>) -> bool {
     let mut changed = false;
     for handle in handles {
         let Ok((id, result)) = handle.join() else { continue };
-        let (logged_in, error) = match result {
-            Ok(status) => (status.logged_in, None),
+        let (logged_in, error, email) = match result {
+            Ok(status) => (status.logged_in, None, status.email),
             // A probe that couldn't run says nothing about the credential. It's
             // recorded as an error and *not* as a logout, so a machine with no
             // network doesn't get told to sign in again.
             Err(e) => {
                 log::warn!("login check: probe failed for account {id}: {e}");
-                (true, Some(e))
+                (true, Some(e), None)
             }
         };
+        // The subscription's email, which this probe has always returned and
+        // this loop used to drop on the floor. It is the only identifier that
+        // means the same thing on another machine — `accounts.id` is minted per
+        // install and `name` is whatever was typed there — so it is what lets a
+        // per-profile report add up two Macs. Only ever written, never cleared:
+        // a probe that failed knows nothing, and forgetting on a bad day would
+        // split one subscription into two.
+        if let Some(email) = email.filter(|e| !e.trim().is_empty()) {
+            if let Ok(conn) = db.0.lock() {
+                if let Err(e) = conn.execute("UPDATE accounts SET provider_email = ?2 WHERE id = ?1", params![id, email.trim()]) {
+                    log::warn!("login check: could not record the provider email for account {id}: {e}");
+                }
+            }
+        }
         if let Ok(conn) = db.0.lock() {
             let previous: Option<bool> = conn
                 .query_row("SELECT logged_in FROM account_login_checks WHERE account_id = ?1", params![id], |row| row.get::<_, i64>(0))

@@ -409,6 +409,8 @@ pub fn run() {
             quota::list_account_quotas,
             usage_meter::list_account_spend,
             usage_meter::list_project_spend,
+            usage_meter::usage_report,
+            usage_meter::daily_usage_since,
             update_access::update_request_headers,
             update_access::has_update_access,
             update_access::set_update_access,

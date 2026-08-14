@@ -73,6 +73,25 @@ pub fn read_claude_transcript(config_dir: &str, session_uuid: &str) -> Vec<TurnC
     parse_claude_usage(&fresh)
 }
 
+/// Which Mac this is, for the ledger line.
+///
+/// Reads the same two `app_settings` rows `bridge::session` mints for the phone
+/// bridge, rather than calling it: that takes the database lock, and this runs
+/// with the lock already held. An id minted there and read here is the same id
+/// either way.
+///
+/// Empty when there is nothing stored yet — the bridge has never run — which is
+/// honest: an unknown machine is better than inventing a second identity for the
+/// one we're on. The next bridge start fills it, and rows written before then
+/// simply carry no machine.
+fn machine_identity(conn: &rusqlite::Connection) -> (String, String) {
+    let read = |key: &str| -> String {
+        conn.query_row("SELECT value FROM app_settings WHERE key = ?1", params![key], |row| row.get::<_, String>(0))
+            .unwrap_or_default()
+    };
+    (read("bridge.machine_id"), read("bridge.machine_name"))
+}
+
 /// The pure half, so the shape of a real transcript can be tested without one.
 pub fn parse_claude_usage(text: &str) -> Vec<TurnCost> {
     let mut turns = Vec::new();
@@ -249,14 +268,26 @@ pub fn record_turns(db: &DbConnection, account_id: &str, project_id: Option<&str
     // write beats no write.
     let tx = conn.unchecked_transaction().ok();
 
+    // Once per batch, not once per row: it is the same answer for every turn
+    // and one of the two halves reads a settings row.
+    let machine = machine_identity(&conn);
+
     let mut written = 0;
     for turn in turns {
         let cost = estimate_cost_usd(turn);
         let result = conn.execute(
             "INSERT OR IGNORE INTO turn_usage
                (id, session_id, account_id, project_id, block_id, model, provider_message_id,
-                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, created_at, with_graph)
-             VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, created_at, with_graph,
+                project_name, account_name, provider, machine_id, machine_name)
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                     -- Resolved now, while the rows still exist, and stored on
+                     -- the ledger line. A name fetched at read time dies with
+                     -- its parent; this is what survives the delete button.
+                     COALESCE((SELECT name FROM projects WHERE id = ?4), ''),
+                     COALESCE((SELECT name FROM accounts WHERE id = ?3), ''),
+                     COALESCE((SELECT provider FROM accounts WHERE id = ?3), ''),
+                     ?14, ?15)",
             params![
                 Uuid::new_v4().to_string(),
                 session_id,
@@ -271,6 +302,8 @@ pub fn record_turns(db: &DbConnection, account_id: &str, project_id: Option<&str
                 cost,
                 turn.at.clone().unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
                 with_graph as i64,
+                machine.0,
+                machine.1,
             ],
         );
         written += result.unwrap_or(0);
@@ -538,6 +571,235 @@ pub struct ProjectAccountSpend {
     pub cost_usd: f64,
 }
 
+/// How far back a report reaches.
+///
+/// `All` is not "a very large number of days": it starts at the ledger's own
+/// first row, so "since I started using Hangar" is a fact read from the data
+/// rather than a date somebody guessed.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UsageWindow {
+    Week,
+    Month,
+    Year,
+    All,
+}
+
+/// What the rows are grouped by. The same ledger answers all four; only the key
+/// changes.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UsageGroup {
+    Project,
+    Account,
+    Machine,
+    Model,
+}
+
+/// One row of the report.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageRow {
+    /// What this row is: a project name, an account name, a machine name, a
+    /// model. Never an id — the ledger stores names precisely so a deleted
+    /// project still has one.
+    pub label: String,
+    /// Set only when grouping by account, so the UI can still colour by
+    /// provider. Empty otherwise.
+    pub provider: String,
+    /// True when whatever this row names no longer exists in the workspace.
+    /// The spend is still real; the thing that made it is gone.
+    pub archived: bool,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub turns: i64,
+    pub cost_usd: f64,
+}
+
+/// A whole report: the totals and the breakdown, for one window.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageReport {
+    /// The first turn the ledger holds, whatever window was asked for — what
+    /// "since the beginning" actually means on this machine.
+    pub ledger_starts_at: Option<String>,
+    pub from: String,
+    pub rows: Vec<UsageRow>,
+    pub total: UsageRow,
+}
+
+/// Where a window starts, in local time.
+///
+/// Local rather than UTC because the windows are human ones: "this month" ends
+/// when the month ends where the person is, and bucketing in UTC makes the last
+/// evening of every month land in the next one.
+fn window_start(window: UsageWindow) -> Option<String> {
+    use chrono::{Datelike, Local, TimeZone};
+    let now = Local::now();
+    let naive = match window {
+        UsageWindow::Week => (now - chrono::Duration::days(7)).naive_local(),
+        UsageWindow::Month => now.date_naive().with_day(1)?.and_hms_opt(0, 0, 0)?,
+        UsageWindow::Year => now.date_naive().with_ordinal(1)?.and_hms_opt(0, 0, 0)?,
+        // No lower bound: the caller uses the ledger's own first row.
+        UsageWindow::All => return None,
+    };
+    Local.from_local_datetime(&naive).single().map(|dt| dt.to_rfc3339())
+}
+
+/// The whole ledger, grouped and windowed.
+///
+/// Replaces `list_project_spend`'s hardcoded seven days and its `LIMIT 6`: the
+/// window is a parameter now, and nothing is truncated. Grouped in SQL over
+/// names stored on the row, so a project deleted last month still reports what
+/// it spent, under its own name, instead of collapsing with every other deleted
+/// thing into a single "no project" line.
+#[tauri::command]
+pub fn usage_report(db: tauri::State<DbConnection>, window: UsageWindow, group: UsageGroup) -> Result<UsageReport, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+
+    let ledger_starts_at: Option<String> = conn.query_row("SELECT MIN(created_at) FROM turn_usage", [], |row| row.get(0)).ok().flatten();
+    let from = window_start(window).or_else(|| ledger_starts_at.clone()).unwrap_or_default();
+
+    // The grouping key and the label come from the same expression, so a row
+    // can never be grouped by one thing and labelled with another. `''` falls
+    // back to a readable stand-in rather than an empty cell.
+    let (key, label) = match group {
+        UsageGroup::Project => ("COALESCE(NULLIF(project_name,''),'(no project)')", "project"),
+        UsageGroup::Account => ("COALESCE(NULLIF(account_name,''),'(unknown account)')", "account"),
+        UsageGroup::Machine => ("COALESCE(NULLIF(machine_name,''),'(this machine)')", "machine"),
+        UsageGroup::Model => ("COALESCE(NULLIF(model,''),'(unknown model)')", "model"),
+    };
+    // Whether the thing still exists. Only projects and accounts can be
+    // archived — a model or a machine name is not something you delete here.
+    let archived = match group {
+        UsageGroup::Project => "MAX(CASE WHEN project_id IS NULL OR NOT EXISTS(SELECT 1 FROM projects WHERE id = project_id) THEN 1 ELSE 0 END)",
+        UsageGroup::Account => "MAX(CASE WHEN account_id IS NULL OR NOT EXISTS(SELECT 1 FROM accounts WHERE id = account_id) THEN 1 ELSE 0 END)",
+        _ => "0",
+    };
+    let provider = if matches!(group, UsageGroup::Account) { "COALESCE(MAX(provider),'')" } else { "''" };
+
+    let sql = format!(
+        "SELECT {key} AS label, {provider} AS provider, {archived} AS archived,
+                COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
+                COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0),
+                COUNT(*), COALESCE(SUM(cost_usd),0.0)
+           FROM turn_usage
+          WHERE created_at >= ?1
+          GROUP BY {key}
+          ORDER BY 9 DESC"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("could not prepare the {label} report: {e}"))?;
+    let rows: Vec<UsageRow> = stmt
+        .query_map(params![from], |row| {
+            Ok(UsageRow {
+                label: row.get(0)?,
+                provider: row.get(1)?,
+                archived: row.get::<_, i64>(2)? != 0,
+                input_tokens: row.get(3)?,
+                output_tokens: row.get(4)?,
+                cache_read_tokens: row.get(5)?,
+                cache_creation_tokens: row.get(6)?,
+                turns: row.get(7)?,
+                cost_usd: row.get(8)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .collect();
+
+    // Summed from the rows rather than re-queried: two queries can disagree if
+    // a turn lands between them, and a total that doesn't match its own
+    // breakdown is worse than no total.
+    let total = UsageRow {
+        label: "total".to_string(),
+        provider: String::new(),
+        archived: false,
+        input_tokens: rows.iter().map(|r| r.input_tokens).sum(),
+        output_tokens: rows.iter().map(|r| r.output_tokens).sum(),
+        cache_read_tokens: rows.iter().map(|r| r.cache_read_tokens).sum(),
+        cache_creation_tokens: rows.iter().map(|r| r.cache_creation_tokens).sum(),
+        turns: rows.iter().map(|r| r.turns).sum(),
+        cost_usd: rows.iter().map(|r| r.cost_usd).sum(),
+    };
+
+    Ok(UsageReport { ledger_starts_at, from, rows, total })
+}
+
+/// One day's spend on this machine, ready to be pushed to the profile.
+///
+/// Aggregated here rather than sent per turn, and that is the whole privacy
+/// design: a day, a project name, a subscription, and counters. The transcript
+/// never leaves, nor the prompts, nor the paths.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyUsage {
+    pub machine_id: String,
+    pub machine_name: String,
+    pub day: String,
+    pub project_name: String,
+    /// The subscription's own email — what lets two machines add up. Empty for
+    /// providers whose CLI doesn't report one, which then group by label.
+    pub provider_email: String,
+    pub account_label: String,
+    pub provider: String,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+    pub cache_read: i64,
+    pub cost_usd: f64,
+    pub turns: i64,
+}
+
+/// The local ledger rolled up by day, for the last `days` days.
+///
+/// Bounded rather than "everything" because this is re-sent on a cycle and the
+/// point is to keep recent days correct, not to re-upload a year every hour.
+/// The upsert on the other side makes re-sending a day free.
+#[tauri::command]
+pub fn daily_usage_since(db: tauri::State<DbConnection>, days: i64) -> Result<Vec<DailyUsage>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let from = (chrono::Utc::now() - chrono::Duration::days(days.clamp(1, 400))).to_rfc3339();
+
+    // The email comes off the live account when it is still there, and falls
+    // back to what the ledger recorded. A deleted account keeps reporting under
+    // its own name; it just can no longer be merged with the other machine's
+    // copy of the same subscription, which is honest — nothing left says they
+    // were the same.
+    let mut stmt = conn
+        .prepare(
+            "SELECT tu.machine_id, tu.machine_name, date(tu.created_at, 'localtime') AS day,
+                    tu.project_name, COALESCE(a.provider_email, ''), tu.account_name, tu.provider,
+                    COALESCE(SUM(tu.input_tokens),0), COALESCE(SUM(tu.output_tokens),0),
+                    COALESCE(SUM(tu.cache_read_tokens),0), COALESCE(SUM(tu.cost_usd),0.0), COUNT(*)
+               FROM turn_usage tu
+               LEFT JOIN accounts a ON a.id = tu.account_id
+              WHERE tu.created_at >= ?1
+              GROUP BY tu.machine_id, day, tu.project_name, COALESCE(a.provider_email,''), tu.account_name",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(params![from], |row| {
+            Ok(DailyUsage {
+                machine_id: row.get(0)?,
+                machine_name: row.get(1)?,
+                day: row.get(2)?,
+                project_name: row.get(3)?,
+                provider_email: row.get(4)?,
+                account_label: row.get(5)?,
+                provider: row.get(6)?,
+                tokens_in: row.get(7)?,
+                tokens_out: row.get(8)?,
+                cache_read: row.get(9)?,
+                cost_usd: row.get(10)?,
+                turns: row.get(11)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
 /// Every project × account pair with spend in the last 7 days.
 #[tauri::command]
 pub fn list_project_spend(db: tauri::State<DbConnection>) -> Result<Vec<ProjectAccountSpend>, String> {
@@ -581,7 +843,7 @@ fn project_breakdown(conn: &rusqlite::Connection, account_id: &str, since: &str)
         "SELECT COALESCE(p.name, 'no project'), COALESCE(SUM(tu.cost_usd),0.0), COUNT(*)
          FROM turn_usage tu LEFT JOIN projects p ON p.id = tu.project_id
          WHERE tu.account_id = ?1 AND tu.created_at >= ?2
-         GROUP BY tu.project_id ORDER BY 2 DESC LIMIT 6",
+         GROUP BY tu.project_id ORDER BY 2 DESC",
     ) else {
         return Vec::new();
     };
@@ -594,7 +856,7 @@ fn model_breakdown(conn: &rusqlite::Connection, account_id: &str, since: &str) -
     let Ok(mut stmt) = conn.prepare(
         "SELECT COALESCE(model, 'unknown'), COALESCE(SUM(cost_usd),0.0), COUNT(*)
          FROM turn_usage WHERE account_id = ?1 AND created_at >= ?2
-         GROUP BY model ORDER BY 2 DESC LIMIT 6",
+         GROUP BY model ORDER BY 2 DESC",
     ) else {
         return Vec::new();
     };
