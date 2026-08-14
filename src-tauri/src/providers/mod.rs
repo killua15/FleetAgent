@@ -425,10 +425,22 @@ pub struct ProviderSpec {
 pub enum AuthStatusProbe {
     /// Run these args and read `loggedIn`/`authMethod`/`email` out of JSON.
     Json(&'static [&'static str]),
-    /// Run these args and treat stdout containing `logged_marker` as success.
+    /// Run these args and read the answer out of the sentence they print.
     /// Coarser, and honest about it: it yields no email or plan, so the UI
     /// shows the account name the user typed instead of inventing detail.
-    Text { args: &'static [&'static str], logged_marker: &'static str },
+    ///
+    /// **Both** phrasings are listed, not just the positive one, because the
+    /// third case is real and used to be invisible: output that matches
+    /// neither. `codex` is a Node script, and when the app can't find `node`
+    /// the child prints `env: node: No such file or directory` and exits — an
+    /// answer to nothing. Matching only `logged_marker` read that as "signed
+    /// out" and put a false banner on screen. Anything that isn't one of these
+    /// two sentences means the question didn't get asked.
+    ///
+    /// The exit code can't be used for this: both CLIs exit 1 for a genuine
+    /// "not logged in", so a non-zero status is a normal answer here, not a
+    /// failure.
+    Text { args: &'static [&'static str], logged_marker: &'static str, logged_out_marker: &'static str },
     /// No way to ask — a key-billed provider is "logged in" when it has a key.
     None,
 }
@@ -501,7 +513,7 @@ pub fn spec(provider: &str) -> Option<ProviderSpec> {
             login_args: Some(CODEX_LOGIN),
             extra_env: &[],
             key_env: "OPENAI_API_KEY",
-            auth_status: AuthStatusProbe::Text { args: CODEX_STATUS, logged_marker: "Logged in" },
+            auth_status: AuthStatusProbe::Text { args: CODEX_STATUS, logged_marker: "Logged in", logged_out_marker: "Not logged in" },
             session: SessionControl::AssignedId { resume_subcommand: "resume" },
             // Loopback OAuth: the browser redirect finishes it, there is
             // nothing to paste.
