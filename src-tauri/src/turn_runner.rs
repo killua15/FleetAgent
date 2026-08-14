@@ -856,8 +856,25 @@ fn store_turn_usage<R: Runtime>(app: &AppHandle<R>, session_id: &str, usage: &Tu
                     // NULL as it was: every per-project report — spend, budget,
                     // and now the graph comparison — filters on it, so headless
                     // turns were invisible to all of them.
-                    "INSERT INTO turn_usage (id, session_id, project_id, block_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, created_at, with_graph)
-                     VALUES (?1, ?2, (SELECT project_id FROM sessions WHERE id = ?2), ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    // The names are resolved here, at write time, and stored on
+                    // the row: `turn_usage` is a ledger, and a name looked up by
+                    // JOIN when the report runs disappears the moment somebody
+                    // deletes the project or the account (see migration 26).
+                    // `account_id` comes off the session for the same reason
+                    // `project_id` does.
+                    "INSERT INTO turn_usage (id, session_id, project_id, account_id, block_id,
+                                             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                                             cost_usd, created_at, with_graph,
+                                             project_name, account_name, provider, machine_id, machine_name)
+                     VALUES (?1, ?2,
+                             (SELECT project_id FROM sessions WHERE id = ?2),
+                             (SELECT account_id FROM sessions WHERE id = ?2),
+                             ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                             COALESCE((SELECT p.name FROM projects p JOIN sessions s ON s.project_id = p.id WHERE s.id = ?2), ''),
+                             COALESCE((SELECT a.name FROM accounts a JOIN sessions s ON s.account_id = a.id WHERE s.id = ?2), ''),
+                             COALESCE((SELECT a.provider FROM accounts a JOIN sessions s ON s.account_id = a.id WHERE s.id = ?2), ''),
+                             COALESCE((SELECT value FROM app_settings WHERE key = 'bridge.machine_id'), ''),
+                             COALESCE((SELECT value FROM app_settings WHERE key = 'bridge.machine_name'), ''))",
                     params![
                         uuid::Uuid::new_v4().to_string(),
                         session_id,
@@ -919,7 +936,13 @@ fn check_spend_cap<R: Runtime>(app: &AppHandle<R>, session_id: &str) {
     let seven_days_ago = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
     let trailing_cost: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(tu.cost_usd), 0.0) FROM turn_usage tu JOIN sessions s2 ON s2.id = tu.session_id WHERE s2.account_id = ?1 AND tu.created_at >= ?2",
+            // Summed off `turn_usage.account_id` directly. It used to join
+            // through `sessions`, which silently excluded every turn without a
+            // session row — and that is where most spending happens: measured
+            // on a real database, $1,253 of $2,065 (61%) came from terminals
+            // with no session, so the cap was watching a third of the money and
+            // never fired.
+            "SELECT COALESCE(SUM(cost_usd), 0.0) FROM turn_usage WHERE account_id = ?1 AND created_at >= ?2",
             params![account_id, seven_days_ago],
             |row| row.get(0),
         )

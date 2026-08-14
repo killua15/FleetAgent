@@ -231,6 +231,20 @@ const MIGRATIONS: &[Migration] = &[
         run: account_login_checks_table,
         transactional: true,
     },
+    Migration {
+        version: 26,
+        name: "turn_usage_is_a_ledger",
+        // Manages its own transaction: rebuilding a table needs
+        // `PRAGMA foreign_keys=OFF` around it, which is a no-op inside one.
+        run: turn_usage_is_a_ledger,
+        transactional: false,
+    },
+    Migration {
+        version: 27,
+        name: "account_provider_email",
+        run: account_provider_email,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -335,6 +349,116 @@ fn pr_host_checks_table(conn: &Connection) -> Result<(), String> {
          );",
     )
     .map_err(|e| format!("could not create pr_host_checks: {e}"))
+}
+
+/// The subscription's own email on each account.
+///
+/// The only identifier that means the same thing on two machines: `accounts.id`
+/// is a UUID minted per install, and `name` is whatever the user typed there —
+/// "David Personal 1" here, something else on the other Mac. Neither can join
+/// "the same subscription" across installs, which is what a per-profile usage
+/// report needs.
+///
+/// A plain column rather than a CHECK change, so no rebuild. Filled by the
+/// login check, which already asks the CLI and receives the email in
+/// `AuthStatus` — a field whose own comment says it was "simply discarded".
+fn account_provider_email(conn: &Connection) -> Result<(), String> {
+    if has_column(conn, "accounts", "provider_email")? {
+        return Ok(());
+    }
+    conn.execute_batch("ALTER TABLE accounts ADD COLUMN provider_email TEXT NOT NULL DEFAULT '';")
+        .map_err(|e| format!("could not add accounts.provider_email: {e}"))
+}
+
+/// Turns `turn_usage` from a child table into a ledger.
+///
+/// It hung off three parents with `ON DELETE CASCADE`, so spend history was
+/// destroyed by ordinary use: deleting one account on the database this was
+/// written against removed **3,331 of 5,798 rows — 57% of the history** — with
+/// no warning, and deleting a session did the same for its share. A project
+/// deletion was gentler and still lossy: `SET NULL` kept the row and threw away
+/// which project it was, so every deleted project collapsed into one "no
+/// project" bucket.
+///
+/// A ledger cannot work that way. What was spent happened, and no later edit to
+/// the workspace can un-happen it. So:
+///
+/// - the names are **denormalized onto the row** at write time, because a name
+///   resolved by `JOIN` at read time dies with its parent;
+/// - the ids stay, downgraded to `SET NULL`, useful for joining against live
+///   things and never again load-bearing for identity;
+/// - and `machine_id`/`machine_name` are recorded too, so the same history can
+///   later be told apart per machine — the reason `bridge::session` already
+///   mints a stable machine id.
+///
+/// The 12-step rebuild, same as `allow_kimi_provider` and for the same reason:
+/// SQLite cannot alter a foreign key. Existing rows keep their names by
+/// resolving the joins one last time, while they still resolve.
+fn turn_usage_is_a_ledger(conn: &Connection) -> Result<(), String> {
+    let already: bool = conn
+        .query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='turn_usage'", [], |row| row.get::<_, String>(0))
+        .map(|sql| sql.contains("project_name"))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let _ = conn.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;");
+    let result = conn.execute_batch(
+        "BEGIN TRANSACTION;
+         ALTER TABLE turn_usage RENAME TO turn_usage_pre_ledger;
+         CREATE TABLE turn_usage (
+           id                    TEXT PRIMARY KEY,
+           session_id            TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+           account_id            TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+           project_id            TEXT REFERENCES projects(id) ON DELETE SET NULL,
+           block_id              TEXT REFERENCES session_blocks(id) ON DELETE SET NULL,
+           -- Written once, never resolved again. This is what survives the
+           -- delete button.
+           project_name          TEXT NOT NULL DEFAULT '',
+           account_name          TEXT NOT NULL DEFAULT '',
+           provider              TEXT NOT NULL DEFAULT '',
+           machine_id            TEXT NOT NULL DEFAULT '',
+           machine_name          TEXT NOT NULL DEFAULT '',
+           model                 TEXT,
+           provider_message_id   TEXT,
+           input_tokens          INTEGER NOT NULL,
+           output_tokens         INTEGER NOT NULL,
+           cache_read_tokens     INTEGER,
+           cache_creation_tokens INTEGER,
+           cost_usd              REAL,
+           created_at            TEXT NOT NULL,
+           with_graph            INTEGER NOT NULL DEFAULT 0
+         );
+         INSERT INTO turn_usage (id, session_id, account_id, project_id, block_id,
+                                 project_name, account_name, provider, machine_id, machine_name,
+                                 model, provider_message_id, input_tokens, output_tokens,
+                                 cache_read_tokens, cache_creation_tokens, cost_usd, created_at, with_graph)
+           SELECT tu.id, tu.session_id, tu.account_id, tu.project_id, tu.block_id,
+                  COALESCE(p.name, ''), COALESCE(a.name, ''), COALESCE(a.provider, ''), '', '',
+                  tu.model, tu.provider_message_id, tu.input_tokens, tu.output_tokens,
+                  tu.cache_read_tokens, tu.cache_creation_tokens, tu.cost_usd, tu.created_at, tu.with_graph
+             FROM turn_usage_pre_ledger tu
+             LEFT JOIN projects p ON p.id = tu.project_id
+             LEFT JOIN accounts a ON a.id = tu.account_id;
+         DROP TABLE turn_usage_pre_ledger;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_turn_usage_message ON turn_usage(provider_message_id) WHERE provider_message_id IS NOT NULL;
+         CREATE INDEX IF NOT EXISTS idx_turn_usage_account ON turn_usage(account_id, created_at);
+         CREATE INDEX IF NOT EXISTS idx_turn_usage_session ON turn_usage(session_id);
+         -- New: the report reads by time range across the whole ledger, which
+         -- the account-prefixed index above cannot serve.
+         CREATE INDEX IF NOT EXISTS idx_turn_usage_created ON turn_usage(created_at);
+         COMMIT;",
+    );
+    let outcome = match result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            Err(format!("could not turn turn_usage into a ledger: {e}"))
+        }
+    };
+    let _ = conn.execute_batch("PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;");
+    outcome
 }
 
 /// Whether each account's provider login still works, as of when it was asked.
@@ -1179,6 +1303,52 @@ mod tests {
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         conn.execute_batch(SCHEMA).unwrap();
         conn
+    }
+
+    /// Spend that happened stays happened, whatever gets deleted afterwards.
+    ///
+    /// This is the whole point of migration 26. `turn_usage` used to hang off
+    /// three parents with `ON DELETE CASCADE`, and on a real database deleting
+    /// **one account removed 3,331 of 5,798 rows — 57% of the history** — with
+    /// no warning. A project deletion was subtler and still lossy: the row
+    /// survived and lost its name, so every deleted project collapsed into one
+    /// anonymous bucket.
+    #[test]
+    fn deleting_a_project_or_an_account_never_deletes_what_it_spent() {
+        let conn = fresh_db();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, status, created_at, updated_at)
+               VALUES ('acc','claude','sub','Personal','personal','','/tmp/x','acc','healthy','now','now');
+             INSERT INTO projects (id, name, path, created_at) VALUES ('proj','Fleet','/tmp/fleet','now');
+             INSERT INTO sessions (id, name, project_id, account_id, model, effort, mode, status, started_at)
+               VALUES ('sess','s','proj','acc','opus','high','ask_edits','waiting','now');
+             INSERT INTO turn_usage (id, session_id, account_id, project_id, project_name, account_name, provider,
+                                     input_tokens, output_tokens, cost_usd, created_at)
+               VALUES ('t1','sess','acc','proj','Fleet','Personal','claude', 10, 5, 1.25, '2026-08-01T10:00:00Z');",
+        )
+        .unwrap();
+
+        // The three deletions a user can perform, in the order that used to be
+        // most destructive.
+        conn.execute_batch("DELETE FROM sessions WHERE id='sess'; DELETE FROM projects WHERE id='proj'; DELETE FROM accounts WHERE id='acc';").unwrap();
+
+        let (rows, project, account, cost): (i64, String, String, f64) = conn
+            .query_row("SELECT COUNT(*), MAX(project_name), MAX(account_name), MAX(cost_usd) FROM turn_usage", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .unwrap();
+
+        assert_eq!(rows, 1, "the ledger line must survive every parent being deleted");
+        assert_eq!(project, "Fleet", "and still know which project spent it");
+        assert_eq!(account, "Personal", "and which account paid");
+        assert_eq!(cost, 1.25);
+
+        // The ids are released, which is what lets the report mark the row as
+        // archived rather than pretending the project is still there.
+        let orphaned: i64 = conn
+            .query_row("SELECT COUNT(*) FROM turn_usage WHERE project_id IS NULL AND account_id IS NULL AND session_id IS NULL", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(orphaned, 1, "the links go, the facts stay");
     }
 
     #[test]

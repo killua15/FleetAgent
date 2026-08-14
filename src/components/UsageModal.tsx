@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '../lib/invoke';
+import { fetchProfileUsage, pushUsage, setUsageSyncEnabled, usageSyncEnabled, type ProfileUsage } from '../lib/usageSync';
 import { toastError } from './ErrorOverlay';
 import { Button } from './ui/button';
 import { compactTokens, money } from '../lib/formatUsage';
@@ -14,17 +15,47 @@ interface TokenTotals {
   turns: number;
 }
 
-interface ProjectAccountSpend {
-  projectName: string;
-  accountId: string;
-  accountName: string;
+/** How far back the report reaches. `all` starts at the ledger's own first
+ * row, so "since the beginning" is read from the data rather than guessed. */
+type UsageWindow = 'week' | 'month' | 'year' | 'all';
+type UsageGroup = 'project' | 'account' | 'machine' | 'model';
+
+const WINDOWS: { id: UsageWindow; label: string }[] = [
+  { id: 'week', label: 'week' },
+  { id: 'month', label: 'month' },
+  { id: 'year', label: 'year' },
+  { id: 'all', label: 'all' },
+];
+
+/** Grouping by machine is what makes two Macs on one profile add up — the
+ * ledger records which one spent each turn. */
+const GROUPS: { id: UsageGroup; label: string }[] = [
+  { id: 'project', label: 'project' },
+  { id: 'account', label: 'account' },
+  { id: 'machine', label: 'machine' },
+  { id: 'model', label: 'model' },
+];
+
+interface UsageRow {
+  label: string;
   provider: string;
+  /** The project or account no longer exists. The spend still does. */
+  archived: boolean;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
+  cacheCreationTokens: number;
   turns: number;
   costUsd: number;
 }
+
+interface UsageReport {
+  ledgerStartsAt: string | null;
+  from: string;
+  rows: UsageRow[];
+  total: UsageRow;
+}
+
 
 interface AccountSpend {
   accountId: string;
@@ -67,15 +98,47 @@ function Bar({ pct }: { pct: number }) {
  */
 export function UsageModal({ onClose }: { onClose: () => void }) {
   const [accounts, setAccounts] = useState<AccountSpend[] | null>(null);
-  const [rows, setRows] = useState<ProjectAccountSpend[]>([]);
+  const [report, setReport] = useState<UsageReport | null>(null);
+  const [range, setRange] = useState<UsageWindow>('month');
+  const [group, setGroup] = useState<UsageGroup>('project');
+  // The profile's spend across every Mac. `null` while unknown — which is also
+  // the honest state when sync is off, since this machine cannot know what the
+  // other one spent.
+  const [profile, setProfile] = useState<ProfileUsage | null>(null);
+  const [syncOn, setSyncOn] = useState(usageSyncEnabled());
   const [reading, setReading] = useState(false);
 
   const load = () => {
     invoke<AccountSpend[]>('list_account_spend').then(setAccounts).catch((e) => toastError(String(e)));
-    invoke<ProjectAccountSpend[]>('list_project_spend').then(setRows).catch(() => setRows([]));
   };
 
   useEffect(load, []);
+
+  // Re-read whenever the window or the grouping changes: the report is one
+  // query over the ledger, so switching is a round trip and not a re-render of
+  // something already held.
+  useEffect(() => {
+    invoke<UsageReport>('usage_report', { window: range, group })
+      .then(setReport)
+      .catch((e) => toastError(String(e)));
+  }, [range, group]);
+
+  // Push first, then read: otherwise the profile total is this machine's work
+  // from the last cycle plus the other machine's from now, which reads as a
+  // number that went backwards.
+  useEffect(() => {
+    if (!syncOn) {
+      setProfile(null);
+      return;
+    }
+    const days = range === 'week' ? 7 : range === 'month' ? 31 : 365;
+    pushUsage()
+      .then(() => fetchProfileUsage(days))
+      .then(setProfile)
+      // Quietly: no session, no network, or sync just turned on are all normal,
+      // and none of them is worth interrupting a usage modal about.
+      .catch(() => setProfile(null));
+  }, [syncOn, range]);
 
   // Explicit, because reading a Claude account's quota spawns a `claude` in a
   // PTY and takes seconds — three of those firing on open would look like the
@@ -172,33 +235,116 @@ export function UsageModal({ onClose }: { onClose: () => void }) {
             );
           })}
 
-          <span className={styles.sectionTitle}>where it went · last 7 days</span>
-          {rows.length === 0 && (
+          <div className={styles.reportHead}>
+            <span className={styles.sectionTitle}>where it went</span>
+            <span className={styles.spacer} />
+            {/* The window is a choice now. It used to be seven days, hardcoded
+                in the SQL, which is why nothing older than a week was ever
+                visible. */}
+            {WINDOWS.map((w) => (
+              <button key={w.id} className={w.id === range ? styles.windowActive : styles.window} onClick={() => setRange(w.id)}>
+                {w.label}
+              </button>
+            ))}
+            {GROUPS.map((g) => (
+              <button key={g.id} className={g.id === group ? styles.windowActive : styles.window} onClick={() => setGroup(g.id)}>
+                {g.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Across every Mac on this profile, which is the only number this
+              machine cannot work out on its own. Off by default: it is the one
+              thing Hangar sends anywhere, so it waits to be asked. */}
+          <div className={styles.reportHead}>
+            <span className={styles.sectionTitle}>this profile</span>
+            <span className={styles.spacer} />
+            <button
+              className={syncOn ? styles.windowActive : styles.window}
+              title={syncOn ? 'Daily totals are shared with your other Macs' : 'Share daily totals with your other Macs — day, project, account and counters only'}
+              onClick={() => {
+                const next = !syncOn;
+                setUsageSyncEnabled(next);
+                setSyncOn(next);
+              }}
+            >
+              {syncOn ? 'sync on' : 'sync off'}
+            </button>
+          </div>
+
+          {!syncOn && (
             <span className={styles.dim}>
-              No turns recorded yet. Numbers appear as each agent finishes a turn — Hangar reads what the CLI writes to its own transcript.
+              Only this Mac. Turn sync on to add up the machines signed in to your profile — Hangar sends a daily total per project and
+              account, never prompts, code or paths.
             </span>
           )}
 
-          {rows.length > 0 && (
+          {syncOn && profile && (
+            <div className={styles.table}>
+              <div className={styles.tableTotal}>
+                <span className={styles.colProject}>every machine</span>
+                <span className={styles.colNum}>{profile.turns}</span>
+                <span className={styles.colNum}>{money(profile.costUsd)}</span>
+              </div>
+              {profile.machines.map((m) => (
+                <div key={m.machineId} className={styles.tableRow}>
+                  <span className={styles.colProject}>
+                    {m.machineName}
+                    {m.isThisMachine && <span className={styles.archived}>this one</span>}
+                  </span>
+                  <span className={styles.colNum}>{m.turns}</span>
+                  <span className={styles.colNum}>{money(m.costUsd)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {report && (
+            <span className={styles.dim}>
+              {range === 'all' && report.ledgerStartsAt
+                ? `everything since ${new Date(report.ledgerStartsAt).toLocaleDateString()}`
+                : `since ${new Date(report.from).toLocaleDateString()}`}
+            </span>
+          )}
+
+          {report?.rows.length === 0 && (
+            <span className={styles.dim}>
+              No turns recorded in this window. Numbers appear as each agent finishes a turn — Hangar reads what the CLI writes to its own transcript.
+            </span>
+          )}
+
+          {report && report.rows.length > 0 && (
             <div className={styles.table}>
               <div className={styles.tableHead}>
-                <span className={styles.colProject}>project</span>
-                <span className={styles.colAccount}>account</span>
+                <span className={styles.colProject}>{GROUPS.find((g) => g.id === group)?.label}</span>
                 <span className={styles.colNum}>in</span>
                 <span className={styles.colNum}>out</span>
                 <span className={styles.colNum}>cache</span>
                 <span className={styles.colNum}>turns</span>
                 <span className={styles.colNum}>cost</span>
               </div>
-              {/* One row per project *and* account, because that pair is the
-                  unit: "this project cost $12" doesn't say which subscription
-                  is about to run out, and "this account is at 80%" doesn't say
-                  what to stop doing. */}
-              {rows.map((row) => (
-                <div key={`${row.projectName}-${row.accountId}`} className={styles.tableRow}>
-                  <span className={styles.colProject}>{row.projectName}</span>
-                  <span className={styles.colAccount}>
-                    {row.accountName} <span className={styles.dim}>{row.provider}</span>
+
+              {/* The total first, because it is the number the question was
+                  about. Everything under it is how that number was reached. */}
+              <div className={styles.tableTotal}>
+                <span className={styles.colProject}>total</span>
+                <span className={styles.colNum}>{compact(report.total.inputTokens)}</span>
+                <span className={styles.colNum}>{compact(report.total.outputTokens)}</span>
+                <span className={styles.colNum}>{compact(report.total.cacheReadTokens)}</span>
+                <span className={styles.colNum}>{report.total.turns}</span>
+                <span className={styles.colNum}>{money(report.total.costUsd)}</span>
+              </div>
+
+              {/* Every row, not the top six: the ledger stores names, so a
+                  deleted project still appears under its own name instead of
+                  collapsing into one anonymous line. The list scrolls with the
+                  modal body. */}
+              {report.rows.map((row) => (
+                <div key={row.label} className={styles.tableRow}>
+                  <span className={styles.colProject}>
+                    {row.label}
+                    {row.archived && <span className={styles.archived}>archived</span>}
+                    {row.provider && <span className={styles.dim}> {row.provider}</span>}
                   </span>
                   <span className={styles.colNum}>{compact(row.inputTokens)}</span>
                   <span className={styles.colNum}>{compact(row.outputTokens)}</span>
