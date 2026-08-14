@@ -42,6 +42,10 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 portable-pty = "0.9"
 base64 = "0.22"
+# `sysctlbyname` for the swap gauge in `memory_pressure` — one number, read
+# without spawning a process. Already in the tree transitively; named here
+# because we call it directly.
+libc = "0.2"
 # Redacts secrets out of a PTY's live output before it crosses the mobile
 # bridge (`bridge::redact`) — linear-time by construction, no backtracking,
 # so arbitrary program output can't turn it into a ReDoS surface.

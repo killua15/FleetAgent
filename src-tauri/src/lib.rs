@@ -11,6 +11,7 @@ mod git_identity;
 mod graph;
 mod handoff;
 mod login_manager;
+mod memory_pressure;
 mod models;
 mod notifications;
 mod permission_bridge;

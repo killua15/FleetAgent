@@ -24,6 +24,29 @@ pub fn init(app: &AppHandle) -> Result<Connection, String> {
 
     let conn = Connection::open(&db_path).map_err(|e| format!("could not open {}: {e}", db_path.display()))?;
     conn.execute_batch("PRAGMA foreign_keys = ON;").map_err(|e| format!("could not enable foreign keys: {e}"))?;
+    // WAL and a relaxed sync, set before the schema so every write from here on
+    // gets them.
+    //
+    // The default — `journal_mode = delete`, `synchronous = FULL` — makes each
+    // statement outside a transaction create a journal file and fsync it. That
+    // is the safest possible setting and it costs about 0.3 ms per row, which
+    // nobody notices until something writes thousands of them while holding the
+    // one lock the whole app shares (see `usage_meter::record_turns`).
+    //
+    // WAL also lets a reader run while a writer commits, which matters here for
+    // a reason specific to this app: the UI thread runs synchronous commands
+    // that read this database, and it used to sit behind every background
+    // write.
+    //
+    // `NORMAL` rather than `FULL`: in WAL that risks losing the last commits in
+    // a power cut, never a corrupt database. What is at stake is a few seconds
+    // of token accounting, which the next transcript read puts back.
+    //
+    // Not fatal if it fails — an older SQLite or a filesystem that won't do WAL
+    // should still get an app, just a slower one.
+    if let Err(e) = conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;") {
+        log::warn!("could not enable WAL, continuing on the slower default: {e}");
+    }
     conn.execute_batch(SCHEMA).map_err(|e| format!("could not apply the schema: {e}"))?;
     run_migrations(&conn)?;
     Ok(conn)
