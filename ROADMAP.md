@@ -64,6 +64,10 @@ no significa más con treinta.
 
 ### Monetización
 
+> **Superado por [BETA.md](BETA.md) (2026-08-18).** Esta sección y la de Distribución se escribieron
+> dando por hecho un lanzamiento público; la dirección de ahora es beta privada por invitación y el
+> precio está sin decidir. Lo de abajo se queda como registro de cómo se pensaba entonces.
+
 Muere el plan de $19/mes al individuo: no se sostiene contra un competidor gratis, MIT y financiado.
 
 - **Individuos: gratis y completo**, rotación incluida. Limitar el plan gratuito a 1 cuenta era tapar

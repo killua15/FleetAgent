@@ -102,6 +102,7 @@ runs them on macOS.
 | [MOBILE_BRIDGE_TRD.md](MOBILE_BRIDGE_TRD.md) | The phone companion: protocol, encryption, pairing ([build docs](docs/mobile/README.md)) |
 | [GRAPHIFY_TRD.md](GRAPHIFY_TRD.md) | A code knowledge graph shared by parallel agents, spanning the several repos that make up one system. Phases 0–5 are implemented and merged; the graph is optional and Hangar runs without it |
 | [ROADMAP.md](ROADMAP.md) | Where this is going |
+| [BETA.md](BETA.md) | The private beta: what is left to do and in what order, what it costs, and why TestFlight isn't an option. Supersedes the roadmap on how this is distributed and paid for |
 
 ## License
 
