@@ -45,10 +45,19 @@ pub fn list_accounts(db: State<DbConnection>) -> Result<Vec<Account>, String> {
 pub struct ProviderAvailability {
     pub provider: String,
     pub available: bool,
+    /// Whether Hangar can run this one as a specific account at all. Separate
+    /// from `available`, and the two fail differently: a missing CLI is
+    /// something the user can go and install, this isn't.
+    pub supported: bool,
 }
 
 /// Lets the wizard's step 1 flag providers whose CLI isn't installed, rather
 /// than letting the user pick one and only discovering it's unusable later.
+///
+/// `supported` closes the other half of that same hole. Installing the CLI was
+/// never the only way to reach a dead end: picking a provider Hangar can't
+/// scope to let someone finish an interactive login and *then* find the account
+/// greyed out in the terminal picker, which is a worse place to learn it.
 #[tauri::command]
 pub fn list_available_providers() -> Vec<ProviderAvailability> {
     ["claude", "codex", "gemini", "kimi", "grok"]
@@ -56,6 +65,7 @@ pub fn list_available_providers() -> Vec<ProviderAvailability> {
         .map(|p| ProviderAvailability {
             provider: p.to_string(),
             available: providers::is_provider_available(p),
+            supported: providers::can_scope_to_account(p),
         })
         .collect()
 }
@@ -287,7 +297,7 @@ pub async fn check_account_auth(app: AppHandle, id: String) -> Result<login_mana
         // question `list_account_auth` asks. It used to be hardcoded to Claude,
         // which reported every healthy Codex account as signed out: false, and
         // now visibly contradicted by the re-login banner, which knows better.
-        let probeable = crate::providers::spec(&provider).is_some_and(|s| !matches!(s.auth_status, crate::providers::AuthStatusProbe::None));
+        let probeable = crate::providers::can_scope_to_account(&provider);
         if !probeable {
             return Ok(login_manager::AuthStatus { logged_in: false, auth_method: "unsupported".to_string(), email: None, subscription_type: None });
         }
@@ -487,8 +497,7 @@ pub async fn list_account_auth(app: AppHandle) -> Result<Vec<AccountAuth>, Strin
                     // Supported means "there's a way to ask this CLI whether
                     // it's logged in" — which is now true of Codex too, and was
                     // hardcoded to Claude.
-                    let supported = crate::providers::spec(&provider)
-                        .is_some_and(|s| !matches!(s.auth_status, crate::providers::AuthStatusProbe::None));
+                    let supported = crate::providers::can_scope_to_account(&provider);
                     let probe_provider = provider.clone();
                     let account = crate::terminals::AccountForTerminal {
                         provider,

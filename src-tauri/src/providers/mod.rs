@@ -579,6 +579,19 @@ pub fn is_provider_available(provider: &str) -> bool {
     resolve_binary(binary) != binary
 }
 
+/// Whether Hangar can run this provider as a *specific account*.
+///
+/// The test is "can its login be checked", because that is what scoping needs:
+/// an account Hangar can't ask about is one it can't tell apart from another,
+/// so the terminal picker refuses it (`AccountAuth.supported`). Being installed
+/// is a different question — `is_provider_available` above answers that one.
+///
+/// Here rather than inlined at each call site because it was written out three
+/// times, and the day a provider grows a probe, all three have to agree.
+pub fn can_scope_to_account(provider: &str) -> bool {
+    spec(provider).is_some_and(|s| !matches!(s.auth_status, AuthStatusProbe::None))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,6 +624,28 @@ mod tests {
         assert_eq!(newest_nvm_binary(&home.to_string_lossy(), "not-installed"), None);
 
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Which providers the account wizard offers, and which the terminal
+    /// picker will accept, both come from this one predicate — so a provider
+    /// quietly gaining or losing a probe changes what the user can pick.
+    ///
+    /// Kimi is the case worth pinning: it runs on the `claude` binary and is
+    /// perfectly runnable, but it authenticates only with an API key and has
+    /// no probe, so Hangar can't tell one Kimi account from another. Scoping
+    /// is exactly what it can't do.
+    #[test]
+    fn only_providers_whose_login_can_be_checked_are_scopable() {
+        assert!(can_scope_to_account("claude"));
+        assert!(can_scope_to_account("codex"));
+
+        assert!(!can_scope_to_account("kimi"));
+        assert!(!can_scope_to_account("grok"));
+        assert!(!can_scope_to_account("gemini"));
+
+        // Not a provider at all: unknown names fail closed rather than
+        // defaulting to "sure, scope to it".
+        assert!(!can_scope_to_account("nonesuch"));
     }
 
     /// The isolation variable is the whole basis of the multi-account model,

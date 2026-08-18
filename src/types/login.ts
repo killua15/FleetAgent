@@ -1,6 +1,10 @@
 export interface ProviderAvailability {
   provider: string;
+  /** Its CLI is on PATH. Fixable by the user: go and install it. */
   available: boolean;
+  /** Hangar can run it as a specific account. Not fixable by the user — it's
+   * a gap in Hangar, so the wizard says so rather than implying otherwise. */
+  supported: boolean;
 }
 
 export interface ApiKeyCheck {

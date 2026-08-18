@@ -27,7 +27,10 @@ const MAX_POLL_FAILURES = 5;
 export function AddAccount() {
   const { back } = useNavigation();
 
-  const [availability, setAvailability] = useState<Record<string, boolean>>({});
+  /** Keyed by provider. Absent while the check is in flight, which reads as
+   * "usable" everywhere below — a provider is never greyed out on the strength
+   * of an answer that hasn't arrived. */
+  const [availability, setAvailability] = useState<Record<string, ProviderAvailability>>({});
   const [step, setStep] = useState(1);
   const [provider, setProviderState] = useState<Provider>('claude');
   const [billing, setBilling] = useState<Billing>('sub');
@@ -77,8 +80,8 @@ export function AddAccount() {
 
   useEffect(() => {
     invoke<ProviderAvailability[]>('list_available_providers').then((list) => {
-      const map: Record<string, boolean> = {};
-      list.forEach((p) => (map[p.provider] = p.available));
+      const map: Record<string, ProviderAvailability> = {};
+      list.forEach((p) => (map[p.provider] = p));
       setAvailability(map);
     });
   }, []);
@@ -228,9 +231,15 @@ export function AddAccount() {
   };
 
   const keyValid = keyCheck?.valid === true;
+  /** Both halves of "can this provider be used at all", with the same
+   * treat-a-missing-answer-as-yes rule the cards use. */
+  const isUsable = (p: string) => {
+    const a = availability[p];
+    return a === undefined || (a.available && a.supported);
+  };
   const canNext =
     step === 1
-      ? availability[provider] !== false
+      ? isUsable(provider)
       : step === 2
         ? true
         : step === 3
@@ -317,14 +326,21 @@ export function AddAccount() {
               >
                 {PROVIDERS.map((p) => {
                   const meta = PROVIDER_META[p];
-                  const isAvailable = availability[p] !== false;
+                  const usable = isUsable(p);
+                  // Two different failures, and the difference is worth a word:
+                  // "not installed" is a thing to go and fix, "not supported
+                  // yet" is a thing to wait for. Saying only the first about
+                  // both would send someone off to install a CLI that wouldn't
+                  // have helped.
+                  const why = availability[p]?.available === false ? 'not installed' : 'not supported yet';
                   return (
                     <Label
                       key={p}
                       className={`${styles.providerCard} ${provider === p ? styles.selected : ''}`}
-                      style={!isAvailable ? { opacity: 0.45, cursor: 'not-allowed' } : undefined}
+                      style={!usable ? { opacity: 0.45, cursor: 'not-allowed' } : undefined}
+                      title={usable ? undefined : `Hangar can't run ${meta.name} as its own account yet`}
                     >
-                      <RadioGroupItem value={p} disabled={!isAvailable} className="sr-only" />
+                      <RadioGroupItem value={p} disabled={!usable} className="sr-only" />
                       <span
                         className={styles.providerIcon}
                         style={{ background: meta.tintVar, color: meta.colorVar }}
@@ -333,8 +349,8 @@ export function AddAccount() {
                       </span>
                       <span className={styles.providerName}>{meta.name}</span>
                       <span className={styles.providerCli}>{meta.cli}</span>
-                      {!isAvailable && (
-                        <span style={{ font: '500 9px var(--font-mono)', color: 'var(--red)' }}>not installed</span>
+                      {!usable && (
+                        <span style={{ font: '500 9px var(--font-mono)', color: 'var(--red)' }}>{why}</span>
                       )}
                     </Label>
                   );
