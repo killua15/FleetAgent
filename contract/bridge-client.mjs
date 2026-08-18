@@ -10,8 +10,9 @@
 //   node contract/bridge-client.mjs login
 //       Inicia sesión con Google. El canal es privado y solo deja entrar a la
 //       cuenta dueña del Mac, así que esto hace falta una vez — igual que hará
-//       la app en el móvil. La sesión queda en contract/.bridge-session.json,
-//       que está en .gitignore.
+//       la app en el móvil. La sesión queda en ~/.hangar-dev/bridge-session.json,
+//       fuera del repositorio (ver SESSION_FILE); con HANGAR_DEV_SESSION se
+//       puede poner en otro sitio.
 //
 //   node contract/bridge-client.mjs loopback
 //       Dos conexiones al canal real, un sobre cifrado de una a otra. Prueba el
@@ -26,9 +27,12 @@
 import { createClient } from '@supabase/supabase-js';
 import sodium from 'libsodium-wrappers';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
+import { homedir } from 'node:os';
+// Con alias: este fichero ya tiene su propio `join`, el que se une al canal.
+import { dirname, join as joinPath } from 'node:path';
 
 // Los mismos que la app de escritorio. La clave publicable es pública por
 // diseño; lo que protege el contenido es el cifrado, no ella.
@@ -40,7 +44,24 @@ const PROTOCOL_VERSION = 1;
 // autorizado como redirect en Supabase. No chocan: el escritorio solo escucha
 // durante los segundos de su propio intercambio.
 const CALLBACK_PORT = 47823;
-const SESSION_FILE = new URL('.bridge-session.json', import.meta.url).pathname;
+
+// Fuera del repositorio, a propósito. Estar en .gitignore evita que se suba,
+// pero no evita las otras dos formas de filtrarlo: aparecer en pantalla cuando
+// se enseña el árbol de ficheros — en un directo, en una captura, compartiendo
+// pantalla — y colarse en un `zip` o un backup de la carpeta del proyecto. Un
+// refresh token vale hasta que se usa o se revoca, así que basta con que se vea
+// una vez.
+const SESSION_FILE =
+  process.env.HANGAR_DEV_SESSION ?? joinPath(homedir(), '.hangar-dev', 'bridge-session.json');
+
+/** Guarda el token con el fichero cerrado a su dueño. */
+function saveSession(refreshToken) {
+  mkdirSync(dirname(SESSION_FILE), { recursive: true, mode: 0o700 });
+  writeFileSync(SESSION_FILE, `${JSON.stringify({ refresh_token: refreshToken }, null, 2)}\n`, { mode: 0o600 });
+  // `writeFileSync` solo aplica el modo al crear: sobre un fichero que ya
+  // existía con permisos abiertos no haría nada.
+  chmodSync(SESSION_FILE, 0o600);
+}
 
 await sodium.ready;
 
@@ -105,8 +126,8 @@ async function login() {
   const exchanged = await supabase.auth.exchangeCodeForSession(await code);
   if (exchanged.error) throw exchanged.error;
 
-  writeFileSync(SESSION_FILE, `${JSON.stringify({ refresh_token: exchanged.data.session.refresh_token }, null, 2)}\n`);
-  console.log(`✓ sesión guardada para ${exchanged.data.session.user.email}`);
+  saveSession(exchanged.data.session.refresh_token);
+  console.log(`✓ sesión guardada para ${exchanged.data.session.user.email} en ${SESSION_FILE}`);
 }
 
 /** Un cliente con la sesión puesta, o un error que dice qué hacer. */
@@ -122,7 +143,7 @@ async function authenticated() {
   if (error || !data.session) throw new Error(`la sesión ya no vale, vuelve a hacer login: ${error?.message ?? 'sin sesión'}`);
   // El refresh token rota: guardar el nuevo o la próxima vez se reusa uno que
   // Supabase ya retiró.
-  writeFileSync(SESSION_FILE, `${JSON.stringify({ refresh_token: data.session.refresh_token }, null, 2)}\n`);
+  saveSession(data.session.refresh_token);
 
   // Realtime lleva su propio token. Sin esto la suscripción va como anónima y la
   // política la rechaza, con un error que no dice nada.
