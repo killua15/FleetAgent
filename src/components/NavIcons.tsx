@@ -49,6 +49,24 @@ export function TasksIcon() {
   );
 }
 
+/**
+ * A stack of equal bars: runs lined up, none of them started.
+ *
+ * Bars rather than a clock or an hourglass, which would say "slow" — the queue
+ * isn't waiting on time, it's waiting on quota, and what the screen shows is an
+ * ordered pile. Distinct from `TasksIcon` on purpose: that one is a checklist
+ * (things you might do), this one is a stack (things that will run).
+ */
+export function QueueIcon() {
+  return (
+    <svg {...base} aria-hidden="true">
+      <rect x="2" y="2.25" width="12" height="3.5" rx="1.25" />
+      <rect x="2" y="6.25" width="12" height="3.5" rx="1.25" />
+      <rect x="2" y="10.25" width="12" height="3.5" rx="1.25" />
+    </svg>
+  );
+}
+
 /** Two branches meeting — a pull request, not a speech bubble. */
 export function PullRequestIcon() {
   return (

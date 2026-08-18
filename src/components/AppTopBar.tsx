@@ -6,7 +6,7 @@ import { useNavigation, type ScreenName } from '../nav/NavigationProvider';
 import type { ProjectPrInbox } from '../types/pullRequest';
 import { IconTooltip } from './ui/tooltip';
 import { Spinner } from './Spinner';
-import { AccountsIcon, BranchIcon, FilesIcon, HomeIcon, MenuIcon, PullRequestIcon, SettingsIcon, TasksIcon, TerminalIcon, UsageIcon } from './NavIcons';
+import { AccountsIcon, BranchIcon, FilesIcon, HomeIcon, MenuIcon, PullRequestIcon, QueueIcon, SettingsIcon, TasksIcon, TerminalIcon, UsageIcon } from './NavIcons';
 import { UsageModal } from './UsageModal';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu';
 import styles from './AppTopBar.module.css';
@@ -110,6 +110,10 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
          * different kinds of thing. Work first — it's what you're here for. */}
         <NavItem screen="terminals" label="Terminals" icon={<TerminalIcon />} />
         <NavItem screen="task-board" label="Tasks" icon={<TasksIcon />} />
+        {/* Next to Tasks because it answers the same question — what is going
+         * to run — for work that's already been handed over and is only
+         * waiting on quota. */}
+        <NavItem screen="queue" label="Queue" icon={<QueueIcon />} />
         <NavItem screen="pr-reviews" label="PRs" icon={<PullRequestIcon />} badge={pendingPrComments} />
 
         <span className={styles.navRule} />
@@ -143,10 +147,6 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
             <SettingsIcon />
           </button>
         </IconTooltip>
-        {/* The Queue screen is hidden: nothing reaches it now that this entry
-         * is gone. The screen, `queued_runs`, and the background `tick_queue`
-         * poller are all untouched and still work — restoring the feature is
-         * putting a NavItem for `queue` back here. */}
       </nav>
       {/* Below `.navMenu`'s breakpoint the row above overlaps rather than
        * wrapping (no flex-wrap, and every item already at its minimum
@@ -170,6 +170,9 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => navigate('task-board')}>
             <TasksIcon /> Tasks
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => navigate('queue')}>
+            <QueueIcon /> Queue
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => navigate('pr-reviews')}>
             <PullRequestIcon /> PRs{pendingPrComments > 0 && ` (${pendingPrComments})`}
