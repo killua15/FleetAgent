@@ -32,22 +32,48 @@ jobs:
           # meaningless on Windows *and* unquotable there: the runner's default
           # shell is PowerShell, which doesn't treat single quotes the way the
           # macOS runners' bash does, so the JSON would arrive mangled.
+          #
+          # `updaterDir` is the bundle subdirectory holding the artifact the
+          # updater downloads, and it differs per platform. It's named here
+          # rather than derived below because `bundle.targets: "all"` can emit
+          # more than one signed artifact on a platform (Windows produces both
+          # an NSIS `.exe` and an `.msi`), and picking "whichever `.sig` `find`
+          # returned first" would make the published manifest non-deterministic.
           - platform: macos-latest
             target: aarch64-apple-darwin
             label: macOS (Apple Silicon)
+            updaterDir: macos
             extraArgs: --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
           - platform: macos-latest
             target: x86_64-apple-darwin
             label: macOS (Intel)
+            updaterDir: macos
             extraArgs: --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
           # Windows x64 only — no ARM64. `bundle.targets: "all"` turns this into
           # an NSIS `-setup.exe` plus an `.msi`. Unsigned, like the macOS ones:
           # there's no Authenticode certificate for this project, so SmartScreen
-          # will warn on first run the way Gatekeeper does.
+          # will warn on first run the way Gatekeeper does. Both are published,
+          # but the NSIS one is what the updater carries.
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             label: Windows (x64)
+            updaterDir: nsis
             extraArgs: ''
+          # Ubuntu 22.04 rather than `ubuntu-latest`, deliberately: the glibc a
+          # binary is linked against is the *floor* of what it will run on, so
+          # building on the newest runner available quietly drops every user on
+          # an older distro. 22.04 is also the last LTS carrying
+          # `webkit2gtk-4.1`, which Tauri 2 needs.
+          #
+          # `--bundles deb,appimage` and not "all": the RPM bundler pulls in
+          # tooling this job doesn't need, and only the AppImage matters to the
+          # updater — Tauri cannot auto-update a `.deb`, so the `.deb` is an
+          # install-once convenience and the AppImage is the beta channel.
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: Linux (x64)
+            updaterDir: appimage
+            extraArgs: --bundles deb,appimage
 
     runs-on: ${{ matrix.platform }}
     name: ${{ matrix.label }}
@@ -68,6 +94,25 @@ jobs:
         with:
           workspaces: src-tauri
           key: ${{ matrix.target }}
+
+      # Linux is the only platform where the webview isn't part of the OS, so
+      # Tauri has to link against one. `webkit2gtk-4.1` is what Tauri 2 wants
+      # (4.0 is the Tauri 1 line) and `libayatana-appindicator3` backs the tray.
+      # `patchelf` and `librsvg2` are what the AppImage bundler shells out to.
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf \
+            build-essential \
+            file \
+            wget
 
       - name: Install frontend dependencies
         run: npm ci
@@ -115,10 +160,12 @@ jobs:
             **macOS** — Apple Silicon (`aarch64`) or Intel (`x86_64`).
             **Windows** — the `-setup.exe` (x64). Requires [Git for Windows](https://git-scm.com/download/win),
             which Hangar uses both for worktrees and as the shell its terminals run in.
+            **Linux** — the `.AppImage` (x64) if you want automatic updates, the `.deb` if you'd
+            rather it be a package. Tauri can only self-update the AppImage.
 
             > Unsigned builds. macOS will say the app can't be verified: right-click the app →
             > Open → Open, once. Windows SmartScreen will say "unrecognized app": More info →
-            > Run anyway. Both go away when the releases are signed.
+            > Run anyway. Both go away when the releases are signed. Linux has no such gate.
           # Draft, so a release is reviewed before the world sees it — and so a
           # half-finished matrix (one arch uploaded, the other still building)
           # is never briefly public as a complete release.
@@ -129,26 +176,38 @@ jobs:
       # in `tauri.conf.json` makes `tauri-action` emit this `.tar.gz` +
       # `.tar.gz.sig` pair next to the `.app`/`.dmg`, signed with
       # `TAURI_SIGNING_PRIVATE_KEY` above regardless of Apple codesigning.
+      # Found by its `.sig` rather than by name: the updater artifact is called
+      # something different on every platform (`.app.tar.gz`, `-setup.exe`,
+      # `.AppImage`) and the version is in the filename, but `createUpdaterArtifacts`
+      # always drops exactly one detached signature beside it. Scoped to
+      # `matrix.updaterDir` so a platform that bundles two installers can't make
+      # this pick the wrong one.
+      #
+      # `shell: bash` is required, not cosmetic: the Windows runner defaults to
+      # PowerShell, where none of this parses.
       - name: Locate the updater artifact
         id: updater
-        if: matrix.target == 'aarch64-apple-darwin'
+        shell: bash
         run: |
           set -euo pipefail
-          dir="src-tauri/target/${{ matrix.target }}/release/bundle/macos"
-          tarball=$(find "$dir" -maxdepth 1 -name '*.app.tar.gz' -print -quit)
-          if [ -z "$tarball" ]; then
-            echo "no .app.tar.gz under $dir — was TAURI_SIGNING_PRIVATE_KEY set?" >&2
+          dir="src-tauri/target/${{ matrix.target }}/release/bundle/${{ matrix.updaterDir }}"
+          sig=$(find "$dir" -maxdepth 1 -name '*.sig' -print -quit)
+          if [ -z "$sig" ]; then
+            echo "no updater signature under $dir — was TAURI_SIGNING_PRIVATE_KEY set?" >&2
+            ls -la "$dir" || echo "(directory does not exist)"
             exit 1
           fi
-          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "artifact=${sig%.sig}" >> "$GITHUB_OUTPUT"
+          echo "signature=$sig" >> "$GITHUB_OUTPUT"
 
+      # One artifact per target, so `publish-update-manifest` can assemble a
+      # manifest covering every platform instead of only Apple Silicon.
       - uses: actions/upload-artifact@v4
-        if: matrix.target == 'aarch64-apple-darwin'
         with:
-          name: updater-aarch64-apple-darwin
+          name: updater-${{ matrix.target }}
           path: |
-            ${{ steps.updater.outputs.tarball }}
-            ${{ steps.updater.outputs.tarball }}.sig
+            ${{ steps.updater.outputs.artifact }}
+            ${{ steps.updater.outputs.signature }}
           if-no-files-found: error
 
   # The auto-update channel Hangar itself checks (`update_access.rs`,
@@ -159,9 +218,14 @@ jobs:
   # (see the `release: vX.Y.Z` commits) — `bundle` produces a signed tarball
   # nobody published anywhere the app would look.
   #
-  # Apple Silicon only, matching every `release: vX.Y.Z` commit so far — the
-  # `updates/latest.json` this replaces never carried an `x86_64` entry either.
-  # Extending to Intel is a real improvement, just not this one's job.
+  # Apple Silicon only, even though `bundle` now uploads an updater artifact for
+  # all four targets. That is deliberate and temporary: this job publishes by
+  # *committing the binary to `main`*, which adds ~9 MB to the repository
+  # permanently (`.git` is already ~196 MB), and doing that four times per
+  # release would quadruple a problem that is about to be deleted rather than
+  # solved. The replacement — artifacts in object storage, manifest served per
+  # platform — reads the same `updater-<target>` artifacts this job ignores, so
+  # nothing here needs to grow first.
   publish-update-manifest:
     needs: bundle
     if: github.ref_type == 'tag'
