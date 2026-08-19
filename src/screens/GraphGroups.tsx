@@ -5,7 +5,7 @@ import { toastError } from '../components/ErrorOverlay';
 import { Spinner } from '../components/Spinner';
 import { SeamMap } from '../components/SeamMap';
 import type { Project } from '../types/session';
-import type { Bridge, GraphGroup, GraphSavingsReport, GraphState, GraphifyStatus } from '../types/graph';
+import { DOC_BACKENDS, type Bridge, type GraphGroup, type GraphSavingsReport, type GraphState, type GraphifyStatus, type Indexable } from '../types/graph';
 import styles from './GraphGroups.module.css';
 
 /**
@@ -30,9 +30,24 @@ export function GraphGroups() {
   const [savings, setSavings] = useState<GraphSavingsReport | null>(null);
   const [newName, setNewName] = useState('');
   const [building, setBuilding] = useState(false);
+  /** Lo que cada proyecto tiene para indexar, por id. Se consulta al añadir un
+   * miembro y al abrir un grupo, porque el problema que resuelve —  una carpeta
+   * sin código que tumba la construcción entera— ya puede estar dentro. */
+  const [corpus, setCorpus] = useState<Record<string, Indexable>>({});
 
   const reloadGroups = useCallback(
     () => invoke<GraphGroup[]>('list_graph_groups').then(setGroups).catch((e) => toastError(String(e))),
+    [],
+  );
+
+  /** Cuenta qué hay que indexar en un proyecto. Falla en silencio a propósito:
+   * es un aviso, y un aviso que no se puede calcular no es un error que valga
+   * interrumpir a nadie. */
+  const inspect = useCallback(
+    (projectId: string) =>
+      invoke<Indexable>('inspect_project_corpus', { projectId })
+        .then((c) => setCorpus((prev) => ({ ...prev, [projectId]: c })))
+        .catch(() => {}),
     [],
   );
 
@@ -48,11 +63,16 @@ export function GraphGroups() {
     if (!selectedId) return;
     setSavings(null);
     Promise.all([
-      invoke<string[]>('get_graph_group_members', { groupId: selectedId }).then(setMembers),
+      invoke<string[]>('get_graph_group_members', { groupId: selectedId }).then((ids) => {
+        setMembers(ids);
+        // Un miembro sin código puede llevar meses ahí. Se revisan los que ya
+        // están, no solo los que se añadan a partir de ahora.
+        for (const id of ids) void inspect(id);
+      }),
       invoke<GraphState>('get_graph_group_state', { groupId: selectedId }).then(setState),
       invoke<Bridge[]>('get_graph_bridges', { groupId: selectedId }).then(setBridges),
     ]).catch((e) => toastError(String(e)));
-  }, [selectedId]);
+  }, [selectedId, inspect]);
 
   const createGroup = async () => {
     if (!newName.trim()) return;
@@ -76,6 +96,9 @@ export function GraphGroups() {
       // una pertenencia nueva es peor que ningún número.
       await reloadGroups();
       setBridges([]);
+      // Aquí y no al construir: la extracción tarda hasta diez minutos por
+      // miembro, así que "esto no tiene nada que indexar" se dice al marcarlo.
+      if (member) void inspect(projectId);
     } catch (e) {
       setMembers(previous);
       toastError(String(e));
@@ -99,6 +122,10 @@ export function GraphGroups() {
 
   const selected = groups.find((g) => g.id === selectedId);
   const memberProjects = projects.filter((p) => members.includes(p.id));
+  /** Miembros que no pueden aportar nada al índice de código. Solo los ya
+   * inspeccionados cuentan: un proyecto sin respuesta todavía no es un
+   * proyecto vacío. */
+  const emptyMembers = memberProjects.filter((p) => corpus[p.id]?.codeFiles === 0);
 
   return (
     <div className={styles.screen}>
@@ -166,9 +193,15 @@ export function GraphGroups() {
                       {/* La frescura se enseña por miembro, no solo por grupo:
                           un aviso que solo dice "viejo" no dice qué reconstruir. */}
                       <span className={styles.memberSha}>
-                        {state?.commits.find((c) => c.projectId === p.id)?.stale
-                          ? 'ha avanzado desde la construcción'
-                          : state?.commits.find((c) => c.projectId === p.id)?.builtSha.slice(0, 7) ?? ''}
+                        {/* Lo primero que se dice de un miembro es si puede
+                            aportar algo: sin código, el resto da igual. */}
+                        {members.includes(p.id) && corpus[p.id]?.codeFiles === 0
+                          ? state?.withDocs
+                            ? `${corpus[p.id].otherFiles} ficheros, ninguno de código — solo documentos`
+                            : `⚠ ${corpus[p.id].otherFiles} ficheros, ninguno de código — no aportará nada`
+                          : state?.commits.find((c) => c.projectId === p.id)?.stale
+                            ? 'ha avanzado desde la construcción'
+                            : state?.commits.find((c) => c.projectId === p.id)?.builtSha.slice(0, 7) ?? ''}
                       </span>
                     </span>
                   </label>
@@ -184,7 +217,20 @@ export function GraphGroups() {
                     cada respuesta.
                   </div>
                 )}
+                {/* El aviso que evita la construcción perdida: sin documentos
+                    activados, un miembro sin código la tumba entera, porque los
+                    miembros se extraen en serie y el primer fallo la corta. */}
+                {!state?.withDocs && emptyMembers.length > 0 && (
+                  <div className={styles.warn}>
+                    ⚠ {emptyMembers.map((p) => p.name).join(', ')} no {emptyMembers.length === 1 ? 'tiene' : 'tienen'} ficheros de
+                    código. Con el índice limitado a código, la construcción del grupo falla ahí. Sácalo del grupo, o activa los
+                    documentos abajo.
+                  </div>
+                )}
                 {state?.status === 'failed' && <div className={styles.warn}>La última construcción falló: {state.lastError}</div>}
+
+                <DocsPolicy state={state} onChange={setState} />
+
 
                 <button className={styles.btnPrimary} disabled={building || members.length < 2} onClick={build}>
                   {building ? <Spinner label="indexando y fusionando…" /> : state?.status === 'ready' ? 'Reconstruir el grafo' : 'Construir el grafo'}
@@ -215,6 +261,76 @@ export function GraphGroups() {
             )}
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Si este grupo indexa también los documentos, y con qué modelo.
+ *
+ * Es el único ajuste de Hangar que hace salir contenido de la máquina, así que
+ * dice lo que hace **cada vez que se mira**, no solo el día que se activa: el
+ * texto de consecuencia va debajo del interruptor y cambia con el backend
+ * elegido. Un "incluir documentos" a secas no es consentimiento informado.
+ *
+ * Por defecto apagado, y no se hereda: un proyecto nuevo nunca lo trae puesto.
+ */
+function DocsPolicy({ state, onChange }: { state: GraphState | null; onChange: (s: GraphState) => void }) {
+  const [saving, setSaving] = useState(false);
+  if (!state) return null;
+
+  const backend = state.docBackend ?? state.defaultDocBackend;
+  const chosen = DOC_BACKENDS.find((b) => b.id === backend);
+
+  const save = async (withDocs: boolean, next: string | null) => {
+    setSaving(true);
+    try {
+      onChange(
+        await invoke<GraphState>('set_graph_index_policy', {
+          scopeKind: state.scopeKind,
+          scopeId: state.scopeId,
+          withDocs,
+          backend: next,
+        }),
+      );
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className={styles.note}>
+      <label className={styles.memberRow}>
+        <input type="checkbox" checked={state.withDocs} disabled={saving} onChange={(e) => save(e.target.checked, state.docBackend)} />
+        <span className={styles.memberInfo}>
+          <span className={styles.memberName}>Indexar también los documentos</span>
+          <span className={styles.memberSha}>
+            El código se lee siempre en local y no sale nunca. Esto añade markdown, PDFs e imágenes, que necesitan un modelo.
+          </span>
+        </span>
+      </label>
+
+      {state.withDocs && (
+        <>
+          <select value={backend} disabled={saving} onChange={(e) => save(true, e.target.value)}>
+            {DOC_BACKENDS.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.label}
+              </option>
+            ))}
+          </select>
+          {/* La consecuencia, con el backend puesto. Es la frase que importa. */}
+          <span className={styles.memberSha}>{chosen?.leaves}</span>
+          {backend === 'claude-cli' && (
+            <span className={styles.memberSha}>
+              Se gasta de tu ventana de cuota, igual que un turno de agente: medido, dos ficheros markdown pequeños costaron unos
+              52.000 tokens de entrada. Una carpeta de documentación entera consume una parte real de las 5 h.
+            </span>
+          )}
+        </>
       )}
     </div>
   );

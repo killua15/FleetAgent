@@ -245,6 +245,12 @@ const MIGRATIONS: &[Migration] = &[
         run: account_provider_email,
         transactional: true,
     },
+    Migration {
+        version: 28,
+        name: "graph_index_policy",
+        run: graph_index_policy,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -627,6 +633,33 @@ fn code_graphs_tables(conn: &Connection) -> Result<(), String> {
          );",
     )
     .map_err(|e| format!("could not create the graph tables: {e}"))
+}
+
+/// Whether a scope's graph may index documents, and with which model.
+///
+/// On `graphs` and not on `projects` and `graph_groups` separately: the setting
+/// is per **scope**, which is exactly what this table is already keyed by, so
+/// one pair of columns covers a project graph and a group graph instead of two
+/// pairs that could disagree.
+///
+/// `'code_only'` as the default is the whole point — every existing row and
+/// every new one keeps §3's promise that nothing leaves the machine, and only
+/// an explicit change opts a scope out of it. `doc_backend` stays NULL until
+/// someone picks one; `graph::DEFAULT_DOC_BACKEND` decides what NULL means, so
+/// the answer can change without a migration.
+///
+/// Survives a rebuild because `mark_building` upserts only `status` and
+/// `graph_path`.
+fn graph_index_policy(conn: &Connection) -> Result<(), String> {
+    if !has_column(conn, "graphs", "index_policy")? {
+        conn.execute_batch("ALTER TABLE graphs ADD COLUMN index_policy TEXT NOT NULL DEFAULT 'code_only';")
+            .map_err(|e| format!("could not add graphs.index_policy: {e}"))?;
+    }
+    if !has_column(conn, "graphs", "doc_backend")? {
+        conn.execute_batch("ALTER TABLE graphs ADD COLUMN doc_backend TEXT;")
+            .map_err(|e| format!("could not add graphs.doc_backend: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Projects the user has marked as one system (`GRAPHIFY_TRD.md` §5.6).

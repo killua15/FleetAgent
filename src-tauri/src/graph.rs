@@ -7,9 +7,13 @@
 //! Three rules from the TRD are enforced *here*, in code, because a promise
 //! that lives only in a document is a promise that ships broken:
 //!
-//! 1. **`--code-only`** (§3). graphify's semantic pass sends docs, PDFs and
-//!    images to a model; the AST pass never leaves the machine. The flag is the
-//!    difference, and `build_args` is the only place that can add it.
+//! 1. **`--code-only` by default** (§3). graphify's semantic pass sends docs,
+//!    PDFs and images to a model; the AST pass never leaves the machine. The
+//!    flag is the difference, and `build_args` is the only place that decides
+//!    it. §3 is relaxable now — a scope can ask for docs to be indexed too via
+//!    `IndexPolicy::WithDocs` — but only by being asked: the default, a NULL
+//!    column and an unreadable value all resolve to code-only, and a test pins
+//!    that. Code extraction stays local AST either way.
 //! 2. **`--out`** (§3). The output lands in Hangar's app data, never in the
 //!    user's checkout. Someone who uninstalls Hangar finds no residue.
 //! 3. **One build in flight per scope** (§5.1). A rebuild racing six agents is
@@ -82,21 +86,162 @@ pub fn graph_html(scope_dir: &Path) -> PathBuf {
     scope_dir.join("graphify-out").join("graph.html")
 }
 
+/// What a build is allowed to read, and therefore what leaves the machine.
+///
+/// `CodeOnly` is §3 as written: local AST extraction, no API key, nothing sent.
+/// It is the default and the only value a new project or group is given.
+///
+/// `WithDocs` adds graphify's semantic pass over docs, papers and images, which
+/// needs a model — so document *content* goes wherever that backend lives. It
+/// is a deliberate, per-scope relaxation of §3 and never inherited, because the
+/// difference between the two is the difference between "nothing leaves" and
+/// "your notes leave", and that is not a default anyone should acquire by
+/// accident. Code extraction is local AST in both cases; this only adds the
+/// files `--code-only` skips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexPolicy {
+    #[default]
+    CodeOnly,
+    WithDocs,
+}
+
+impl IndexPolicy {
+    /// Round-trips through SQLite as text. An unrecognised value reads as
+    /// `CodeOnly` rather than erroring: the safe direction for a column whose
+    /// other value sends data somewhere.
+    pub fn from_db(value: Option<&str>) -> Self {
+        match value {
+            Some("with_docs") => Self::WithDocs,
+            _ => Self::CodeOnly,
+        }
+    }
+
+    pub fn as_db(self) -> &'static str {
+        match self {
+            Self::CodeOnly => "code_only",
+            Self::WithDocs => "with_docs",
+        }
+    }
+}
+
+/// The semantic backend used when docs are indexed and none was chosen.
+///
+/// `claude-cli` rather than an API-key backend: it drives the locally installed
+/// `claude` binary on the user's existing Pro/Max subscription, so switching
+/// docs on never requires a new credential — graphify's own words are "billed
+/// to the plan, not pay-as-you-go API credit". It does send document text to
+/// Anthropic. `ollama` is the answer for someone who wants docs indexed with
+/// nothing leaving at all, which is why this is configurable and not hardcoded.
+pub const DEFAULT_DOC_BACKEND: &str = "claude-cli";
+
+/// Extensions graphify's AST pass recognises — near enough, for a warning.
+///
+/// A deliberate and acknowledged copy of the tail of graphify's own
+/// `detect.py:CODE_EXTENSIONS`. It drives **only** the pre-build warning below;
+/// no build ever consults it, so drifting out of sync costs a warning that was
+/// wrong and never a graph that was. That asymmetry is the reason it is allowed
+/// to be a copy at all.
+const CODE_EXTENSIONS: &[&str] = &[
+    "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts", "vue", "svelte", "astro", "go", "rs", "java", "kt", "kts", "scala", "swift", "m", "mm", "c", "h", "cc", "cpp", "hpp", "cs", "rb",
+    "php", "lua", "zig", "dart", "ex", "exs", "jl", "sh", "bash", "ps1", "sql", "json", "tf", "f90", "v", "groovy",
+];
+
+/// Directories never worth walking: vendored or generated, and graphify's own
+/// ignore rules drop them too. Without this, "does this repo have code?" walks
+/// a `node_modules` to answer a question about the repo.
+///
+/// Every *hidden* directory is skipped as well, which is not tidiness — it was
+/// found by running this against a real docs-only folder. Its single
+/// code-extension file was `.claude/settings.local.json`, so counting it as
+/// code made the whole warning fire never: the corpus looked non-empty and
+/// graphify still produced zero nodes from it. Tool and editor config is not
+/// source, and `.claude`, `.idea`, `.vscode`, `.venv` and `.git` are all the
+/// same shape of not-source.
+const SKIP_DIRS: &[&str] = &["node_modules", "target", "dist", "build", "vendor", "venv", "__pycache__", "Pods"];
+
+/// What a checkout looks like to the AST pass, before spending a build on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Indexable {
+    /// Files with a recognised code extension. Counting stops at the first one:
+    /// every caller only asks "any?", and a repo with code is the case where a
+    /// full walk would cost the most for the least.
+    pub code_files: usize,
+    /// Everything else, counted only when there was no code — which is exactly
+    /// when the number is worth showing ("23 files, none of them code"). Zero
+    /// otherwise, and meaningless there.
+    pub other_files: usize,
+}
+
+/// Whether a build of this checkout could produce anything.
+///
+/// The cheap half of the answer: a repo with code exits on its first `.rs`,
+/// and a repo without code is small enough to walk by definition of the
+/// problem. Bounded anyway — a pathological tree must not hang the screen that
+/// called this.
+pub fn inspect_indexable(repo: &Path) -> Indexable {
+    const MAX_ENTRIES: usize = 20_000;
+
+    let mut other = 0usize;
+    let mut seen = 0usize;
+    let mut stack = vec![repo.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            if seen >= MAX_ENTRIES {
+                // Out of budget with no code found. Reported as "no code" is
+                // wrong; reported as code found is wrong too. One of them only
+                // suppresses a warning, so it wins.
+                return Indexable { code_files: 1, other_files: other };
+            }
+            seen += 1;
+            let path = entry.path();
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if !name.starts_with('.') && !SKIP_DIRS.contains(&name.as_ref()) {
+                    stack.push(path);
+                }
+                continue;
+            }
+            match path.extension().and_then(|e| e.to_str()).map(str::to_lowercase) {
+                Some(ext) if CODE_EXTENSIONS.contains(&ext.as_str()) => {
+                    return Indexable { code_files: 1, other_files: 0 };
+                }
+                _ => other += 1,
+            }
+        }
+    }
+
+    Indexable { code_files: 0, other_files: other }
+}
+
 /// The argv for building one scope's graph.
 ///
-/// Split out from the spawn so the two flags that carry a promise can be
-/// asserted in a unit test rather than trusted. See the module docs.
-pub fn build_args(repo: &Path, out: &Path) -> Vec<String> {
-    vec![
-        "extract".to_string(),
-        repo.to_string_lossy().into_owned(),
+/// Split out from the spawn so the flags that carry a promise can be asserted
+/// in a unit test rather than trusted. See the module docs.
+pub fn build_args(repo: &Path, out: &Path, policy: IndexPolicy, backend: Option<&str>) -> Vec<String> {
+    let mut args = vec!["extract".to_string(), repo.to_string_lossy().into_owned()];
+
+    match policy {
         // §3: no doc/PDF/image pass, so no API key is read and nothing leaves
         // the machine.
-        "--code-only".to_string(),
-        // §3: output into Hangar's app data, never the user's checkout.
-        "--out".to_string(),
-        out.to_string_lossy().into_owned(),
-    ]
+        IndexPolicy::CodeOnly => args.push("--code-only".to_string()),
+        // Dropping `--code-only` is what enables the semantic pass; naming a
+        // backend is what makes it run without prompting for a key mid-build.
+        IndexPolicy::WithDocs => {
+            args.push("--backend".to_string());
+            args.push(backend.filter(|b| !b.trim().is_empty()).unwrap_or(DEFAULT_DOC_BACKEND).to_string());
+        }
+    }
+
+    // §3: output into Hangar's app data, never the user's checkout.
+    args.push("--out".to_string());
+    args.push(out.to_string_lossy().into_owned());
+    args
 }
 
 /// The `--mcp-config` payload that points Claude at a built graph.
@@ -529,17 +674,74 @@ mod tests {
         }
     }
 
-    /// The two flags that carry §3's promises. If either disappears, the app
-    /// starts sending source to a model or writing into the user's checkout —
-    /// neither of which is visible in a diff of the calling code.
+    /// The flags that carry §3's promises. If these drift, the app starts
+    /// sending source to a model or writing into the user's checkout — neither
+    /// of which is visible in a diff of the calling code.
+    ///
+    /// Docs may now be indexed, but only on an explicit `WithDocs`. The cases
+    /// below pin the *default* rather than the feature: a new scope, a NULL
+    /// column and an unreadable value must all come out code-only, because that
+    /// is the difference between "nothing leaves" and "your notes leave".
     #[test]
-    fn a_build_is_always_code_only_and_writes_outside_the_repo() {
-        let args = build_args(Path::new("/repos/thing"), Path::new("/appdata/graphs/project-1"));
+    fn a_build_is_code_only_unless_docs_were_explicitly_asked_for() {
+        let repo = Path::new("/repos/thing");
+        let out_dir = Path::new("/appdata/graphs/project-1");
 
-        assert!(args.contains(&"--code-only".to_string()), "the semantic pass reaches a model: it must stay off. got: {args:?}");
-        let out = args.iter().position(|a| a == "--out").expect("--out must be passed");
-        assert_eq!(args[out + 1], "/appdata/graphs/project-1", "output must land in the app data, not the repo");
-        assert!(!args.iter().any(|a| a.contains("/repos/thing/graphify-out")), "nothing may be written inside the user's checkout");
+        for policy in [IndexPolicy::default(), IndexPolicy::from_db(None), IndexPolicy::from_db(Some("")), IndexPolicy::from_db(Some("WITH_DOCS")), IndexPolicy::from_db(Some("nonsense"))] {
+            let args = build_args(repo, out_dir, policy, Some("claude-cli"));
+            assert!(args.contains(&"--code-only".to_string()), "the semantic pass reaches a model: it must stay off unless asked. policy {policy:?} got: {args:?}");
+            assert!(!args.contains(&"--backend".to_string()), "no backend may be named without --with-docs. policy {policy:?} got: {args:?}");
+        }
+
+        // And the opt-in actually opts in, or the setting is decoration.
+        let with_docs = build_args(repo, out_dir, IndexPolicy::WithDocs, None);
+        assert!(!with_docs.contains(&"--code-only".to_string()), "--code-only would suppress the very pass this policy asks for: {with_docs:?}");
+        let backend = with_docs.iter().position(|a| a == "--backend").expect("docs need a backend named, or graphify prompts mid-build");
+        assert_eq!(with_docs[backend + 1], DEFAULT_DOC_BACKEND, "an unset backend must fall back to the subscription-based one, not to an API key");
+
+        // Whatever the policy, output never lands in the checkout.
+        for args in [build_args(repo, out_dir, IndexPolicy::CodeOnly, None), with_docs] {
+            let out = args.iter().position(|a| a == "--out").expect("--out must be passed");
+            assert_eq!(args[out + 1], "/appdata/graphs/project-1", "output must land in the app data, not the repo");
+            assert!(!args.iter().any(|a| a.contains("/repos/thing/graphify-out")), "nothing may be written inside the user's checkout");
+        }
+    }
+
+    /// The case this function exists for, and the one that nearly slipped
+    /// through: a documentation folder whose only code-extension file is agent
+    /// config in a hidden directory. graphify counts that as "1 code file" and
+    /// then produces zero nodes from it, so a warning that trusted the count
+    /// would never fire on the exact folder that breaks the build.
+    #[test]
+    fn a_docs_folder_reads_as_empty_even_with_config_in_a_hidden_dir() {
+        let dir = std::env::temp_dir().join(format!("hangar-indexable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".claude")).unwrap();
+        std::fs::write(dir.join("use-cases.md"), "# docs").unwrap();
+        std::fs::write(dir.join("notes.md"), "more").unwrap();
+        std::fs::write(dir.join("preview.html"), "<p>").unwrap();
+        std::fs::write(dir.join(".claude/settings.local.json"), "{}").unwrap();
+
+        let found = inspect_indexable(&dir);
+        assert_eq!(found.code_files, 0, "config in a dot-directory is not source");
+        assert_eq!(found.other_files, 3, "the docs are what is actually there");
+
+        // One real source file is enough to stop warning, and stops the walk.
+        std::fs::write(dir.join("main.rs"), "fn main() {}").unwrap();
+        assert_eq!(inspect_indexable(&dir).code_files, 1);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A blank backend is what a settings field yields when someone clears it,
+    /// and it must not reach graphify as an empty `--backend ''`.
+    #[test]
+    fn a_blank_backend_falls_back_rather_than_passing_nothing() {
+        for blank in [Some(""), Some("   "), None] {
+            let args = build_args(Path::new("/r"), Path::new("/o"), IndexPolicy::WithDocs, blank);
+            let backend = args.iter().position(|a| a == "--backend").expect("--backend must be present");
+            assert_eq!(args[backend + 1], DEFAULT_DOC_BACKEND, "blank backend {blank:?} must fall back");
+        }
     }
 
     /// Additive or nothing (§5.2). `--strict-mcp-config` would switch off the

@@ -56,6 +56,14 @@ pub struct GraphState {
     /// Present only once a build has produced it — graphify's own HTML, which
     /// Hangar opens in the system browser rather than embedding (§5.8).
     pub html_path: Option<String>,
+    /// Whether this scope indexes documents as well as code. False for every
+    /// scope that has never said otherwise — see `graph::IndexPolicy`.
+    pub with_docs: bool,
+    /// The model that reads those documents, when one was chosen. `None` means
+    /// `default_doc_backend`, which is sent along so the UI can name it without
+    /// hardcoding a second copy.
+    pub doc_backend: Option<String>,
+    pub default_doc_backend: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -140,6 +148,7 @@ fn read_state(conn: &Connection, app_data: &Path, kind: ScopeKind, scope_id: &st
     // exist, because the question a group answers spans all of them.
     let stale = commits.iter().any(|c| c.stale);
     let html = graph::graph_html(&graph::scope_dir(app_data, kind, scope_id));
+    let (policy, doc_backend) = read_index_policy(conn, kind, scope_id);
 
     Ok(GraphState {
         scope_kind: kind.as_str().to_string(),
@@ -152,6 +161,9 @@ fn read_state(conn: &Connection, app_data: &Path, kind: ScopeKind, scope_id: &st
         commits,
         stale,
         html_path: html.is_file().then(|| html.to_string_lossy().into_owned()),
+        with_docs: policy == graph::IndexPolicy::WithDocs,
+        doc_backend,
+        default_doc_backend: graph::DEFAULT_DOC_BACKEND.to_string(),
     })
 }
 
@@ -185,7 +197,7 @@ fn build_project_graph_inner<R: tauri::Runtime>(app: &AppHandle<R>, db: &DbConne
         .ok_or_else(|| format!("graphify isn't installed — run `{}` and reopen this screen", graph::INSTALL_HINT))?;
 
     let app_data = crate::app_data::root(&app)?;
-    let (repo_path, _name) = {
+    let (repo_path, name) = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         conn.query_row("SELECT path, name FROM projects WHERE id = ?1", params![project_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -205,13 +217,15 @@ fn build_project_graph_inner<R: tauri::Runtime>(app: &AppHandle<R>, db: &DbConne
     let out = graph::scope_dir(&app_data, ScopeKind::Project, &project_id);
     std::fs::create_dir_all(&out).map_err(|e| format!("could not create {}: {e}", out.display()))?;
 
-    {
+    let (policy, backend) = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let read = read_index_policy(&conn, ScopeKind::Project, &project_id);
         mark_building(&conn, ScopeKind::Project, &project_id, &graph::graph_json(&out))?;
-    }
+        read
+    };
 
     let mut cmd = Command::new(&binary);
-    cmd.args(graph::build_args(&repo, &out));
+    cmd.args(graph::build_args(&repo, &out, policy, backend.as_deref()));
     let output = crate::process_timeout::run_with_timeout(cmd, BUILD_TIMEOUT);
 
     let conn = db.0.lock().map_err(|e| e.to_string())?;
@@ -244,8 +258,15 @@ fn build_project_graph_inner<R: tauri::Runtime>(app: &AppHandle<R>, db: &DbConne
             write_brief(&conn, &out, &graph::graph_json(&out), &[], &[project_id.to_string()]);
         }
         Ok(failed) => {
-            let stderr = String::from_utf8_lossy(&failed.stderr);
-            let detail = stderr.lines().last().unwrap_or("graphify exited with an error").trim().to_string();
+            // Same folding-in of graphify's stdout as the group path: with
+            // `--code-only`, "graph is empty" alone doesn't say that every file
+            // in the repo was a document.
+            let detail = member_failure_detail(
+                &name,
+                &repo,
+                &String::from_utf8_lossy(&failed.stdout),
+                &String::from_utf8_lossy(&failed.stderr),
+            );
             record_failure(&conn, &project_id, &detail)?;
             return Err(format!("the graph build failed: {detail}"));
         }
@@ -336,6 +357,49 @@ fn write_brief(conn: &Connection, scope_dir: &Path, graph_path: &Path, bridges: 
                 params![format!("graph-brief-{project_id}"), brief, Utc::now().to_rfc3339()],
             );
         }
+    }
+}
+
+/// This scope's indexing policy, or code-only if it has never said otherwise.
+///
+/// A scope with no `graphs` row yet — everything before its first build — is the
+/// common case, not an error, and it reads as code-only like every other absence
+/// (see `IndexPolicy::from_db`).
+fn read_index_policy(conn: &Connection, kind: ScopeKind, scope_id: &str) -> (graph::IndexPolicy, Option<String>) {
+    conn.query_row(
+        "SELECT index_policy, doc_backend FROM graphs WHERE scope_kind = ?1 AND scope_id = ?2",
+        params![kind.as_str(), scope_id],
+        |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .map(|(policy, backend)| (graph::IndexPolicy::from_db(policy.as_deref()), backend))
+    .unwrap_or((graph::IndexPolicy::CodeOnly, None))
+}
+
+/// What to tell the user when one member of a group fails to extract.
+///
+/// The member's name comes first because a group build runs one extraction per
+/// member and graphify's messages name none of them: "graph is empty" on a
+/// four-repo group sends you looking in the wrong three.
+///
+/// The reason usually sits in graphify's **stdout**, not its stderr — with
+/// `--code-only` it prints how many non-code files it skipped, which is the
+/// entire explanation when a docs-only folder yields nothing. Reading only the
+/// last stderr line throws that away, so it is folded back in here rather than
+/// re-derived: no second copy of graphify's extension list to drift out of sync.
+fn member_failure_detail(name: &str, repo: &Path, stdout: &str, stderr: &str) -> String {
+    let last = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .last()
+        .unwrap_or("graphify exited with an error");
+
+    match stdout.lines().map(str::trim).rev().find(|l| l.contains("--code-only") && l.contains("skipping")) {
+        Some(skipped) => format!("{name} ({}): {last} — {skipped}", repo.display()),
+        None => format!("{name} ({}): {last}", repo.display()),
     }
 }
 
@@ -510,6 +574,65 @@ pub fn set_graph_group_member(db: State<DbConnection>, group_id: String, project
     Ok(())
 }
 
+/// What a build of this project would find, so the group screen can say "this
+/// one has nothing to index" *before* a build spends up to ten minutes per
+/// member discovering it.
+#[tauri::command]
+pub fn inspect_project_corpus(db: State<DbConnection>, project_id: String) -> Result<graph::Indexable, String> {
+    let path: String = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT path FROM projects WHERE id = ?1", params![project_id], |r| r.get(0))
+            .map_err(|_| format!("no project with id {project_id}"))?
+    };
+    Ok(graph::inspect_indexable(Path::new(&path)))
+}
+
+/// Whether this scope indexes documents too, and with which model.
+///
+/// Its own command rather than a field on the build call: the choice outlives
+/// any one build, and the user has to be able to see and change it without
+/// starting one. Writes into `graphs`, which is where the scope's other build
+/// state already lives — the row is created if this is the first thing ever
+/// said about the scope.
+#[tauri::command]
+pub fn set_graph_index_policy(
+    app: AppHandle,
+    db: State<DbConnection>,
+    scope_kind: String,
+    scope_id: String,
+    with_docs: bool,
+    backend: Option<String>,
+) -> Result<GraphState, String> {
+    let kind = match scope_kind.as_str() {
+        "project" => ScopeKind::Project,
+        "group" => ScopeKind::Group,
+        other => return Err(format!("unknown scope kind {other}")),
+    };
+    let policy = if with_docs { graph::IndexPolicy::WithDocs } else { graph::IndexPolicy::CodeOnly };
+    // A blank field from the UI means "the default", not an empty backend name
+    // that graphify would reject halfway through a build.
+    let backend = backend.map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
+
+    let app_data = crate::app_data::root(&app)?;
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO graphs (scope_kind, scope_id, graph_path, status, index_policy, doc_backend)
+              VALUES (?1, ?2, ?3, 'never_built', ?4, ?5)
+           ON CONFLICT (scope_kind, scope_id)
+           DO UPDATE SET index_policy = excluded.index_policy, doc_backend = excluded.doc_backend",
+        params![
+            kind.as_str(),
+            scope_id,
+            graph::graph_json(&graph::scope_dir(&app_data, kind, &scope_id)).to_string_lossy(),
+            policy.as_db(),
+            backend,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    read_state(&conn, &app_data, kind, &scope_id)
+}
+
 #[tauri::command]
 pub fn get_graph_group_members(db: State<DbConnection>, group_id: String) -> Result<Vec<String>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
@@ -557,16 +680,20 @@ fn build_graph_group_blocking(app: AppHandle, group_id: String) -> Result<GraphS
         .ok_or_else(|| format!("graphify isn't installed — run `{}` and reopen this screen", graph::INSTALL_HINT))?;
     let app_data = crate::app_data::root(&app)?;
 
-    let members: Vec<(String, String)> = {
+    // `p.name` is selected for the error message, not for the build: an
+    // extraction that fails has to be able to say which member it was.
+    let members: Vec<(String, String, String)> = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT p.id, p.path FROM graph_group_projects gp JOIN projects p ON p.id = gp.project_id
+                "SELECT p.id, p.path, p.name FROM graph_group_projects gp JOIN projects p ON p.id = gp.project_id
                   WHERE gp.group_id = ?1 ORDER BY p.name",
             )
             .map_err(|e| e.to_string())?;
-        let rows: Vec<(String, String)> = stmt
-            .query_map(params![group_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        let rows: Vec<(String, String, String)> = stmt
+            .query_map(params![group_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            })
             .map_err(|e| e.to_string())?
             .filter_map(Result::ok)
             .collect();
@@ -589,25 +716,39 @@ fn build_graph_group_blocking(app: AppHandle, group_id: String) -> Result<GraphS
     // would be. Members are extracted in series, not in parallel: graphify
     // already uses every core (10 workers on this machine), so running two at
     // once would only make them fight each other.
+    // The group's own policy applies to every member: "index the docs in this
+    // system" is a statement about the system, and a group whose members
+    // disagreed would produce a graph that is half one thing and half another
+    // with no way to tell which half you were reading.
+    let (policy, backend) = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        read_index_policy(&conn, ScopeKind::Group, &group_id)
+    };
+
     let mut member_graphs = Vec::new();
     let mut shas = Vec::new();
-    for (project_id, repo_path) in &members {
+    for (project_id, repo_path, project_name) in &members {
         let repo = PathBuf::from(repo_path);
         if !repo.is_dir() {
-            return fail_group(&db, &group_id, &format!("{repo_path} is not a directory anymore"));
+            return fail_group(&db, &group_id, &format!("{project_name} ({repo_path}) is not a directory anymore"));
         }
         let member_out = graph::scope_dir(&app_data, ScopeKind::Project, project_id);
         std::fs::create_dir_all(&member_out).map_err(|e| e.to_string())?;
 
         let mut cmd = Command::new(&binary);
-        cmd.args(graph::build_args(&repo, &member_out));
+        cmd.args(graph::build_args(&repo, &member_out, policy, backend.as_deref()));
         match crate::process_timeout::run_with_timeout(cmd, BUILD_TIMEOUT) {
             Ok(o) if o.status.success() => {}
             Ok(o) => {
-                let detail = String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("graphify failed").trim().to_string();
+                let detail = member_failure_detail(
+                    project_name,
+                    &repo,
+                    &String::from_utf8_lossy(&o.stdout),
+                    &String::from_utf8_lossy(&o.stderr),
+                );
                 return fail_group(&db, &group_id, &detail);
             }
-            Err(e) => return fail_group(&db, &group_id, &e),
+            Err(e) => return fail_group(&db, &group_id, &format!("{project_name} ({repo_path}): {e}")),
         }
         member_graphs.push(graph::graph_json(&member_out));
         shas.push((project_id.clone(), head_sha(&repo)));
@@ -683,7 +824,7 @@ fn build_graph_group_blocking(app: AppHandle, group_id: String) -> Result<GraphS
 
     // Every member gets the same brief: the seam is what they share, and an
     // agent on either side needs to know both ends of it.
-    let member_ids: Vec<String> = members.iter().map(|(id, _)| id.clone()).collect();
+    let member_ids: Vec<String> = members.iter().map(|(id, _, _)| id.clone()).collect();
     write_brief(&conn, &group_dir, &merged, &bridges, &member_ids);
 
     read_state(&conn, &app_data, ScopeKind::Group, &group_id)
@@ -985,14 +1126,56 @@ pub fn graph_savings_report(db: State<DbConnection>, project_id: String) -> Resu
 mod tests {
     use super::*;
 
+    /// Real captured output from `graphify extract` on a docs-only folder — the
+    /// failure that prompted all of this. Recorded, not invented: the point is
+    /// that the reason sits in stdout while the error sits in stderr.
+    const DOCS_ONLY_STDOUT: &str = "\
+[graphify extract] scanning /Users/x/docradar
+[graphify extract] --code-only: skipping 23 non-code file(s) (23 docs, 0 papers, 0 images) — no LLM extraction
+[graphify extract] found 1 code, 0 docs, 0 papers, 0 images
+[graphify extract] AST extraction on 1 code files...
+";
+    const DOCS_ONLY_STDERR: &str = "\
+  warning: 1 source file(s) produced zero nodes and are absent from the graph: settings.local.json.
+[graphify extract] graph is empty — extraction produced no nodes. Possible causes: all files skipped, binary-only corpus, or LLM returned no edges.
+";
+
+    /// "graph is empty" on a four-member group names none of them, and the one
+    /// line that explains it is on the wrong stream. Both halves are the bug.
+    #[test]
+    fn a_failed_member_is_named_and_carries_the_reason_from_stdout() {
+        let detail = member_failure_detail("docradar", Path::new("/Users/x/docradar"), DOCS_ONLY_STDOUT, DOCS_ONLY_STDERR);
+
+        assert!(detail.starts_with("docradar (/Users/x/docradar)"), "the member has to come first: {detail}");
+        assert!(detail.contains("graph is empty"), "graphify's own verdict must survive: {detail}");
+        assert!(detail.contains("skipping 23 non-code file(s)"), "the reason is on stdout and must be folded in: {detail}");
+    }
+
+    /// A failure with nothing useful on stdout must still name the member and
+    /// must not invent a reason.
+    #[test]
+    fn a_failed_member_without_a_stdout_hint_says_only_what_is_known() {
+        let detail = member_failure_detail("thing", Path::new("/r/thing"), "nothing relevant here\n", "boom\n");
+        assert_eq!(detail, "thing (/r/thing): boom");
+
+        // Empty streams are the timeout-shaped case: still named, still no guess.
+        let empty = member_failure_detail("thing", Path::new("/r/thing"), "", "  \n\n");
+        assert_eq!(empty, "thing (/r/thing): graphify exited with an error");
+    }
+
     fn db_with_project(path: &str) -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(crate::db::SCHEMA).unwrap();
         conn.execute_batch(
+            // Mirrors migration 28's shape, columns included: without them
+            // `read_index_policy` would fall back to its default through a SQL
+            // error rather than through the column, and the tests would pass on
+            // a table the app never has.
             "CREATE TABLE IF NOT EXISTS graphs (
                scope_kind TEXT NOT NULL, scope_id TEXT NOT NULL, graph_path TEXT NOT NULL,
                built_at TEXT, node_count INTEGER NOT NULL DEFAULT 0, edge_count INTEGER NOT NULL DEFAULT 0,
                status TEXT NOT NULL DEFAULT 'never_built', last_error TEXT,
+               index_policy TEXT NOT NULL DEFAULT 'code_only', doc_backend TEXT,
                PRIMARY KEY (scope_kind, scope_id));
              CREATE TABLE IF NOT EXISTS graph_commits (
                scope_kind TEXT NOT NULL, scope_id TEXT NOT NULL, project_id TEXT NOT NULL,
@@ -1103,8 +1286,11 @@ mod tests {
         let out_b = root.join("b");
         std::fs::create_dir_all(&out_a).unwrap();
         std::fs::create_dir_all(&out_b).unwrap();
-        run(graph::build_args(&repo_a, &out_a));
-        run(graph::build_args(&repo_b, &out_b));
+        // Code-only, which is what a group with no policy of its own gets —
+        // keeping this the default path means the chain is still verified
+        // without a model in the loop or an account being billed for a test.
+        run(graph::build_args(&repo_a, &out_a, graph::IndexPolicy::CodeOnly, None));
+        run(graph::build_args(&repo_b, &out_b, graph::IndexPolicy::CodeOnly, None));
 
         let graph_a = graph::graph_json(&out_a);
         let graph_b = graph::graph_json(&out_b);
