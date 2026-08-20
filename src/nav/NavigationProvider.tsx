@@ -23,6 +23,7 @@ export type ScreenName =
   | 'git-panel'
   | 'files'
   | 'queue'
+  | 'start-here'
   | 'git-history'
   | 'changes'
   | 'pr-modal'

@@ -33,6 +33,7 @@ import { PrReviews } from './screens/PrReviews';
 import { GitPanel } from './screens/GitPanel';
 import { Files } from './screens/Files';
 import { Queue } from './screens/Queue';
+import { StartHere } from './screens/StartHere';
 import { GitHistoryView } from './screens/GitHistoryView';
 import { TreeCanvas } from './screens/TreeCanvas';
 import { TreeColumns } from './screens/TreeColumns';
@@ -126,6 +127,8 @@ function Screens() {
       return <Files />;
     case 'queue':
       return <Queue />;
+    case 'start-here':
+      return <StartHere />;
     case 'changes':
       return <Changes />;
     case 'git-history':

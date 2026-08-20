@@ -6,7 +6,7 @@ import { useNavigation, type ScreenName } from '../nav/NavigationProvider';
 import type { ProjectPrInbox } from '../types/pullRequest';
 import { IconTooltip } from './ui/tooltip';
 import { Spinner } from './Spinner';
-import { AccountsIcon, BranchIcon, FilesIcon, HomeIcon, MenuIcon, PullRequestIcon, SettingsIcon, TasksIcon, TerminalIcon, UsageIcon } from './NavIcons';
+import { AccountsIcon, BranchIcon, CompassIcon, FilesIcon, HomeIcon, MenuIcon, PullRequestIcon, SettingsIcon, TasksIcon, TerminalIcon, UsageIcon } from './NavIcons';
 import { UsageModal } from './UsageModal';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu';
 import styles from './AppTopBar.module.css';
@@ -65,6 +65,12 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
   const inFlight = useInFlightCount();
   const showBusy = useDelayedBusy(inFlight, BUSY_INDICATOR_DELAY_MS);
 
+  // Cuántos pasos esenciales quedan, para el contador de "Empieza aquí".
+  // Se pide al montar y no en cada navegación: cambia cuando el usuario hace
+  // algo, no cuando cambia de pantalla, y el propio badge desaparece solo al
+  // llegar a cero.
+  const [stepsLeft, setStepsLeft] = useState(0);
+
   const refreshPrInbox = () => {
     invoke<ProjectPrInbox[]>('list_pr_review_inbox').then((inbox) => setPendingPrComments(countPendingPrComments(inbox)));
   };
@@ -72,6 +78,12 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
   useEffect(() => {
     invoke<string>('get_default_terminal_mode').then(setMode).catch(() => {});
   }, [current.screen]);
+
+  useEffect(() => {
+    invoke<{ basicsDone: number; basicsTotal: number }>('onboarding_progress')
+      .then((p) => setStepsLeft(p.basicsTotal - p.basicsDone))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     refreshPrInbox();
@@ -108,6 +120,7 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
         {/* Grouped by what you're doing, with a rule between groups, because a
          * flat row of nine gives no clue that "Git" and "Settings" are
          * different kinds of thing. Work first — it's what you're here for. */}
+        <NavItem screen="start-here" label="Empieza aquí" icon={<CompassIcon />} badge={stepsLeft} />
         <NavItem screen="terminals" label="Terminals" icon={<TerminalIcon />} />
         <NavItem screen="task-board" label="Tasks" icon={<TasksIcon />} />
         <NavItem screen="pr-reviews" label="PRs" icon={<PullRequestIcon />} badge={pendingPrComments} />
@@ -165,6 +178,9 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
               <HomeIcon /> Back to terminals
             </DropdownMenuItem>
           )}
+          <DropdownMenuItem onClick={() => navigate('start-here')}>
+            <CompassIcon /> Empieza aquí{stepsLeft > 0 && ` (${stepsLeft})`}
+          </DropdownMenuItem>
           <DropdownMenuItem onClick={() => navigate('terminals')}>
             <TerminalIcon /> Terminals
           </DropdownMenuItem>

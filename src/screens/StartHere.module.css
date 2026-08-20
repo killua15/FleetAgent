@@ -1,0 +1,196 @@
+.screen {
+  width: 100%;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--txt);
+  font-family: var(--font-ui);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.loading {
+  flex: 1;
+  display: grid;
+  place-items: center;
+}
+
+/* Una sola columna centrada y estrecha: es una lista que se lee, no un panel
+   que se opera, y a 1400 px de ancho una fila de borde a borde separa tanto el
+   título de su cifra que dejan de leerse juntos. */
+.body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px 24px 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  max-width: 780px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.title {
+  font: 600 21px var(--font-ui);
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+.subtitle {
+  font: 400 13px var(--font-ui);
+  color: var(--mut);
+  margin: 0;
+  max-width: 60ch;
+  line-height: 1.5;
+}
+
+.meter {
+  height: 3px;
+  background: var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 6px;
+}
+
+.meterFill {
+  height: 100%;
+  background: var(--acc);
+  border-radius: 2px;
+  transition: width 240ms ease;
+}
+
+.count {
+  font: 500 10.5px var(--font-mono);
+  color: var(--dim);
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.groupLabel {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.16em;
+  color: var(--dim);
+  margin-bottom: 4px;
+}
+
+.groupNote {
+  font: 400 12px var(--font-ui);
+  color: var(--dim);
+  margin: 0 0 6px;
+}
+
+.row,
+.rowDone {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+/* Lo hecho se atenúa en vez de desaparecer o tacharse: sigue siendo consultable
+   ("¿cuánto he gastado?") y una lista que se vacía al progresar pierde
+   justamente el resumen que la hace útil el día veinte. */
+.rowDone {
+  background: transparent;
+  border-color: transparent;
+}
+
+.rowDone .rowTitle {
+  color: var(--mut);
+}
+
+.rowDone .why {
+  display: none;
+}
+
+.mark,
+.markDone {
+  font: 400 13px var(--font-mono);
+  line-height: 1.5;
+  flex: none;
+  width: 14px;
+  text-align: center;
+}
+
+.mark {
+  color: var(--dim);
+}
+
+.markDone {
+  color: var(--grn);
+}
+
+.rowBody {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.rowTop {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.rowTitle {
+  font: 500 13.5px var(--font-ui);
+}
+
+.detail {
+  font: 500 10.5px var(--font-mono);
+  color: var(--teal);
+  background: var(--tealD);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.why {
+  font: 400 12.5px var(--font-ui);
+  color: var(--mut);
+  line-height: 1.5;
+  max-width: 62ch;
+}
+
+.go {
+  flex: none;
+  font: 500 11px var(--font-ui);
+  color: var(--acc);
+  background: transparent;
+  border: 1px solid var(--line2);
+  border-radius: 6px;
+  padding: 4px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.go:hover {
+  background: var(--accD);
+  border-color: var(--acc);
+}
+
+@media (max-width: 560px) {
+  .row,
+  .rowDone {
+    flex-wrap: wrap;
+  }
+
+  .go {
+    margin-left: 26px;
+  }
+}

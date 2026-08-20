@@ -49,6 +49,22 @@ export function TasksIcon() {
   );
 }
 
+/**
+ * A compass needle: where to go, not what to do.
+ *
+ * Deliberately not a checklist — `TasksIcon` is already a checklist, and this
+ * screen is about orientation in an app with 28 of them, which is a different
+ * idea and deserves a different shape.
+ */
+export function CompassIcon() {
+  return (
+    <svg {...base} aria-hidden="true">
+      <circle cx="8" cy="8" r="6" />
+      <path d="M10.2 5.8 6.9 6.9 5.8 10.2l3.3-1.1z" />
+    </svg>
+  );
+}
+
 /** Two branches meeting — a pull request, not a speech bubble. */
 export function PullRequestIcon() {
   return (
