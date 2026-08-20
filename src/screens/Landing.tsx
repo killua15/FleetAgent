@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { useNavigation } from '../nav/NavigationProvider';
+import { useEffect, useState } from 'react';
+import { useNavigation, type ScreenName } from '../nav/NavigationProvider';
+import { invoke } from '../lib/invoke';
 import { Button } from '../components/ui/button';
 import styles from './Landing.module.css';
 
@@ -23,11 +24,22 @@ function platformName() {
 export function Landing() {
   const [entering, setEntering] = useState(false);
   const { navigate } = useNavigation();
+  // Where the door leads. Someone with no accounts yet cannot do anything on
+  // the terminal grid — it has nothing to run under — so the first launch opens
+  // the checklist instead. Only "no accounts at all" is a safe signal for
+  // "new here"; anything cleverer would keep greeting a regular user.
+  const [destination, setDestination] = useState<ScreenName>('terminals');
+
+  useEffect(() => {
+    invoke<unknown[]>('list_accounts')
+      .then((accounts) => setDestination(accounts.length === 0 ? 'start-here' : 'terminals'))
+      .catch(() => {});
+  }, []);
 
   const handleEnter = () => {
     if (entering) return;
     setEntering(true);
-    window.setTimeout(() => navigate('terminals'), 450);
+    window.setTimeout(() => navigate(destination), 450);
   };
 
   return (
@@ -63,7 +75,7 @@ export function Landing() {
           onClick={handleEnter}
           title="Open Hangar"
         >
-          {entering ? 'Opening terminals…' : 'Enter Hangar →'}
+          {entering ? 'Opening…' : 'Enter Hangar →'}
         </Button>
         <span className={styles.footNote}>local-first · your keys stay in the keychain</span>
       </div>

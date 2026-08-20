@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hangar — mission control for your coding agents</title>
+<meta name="description" content="Hangar reparte tus cuentas de agentes: rotación automática al agotarse la cuota, y la conversación sobrevive al cambio.">
+<!--
+  Una sola página, sin build y sin CDN: se abre con doble clic.
+
+  La paleta y las fuentes están copiadas de `src/styles/tokens.css`, no
+  aproximadas, para que quien llegue aquí y luego abra la app reconozca el mismo
+  producto. Dark es el tema por defecto de Hangar, así que es el `:root` de aquí
+  también, y el claro entra por `prefers-color-scheme` en vez de por un botón:
+  el tema es del sistema, el idioma es del lector.
+
+  Bilingüe con un solo árbol DOM: cada texto traducible aparece dos veces, en un
+  `<span lang="es">` y un `<span lang="en">`, y el CSS oculta el que no toca
+  según el `lang` del documento. Dos páginas paralelas se desincronizan a la
+  tercera edición; así quien escribe ve las dos versiones juntas.
+-->
+<style>
+  :root {
+    --bg: #0e0f14; --bg2: #12131a; --panel: #171822; --panel2: #1d1e2a;
+    --line: #262838; --line2: #3a3d58;
+    --txt: #e8e8f2; --mut: #b4b4c8; --dim: #8a8ba3;
+    --acc: #b48cff; --accD: rgba(180, 140, 255, 0.13);
+    --teal: #3ecfc0; --tealD: rgba(62, 207, 192, 0.12);
+    --amber: #e0a458; --amberD: rgba(224, 164, 88, 0.12);
+    --grn: #5fd39a; --grnD: rgba(95, 211, 154, 0.12);
+    --font-ui: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f2f2f6; --bg2: #eaeaf0; --panel: #ffffff; --panel2: #f5f4f9;
+      --line: #dcdce6; --line2: #b9b9d0;
+      --txt: #1d1e2a; --mut: #5b5c72; --dim: #8f90a6;
+      --acc: #7d4fd6; --accD: rgba(125, 79, 214, 0.1);
+      --teal: #0f9c8f; --tealD: rgba(15, 156, 143, 0.1);
+      --amber: #b07a2a; --amberD: rgba(176, 122, 42, 0.12);
+      --grn: #1f9d63; --grnD: rgba(31, 157, 99, 0.1);
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--txt);
+    font-family: var(--font-ui);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Un solo ancho de lectura para todo. Una landing que alterna anchos por
+     sección se lee como tres páginas pegadas. */
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 22px; }
+
+  header { padding: 56px 0 8px; }
+
+  .topline {
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 40px;
+  }
+
+  .mark { font: 400 20px var(--font-mono); color: var(--acc); }
+  .wordmark { font: 600 15px var(--font-ui); letter-spacing: -0.01em; }
+  .spacer { flex: 1; }
+
+  .langbtn {
+    font: 500 11px var(--font-mono);
+    color: var(--mut); background: transparent;
+    border: 1px solid var(--line2); border-radius: 6px;
+    padding: 4px 9px; cursor: pointer;
+  }
+  .langbtn:hover { border-color: var(--acc); color: var(--acc); }
+
+  h1 {
+    font: 600 clamp(26px, 5.4vw, 40px) var(--font-ui);
+    line-height: 1.15; letter-spacing: -0.02em;
+    margin: 0 0 18px; max-width: 22ch;
+  }
+  h1 em { font-style: normal; color: var(--acc); }
+
+  .lede { font-size: 16.5px; color: var(--mut); margin: 0; max-width: 58ch; }
+
+  h2 {
+    font: 600 10px var(--font-mono);
+    letter-spacing: 0.18em; color: var(--dim);
+    margin: 56px 0 16px; text-transform: uppercase;
+  }
+
+  p { margin: 0 0 14px; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 18px 20px; margin-bottom: 10px;
+  }
+  .card h3 { font: 600 14.5px var(--font-ui); margin: 0 0 6px; }
+  .card p { font-size: 13.5px; color: var(--mut); margin: 0; }
+
+  /* El detalle técnico en monospace: es lo que hace creíble la afirmación de
+     arriba, y quien lo reconoce es exactamente el lector objetivo. */
+  .proof {
+    display: block; margin-top: 9px;
+    font: 400 11.5px var(--font-mono); color: var(--teal);
+  }
+
+  .grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+  .grid .card { margin: 0; }
+
+  .honest {
+    border-left: 2px solid var(--amber);
+    background: var(--amberD);
+    border-radius: 0 8px 8px 0;
+    padding: 16px 20px;
+  }
+  .honest ul { margin: 0; padding-left: 18px; }
+  .honest li { font-size: 13.5px; color: var(--mut); margin-bottom: 7px; }
+  .honest li:last-child { margin-bottom: 0; }
+  .honest strong { color: var(--txt); font-weight: 600; }
+
+  .cta {
+    margin: 44px 0 0; padding: 26px 22px;
+    background: var(--panel2); border: 1px solid var(--line);
+    border-radius: 10px; text-align: center;
+  }
+  .cta h3 { font: 600 17px var(--font-ui); margin: 0 0 8px; }
+  .cta p { font-size: 13.5px; color: var(--mut); margin: 0 auto; max-width: 44ch; }
+  .invite {
+    display: inline-block; margin-top: 16px;
+    font: 500 13px var(--font-ui); color: var(--bg);
+    background: var(--acc); border-radius: 7px;
+    padding: 9px 18px; text-decoration: none;
+  }
+  .invite:hover { filter: brightness(1.08); }
+
+  footer {
+    margin: 52px 0 44px; padding-top: 20px;
+    border-top: 1px solid var(--line);
+    font: 400 11.5px var(--font-mono); color: var(--dim);
+    display: flex; gap: 14px; flex-wrap: wrap;
+  }
+
+  /* El idioma inactivo se oculta, pero existe en el DOM: el texto sigue siendo
+     seleccionable, copiable y legible por un lector de pantalla, que es lo que
+     un `content: attr()` habría roto. Se apoya en el atributo `lang` estándar,
+     así que el idioma también queda declarado correctamente para el navegador.
+     `html[lang]` no se oculta a sí mismo: el selector exige descendiente. */
+  html[lang='es'] [lang='en'],
+  html[lang='en'] [lang='es'] { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="topline">
+      <span class="mark">⌥</span>
+      <span class="wordmark">hangar</span>
+      <span class="spacer"></span>
+      <button class="langbtn" id="lang" type="button">EN / ES</button>
+    </div>
+
+    <h1><span lang="es">Que tu suscripción de agentes no te pare.</span><span lang="en">Your agent subscription shouldn't stop you.</span></h1>
+
+    <p class="lede"><span lang="es">Hangar corre varias terminales de agente en paralelo, cada una en su propio worktree de git y bajo la cuenta que le toca. Cuando una cuenta se queda sin cuota, sigue con otra — y la conversación no se pierde.</span><span lang="en">Hangar runs several agent terminals in parallel, each in its own git worktree and under the account it's meant to use. When one account runs out of quota, it carries on with another — and the conversation survives the switch.</span></p>
+  </header>
+
+  <h2><span lang="es">El problema</span><span lang="en">The problem</span></h2>
+  <p style="color: var(--mut); font-size: 15px;"><span lang="es">Los límites se agotan a mitad de una tarea. Cambias de cuenta a mano, el agente pierde el hilo de lo que estaba haciendo, y vuelves a explicarle el contexto desde cero. Si además reparte tres suscripciones entre trabajo y personal, nadie sabe cuál gastó qué.</span><span lang="en">Limits run out mid-task. You switch accounts by hand, the agent loses the thread of what it was doing, and you explain the context from scratch. And if you're juggling three subscriptions across work and personal, nobody knows which one spent what.</span></p>
+
+  <h2><span lang="es">Los tres pilares</span><span lang="en">The three pillars</span></h2>
+
+  <div class="card">
+    <h3><span lang="es">Aislamiento real por cuenta</span><span lang="en">Real per-account isolation</span></h3>
+    <p><span lang="es">Cada cuenta tiene su propio directorio de configuración del CLI. Dos cuentas nunca se pisan la sesión, y la frontera entre trabajo y personal se aplica, no solo se avisa.</span><span lang="en">Each account gets its own CLI config directory. Two accounts never overwrite each other's session, and the work/personal boundary is enforced rather than merely flagged.</span>
+      <span class="proof">CLAUDE_CONFIG_DIR · CODEX_HOME — one per account</span></p>
+  </div>
+
+  <div class="card">
+    <h3><span lang="es">Rotación automática al agotarse</span><span lang="en">Automatic rotation on exhaustion</span></h3>
+    <p><span lang="es">Políticas por proyecto: qué cuentas puede usar y en qué orden. Cuando detecta que una está agotada, pasa a la siguiente permitida sin que tengas que estar mirando.</span><span lang="en">Per-project policies: which accounts it may use, and in what order. When it detects one is exhausted, it moves to the next allowed account without you watching.</span>
+      <span class="proof">auto · round_robin · manual — per project, per provider</span></p>
+  </div>
+
+  <div class="card">
+    <h3><span lang="es">La conversación sobrevive al cambio</span><span lang="en">The conversation survives the switch</span></h3>
+    <p><span lang="es">Esto es lo que casi nadie hace: al cambiar de cuenta, el hilo se coloca donde el CLI de destino lo busca y se reanuda ahí. El agente sigue donde estaba.</span><span lang="en">This is the part almost nobody does: on an account switch, the transcript is placed where the destination CLI looks for it and resumed there. The agent picks up where it left off.</span>
+      <span class="proof">transcript relocated + --resume</span></p>
+  </div>
+
+  <h2><span lang="es">Y en el día a día</span><span lang="en">And day to day</span></h2>
+
+  <div class="grid">
+    <div class="card">
+      <h3><span lang="es">Gasto en dólares, por turno</span><span lang="en">Spend in dollars, per turn</span></h3>
+      <p><span lang="es">No un porcentaje de cuota: lo que costó cada turno, en qué repositorio y con qué cuenta. Leído de los propios transcripts del CLI.</span><span lang="en">Not a quota percentage: what each turn cost, in which repo and under which account. Read from the CLI's own transcripts.</span></p>
+    </div>
+    <div class="card">
+      <h3><span lang="es">Cola que espera a la cuota</span><span lang="en">A queue that waits for quota</span></h3>
+      <p><span lang="es">Dejas trabajo encolado y arranca cuando vuelve la ventana, en vez de fallar contra ella.</span><span lang="en">Leave work queued and it starts when the window comes back, instead of failing against it.</span></p>
+    </div>
+    <div class="card">
+      <h3><span lang="es">Worktrees aislados</span><span lang="en">Isolated worktrees</span></h3>
+      <p><span lang="es">Cada agente en su rama y su directorio, así varios a la vez no se pelean por los mismos ficheros.</span><span lang="en">Each agent on its own branch and directory, so several at once never fight over the same files.</span></p>
+    </div>
+    <div class="card">
+      <h3><span lang="es">Cuatro modos de permiso</span><span lang="en">Four permission modes</span></h3>
+      <p><span lang="es">De solo lectura a sin preguntar, con cada llamada a herramienta pasando por aprobación si lo pides.</span><span lang="en">From read-only to no-questions-asked, with every tool call surfaced for approval if you want it.</span></p>
+    </div>
+    <div class="card">
+      <h3><span lang="es">Git y pull requests</span><span lang="en">Git and pull requests</span></h3>
+      <p><span lang="es">Diffs, ramas, crear PRs, y los comentarios de revisión de vuelta a la sesión que escribió el código.</span><span lang="en">Diffs, branches, opening PRs, and review comments sent back into the session that wrote the code.</span></p>
+    </div>
+    <div class="card">
+      <h3><span lang="es">Local primero</span><span lang="en">Local first</span></h3>
+      <p><span lang="es">El estado en SQLite y las credenciales en el llavero del sistema. Ni prompts ni transcripts ni ficheros salen de la máquina.</span><span lang="en">State in SQLite, credentials in the OS keychain. No prompt, transcript or file ever leaves the machine.</span></p>
+    </div>
+  </div>
+
+  <h2><span lang="es">Lo que todavía no es</span><span lang="en">What it isn't yet</span></h2>
+
+  <div class="honest">
+    <ul>
+      <li><strong><span lang="es">Beta privada, por invitación.</span><span lang="en">Private beta, invite only.</span></strong>
+        <span lang="es">No hay descarga pública todavía.</span><span lang="en">There's no public download yet.</span></li>
+      <li><strong><span lang="es">Los binarios no están firmados.</span><span lang="en">The binaries aren't signed.</span></strong>
+        <span lang="es">En macOS hay que abrirla con clic derecho → Abrir la primera vez; en Windows, Más información → Ejecutar de todas formas. En Linux no hay ese aviso.</span><span lang="en">On macOS you right-click → Open the first time; on Windows, More info → Run anyway. Linux has no such gate.</span></li>
+      <li><strong><span lang="es">macOS y Linux hoy.</span><span lang="en">macOS and Linux today.</span></strong>
+        <span lang="es">Windows compila pero se prueba menos. En Linux hay .deb y .AppImage.</span><span lang="en">Windows builds but gets less testing. On Linux there's a .deb and an .AppImage.</span></li>
+      <li><strong><span lang="es">Claude Code y Codex.</span><span lang="en">Claude Code and Codex.</span></strong>
+        <span lang="es">Kimi, Grok y Gemini se reconocen, pero Hangar todavía no sabe comprobar su login, así que no puede distinguir una cuenta de otra.</span><span lang="en">Kimi, Grok and Gemini are recognised, but Hangar can't check their login state yet, so it can't tell two of their accounts apart.</span></li>
+      <li><strong><span lang="es">No hay companion móvil.</span><span lang="en">There's no mobile companion.</span></strong>
+        <span lang="es">El lado del escritorio está hecho; la app del teléfono no existe.</span><span lang="en">The desktop half is built; the phone app doesn't exist.</span></li>
+    </ul>
+  </div>
+
+  <div class="cta">
+    <h3><span lang="es">¿Reparte varias suscripciones?</span><span lang="en">Juggling several subscriptions?</span></h3>
+    <p><span lang="es">Es para quien tiene dos o más cuentas de agentes y se queda parado a mitad de tarea. Si eres tú, escribe y te paso una invitación.</span><span lang="en">It's for people with two or more agent accounts who get stopped mid-task. If that's you, get in touch and I'll send an invite.</span></p>
+    <a class="invite" href="mailto:dsalinas@technomar.com.br?subject=Hangar%20beta"><span lang="es">Pedir una invitación</span><span lang="en">Ask for an invite</span></a>
+  </div>
+
+  <footer>
+    <span>hangar v0.6.8</span>
+    <span>macOS · Linux · Windows</span>
+    <span>AGPL-3.0</span>
+    <span lang="es">local-first</span><span lang="en">local-first</span>
+  </footer>
+
+</div>
+
+<script>
+  // El idioma se recuerda, porque nadie quiere volver a pulsarlo en cada
+  // visita; y se inicializa desde el navegador para que un lector inglés no
+  // aterrice en español.
+  const KEY = 'hangar.landing.lang';
+  const saved = localStorage.getItem(KEY);
+  const fromBrowser = (navigator.language || '').toLowerCase().startsWith('es') ? 'es' : 'en';
+  setLang(saved === 'es' || saved === 'en' ? saved : fromBrowser);
+
+  function setLang(lang) {
+    document.documentElement.lang = lang;
+    document.getElementById('lang').textContent = lang === 'es' ? 'EN / ES' : 'ES / EN';
+    localStorage.setItem(KEY, lang);
+  }
+
+  document.getElementById('lang').addEventListener('click', () => {
+    setLang(document.documentElement.lang === 'es' ? 'en' : 'es');
+  });
+</script>
+</body>
+</html>

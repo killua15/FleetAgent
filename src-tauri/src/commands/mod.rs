@@ -5,6 +5,7 @@ pub mod forge_status;
 pub mod git_panel;
 pub mod graph;
 pub mod login;
+pub mod onboarding;
 pub mod preferences;
 pub mod projects;
 pub mod pull_requests;
