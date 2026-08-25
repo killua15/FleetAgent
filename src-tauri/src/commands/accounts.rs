@@ -51,7 +51,7 @@ pub struct ProviderAvailability {
 /// than letting the user pick one and only discovering it's unusable later.
 #[tauri::command]
 pub fn list_available_providers() -> Vec<ProviderAvailability> {
-    ["claude", "codex", "gemini", "kimi", "grok"]
+    ["claude", "codex", "opencode", "gemini", "kimi", "grok"]
         .into_iter()
         .map(|p| ProviderAvailability {
             provider: p.to_string(),

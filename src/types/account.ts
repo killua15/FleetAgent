@@ -1,4 +1,4 @@
-export type Provider = 'claude' | 'codex' | 'gemini' | 'kimi' | 'grok';
+export type Provider = 'claude' | 'codex' | 'opencode' | 'gemini' | 'kimi' | 'grok';
 export type Billing = 'sub' | 'key';
 export type Scope = 'work' | 'personal';
 export type AccountStatus = 'healthy' | 'cooling_down' | 'exhausted';
@@ -91,6 +91,14 @@ export const PROVIDER_META: Record<
     colorVar: 'var(--teal)',
     tintVar: 'var(--tealD)',
     loginCmd: 'codex login',
+  },
+  opencode: {
+    name: 'opencode',
+    cli: 'opencode',
+    letter: 'O',
+    colorVar: 'var(--opencode)',
+    tintVar: 'var(--opencodeD)',
+    loginCmd: 'opencode auth login',
   },
   gemini: {
     name: 'Gemini',

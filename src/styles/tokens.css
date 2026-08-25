@@ -39,6 +39,8 @@
      not already claimed by another provider (acc=violet, teal, gemini=blue). */
   --grok: #e878c0;
   --grokD: rgba(232, 120, 192, 0.13);
+  --opencode: #f0956b;
+  --opencodeD: rgba(240, 149, 107, 0.13);
 
   /* The one surface that never dissolves: popovers, palettes and modals.
      It was defined only inside the glass theme, so in dark and light
@@ -87,6 +89,8 @@
 
   --grok: #c23f96;
   --grokD: rgba(194, 63, 150, 0.1);
+  --opencode: #c2571f;
+  --opencodeD: rgba(194, 87, 31, 0.1);
 
   --overlay: #ffffff;
   --overlay-line: rgba(30, 30, 60, 0.14);
@@ -145,6 +149,8 @@
 
   --grok: #e878c0;
   --grokD: rgba(232, 120, 192, 0.13);
+  --opencode: #f0956b;
+  --opencodeD: rgba(240, 149, 107, 0.13);
 
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
 

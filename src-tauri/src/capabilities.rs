@@ -54,6 +54,9 @@ pub enum Capability {
     GeminiAccounts,
     /// Grok accounts, same.
     GrokAccounts,
+    /// opencode accounts, which need its own CLI. Isolation is by
+    /// `XDG_DATA_HOME` rather than a dedicated variable — see `providers::spec`.
+    OpencodeAccounts,
     // Kimi is deliberately absent: it runs through the `claude` binary with
     // Moonshot's endpoint in the environment (`providers::spec`), so there is
     // nothing to install. What it needs is an account, and a row telling
@@ -220,6 +223,7 @@ const CLAUDE: Binary = provider(crate::providers::claude::BINARY, "npm install -
 const CODEX: Binary = provider("codex", "npm install -g @openai/codex");
 const GEMINI: Binary = provider("gemini", "npm install -g @google/gemini-cli");
 const GROK: Binary = provider("grok", "npm install -g @vibe-kit/grok-cli");
+const OPENCODE: Binary = provider("opencode", "brew install opencode");
 
 const GRAPHIFY: Binary = Binary {
     name: crate::graph::BINARY,
@@ -244,6 +248,7 @@ impl Capability {
         Capability::CodexAccounts,
         Capability::GeminiAccounts,
         Capability::GrokAccounts,
+        Capability::OpencodeAccounts,
     ];
 
     pub fn spec(self) -> CapabilitySpec {
@@ -295,6 +300,13 @@ impl Capability {
                 enables: "Running Codex agents alongside your Claude ones, with the same isolation and rotation.",
                 essential: false,
                 binaries: &[CODEX],
+                needs_login: NeedsLogin::None,
+            },
+            Capability::OpencodeAccounts => CapabilitySpec {
+                label: "opencode accounts",
+                enables: "Running opencode agents alongside your Claude ones, each isolated to its own credentials.",
+                essential: false,
+                binaries: &[OPENCODE],
                 needs_login: NeedsLogin::None,
             },
             Capability::GeminiAccounts => CapabilitySpec {

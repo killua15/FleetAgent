@@ -1,0 +1,155 @@
+# opencode como proveedor
+
+Verificado contra **opencode 1.18.20** instalada con `brew install opencode`, y contra su código
+fuente. Nada de este documento sale de su documentación: los docs no dicen dónde viven las
+credenciales, que es justo la única cosa de la que depende toda la integración.
+
+## Lo que decide todo: el aislamiento va por `XDG_DATA_HOME`
+
+El modelo de Hangar es un directorio de configuración por cuenta. Para opencode, **la variable no es
+`OPENCODE_CONFIG_DIR`**, que es lo que cualquiera supondría por el nombre.
+
+De `packages/core/src/global.ts`:
+
+```js
+const data   = path.join(xdgData!,   "opencode")   // ~/.local/share/opencode
+const config = path.join(xdgConfig!, "opencode")   // ~/.config/opencode
+...
+config: Flag.OPENCODE_CONFIG_DIR ?? Path.config,   // redirigible
+data:   Path.data,                                  // NO redirigible
+```
+
+Y de `packages/opencode/src/auth/index.ts`:
+
+```js
+const file = path.join(Global.Path.data, "auth.json")
+```
+
+O sea: `OPENCODE_CONFIG_DIR` mueve agentes, comandos, modos y plugins, y deja a **todas las cuentas
+compartiendo un único fichero de credenciales**. En silencio, que es la peor versión de este fallo.
+
+Comprobado en la máquina:
+
+```
+$ XDG_DATA_HOME=/tmp/oc-a opencode auth list
+┌  Credentials /tmp/oc-a/opencode/auth.json
+└  0 credentials
+```
+
+Dos consecuencias, ambas asumidas a propósito:
+
+1. **`XDG_DATA_HOME` es genérica.** Cualquier herramienta consciente de XDG que se lance en esa misma
+   terminal escribirá también dentro del directorio de la cuenta. Se acepta: esa terminal existe para
+   correr un agente bajo una cuenta. Si algún día molesta, la salida es envolver el lanzamiento para
+   que la variable aplique solo a ese proceso y no al shell.
+2. **Es una raíz, y opencode le añade su nombre.** El `auth.json` cae en
+   `<dir de cuenta>/opencode/auth.json`. Por eso `auth_marker_file("opencode")` devuelve esa ruta
+   anidada y no un `auth.json` pelado, que nunca se encontraría.
+
+### La trampa que parecía la solución limpia
+
+`OPENCODE_AUTH_CONTENT` inyecta el JSON de credenciales por variable de entorno, sin tocar disco —
+suena mejor que redirigir un directorio. **Es de solo lectura.** Las escrituras siguen yendo al
+fichero compartido (`auth/index.ts:79,88`), así que un refresco de token OAuth contaminaría entre
+cuentas: exactamente el fallo que Hangar existe para evitar. Descartado.
+
+## Cómo responde a la sonda de login
+
+`opencode auth list` imprime el fichero que leyó y luego un recuento. Sin credenciales:
+
+```
+└  0 credentials
+```
+
+Con una (creada a mano para la prueba):
+
+```
+◇  Anthropic api
+└  1 credentials
+```
+
+Las filas de proveedor de arriba varían según el vendedor usado, así que **el recuento es la única
+señal fiable**. De ahí los marcadores:
+
+| | |
+|---|---|
+| `logged_out_marker` | `0 credentials` |
+| `logged_marker` | `credentials` |
+
+El negativo contiene al positivo, y eso funciona porque `read_text_probe` comprueba el negativo
+primero — un orden que ya estaba puesto a propósito para el `"Not logged in"` de Codex.
+
+Tener sonda es lo que hace que el asistente ofrezca el proveedor en vez de deshabilitarlo.
+
+## Los cuatro modos de permiso, y el que se rechaza
+
+Verificado en `opencode --help`: el único flag de aprobación es
+`--auto` («auto-approve permissions that are not explicitly denied (dangerous!)»). No hay equivalente
+de solo-lectura ni de aceptar-ediciones; el control fino vive en la lista de herramientas de un
+*agente*, que se elige con `--agent`.
+
+| Modo de Hangar | opencode |
+|---|---|
+| `yolo` | `--auto` |
+| `auto_edit` | sin flag — pregunta (menos permisivo de lo que promete el modo) |
+| `ask_edits` | sin flag — pregunta ✔ correcto |
+| `plan` | **se rechaza** |
+
+`plan` significa solo-lectura en Hangar, y opencode no tiene con qué garantizarlo. Devolver "ningún
+flag" dejaría abrir una terminal que dice `plan` en la insignia y puede escribir igual. Un modo de
+solo-lectura en el que no se puede confiar es peor que no ofrecerlo, así que `terminals.rs` lo niega
+con un mensaje que dice por qué.
+
+**El arreglo de verdad**, cuando toque: un agente cuya lista de herramientas no tenga `edit` ni
+`bash`, inyectado con `OPENCODE_CONFIG_CONTENT` y seleccionado con `--agent`.
+
+## Lo que no llega: las preferencias de proyecto
+
+opencode **no tiene ningún flag de system prompt** — `--prompt` es el mensaje del usuario, no
+instrucciones permanentes. Así que el idioma de conversación y de código que Hangar configura por
+proyecto hoy no le llega.
+
+Las dos vías:
+
+- `opencode.json` en la raíz del proyecto. Funcionaría y **está prohibido**: la regla de
+  [AGENT_CONTEXT.md](../../AGENT_CONTEXT.md) es que nada se escribe dentro del repositorio del usuario.
+- `OPENCODE_CONFIG_CONTENT`, una variable que inyecta una configuración entera sin tocar disco. Es
+  la vía abierta, y es la misma palanca que necesita el modo `plan`.
+
+## Sesiones: las tiene, pero Hangar no puede acuñarlas
+
+`--session <id>`, `-c/--continue`, `--fork`, y `opencode session list|delete`. Lo que no se puede es
+elegir el id al arrancar:
+
+```
+$ opencode run --session id-que-no-existe-123 "hola"
+Error: Session not found
+```
+
+Así que `SessionControl` queda en `None` — no porque no haya sesiones, sino porque Hangar no puede
+dirigirlas todavía, y una terminal arranca de cero en vez de fingir continuidad.
+
+**Cuando se cablee, la vía es mejor que la de Claude**: opencode tiene `export [sessionID]` e
+`import <file>` en JSON, así que transferir un hilo entre cuentas es exportar e importar, no mover
+ficheros a mano como hace `handoff.rs`.
+
+## Fuera de alcance, y por qué
+
+| | |
+|---|---|
+| **Rotación por agotamiento** | `is_exhaustion_signal` devuelve `false`. Capturar el mensaje exige agotar una cuota de verdad; no se puede adivinar |
+| **Gasto por turno** | `usage_meter.rs` lee transcripts por desplazamiento de bytes. opencode guarda en SQLite (`OPENCODE_DB`) y agrega con `opencode stats`. Es otra vía de ingesta entera |
+| **Skills y MCP** | No hay `--add-dir` ni `--mcp-config`; `mcp` es un subcomando que gestiona servidores. Ambos devuelven vacío |
+
+## Notas sueltas que ahorran tiempo
+
+- opencode es **multi-proveedor por dentro**: una "cuenta de opencode" en Hangar es en realidad un
+  directorio de datos con credenciales de N vendedores. Por eso `login_args` no fija `--provider`: qué
+  vendedor se usa es elección del usuario dentro del menú.
+- Por lo mismo, `key_env` no mapea limpio. Se nombra `ANTHROPIC_API_KEY` por ser el caso más común,
+  no porque exista una "clave de opencode".
+- El login es un **menú** (elegir proveedor, luego método), no una URL con código que pegar. De ahí
+  `login_expects_code: false`: enseñar una caja de pegado pediría algo que aún no existe, que es el
+  error que cometía el login de Codex.
+- Se instala con `brew install opencode`, no con npm, a diferencia de los otros tres proveedores con
+  binario propio.

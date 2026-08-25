@@ -36,6 +36,28 @@ impl Mode {
 /// el que un agente puede destruir algo, así que lo que protege pasa a ser el
 /// worktree aislado y git.
 pub fn permission_args(provider: &str, mode: Mode) -> &'static [&'static str] {
+    // opencode first, because the boolean below would otherwise sweep it into
+    // the Codex branch and hand it `--ask-for-approval`, a flag it does not
+    // have — the terminal would simply fail to start.
+    //
+    // Verified against opencode 1.18.20: the only approval flag is `--auto`
+    // ("auto-approve permissions that are not explicitly denied (dangerous!)").
+    // There is no read-only or accept-edits equivalent; finer control lives in
+    // an agent's tool list, reached with `--agent`. So the honest mapping is
+    // yolo → `--auto`, and everything else → nothing, which is opencode's own
+    // ask-before-acting default.
+    //
+    // `Plan` is the one that must not be quietly downgraded: in Hangar it means
+    // read-only, and returning no flag here would let a mode that promises
+    // read-only start something that can write. It is refused before this point
+    // (see `terminals.rs`), and this arm exists only so the mapping is total.
+    if provider == "opencode" {
+        return match mode {
+            Mode::Yolo => &["--auto"],
+            Mode::Plan | Mode::AskEdits | Mode::AutoEdit => &[],
+        };
+    }
+
     // ASSUMPTION: grok's CLI hasn't been verified against these flags yet
     // (unlike claude/codex/kimi, checked against the installed binary per the
     // comment above) — bucketed with claude for now since it's the more
@@ -95,6 +117,17 @@ pub fn instruction_args(provider: &str, path: &str, inline: &str) -> Vec<String>
         // (see `terminals::account_command_line_full`), where a newline opens
         // zsh's continuation prompt.
         "codex" if !inline.trim().is_empty() => vec!["-c".to_string(), format!("developer_instructions={inline}")],
+        // opencode falls through here, and that is a real gap rather than an
+        // oversight: verified against 1.18.20, it has no system-prompt flag at
+        // all (`--prompt` is the user's message, not standing instructions), so
+        // a project's language preference currently does not reach it.
+        //
+        // The two routes that exist are both blocked or unbuilt. `opencode.json`
+        // in the project root would work and is forbidden — §AGENT_CONTEXT's
+        // rule is that nothing is ever written into the user's repository. The
+        // open one is `OPENCODE_CONFIG_CONTENT`, an env var that injects a whole
+        // config without touching disk; that is where this should go, and it is
+        // the same lever a real `plan` mode would need.
         _ => Vec::new(),
     }
 }
@@ -473,6 +506,11 @@ pub enum SessionControl {
 pub fn auth_marker_file(provider: &str) -> Option<&'static str> {
     match provider {
         "codex" => Some("auth.json"),
+        // Nested, unlike Codex's: `XDG_DATA_HOME` is a *root* and opencode
+        // appends its own name to it, so the file lands one level down. Verified
+        // by running it — `auth list` prints the path it read, and it was
+        // `<the dir we set>/opencode/auth.json`.
+        "opencode" => Some("opencode/auth.json"),
         _ => None,
     }
 }
@@ -489,6 +527,19 @@ const GEMINI_LOGIN: &[&str] = &["auth", "login"];
 /// was described when this provider was added; re-check against `grok --help`
 /// once the binary is actually available.
 const GROK_LOGIN: &[&str] = &["auth", "login"];
+
+/// Verified against opencode 1.18.20.
+///
+/// `auth login` opens a provider picker (opencode is itself multi-provider),
+/// which is why no `--provider` is pinned here: which model vendor an account
+/// signs into is the user's choice inside that menu, not Hangar's.
+const OPENCODE_LOGIN: &[&str] = &["auth", "login"];
+
+/// `opencode auth list` prints the credentials file it read and then a count:
+/// `0 credentials` when empty, `1 credentials` (sic) once something is stored.
+/// The count line is the reliable signal — the per-provider rows above it vary
+/// with which vendor was used.
+const OPENCODE_STATUS: &[&str] = &["auth", "list"];
 
 /// Moonshot's Anthropic-compatible endpoint. A Kimi account *is* Claude Code
 /// pointed somewhere else, which is why it inherits every feature built for
@@ -543,6 +594,68 @@ pub fn spec(provider: &str) -> Option<ProviderSpec> {
             key_env: "XAI_API_KEY",
             auth_status: AuthStatusProbe::None,
             session: SessionControl::None,
+            login_expects_code: false,
+        }),
+        // Everything here was verified against opencode 1.18.20, not inferred
+        // from its docs — the docs are silent on where credentials live, which
+        // is the one thing this whole spec turns on.
+        //
+        // `XDG_DATA_HOME` and **not** `OPENCODE_CONFIG_DIR`, which is the change
+        // the next person will try to make. From opencode's own
+        // `packages/core/src/global.ts`:
+        //
+        //     config: Flag.OPENCODE_CONFIG_DIR ?? Path.config,   // redirectable
+        //     data:   Path.data,                                 // not
+        //
+        // and `auth.json` is written under `Path.data`, which comes from
+        // `xdgData`. So `OPENCODE_CONFIG_DIR` relocates agents, commands and
+        // modes while leaving every account sharing one credential file —
+        // silently, which is the worst version of this bug. `XDG_DATA_HOME` is
+        // the only lever that moves the credentials.
+        //
+        // Two consequences, both deliberate:
+        //
+        // 1. It is a *generic* variable, so anything XDG-aware spawned in the
+        //    same terminal also writes inside the account's directory. Accepted:
+        //    that terminal exists to run one agent under one account. The way
+        //    out, if it ever bites, is wrapping the spawn so the variable is set
+        //    for that process instead of the shell.
+        // 2. It is a *root*, and opencode appends its own name — so credentials
+        //    land at `<account dir>/opencode/auth.json`, which is why
+        //    `auth_marker_file` returns that path and not a bare `auth.json`.
+        //
+        // `OPENCODE_AUTH_CONTENT` looks like a cleaner lever (inject the JSON,
+        // touch no filesystem) and is a trap: it is read-only. Writes still go
+        // to the shared file, so a refreshed OAuth token would cross-contaminate
+        // accounts — precisely the failure Hangar exists to prevent.
+        "opencode" => Some(ProviderSpec {
+            binary: "opencode",
+            config_dir_env: "XDG_DATA_HOME",
+            login_args: Some(OPENCODE_LOGIN),
+            extra_env: &[],
+            // opencode is multi-provider by design, so there is no single key
+            // variable that means "the opencode key" — a key-billed account
+            // would carry its inner vendor's own. This names the most common one
+            // rather than pretending the concept maps cleanly.
+            key_env: "ANTHROPIC_API_KEY",
+            auth_status: AuthStatusProbe::Text {
+                args: OPENCODE_STATUS,
+                logged_marker: "credentials",
+                logged_out_marker: "0 credentials",
+            },
+            // opencode *does* have sessions — `--session <id>`, `--continue`,
+            // and `export`/`import` as JSON. What it cannot do is let Hangar
+            // choose the id: `--session no-such-id` answers `Error: Session not
+            // found`, so an id has to exist before it can be resumed. That makes
+            // exact transfer between accounts a different mechanism from
+            // Claude's file relocation, and it is out of scope here — so this
+            // reads `None`, and a terminal starts fresh rather than pretending.
+            // When it is wired, `export`/`import` is the route, not file moves.
+            session: SessionControl::None,
+            // The login is a menu (pick a provider, then a method), not a URL
+            // with a code to paste. Showing a paste box up front would ask for
+            // something that does not exist yet — the mistake Codex's login
+            // used to make.
             login_expects_code: false,
         }),
         // Kimi has no interactive subscription login here: it's a Moonshot API
@@ -616,6 +729,55 @@ mod tests {
     /// The isolation variable is the whole basis of the multi-account model,
     /// and it's per-CLI. Getting it wrong doesn't fail — it silently writes a
     /// Codex login into the shared `~/.codex`, so every "isolated" account ends
+    /// opencode's whole integration turns on one thing, and it is the thing
+    /// someone will later try to "fix" wrongly: credentials follow
+    /// `XDG_DATA_HOME`, not `OPENCODE_CONFIG_DIR`. Verified by running the real
+    /// CLI — `auth list` printed the file it read, inside the directory we set.
+    /// If this ever becomes `OPENCODE_CONFIG_DIR`, every opencode account
+    /// silently shares one credential file, which is the failure this app exists
+    /// to prevent.
+    #[test]
+    fn opencode_isolates_by_data_home_and_nests_its_marker() {
+        let spec = spec("opencode").expect("opencode must be a known provider");
+        assert_eq!(spec.binary, "opencode");
+        assert_eq!(spec.config_dir_env, "XDG_DATA_HOME", "credentials live under the data dir, not the config dir");
+
+        // A root, not the final directory: opencode appends its own name, so the
+        // marker sits one level down. A bare "auth.json" would never be found.
+        assert_eq!(auth_marker_file("opencode"), Some("opencode/auth.json"));
+    }
+
+    /// The credential count is the only stable part of `auth list` — the rows
+    /// above it name whichever vendor was used. And the negative marker contains
+    /// the positive one, which `read_text_probe` survives by checking the
+    /// negative first; this pins the pair so that ordering stays load-bearing on
+    /// purpose rather than by luck.
+    #[test]
+    fn opencode_reports_its_login_by_credential_count() {
+        let AuthStatusProbe::Text { logged_marker, logged_out_marker, .. } = spec("opencode").unwrap().auth_status else {
+            panic!("opencode needs a text probe, or the wizard cannot tell its accounts apart");
+        };
+        assert_eq!(logged_out_marker, "0 credentials");
+        assert_eq!(logged_marker, "credentials");
+        assert!(logged_out_marker.contains(logged_marker), "the negative contains the positive — checking it first is what saves this");
+    }
+
+    /// opencode has exactly one approval flag. Bucketing it with Codex — which
+    /// is what the `claude_like` boolean does to anything it does not recognise —
+    /// would hand it `--ask-for-approval` and the terminal would fail to start.
+    #[test]
+    fn opencode_only_has_one_approval_flag() {
+        assert_eq!(permission_args("opencode", Mode::Yolo), &["--auto"]);
+        for mode in [Mode::Plan, Mode::AskEdits, Mode::AutoEdit] {
+            assert!(permission_args("opencode", mode).is_empty(), "{mode:?} must add no flag: opencode has none for it");
+        }
+        for mode in [Mode::Plan, Mode::AskEdits, Mode::AutoEdit, Mode::Yolo] {
+            let args = permission_args("opencode", mode);
+            assert!(!args.contains(&"--ask-for-approval"), "Codex's flag reached opencode: {args:?}");
+            assert!(!args.contains(&"--permission-mode"), "Claude's flag reached opencode: {args:?}");
+        }
+    }
+
     /// up sharing credentials.
     #[test]
     fn each_provider_isolates_with_its_own_variable() {

@@ -643,6 +643,18 @@ pub(crate) fn account_command_line_full(
     if !crate::providers::is_provider_available(&account.provider) {
         return Err(format!("the `{binary}` CLI isn't installed on this machine"));
     }
+    // Refused rather than downgraded. `plan` means read-only in Hangar, and
+    // opencode has no flag that enforces it — only `--auto`, which is the
+    // opposite. Falling through would open a terminal that says "plan" in the
+    // badge and can still write, which is worse than not offering the mode:
+    // the whole point of a read-only mode is being able to trust it.
+    //
+    // The real fix is an agent whose tool list has no `edit` or `bash`, injected
+    // with `OPENCODE_CONFIG_CONTENT` and selected with `--agent`. Until that
+    // exists, this says so instead of pretending.
+    if account.provider == "opencode" && !matches!(init, InitCommand::Login) && mode == Some(crate::providers::Mode::Plan) {
+        return Err("opencode has no read-only mode yet — it only offers auto-approve. Pick ask-edits and it will ask before touching anything.".to_string());
+    }
     let config = shell_path(&account.config_dir_path);
     // Fixed environment the provider always needs — for Kimi, pointing Claude
     // Code at Moonshot's Anthropic-compatible endpoint. Rendered into the
