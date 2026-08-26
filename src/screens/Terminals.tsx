@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '../lib/invoke';
@@ -10,32 +10,17 @@ import { Button } from '../components/ui/button';
 import { IconTooltip } from '../components/ui/tooltip';
 import { BaseBranchPicker, useBaseBranch } from '../components/BaseBranchPicker';
 import { useNavigation } from '../nav/NavigationProvider';
-import { autoGridColumns } from '../lib/gridLayout';
-import { formatHoursLeft, PROVIDER_META, type Account, type AccountAuth, type AccountNeedsLogin, type FanOutProjection } from '../types/account';
+import { autoGridColumns, shouldWarnAboutPanels } from '../lib/gridLayout';
+import { formatHoursLeft, providerMeta, type Account, type AccountAuth, type AccountNeedsLogin, type FanOutProjection } from '../types/account';
 import type { Project, Session } from '../types/session';
 import { TERMINAL_STATE_META, type FanOutBranch, type InitCommand, type SuggestedAccount, type TerminalActivity, type TerminalInfo, type TerminalTarget } from '../types/terminal';
 import styles from './Terminals.module.css';
 
-const COLLAPSED_KEY = 'hangar.collapsedTerminals';
 
-/** Which panels were minimised last time. A view preference, so `localStorage`
- * rather than the database: it belongs to this machine's window, not to the
- * fleet, and losing it costs one click. */
-function readCollapsed(): Record<string, boolean> {
-  try {
-    const raw = window.localStorage.getItem(COLLAPSED_KEY);
-    const parsed = raw ? JSON.parse(raw) : {};
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    // Corrupt or hand-edited: an unreadable preference is not a reason to
-    // fail to open the screen.
-    return {};
-  }
-}
-
-/** Terminals opened past this point stop being supervisable at a glance —
- * same threshold and same reasoning as the agent grid's own warning. */
-const WARN_THRESHOLD = 4;
+/** Lo que avisaba antes de que el umbral fuese configurable, y lo que sigue
+ * valiendo mientras los ajustes no han llegado — así el aviso no parpadea en el
+ * primer render. `0` en los ajustes significa nunca. */
+const DEFAULT_WARN_THRESHOLD = 4;
 
 /** The "no account" row. A plain shell is still worth one click — it's what
  * the terminals were before they knew about accounts — but it sits below the
@@ -62,7 +47,32 @@ export function Terminals() {
   // state, so navigating to Git and back unmounted the screen and every panel
   // you had minimised came back — which reads as the app forgetting what you
   // asked for, twenty times a day.
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(readCollapsed);
+  /** Qué paneles están plegados, derivado de la propia lista de terminales.
+   *
+   * Antes era un `Record` aparte guardado en `localStorage` con clave de id de
+   * terminal, y no podía funcionar: `restore_terminals` reabre cada terminal con
+   * un id nuevo, así que al arrancar ninguna clave coincidía — y el efecto que
+   * podaba las entradas «muertas» acababa de borrar lo que quedara. El estado
+   * vive ahora en la fila de `open_terminals`, que es la que sobrevive, y aquí
+   * solo se lee. Un mapa paralelo a la verdad es exactamente lo que causó esto. */
+  /** El umbral del aviso, elegido por el usuario. `0` = nunca. */
+  const [warnThreshold, setWarnThreshold] = useState<number>(DEFAULT_WARN_THRESHOLD);
+  useEffect(() => {
+    invoke<{ panelWarnThreshold: number }>('get_app_settings')
+      .then((s) => setWarnThreshold(s.panelWarnThreshold))
+      .catch(() => {});
+  }, []);
+
+  const collapsed = useMemo(
+    () => Object.fromEntries(terminals.map((t) => [t.id, t.minimized])),
+    [terminals],
+  );
+
+  /** Pliega o despliega, en la pantalla y en la base de datos a la vez. */
+  const setMinimized = (id: string, minimized: boolean) => {
+    setTerminals((prev) => prev.map((t) => (t.id === id ? { ...t, minimized } : t)));
+    invoke('set_terminal_minimized', { id, minimized }).catch((e) => toastError(String(e)));
+  };
   const [gridColumns, setGridColumns] = useState<number | 'auto'>('auto');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [multiOpen, setMultiOpen] = useState(false);
@@ -305,7 +315,7 @@ export function Terminals() {
   /** Sidebar → panel. Un-hides it if it was hidden, then scrolls it into view:
    * a row that does nothing because its panel is collapsed is a dead control. */
   const focusTerminal = (id: string) => {
-    setCollapsed((prev) => (prev[id] ? { ...prev, [id]: false } : prev));
+    setMinimized(id, false);
     setFocusedId(id);
     // After the panel has had a frame to mount if it was hidden.
     requestAnimationFrame(() => {
@@ -317,21 +327,6 @@ export function Terminals() {
     window.localStorage.setItem('hangar.sidebar', sidebarOpen ? 'open' : 'closed');
   }, [sidebarOpen]);
 
-  useEffect(() => {
-    window.localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsed));
-  }, [collapsed]);
-
-  // Terminal ids are per run, so yesterday's entries would accumulate forever
-  // and, worse, a reused id would arrive already minimised. Pruned against the
-  // terminals that actually exist, once they're known.
-  useEffect(() => {
-    if (terminals.length === 0) return;
-    setCollapsed((prev) => {
-      const live = new Set(terminals.map((t) => t.id));
-      const next = Object.fromEntries(Object.entries(prev).filter(([id, on]) => on && live.has(id)));
-      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
-    });
-  }, [terminals.length]);
 
   // ⌘B toggles it, the convention every editor with a sidebar uses. Ignored
   // while typing in a field so it can't fire from the filter box or a rename.
@@ -455,7 +450,7 @@ export function Terminals() {
           </span>
           <div className={styles.pickerGroup}>
             {accounts.map((a) => {
-              const meta = PROVIDER_META[a.provider];
+              const meta = providerMeta(a.provider);
               const status = auth[a.id];
               const unsupported = status && !status.supported;
               return (
@@ -597,14 +592,14 @@ export function Terminals() {
             collapsed={collapsed}
             focusedId={focusedId}
             onFocus={focusTerminal}
-            onToggleVisible={(id) => setCollapsed((prev) => ({ ...prev, [id]: !prev[id] }))}
+            onToggleVisible={(id) => setMinimized(id, !collapsed[id])}
             onRename={renameTerminal}
             onClose={closeTerminal}
           />
         )}
 
         <div className={styles.gridArea}>
-          {panels.length >= WARN_THRESHOLD && (
+          {shouldWarnAboutPanels(panels.length, warnThreshold) && (
             <div className={styles.warnBanner}>
               <span className={styles.warnDot} />
               <span>{panels.length} panels on screen — hide some from the sidebar; they keep running either way</span>
@@ -678,7 +673,7 @@ export function Terminals() {
                       variant="outline"
                       size="icon-sm"
                       title="Collapse to rail — the shell keeps running"
-                      onClick={() => setCollapsed((prev) => ({ ...prev, [t.id]: true }))}
+                      onClick={() => setMinimized(t.id, true)}
                     >
                       ▁
                     </Button>
@@ -1117,7 +1112,7 @@ function FanOutPicker({
                 <option value="">account…</option>
                 {accounts.map((a) => (
                   <option key={a.id} value={a.id}>
-                    {a.name} · {PROVIDER_META[a.provider].name}
+                    {a.name} · {providerMeta(a.provider).name}
                   </option>
                 ))}
               </select>
@@ -1261,7 +1256,7 @@ function MultiTerminalPicker({
                 <option value="">account…</option>
                 {accounts.map((a) => (
                   <option key={a.id} value={a.id}>
-                    {a.name} · {PROVIDER_META[a.provider].name}
+                    {a.name} · {providerMeta(a.provider).name}
                   </option>
                 ))}
                 <option value={PLAIN_SHELL}>Plain shell</option>

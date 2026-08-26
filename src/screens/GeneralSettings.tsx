@@ -75,6 +75,7 @@ export function GeneralSettings() {
     notifyUpdateAvailable: false,
     agentTreesEnabled: false,
     includeOwnPrComments: false,
+    panelWarnThreshold: 4,
   });
   const [savingReviewer, setSavingReviewer] = useState(false);
 
@@ -375,6 +376,10 @@ export function GeneralSettings() {
           <section className={styles.section}>
             <span className={styles.sectionLabel}>MODO DE LAS TERMINALES</span>
             <TerminalModeRow />
+          </section>
+          <section className={styles.section}>
+            <span className={styles.sectionLabel}>PANELES EN PANTALLA</span>
+            <PanelWarnRow />
           </section>
           </Pane>
 
@@ -684,6 +689,60 @@ function TerminalModeRow() {
           Con yolo, cada terminal de este Mac ejecuta sin preguntar — también la del repositorio que más te importa.
         </span>
       )}
+    </div>
+  );
+}
+
+/** Cuántos paneles abiertos antes de avisar.
+ *
+ * Sigue siendo un consejo y no un tope: nada se bloquea y ningún panel se pliega
+ * solo, que es lo que el propio texto del aviso promete. Configurable porque el
+ * número cómodo depende del tamaño de la pantalla, y un aviso que aparece antes
+ * de tiempo se aprende a ignorar — que es peor que no tenerlo. */
+function PanelWarnRow() {
+  const [threshold, setThreshold] = useState<number | null>(null);
+
+  useEffect(() => {
+    invoke<AppSettings>('get_app_settings')
+      .then((s) => setThreshold(s.panelWarnThreshold))
+      .catch((e) => toastError(String(e)));
+  }, []);
+
+  const choose = async (next: number) => {
+    // Optimista: el select se queda donde lo dejó el usuario y no salta atrás
+    // mientras el backend confirma.
+    setThreshold(next);
+    try {
+      const current = await invoke<AppSettings>('get_app_settings');
+      const saved = await invoke<AppSettings>('set_app_settings', { input: { ...current, panelWarnThreshold: next } });
+      setThreshold(saved.panelWarnThreshold);
+    } catch (e) {
+      toastError(String(e));
+    }
+  };
+
+  return (
+    <div className={styles.notifList}>
+      <label className={styles.notifRow}>
+        <span className={styles.notifLabel}>Avisar a partir de</span>
+        <span className={styles.spacer} />
+        <select
+          value={threshold === null ? '' : String(threshold)}
+          disabled={threshold === null}
+          onChange={(e) => choose(Number(e.target.value))}
+        >
+          {[2, 3, 4, 5, 6, 8].map((n) => (
+            <option key={n} value={n}>
+              {n} paneles
+            </option>
+          ))}
+          {/* 0 es «nunca» — ver `AppSettings::panel_warn_threshold`. */}
+          <option value={0}>nunca</option>
+        </select>
+      </label>
+      <span className={styles.updateHint}>
+        Solo es un aviso: las terminales nunca se bloquean, y las que ocultes de la barra lateral siguen corriendo igual.
+      </span>
     </div>
   );
 }

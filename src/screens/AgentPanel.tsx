@@ -203,6 +203,7 @@ export function AgentPanelBody({
     notifyUpdateAvailable: false,
     agentTreesEnabled: false,
     includeOwnPrComments: false,
+    panelWarnThreshold: 4,
   });
   const [reviewing, setReviewing] = useState(false);
   const [pendingApproval, setPendingApproval] = useState<PermissionRequest | null>(null);

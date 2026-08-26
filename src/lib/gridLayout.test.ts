@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { autoGridColumns } from './gridLayout';
+import { autoGridColumns, shouldWarnAboutPanels } from './gridLayout';
 
 /** Shared by the agent grid and the terminal grid, which is the point: two
  * surfaces laid out by different rules read as two unrelated screens. */
@@ -24,5 +24,26 @@ describe('autoGridColumns', () => {
     // grid terms and collapses the whole screen.
     expect(autoGridColumns(0)).toBe(1);
     expect(autoGridColumns(-3)).toBe(1);
+  });
+});
+
+/** The banner is advice, not a cap — which is why the number is the user's to
+ * pick. The whole decision is two numbers, so it is worth pinning down. */
+describe('shouldWarnAboutPanels', () => {
+  it('waits until the panel count reaches the threshold', () => {
+    expect(shouldWarnAboutPanels(3, 4)).toBe(false);
+    expect(shouldWarnAboutPanels(4, 4)).toBe(true);
+    expect(shouldWarnAboutPanels(9, 4)).toBe(true);
+  });
+
+  it('reads zero as never, whatever is on screen', () => {
+    expect(shouldWarnAboutPanels(0, 0)).toBe(false);
+    expect(shouldWarnAboutPanels(20, 0)).toBe(false);
+  });
+
+  it('treats a nonsense threshold as never, not as always', () => {
+    // Only reachable from a corrupted setting; "always" would be the worse
+    // of the two readings, since the banner cannot be dismissed.
+    expect(shouldWarnAboutPanels(1, -3)).toBe(false);
   });
 });

@@ -13,6 +13,10 @@ export interface TerminalTarget {
 
 export interface TerminalInfo {
   id: string;
+  /** Folded in the grid. Comes from the backend because terminal ids are minted
+   * per run — anything the frontend remembered under the old id is stale the
+   * moment `restore_terminals` reopens them. */
+  minimized: boolean;
   /** Project or session name, shown in the pane header. */
   title: string;
   cwd: string;

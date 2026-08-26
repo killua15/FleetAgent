@@ -404,6 +404,7 @@ pub fn run() {
             task_sources::list_source_tasks,
             terminals::list_terminal_states,
             terminals::rename_terminal,
+            terminals::set_terminal_minimized,
             run_queue::enqueue_run,
             run_queue::list_queued_runs,
             run_queue::cancel_queued_run,

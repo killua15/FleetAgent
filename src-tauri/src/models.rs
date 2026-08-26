@@ -222,6 +222,17 @@ pub struct AppSettings {
     /// impossible to test solo without a second GitHub account. Turning
     /// this on keeps self-authored comments too.
     pub include_own_pr_comments: bool,
+    /// How many open panels before the terminals view warns that they are
+    /// getting hard to supervise at a glance.
+    ///
+    /// **`0` means never.** A magic value rather than an `Option` because this
+    /// round-trips through `app_settings`, which is text key/value — and a
+    /// threshold of zero has no other sensible reading, since a warning that
+    /// fires at zero panels would fire before anything is open.
+    ///
+    /// Advisory only: nothing is blocked and no panel is folded automatically,
+    /// which is what the banner's own wording already promises.
+    pub panel_warn_threshold: i64,
 }
 
 /// One row of the Rotation settings screen's checklist — an account plus

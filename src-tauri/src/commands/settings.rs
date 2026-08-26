@@ -43,6 +43,9 @@ pub(crate) fn read_app_settings(conn: &rusqlite::Connection) -> Result<AppSettin
         notify_update_available: false,
         agent_trees_enabled: false,
         include_own_pr_comments: false,
+        // The value this shipped with, so an install that has never touched the
+        // setting behaves exactly as it did before it existed.
+        panel_warn_threshold: 4,
     };
     for row in rows {
         let (key, value) = row.map_err(|e| e.to_string())?;
@@ -57,6 +60,13 @@ pub(crate) fn read_app_settings(conn: &rusqlite::Connection) -> Result<AppSettin
             "notify_update_available" => settings.notify_update_available = value == "1",
             "agent_trees_enabled" => settings.agent_trees_enabled = value == "1",
             "include_own_pr_comments" => settings.include_own_pr_comments = value == "1",
+            // A row that cannot be parsed leaves the default standing rather
+            // than silently turning the warning off.
+            "panel_warn_threshold" => {
+                if let Ok(n) = value.parse::<i64>() {
+                    settings.panel_warn_threshold = n.max(0);
+                }
+            }
             _ => {}
         }
     }
@@ -93,6 +103,7 @@ pub fn set_app_settings(db: State<DbConnection>, input: AppSettings) -> Result<A
     write_setting(&conn, "notify_update_available", bool_str(input.notify_update_available))?;
     write_setting(&conn, "agent_trees_enabled", bool_str(input.agent_trees_enabled))?;
     write_setting(&conn, "include_own_pr_comments", bool_str(input.include_own_pr_comments))?;
+    write_setting(&conn, "panel_warn_threshold", &input.panel_warn_threshold.max(0).to_string())?;
     Ok(input)
 }
 

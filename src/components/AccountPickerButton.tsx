@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Popover as PopoverPrimitive } from 'radix-ui';
 import { invoke } from '../lib/invoke';
 import { Spinner } from './Spinner';
-import { PROVIDER_META, type Account } from '../types/account';
+import { providerMeta, type Account } from '../types/account';
 import styles from './AccountPickerButton.module.css';
 
 /** A button that asks which account to run something under before doing it.
@@ -57,7 +57,7 @@ export function AccountPickerButton({
           )}
           {error && <span className={styles.error}>{error}</span>}
           {accounts?.map((a) => {
-            const meta = PROVIDER_META[a.provider];
+            const meta = providerMeta(a.provider);
             const benched = a.status !== 'healthy';
             return (
               <button

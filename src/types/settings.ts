@@ -18,6 +18,9 @@ export interface AppSettings {
    * reviewers' feedback) — turning this on keeps self-authored comments
    * too, for testing the review flow solo. */
   includeOwnPrComments: boolean;
+  /** Cuántos paneles abiertos antes de avisar de que cuesta supervisarlos.
+   * **0 significa nunca.** Solo es un consejo: no bloquea nada. */
+  panelWarnThreshold: number;
 }
 
 /**
