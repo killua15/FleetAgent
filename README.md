@@ -4,11 +4,18 @@
 
 A local-first desktop app that runs real agent CLI terminals in parallel — each in its own git
 worktree, each under the account it's supposed to use. When an account runs out of quota, Hangar
-carries on with another one, keeping the conversation. Nothing leaves the machine: state is SQLite,
-credentials are in the OS keychain.
+carries on with another one, keeping the conversation. Your work stays on the machine: state is
+SQLite, credentials are in the OS keychain, and no prompt, transcript or file ever leaves.
 
-Claude Code is the provider wired end to end today. Codex and Gemini are recognized but not yet
-supported (the UI marks them as such).
+What does leave is small and nameable: a Google sign-in (Hangar requires an account to open), and,
+only if you switch it on, a daily roll-up of spend per project and account — counters, no content.
+
+**Claude Code and Codex** are wired end to end: each gets its own config directory
+(`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), and Hangar can tell whether an account is signed in — which is
+what scoping a terminal to one account rather than another depends on. **Kimi, Grok and Gemini**
+have provider specs and would run, but Hangar can't check their login state yet, so it can't tell
+two of their accounts apart. Both the account wizard and the terminal picker mark them "not
+supported yet" instead of letting you get halfway in.
 
 ## What it does
 
@@ -25,7 +32,7 @@ supported (the UI marks them as such).
   destination CLI looks and resumed there.
 - **Governance** — four session modes (`plan` read-only, ask-edits, auto-edit, yolo) plus a
   permission bridge that surfaces each tool call for approval, even in headless turns.
-- **Git and PRs** — diffs, branches, per-turn checkpoints, PR creation via `gh`, a review inbox, and
+- **Git and PRs** — diffs, branches, PR creation via `gh`, a review inbox, and
   sending PR review comments straight back into a session.
 - **Hierarchies and shared memory** — parent agents that spawn children (three levels, three views)
   and memory groups shared across projects.
@@ -93,8 +100,9 @@ runs them on macOS.
 | [AGENT_CONTEXT.md](AGENT_CONTEXT.md) | How language preferences and skills reach the CLI: where they're configured, where they land on disk, which flag carries them, and what was verified by actually running each CLI |
 | [TERMINAL_CONTINUITY.md](TERMINAL_CONTINUITY.md) | How a conversation survives a relaunch and an account switch |
 | [MOBILE_BRIDGE_TRD.md](MOBILE_BRIDGE_TRD.md) | The phone companion: protocol, encryption, pairing ([build docs](docs/mobile/README.md)) |
-| [GRAPHIFY_TRD.md](GRAPHIFY_TRD.md) | Draft, nothing implemented — a code knowledge graph shared by parallel agents, spanning the several repos that make up one system |
+| [GRAPHIFY_TRD.md](GRAPHIFY_TRD.md) | A code knowledge graph shared by parallel agents, spanning the several repos that make up one system. Phases 0–5 are implemented and merged; the graph is optional and Hangar runs without it |
 | [ROADMAP.md](ROADMAP.md) | Where this is going |
+| [BETA.md](BETA.md) | The private beta: what is left to do and in what order, what it costs, and why TestFlight isn't an option. Supersedes the roadmap on how this is distributed and paid for |
 
 ## License
 
