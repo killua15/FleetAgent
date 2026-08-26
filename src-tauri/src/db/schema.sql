@@ -2,7 +2,7 @@
 
 CREATE TABLE IF NOT EXISTS accounts (
   id               TEXT PRIMARY KEY,
-  provider         TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini','kimi','grok')),
+  provider         TEXT NOT NULL CHECK (provider IN ('claude','codex','opencode','gemini','kimi','grok')),
   billing          TEXT NOT NULL CHECK (billing IN ('sub','key')),
   name             TEXT NOT NULL,
   scope            TEXT NOT NULL CHECK (scope IN ('work','personal')),
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS project_allowed_accounts (
 
 CREATE TABLE IF NOT EXISTS rotation_policies (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini','kimi','grok')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','opencode','gemini','kimi','grok')),
   policy     TEXT NOT NULL DEFAULT 'manual' CHECK (policy IN ('auto','round_robin','manual')),
   PRIMARY KEY (project_id, provider)
 );
@@ -351,6 +351,10 @@ CREATE TABLE IF NOT EXISTS open_terminals (
   -- name. Two terminals on the same project are otherwise indistinguishable in
   -- a list, which is exactly when a sidebar makes them worth naming.
   display_name TEXT,
+  -- Folded in the grid. Lives here and not in the frontend because
+  -- `restore_terminals` reopens each terminal with a new id, so anything keyed
+  -- by that id is stale the moment the app restarts.
+  minimized    INTEGER NOT NULL DEFAULT 0,
   created_at   TEXT NOT NULL
 );
 

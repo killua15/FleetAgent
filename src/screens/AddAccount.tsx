@@ -27,7 +27,7 @@ const MAX_POLL_FAILURES = 5;
 export function AddAccount() {
   const { back } = useNavigation();
 
-  const [availability, setAvailability] = useState<Record<string, boolean>>({});
+  const [availability, setAvailability] = useState<Record<string, ProviderAvailability>>({});
   const [step, setStep] = useState(1);
   const [provider, setProviderState] = useState<Provider>('claude');
   const [billing, setBilling] = useState<Billing>('sub');
@@ -77,8 +77,8 @@ export function AddAccount() {
 
   useEffect(() => {
     invoke<ProviderAvailability[]>('list_available_providers').then((list) => {
-      const map: Record<string, boolean> = {};
-      list.forEach((p) => (map[p.provider] = p.available));
+      const map: Record<string, ProviderAvailability> = {};
+      list.forEach((p) => (map[p.provider] = p));
       setAvailability(map);
     });
   }, []);
@@ -107,6 +107,16 @@ export function AddAccount() {
     stopPolling();
     if (loginId) invoke('cancel_login', { loginId }).catch(() => {});
   };
+
+  /** Si este proveedor puede reutilizar un login que ya esté en la máquina.
+   *
+   * Lo decide Rust, no esta pantalla: repetir aquí la lista de proveedores es
+   * cómo se vuelve a este mismo fallo — el asistente ofreciendo adopción y el
+   * backend devolviendo vacío, con el usuario en una pantalla sin salida.
+   *
+   * Mientras la respuesta no ha llegado se asume que sí, que es el
+   * comportamiento de siempre para Claude y evita un parpadeo al formulario. */
+  const canAdoptLogin = availability[provider]?.canAdoptLogin ?? true;
 
   // Starts the real embedded CLI login. No longer auto-fired on entering
   // step 3: importing an existing login is the default there, and a genuinely
@@ -172,11 +182,11 @@ export function AddAccount() {
   // candidate costs a real `claude auth status`, so it waits until the step
   // is actually reached rather than running on mount.
   useEffect(() => {
-    if (step !== 3 || billing !== 'sub' || discovered !== null) return;
-    invoke<DiscoveredLogin[]>('list_discoverable_logins')
+    if (step !== 3 || billing !== 'sub' || discovered !== null || !canAdoptLogin) return;
+    invoke<DiscoveredLogin[]>('list_discoverable_logins', { provider })
       .then(setDiscovered)
       .catch(() => setDiscovered([]));
-  }, [step, billing, discovered]);
+  }, [step, billing, discovered, provider, canAdoptLogin]);
 
   const resetLoginState = () => {
     loginStartedRef.current = false;
@@ -221,20 +231,30 @@ export function AddAccount() {
       const result = await invoke<ApiKeyCheck>('validate_api_key', { provider, apiKey: apiKey.trim() });
       setKeyCheck(result);
     } catch (e) {
-      setKeyCheck({ valid: false, message: String(e) });
+      // La comprobación se cayó, que no dice nada sobre la clave. Marcarla como
+      // inválida acusaría al usuario de un fallo nuestro.
+      setKeyCheck({ valid: false, unverifiable: true, message: `Couldn't run the check: ${e}` });
     } finally {
       setCheckingKey(false);
     }
   };
 
   const keyValid = keyCheck?.valid === true;
+  /** Verificada, o imposible de verificar pero escrita. Lo segundo no es un
+   * error del usuario, y tratarlo como tal dejaba sin crear cualquier cuenta de
+   * clave que no fuera de Anthropic — Kimi incluida. */
+  const keyUsable = keyValid || (keyCheck?.unverifiable === true && apiKey.trim() !== '');
+  /** opencode corre con sus modelos gratuitos sin credencial ninguna —
+   * verificado ejecutándolo— así que exigir una clave bloquearía justo al único
+   * proveedor que no la necesita. Lo decide Rust, no esta pantalla. */
+  const keyOptional = availability[provider]?.keyOptional === true;
   const canNext =
     step === 1
-      ? availability[provider] !== false
+      ? availability[provider]?.available !== false
       : step === 2
         ? true
         : step === 3
-          ? (billing === 'sub' ? loggedIn || importedConfigDir !== null : keyValid)
+          ? (billing === 'sub' ? loggedIn || importedConfigDir !== null : keyUsable || keyOptional)
           : !nameTaken(name);
 
   const handleNext = async () => {
@@ -317,7 +337,7 @@ export function AddAccount() {
               >
                 {PROVIDERS.map((p) => {
                   const meta = PROVIDER_META[p];
-                  const isAvailable = availability[p] !== false;
+                  const isAvailable = availability[p]?.available !== false;
                   return (
                     <Label
                       key={p}
@@ -370,9 +390,14 @@ export function AddAccount() {
                   <RadioGroupItem value="key" className="sr-only" />
                   <span className={styles.billingName}>API key</span>
                   <span className={styles.billingDesc}>
-                    {KEY_ONLY_PROVIDERS.includes(provider)
+                    {/* El texto de Kimi estaba puesto para cualquier proveedor
+                        solo-clave, y dejó de ser cierto en cuanto hubo un
+                        segundo. */}
+                    {provider === 'kimi'
                       ? 'Kimi authenticates with a Moonshot API key — there is no subscription login. It runs through Claude Code against Moonshot’s Anthropic-compatible endpoint, so everything else works the same.'
-                      : 'Pay per token. Hangar tracks accumulated spend and enforces your cap.'}
+                      : provider === 'opencode'
+                        ? 'opencode reads a provider’s key straight from the environment, so there is no login to run here. And the key is optional: without one it still works, on the free models it ships with.'
+                        : 'Pay per token. Hangar tracks accumulated spend and enforces your cap.'}
                   </span>
                 </Label>
               </RadioGroup>
@@ -400,10 +425,10 @@ export function AddAccount() {
           {/* Default state: pick one of the logins already on this machine.
             * One click and the account is correctly configured — no browser
             * round-trip, no config dir to move afterwards. */}
-          {step === 3 && billing === 'sub' && importedConfigDir === null && !wantsNewLogin && (
+          {step === 3 && billing === 'sub' && importedConfigDir === null && canAdoptLogin && !wantsNewLogin && (
             <>
               <span className={styles.hint}>Which login should this account use?</span>
-              {discovered === null && <Spinner label="finding your Claude logins…" />}
+              {discovered === null && <Spinner label={`finding your ${prov.name} logins…`} />}
               <div className={styles.loginList}>
                 {discovered?.map((login) => (
                   <button
@@ -424,7 +449,7 @@ export function AddAccount() {
                 ))}
               </div>
               {discovered?.length === 0 && (
-                <span className={styles.hint}>No existing Claude logins found on this machine.</span>
+                <span className={styles.hint}>{`No existing ${prov.name} logins found on this machine.`}</span>
               )}
               <button className={styles.newLoginLink} onClick={() => setWantsNewLogin(true)}>
                 + Log in a new account instead
@@ -435,7 +460,7 @@ export function AddAccount() {
           {/* A genuinely new login. The name is asked first because it decides
             * the config directory (`~/.<name>`), which can't be renamed
             * once `claude auth login` has written the token there. */}
-          {step === 3 && billing === 'sub' && importedConfigDir === null && wantsNewLogin && !loginSession && !startingLogin && (
+          {step === 3 && billing === 'sub' && importedConfigDir === null && (wantsNewLogin || !canAdoptLogin) && !loginSession && !startingLogin && (
             <div className={styles.newLoginForm}>
               <span className={styles.hint}>Name this account — it also names its config folder:</span>
               <Input
@@ -469,7 +494,7 @@ export function AddAccount() {
             </div>
           )}
 
-          {step === 3 && billing === 'sub' && importedConfigDir === null && wantsNewLogin && (loginSession || startingLogin) && (
+          {step === 3 && billing === 'sub' && importedConfigDir === null && (wantsNewLogin || !canAdoptLogin) && (loginSession || startingLogin) && (
             <>
               <span className={styles.hint}>Complete the CLI login — Hangar runs it in an embedded terminal:</span>
               <div className={styles.terminal} ref={terminalRef} style={{ maxHeight: 220, overflow: 'auto' }}>
@@ -520,7 +545,9 @@ export function AddAccount() {
           {step === 3 && billing === 'key' && (
             <>
               <span className={styles.hint}>
-                Paste the API key — stored in the OS keychain, never in config files:
+                {keyOptional
+                  ? 'Paste an API key if you have one — stored in the OS keychain, never in config files. You can also leave it empty and use the free models:'
+                  : 'Paste the API key — stored in the OS keychain, never in config files:'}
               </span>
               <div style={{ display: 'flex', gap: 8 }}>
                 <Input

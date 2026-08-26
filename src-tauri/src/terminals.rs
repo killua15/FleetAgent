@@ -134,6 +134,11 @@ pub struct TerminalInfo {
     /// A name the user typed for this panel, which wins over `title` in the UI.
     /// `None` until they rename it.
     pub display_name: Option<String>,
+    /// Folded in the grid. Sent from here so a restart can put the panels back
+    /// the way they were left: the frontend cannot remember this on its own,
+    /// because restore reopens every terminal with a new id and anything keyed
+    /// by the old one is already stale.
+    pub minimized: bool,
 }
 
 /// What a terminal's agent is doing, as far as Hangar can tell from the
@@ -312,6 +317,21 @@ fn push_scrollback(buffer: &mut VecDeque<u8>, chunk: &[u8]) {
         buffer.drain(..drop_n);
     }
 }
+
+/// The narrowest terminal an agent CLI is given, however narrow its pane is.
+///
+/// Not tidiness — a measured crash. opencode's TUI segfaults inside Bun when the
+/// terminal is 28 columns or fewer, and renders fine from 30 up; the row count
+/// makes no difference (5×20, 10×20 and 20×20 all die, 24×40 does not). A pane
+/// in a six-up grid, or one caught before the frontend's first `fit()` lands, is
+/// exactly that narrow, which is why this looked like "opencode doesn't open".
+///
+/// Applied to every provider rather than special-cased: no agent CLI is usable
+/// below this width, so the only cost is that a hopelessly narrow pane wraps
+/// text wider than it can show — while the benefit is that no CLI can be handed
+/// a size that kills it. 40 rather than the measured 30 leaves room for the
+/// threshold to move in a future version without breaking this again.
+const MIN_PTY_COLS: u16 = 40;
 
 /// The shell to launch. `$SHELL` is what the user actually chose; the
 /// fallback only matters for a process started without it.
@@ -499,12 +519,19 @@ fn account_key_env(account: &AccountForTerminal, account_id: &str) -> Result<Vec
     if account.billing != "key" {
         return Ok(Vec::new());
     }
-    let key = crate::credential_vault::get(account_id)?;
+    // A missing secret is a broken account for every provider that needs one,
+    // and a normal one for opencode — which runs on its free models until a key
+    // is added. Failing here would refuse to open a terminal that works.
+    let key = match crate::credential_vault::get(account_id) {
+        Ok(key) => Some(key),
+        Err(_) if crate::providers::key_is_optional(&account.provider) => None,
+        Err(e) => return Err(e),
+    };
     // Which variable carries the key is the provider's business: Anthropic
     // reads `ANTHROPIC_API_KEY`, Moonshot is reached through Claude Code's
     // `ANTHROPIC_AUTH_TOKEN`, and Codex wants `OPENAI_API_KEY`.
     let var = crate::providers::spec(&account.provider).map(|s| s.key_env).unwrap_or("ANTHROPIC_API_KEY");
-    let mut env = vec![(var.to_string(), key)];
+    let mut env: Vec<(String, String)> = key.into_iter().map(|k| (var.to_string(), k)).collect();
     for (k, v) in crate::providers::spec(&account.provider).map(|s| s.extra_env).unwrap_or(&[]) {
         env.push((k.to_string(), v.to_string()));
     }
@@ -642,18 +669,6 @@ pub(crate) fn account_command_line_full(
     let binary = spec.binary;
     if !crate::providers::is_provider_available(&account.provider) {
         return Err(format!("the `{binary}` CLI isn't installed on this machine"));
-    }
-    // Refused rather than downgraded. `plan` means read-only in Hangar, and
-    // opencode has no flag that enforces it — only `--auto`, which is the
-    // opposite. Falling through would open a terminal that says "plan" in the
-    // badge and can still write, which is worse than not offering the mode:
-    // the whole point of a read-only mode is being able to trust it.
-    //
-    // The real fix is an agent whose tool list has no `edit` or `bash`, injected
-    // with `OPENCODE_CONFIG_CONTENT` and selected with `--agent`. Until that
-    // exists, this says so instead of pretending.
-    if account.provider == "opencode" && !matches!(init, InitCommand::Login) && mode == Some(crate::providers::Mode::Plan) {
-        return Err("opencode has no read-only mode yet — it only offers auto-approve. Pick ask-edits and it will ask before touching anything.".to_string());
     }
     let config = shell_path(&account.config_dir_path);
     // Fixed environment the provider always needs — for Kimi, pointing Claude
@@ -1042,8 +1057,9 @@ pub(crate) fn open_terminal_blocking<R: Runtime>(
     let pty = native_pty_system();
     let pair = pty
         // A zero dimension makes some shells misbehave before the frontend's
-        // first real `fit()` lands, so clamp to something sane.
-        .openpty(PtySize { rows: rows.max(1), cols: cols.max(1), pixel_width: 0, pixel_height: 0 })
+        // first real `fit()` lands, so clamp to something sane — and see
+        // `MIN_PTY_COLS` for why "sane" is not 1 column.
+        .openpty(PtySize { rows: rows.max(1), cols: cols.max(MIN_PTY_COLS), pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())?;
 
     let mut cmd = CommandBuilder::new(user_shell());
@@ -1068,6 +1084,9 @@ pub(crate) fn open_terminal_blocking<R: Runtime>(
 
     let id = Uuid::new_v4().to_string();
     let info = TerminalInfo {
+        // A terminal the user just asked for is never born folded; restore sets
+        // it afterwards for the ones that were.
+        minimized: false,
         id: id.clone(),
         title,
         cwd: cwd.clone(),
@@ -1234,9 +1253,9 @@ fn persist_terminal<R: Runtime>(app: &AppHandle<R>, info: &TerminalInfo) {
         TargetKind::Session => "session",
     };
     if let Err(e) = conn.execute(
-        "INSERT OR REPLACE INTO open_terminals (id, target_kind, source_id, account_id, session_uuid, display_name, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        rusqlite::params![info.id, kind, info.source_id, info.account_id, info.session_uuid, info.display_name, chrono::Utc::now().to_rfc3339()],
+        "INSERT OR REPLACE INTO open_terminals (id, target_kind, source_id, account_id, session_uuid, display_name, minimized, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![info.id, kind, info.source_id, info.account_id, info.session_uuid, info.display_name, info.minimized, chrono::Utc::now().to_rfc3339()],
     ) {
         log::warn!("persist_terminal: {e}");
     }
@@ -1307,7 +1326,9 @@ pub fn resize_terminal<R: Runtime>(app: AppHandle<R>, id: String, cols: u16, row
     let handle = map.get(&id).ok_or_else(|| format!("no terminal with id {id}"))?;
     handle
         .master
-        .resize(PtySize { rows: rows.max(1), cols: cols.max(1), pixel_width: 0, pixel_height: 0 })
+        // Same floor as the open: a resize down to a few columns kills the
+        // same CLIs a narrow open does.
+        .resize(PtySize { rows: rows.max(1), cols: cols.max(MIN_PTY_COLS), pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())?;
     // Keeps the mobile tail's vt100 buffer at the same geometry as the real
     // PTY — its cursor math (and Ink's own hard-wrap decisions) are relative
@@ -1351,6 +1372,7 @@ struct PersistedTerminal {
     account_id: Option<String>,
     session_uuid: Option<String>,
     display_name: Option<String>,
+    minimized: bool,
 }
 
 /// Reopens the terminals that were open when Hangar last closed — the first
@@ -1385,11 +1407,18 @@ fn restore_terminals_blocking<R: Runtime>(app: AppHandle<R>, cols: u16, rows: u1
         let db = app.state::<DbConnection>();
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT target_kind, source_id, account_id, session_uuid, display_name FROM open_terminals ORDER BY created_at ASC")
+            .prepare("SELECT target_kind, source_id, account_id, session_uuid, display_name, minimized FROM open_terminals ORDER BY created_at ASC")
             .map_err(|e| e.to_string())?;
         let collected: Vec<PersistedTerminal> = stmt
             .query_map([], |r| {
-                Ok(PersistedTerminal { target_kind: r.get(0)?, source_id: r.get(1)?, account_id: r.get(2)?, session_uuid: r.get(3)?, display_name: r.get(4)? })
+                Ok(PersistedTerminal {
+                    target_kind: r.get(0)?,
+                    source_id: r.get(1)?,
+                    account_id: r.get(2)?,
+                    session_uuid: r.get(3)?,
+                    display_name: r.get(4)?,
+                    minimized: r.get::<_, i64>(5)? != 0,
+                })
             })
             .map_err(|e| e.to_string())?
             .filter_map(Result::ok)
@@ -1415,6 +1444,12 @@ fn restore_terminals_blocking<R: Runtime>(app: AppHandle<R>, cols: u16, rows: u1
                 if let Some(name) = row.display_name.clone() {
                     let _ = rename_terminal(app.clone(), info.id.clone(), name.clone());
                     info.display_name = Some(name);
+                }
+                // Same reasoning as the name: a panel the user folded comes back
+                // folded, or "restore" has quietly rearranged their screen.
+                if row.minimized {
+                    let _ = set_terminal_minimized(app.clone(), info.id.clone(), true);
+                    info.minimized = true;
                 }
                 restored.push(info);
             }
@@ -1671,6 +1706,30 @@ pub async fn fan_out_prompt<R: Runtime>(
 /// Renames a panel. Persisted, because a name that vanishes on restart is worse
 /// than no name: you'd have to re-derive which of three panels on the same
 /// project was the one doing the migration.
+/// Folds or unfolds a panel, and remembers it.
+///
+/// Same shape as `rename_terminal` below, for the same reason: the registry
+/// entry is what the running app reads and the row is what a restart reads, so
+/// both have to move together or the two disagree the moment Hangar reopens.
+#[tauri::command]
+pub fn set_terminal_minimized<R: Runtime>(app: AppHandle<R>, id: String, minimized: bool) -> Result<(), String> {
+    {
+        let registry = app.state::<TerminalRegistry>();
+        let mut map = registry.0.lock().map_err(|e| e.to_string())?;
+        // Not an error when the terminal is gone: a panel can be folded and
+        // closed in the same breath, and failing here would surface a toast for
+        // something the user already finished doing.
+        if let Some(handle) = map.get_mut(&id) {
+            handle.info.minimized = minimized;
+        }
+    }
+    let Some(db) = app.try_state::<DbConnection>() else { return Ok(()) };
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE open_terminals SET minimized = ?2 WHERE id = ?1", rusqlite::params![id, minimized])
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn rename_terminal<R: Runtime>(app: AppHandle<R>, id: String, name: String) -> Result<(), String> {
     let trimmed = name.trim().to_string();
@@ -2297,6 +2356,29 @@ fn spawn_account_check<R: Runtime>(app: &AppHandle<R>, account_id: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pane narrower than this killed opencode outright: its TUI segfaults
+    /// inside Bun at 28 columns or fewer, and the row count is irrelevant
+    /// (20×20 dies, 24×40 does not). From the outside it read as "opencode
+    /// doesn't open" — the terminal appeared, the process died, the shell prompt
+    /// came back.
+    ///
+    /// The floor is what the PTY is told, not what the pane is: a six-up grid
+    /// legitimately produces panes this narrow, and the alternative to wrapping
+    /// text wider than the pane shows is a CLI that crashes.
+    #[test]
+    fn a_narrow_pane_never_reaches_a_cli_as_a_lethal_width() {
+        assert!(MIN_PTY_COLS >= 30, "measured: 28 columns crashes opencode, 30 does not");
+
+        // The clamp both sites apply.
+        for pane in [0u16, 1, 12, 20, 28] {
+            assert_eq!(pane.max(MIN_PTY_COLS), MIN_PTY_COLS, "a {pane}-column pane must be widened before it reaches the CLI");
+        }
+        // And a real width is passed through untouched.
+        for pane in [MIN_PTY_COLS, 80, 200] {
+            assert_eq!(pane.max(MIN_PTY_COLS), pane, "a usable width must not be rewritten");
+        }
+    }
     use rusqlite::Connection;
 
     #[test]
@@ -3415,6 +3497,7 @@ mod tests {
     fn info_for(id: &str, kind: TargetKind, source_id: &str, account_id: Option<&str>, session_uuid: Option<&str>) -> TerminalInfo {
         TerminalInfo {
             id: id.to_string(),
+            minimized: false,
             title: "t".to_string(),
             cwd: "/repo".to_string(),
             kind,
@@ -3474,7 +3557,7 @@ mod tests {
     fn restore_starts_a_plain_shell_when_there_was_no_account() {
         let app = tauri::test::mock_app();
         app.manage(crate::db::DbConnection(Mutex::new(seed())));
-        let row = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: None, session_uuid: None, display_name: None };
+        let row = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: None, session_uuid: None, display_name: None, minimized: false };
         assert_eq!(decide_restore_init(app.handle(), &row), (None, None));
     }
 
@@ -3498,11 +3581,11 @@ mod tests {
         let handle = app.handle();
 
         // Transcript present → resume that exact session.
-        let with = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: Some("accR".into()), session_uuid: Some(uuid.into()), display_name: None };
+        let with = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: Some("accR".into()), session_uuid: Some(uuid.into()), display_name: None , minimized: false };
         assert_eq!(decide_restore_init(handle, &with), (Some(InitCommand::Resume), Some(uuid.to_string())));
 
         // Same account, a session id with no transcript on disk → fresh start.
-        let without = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: Some("accR".into()), session_uuid: Some("no-such-uuid".into()), display_name: None };
+        let without = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: Some("accR".into()), session_uuid: Some("no-such-uuid".into()), display_name: None , minimized: false };
         assert_eq!(decide_restore_init(handle, &without), (Some(InitCommand::Start), None));
 
         let _ = std::fs::remove_dir_all(&cfg);

@@ -245,6 +245,18 @@ const MIGRATIONS: &[Migration] = &[
         run: account_provider_email,
         transactional: true,
     },
+    Migration {
+        version: 28,
+        name: "allow_opencode_provider",
+        run: allow_opencode_provider,
+        transactional: false,
+    },
+    Migration {
+        version: 29,
+        name: "open_terminal_minimized",
+        run: open_terminal_minimized,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -895,6 +907,88 @@ fn allow_grok_provider(conn: &Connection) -> Result<(), String> {
          CREATE TABLE rotation_policies (
            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
            provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini','kimi','grok')),
+           policy     TEXT NOT NULL DEFAULT 'manual' CHECK (policy IN ('auto','round_robin','manual')),
+           PRIMARY KEY (project_id, provider)
+         );
+         INSERT INTO rotation_policies SELECT project_id, provider, policy FROM rotation_policies_old_provider_migration;
+         DROP TABLE rotation_policies_old_provider_migration;
+         COMMIT;",
+    );
+    let outcome = match result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            Err(format!("could not widen the provider constraint: {e}"))
+        }
+    };
+    let _ = conn.execute_batch("PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;");
+    outcome
+}
+
+/// Whether a restored terminal comes back folded.
+///
+/// The state existed before this column, in `localStorage` keyed by terminal id
+/// — and it could never have worked: `restore_terminals` drops the rows and
+/// reopens each terminal with a *fresh* id, so every key in that map pointed at
+/// something that no longer existed and all panels came back expanded. Keeping
+/// it next to the row that survives the restart is the fix; the key is the
+/// problem, not the storage.
+///
+/// Additive, so no table rebuild: there is no `CHECK` to alter here, unlike the
+/// provider constraint above.
+fn open_terminal_minimized(conn: &Connection) -> Result<(), String> {
+    if has_column(conn, "open_terminals", "minimized")? {
+        return Ok(());
+    }
+    conn.execute_batch("ALTER TABLE open_terminals ADD COLUMN minimized INTEGER NOT NULL DEFAULT 0;")
+        .map_err(|e| format!("could not add open_terminals.minimized: {e}"))
+}
+
+/// Adds `opencode` to the providers an account may have.
+///
+/// The same 12-step rebuild as `allow_grok_provider`, for the same reason:
+/// SQLite cannot alter a `CHECK`, so the table is recreated and copied. Both
+/// tables carry the constraint, and missing the second one is the interesting
+/// failure — accounts would save fine and rotation would refuse the provider
+/// later, far from the cause.
+fn allow_opencode_provider(conn: &Connection) -> Result<(), String> {
+    let already: bool = conn
+        .query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='accounts'", [], |row| row.get::<_, String>(0))
+        .map(|sql| sql.contains("'opencode'"))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+
+    let _ = conn.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;");
+    let result = conn.execute_batch(
+        "BEGIN TRANSACTION;
+         ALTER TABLE accounts RENAME TO accounts_old_provider_migration;
+         CREATE TABLE accounts (
+           id               TEXT PRIMARY KEY,
+           provider         TEXT NOT NULL CHECK (provider IN ('claude','codex','opencode','gemini','kimi','grok')),
+           billing          TEXT NOT NULL CHECK (billing IN ('sub','key')),
+           name             TEXT NOT NULL,
+           scope            TEXT NOT NULL CHECK (scope IN ('work','personal')),
+           plan_label       TEXT NOT NULL DEFAULT '',
+           config_dir_path  TEXT NOT NULL,
+           credential_ref   TEXT NOT NULL,
+           monthly_cap      REAL,
+           status           TEXT NOT NULL DEFAULT 'healthy' CHECK (status IN ('healthy','cooling_down','exhausted')),
+           created_at       TEXT NOT NULL,
+           updated_at       TEXT NOT NULL,
+           exhausted_at     TEXT,
+           team_account_id  TEXT,
+           provider_email   TEXT NOT NULL DEFAULT ''
+         );
+         INSERT INTO accounts SELECT id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, monthly_cap, status, created_at, updated_at, exhausted_at, team_account_id, provider_email
+           FROM accounts_old_provider_migration;
+         DROP TABLE accounts_old_provider_migration;
+
+         ALTER TABLE rotation_policies RENAME TO rotation_policies_old_provider_migration;
+         CREATE TABLE rotation_policies (
+           project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+           provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','opencode','gemini','kimi','grok')),
            policy     TEXT NOT NULL DEFAULT 'manual' CHECK (policy IN ('auto','round_robin','manual')),
            PRIMARY KEY (project_id, provider)
          );
@@ -1896,6 +1990,180 @@ mod tests {
     /// other (a stale idempotency check, a column dropped from one rebuild but
     /// not the other) needs its own coverage rather than assuming kimi's
     /// passing is enough.
+    /// The previous test proves the *schema* accepts opencode, and proves
+    /// nothing about the migration: `fresh_db` applies the new `SCHEMA`, so
+    /// `allow_opencode_provider` sees the provider already there and returns
+    /// early. The path that actually runs on someone's existing database is the
+    /// one that was broken, so it gets rebuilt here on purpose.
+    #[test]
+    fn the_migration_widens_an_existing_database_without_losing_rows() {
+        let conn = fresh_db();
+        run_migrations(&conn).unwrap();
+
+        // Put the two tables back on their pre-opencode shape, with a row in
+        // each, exactly as a database from before this branch looks.
+        conn.execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             PRAGMA legacy_alter_table=ON;
+             DROP TABLE accounts;
+             CREATE TABLE accounts (
+               id               TEXT PRIMARY KEY,
+               provider         TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini','kimi','grok')),
+               billing          TEXT NOT NULL CHECK (billing IN ('sub','key')),
+               name             TEXT NOT NULL,
+               scope            TEXT NOT NULL CHECK (scope IN ('work','personal')),
+               plan_label       TEXT NOT NULL DEFAULT '',
+               config_dir_path  TEXT NOT NULL,
+               credential_ref   TEXT NOT NULL,
+               monthly_cap      REAL,
+               status           TEXT NOT NULL DEFAULT 'healthy' CHECK (status IN ('healthy','cooling_down','exhausted')),
+               created_at       TEXT NOT NULL,
+               updated_at       TEXT NOT NULL,
+               exhausted_at     TEXT,
+               team_account_id  TEXT,
+               provider_email   TEXT NOT NULL DEFAULT ''
+             );
+             DROP TABLE rotation_policies;
+             CREATE TABLE rotation_policies (
+               project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+               provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','gemini','kimi','grok')),
+               policy     TEXT NOT NULL DEFAULT 'manual' CHECK (policy IN ('auto','round_robin','manual')),
+               PRIMARY KEY (project_id, provider)
+             );
+             PRAGMA legacy_alter_table=OFF;
+             PRAGMA foreign_keys=ON;",
+        )
+        .unwrap();
+
+        conn.execute("INSERT INTO projects (id, name, path, created_at) VALUES ('p1','P','/tmp','now')", []).unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, monthly_cap, status, created_at, updated_at, provider_email)
+             VALUES ('c1','claude','sub','Work','work','Max','~/.work','c1',42.5,'healthy','then','then','me@example.com')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO rotation_policies (project_id, provider, policy) VALUES ('p1','claude','round_robin')", []).unwrap();
+
+        // Before: exactly the error that was reported.
+        assert!(
+            conn.execute(
+                "INSERT INTO accounts (id, provider, billing, name, scope, config_dir_path, credential_ref, status, created_at, updated_at)
+                 VALUES ('o0','opencode','key','OC','personal','~/.oc','o0','healthy','now','now')",
+                [],
+            )
+            .is_err(),
+            "the old shape must reject opencode, or this test is not reproducing the bug"
+        );
+
+        allow_opencode_provider(&conn).expect("the migration must run on a real pre-opencode database");
+
+        conn.execute(
+            "INSERT INTO accounts (id, provider, billing, name, scope, config_dir_path, credential_ref, status, created_at, updated_at)
+             VALUES ('o1','opencode','key','OC','personal','~/.oc','o1','healthy','now','now')",
+            [],
+        )
+        .expect("after the migration opencode must be accepted");
+        conn.execute("INSERT INTO rotation_policies (project_id, provider, policy) VALUES ('p1','opencode','auto')", [])
+            .expect("rotation_policies must have been widened too");
+
+        // Every column of the old row, not just the ones the CHECK mentions.
+        let (cap, plan, email, created): (f64, String, String, String) = conn
+            .query_row("SELECT monthly_cap, plan_label, provider_email, created_at FROM accounts WHERE id = 'c1'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .expect("the pre-existing account must survive the rebuild");
+        assert_eq!((cap, plan.as_str(), email.as_str(), created.as_str()), (42.5, "Max", "me@example.com", "then"));
+
+        let policy: String = conn
+            .query_row("SELECT policy FROM rotation_policies WHERE project_id='p1' AND provider='claude'", [], |r| r.get(0))
+            .expect("the pre-existing rotation policy must survive too");
+        assert_eq!(policy, "round_robin");
+
+        // And it is idempotent, because migrations get re-run on every start
+        // until their version is recorded.
+        allow_opencode_provider(&conn).expect("running it twice must be harmless");
+    }
+
+    /// Reported as "I minimise every panel, reopen Hangar, and they are all
+    /// open again". The state *was* being saved — in `localStorage`, keyed by
+    /// terminal id — and could never have survived: restore reopens each
+    /// terminal with a fresh id, so every key pointed at nothing. It lives on
+    /// the row now, which is the thing that outlives the restart.
+    #[test]
+    fn a_folded_panel_is_remembered_on_its_own_row() {
+        let conn = fresh_db();
+        run_migrations(&conn).unwrap();
+        conn.execute("INSERT INTO projects (id, name, path, created_at) VALUES ('p1','P','/tmp','now')", []).unwrap();
+
+        // A row written before the column existed: it must read as "open",
+        // never as folded, or an update would fold panels nobody folded.
+        conn.execute(
+            "INSERT INTO open_terminals (id, target_kind, source_id, created_at) VALUES ('t1','project','p1','now')",
+            [],
+        )
+        .unwrap();
+        let fresh: i64 = conn.query_row("SELECT minimized FROM open_terminals WHERE id='t1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(fresh, 0, "an existing terminal must default to unfolded");
+
+        conn.execute("UPDATE open_terminals SET minimized = 1 WHERE id = 't1'", []).unwrap();
+        let folded: i64 = conn.query_row("SELECT minimized FROM open_terminals WHERE id='t1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(folded, 1);
+
+        // Idempotent: migrations re-run until their version is recorded.
+        open_terminal_minimized(&conn).expect("running it twice must be harmless");
+        let still: i64 = conn.query_row("SELECT minimized FROM open_terminals WHERE id='t1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(still, 1, "re-running the migration must not reset what the user set");
+    }
+
+    /// The constraint this was reported against: creating an opencode account
+    /// failed with `CHECK constraint failed: provider IN (...)`, because the
+    /// provider was wired everywhere except the two tables that police it.
+    ///
+    /// `rotation_policies` is the half that would have been missed: an account
+    /// saves fine without it, and rotation refuses the provider much later,
+    /// nowhere near the cause.
+    #[test]
+    fn opencode_becomes_a_valid_provider_and_the_rebuild_keeps_the_rows() {
+        let conn = fresh_db();
+        run_migrations(&conn).unwrap();
+
+        // A row that predates the rebuild, to prove the copy carries data over
+        // rather than quietly starting an empty table.
+        conn.execute(
+            "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, status, created_at, updated_at, provider_email)
+             VALUES ('c1','claude','sub','Work','work','','~/.work','c1','healthy','now','now','me@example.com')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, status, created_at, updated_at)
+             VALUES ('o1','opencode','key','OC','personal','','~/.oc','o1','healthy','now','now')",
+            [],
+        )
+        .expect("opencode must be a valid provider — this is the reported failure");
+
+        let email: String = conn
+            .query_row("SELECT provider_email FROM accounts WHERE id = 'c1'", [], |r| r.get(0))
+            .expect("the pre-existing row must survive the table rebuild");
+        assert_eq!(email, "me@example.com", "the rebuild must copy every column, not just the ones it names in the CHECK");
+
+        conn.execute("INSERT INTO projects (id, name, path, created_at) VALUES ('p1','P','/tmp','now')", []).unwrap();
+        conn.execute("INSERT INTO rotation_policies (project_id, provider, policy) VALUES ('p1','opencode','auto')", [])
+            .expect("rotation_policies carries the same constraint and must have been rebuilt too");
+
+        conn.execute(
+            "INSERT INTO sessions (id, name, project_id, account_id, model, effort, mode, status, started_at)
+             VALUES ('s1','s','p1','o1','','high','ask_edits','waiting','now')",
+            [],
+        )
+        .expect("a session referencing the rebuilt accounts table must still insert");
+
+        conn.execute("DELETE FROM accounts WHERE id = 'o1'", []).unwrap();
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0, "ON DELETE CASCADE must survive the rebuild");
+    }
+
     #[test]
     fn grok_becomes_a_valid_provider_without_breaking_what_references_accounts() {
         let conn = fresh_db();

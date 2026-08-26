@@ -53,6 +53,33 @@ suena mejor que redirigir un directorio. **Es de solo lectura.** Las escrituras 
 fichero compartido (`auth/index.ts:79,88`), así que un refresco de token OAuth contaminaría entre
 cuentas: exactamente el fallo que Hangar existe para evitar. Descartado.
 
+## No hace falta login: la clave va por el entorno
+
+**Este fue el hallazgo que cambió el diseño**, y contradice a la documentación oficial, que dice que
+para Anthropic y OpenAI las variables de entorno «no bastan» y hay que pasar por `/connect`.
+
+Medido contra el binario, con un `XDG_DATA_HOME` limpio:
+
+| | modelos totales | `anthropic/` |
+|---|---|---|
+| sin credencial | **7** (todos `opencode/`, el nivel gratuito) | 0 |
+| con `ANTHROPIC_API_KEY` en el entorno | — | **15** |
+
+Dos conclusiones:
+
+1. **opencode lee la clave del entorno.** Así que la ruta de clave de Hangar —  que ya pasa el secreto
+   como entorno ambiental, nunca en la línea de comandos— le llega tal cual, igual que a cualquier
+   otra cuenta de clave.
+2. **Funciona sin ninguna credencial**, con los modelos gratuitos de OpenCode Zen.
+
+Por eso `login_args` es `None` y opencode entra en `KEY_ONLY_PROVIDERS`. No es una limitación: es que
+`opencode auth login` es un **menú de flechas**, y el paso de login del asistente es un panel de solo
+lectura con una caja para pegar códigos. Renderizaría un menú que nadie puede contestar — que es
+exactamente el síntoma que se reportó, una terminal con el cursor parpadeando y nada más.
+
+**No se pierde el OAuth**: quien lo quiera puede ejecutar `opencode auth login` en una terminal de
+Hangar de verdad, que sí es interactiva, una vez creada la cuenta.
+
 ## Cómo responde a la sonda de login
 
 `opencode auth list` imprime el fichero que leyó y luego un recuento. Sin credenciales:
@@ -81,27 +108,37 @@ primero — un orden que ya estaba puesto a propósito para el `"Not logged in"`
 
 Tener sonda es lo que hace que el asistente ofrezca el proveedor en vez de deshabilitarlo.
 
-## Los cuatro modos de permiso, y el que se rechaza
+## Los cuatro modos de permiso
 
-Verificado en `opencode --help`: el único flag de aprobación es
-`--auto` («auto-approve permissions that are not explicitly denied (dangerous!)»). No hay equivalente
-de solo-lectura ni de aceptar-ediciones; el control fino vive en la lista de herramientas de un
-*agente*, que se elige con `--agent`.
+El único flag de aprobación es `--auto` («auto-approve permissions that are not explicitly denied
+(dangerous!)»). El control fino no vive en flags: vive en **agentes**, que se eligen con `--agent` y
+llevan reglas `{permission, action, pattern}` con acciones `allow`, `ask` y `deny`.
 
 | Modo de Hangar | opencode |
 |---|---|
 | `yolo` | `--auto` |
+| `plan` | `--agent plan` |
 | `auto_edit` | sin flag — pregunta (menos permisivo de lo que promete el modo) |
 | `ask_edits` | sin flag — pregunta ✔ correcto |
-| `plan` | **se rechaza** |
 
-`plan` significa solo-lectura en Hangar, y opencode no tiene con qué garantizarlo. Devolver "ningún
-flag" dejaría abrir una terminal que dice `plan` en la insignia y puede escribir igual. Un modo de
-solo-lectura en el que no se puede confiar es peor que no ofrecerlo, así que `terminals.rs` lo niega
-con un mensaje que dice por qué.
+### El agente `plan` viene de fábrica, y aguanta
 
-**El arreglo de verdad**, cuando toque: un agente cuya lista de herramientas no tenga `edit` ni
-`bash`, inyectado con `OPENCODE_CONFIG_CONTENT` y seleccionado con `--agent`.
+`opencode agent list` muestra siete agentes, y uno es `plan`. Sus reglas relevantes:
+
+```
+deny   edit   *
+allow  edit   .opencode/plans/*.md
+allow  read   *
+ask    read   *.env
+```
+
+Probado ejecutándolo, no leído: se le pidió escribir un fichero con bash de dos formas —  directa, y
+disfrazada de comprobación de permisos de disco— y las rechazó ambas, ofreciendo en la segunda una
+alternativa no destructiva.
+
+**Hasta dónde llega, dicho con precisión**: `edit` está denegado por regla; `bash` lo sostienen las
+instrucciones del propio agente. Es la misma forma que el `--permission-mode plan` de Claude Code, así
+que confiar en ello aquí es coherente y no un salto nuevo.
 
 ## Lo que no llega: las preferencias de proyecto
 
@@ -140,6 +177,25 @@ ficheros a mano como hace `handoff.rs`.
 | **Rotación por agotamiento** | `is_exhaustion_signal` devuelve `false`. Capturar el mensaje exige agotar una cuota de verdad; no se puede adivinar |
 | **Gasto por turno** | `usage_meter.rs` lee transcripts por desplazamiento de bytes. opencode guarda en SQLite (`OPENCODE_DB`) y agrega con `opencode stats`. Es otra vía de ingesta entera |
 | **Skills y MCP** | No hay `--add-dir` ni `--mcp-config`; `mcp` es un subcomando que gestiona servidores. Ambos devuelven vacío |
+
+## El panel estrecho lo mata
+
+Su TUI **segfaultea dentro de Bun con 28 columnas o menos**, y funciona desde 30. Las filas no
+influyen: 5×20, 10×20 y 20×20 mueren igual; 24×40 no.
+
+```
+panic(main thread): Segmentation fault at address 0x5084817FC
+oh no: Bun has crashed. This indicates a bug in Bun, not your code.
+```
+
+Un panel de una rejilla de seis es exactamente así de estrecho, y también lo es cualquier panel antes
+de que el `fit()` del frontend aterrice. Desde fuera se lee como «opencode no abre»: la terminal
+aparece, el proceso muere, y vuelve el prompt del shell.
+
+Por eso `MIN_PTY_COLS` en `terminals.rs` pone un suelo de 40 columnas a lo que se le dice al PTY —
+para todos los proveedores, no solo para este: ningún CLI de agente es usable por debajo de eso, así
+que lo único que cuesta es que un panel imposiblemente estrecho ajuste el texto más ancho de lo que
+enseña, y lo que evita es entregarle a un CLI un tamaño que lo mata.
 
 ## Notas sueltas que ahorran tiempo
 

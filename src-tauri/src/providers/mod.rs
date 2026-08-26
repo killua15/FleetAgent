@@ -47,14 +47,22 @@ pub fn permission_args(provider: &str, mode: Mode) -> &'static [&'static str] {
     // yolo → `--auto`, and everything else → nothing, which is opencode's own
     // ask-before-acting default.
     //
-    // `Plan` is the one that must not be quietly downgraded: in Hangar it means
-    // read-only, and returning no flag here would let a mode that promises
-    // read-only start something that can write. It is refused before this point
-    // (see `terminals.rs`), and this arm exists only so the mapping is total.
+    // `Plan` maps to opencode's own built-in `plan` agent, which is what makes
+    // the mode real instead of a label. Verified by running it: `deny edit *` is
+    // a hard rule (with an exception for its own `.opencode/plans/*.md`), and
+    // two separate attempts to write through `bash` — one direct, one disguised
+    // as a disk-permission check — were both refused, the second one offering a
+    // non-destructive alternative instead.
+    //
+    // Worth stating exactly how far that goes: `edit` is denied by rule, while
+    // `bash` is held by the agent's own instructions. That is the same shape as
+    // Claude Code's `--permission-mode plan`, so trusting it here is consistent
+    // rather than a new leap.
     if provider == "opencode" {
         return match mode {
             Mode::Yolo => &["--auto"],
-            Mode::Plan | Mode::AskEdits | Mode::AutoEdit => &[],
+            Mode::Plan => &["--agent", "plan"],
+            Mode::AskEdits | Mode::AutoEdit => &[],
         };
     }
 
@@ -495,6 +503,26 @@ pub enum SessionControl {
     None,
 }
 
+/// Whether an account of this provider can exist with no credential at all.
+///
+/// True only for opencode, and it is a measured fact rather than a courtesy.
+/// With an empty `XDG_DATA_HOME` and nothing stored:
+///
+/// ```text
+/// $ opencode run -m opencode/hy3-free "Responde solo con la palabra: FUNCIONA"
+/// > build · hy3-free
+/// FUNCIONA
+/// ```
+///
+/// It ships seven free models, so demanding a key before letting an account be
+/// created would block the one provider that does not need one. Someone who
+/// wants a paid vendor either pastes its key — opencode reads it from the
+/// environment — or runs `opencode auth login` inside one of Hangar's real
+/// terminals, which is interactive in a way the wizard's login pane is not.
+pub fn key_is_optional(provider: &str) -> bool {
+    provider == "opencode"
+}
+
 /// A file whose presence in the config dir means "logged in", checked before
 /// spawning anything.
 ///
@@ -527,13 +555,6 @@ const GEMINI_LOGIN: &[&str] = &["auth", "login"];
 /// was described when this provider was added; re-check against `grok --help`
 /// once the binary is actually available.
 const GROK_LOGIN: &[&str] = &["auth", "login"];
-
-/// Verified against opencode 1.18.20.
-///
-/// `auth login` opens a provider picker (opencode is itself multi-provider),
-/// which is why no `--provider` is pinned here: which model vendor an account
-/// signs into is the user's choice inside that menu, not Hangar's.
-const OPENCODE_LOGIN: &[&str] = &["auth", "login"];
 
 /// `opencode auth list` prints the credentials file it read and then a count:
 /// `0 credentials` when empty, `1 credentials` (sic) once something is stored.
@@ -631,12 +652,27 @@ pub fn spec(provider: &str) -> Option<ProviderSpec> {
         "opencode" => Some(ProviderSpec {
             binary: "opencode",
             config_dir_env: "XDG_DATA_HOME",
-            login_args: Some(OPENCODE_LOGIN),
+            // `None`, even though `opencode auth login` exists and works: it is
+            // an arrow-key menu (pick a provider, then a method), and the
+            // wizard's login step is a read-only pane with a paste box — there
+            // is no way to drive a TUI from it, so it would render a menu
+            // nobody could answer.
+            //
+            // Nothing is lost. Verified against 1.18.20: opencode reads a
+            // provider's key straight from the environment — with
+            // `ANTHROPIC_API_KEY` set, `opencode models` goes from 0 to 15
+            // `anthropic/` entries — so the key path reaches it exactly like
+            // every other key-billed account. And an account with *no*
+            // credential still gets opencode's 7 free models.
+            //
+            // Someone who wants the OAuth flow can still run `opencode auth
+            // login` in one of Hangar's real terminals, which is interactive.
+            login_args: None,
             extra_env: &[],
-            // opencode is multi-provider by design, so there is no single key
-            // variable that means "the opencode key" — a key-billed account
-            // would carry its inner vendor's own. This names the most common one
-            // rather than pretending the concept maps cleanly.
+            // Verified: opencode picks this up from the environment. It is
+            // multi-provider, so there is no single "opencode key" — this names
+            // the vendor Hangar is built around, and a second one would need a
+            // per-account choice of variable, which is a follow-up.
             key_env: "ANTHROPIC_API_KEY",
             auth_status: AuthStatusProbe::Text {
                 args: OPENCODE_STATUS,
@@ -747,6 +783,34 @@ mod tests {
         assert_eq!(auth_marker_file("opencode"), Some("opencode/auth.json"));
     }
 
+    /// Measured, not assumed: with an empty data dir and nothing stored,
+    /// `opencode run -m opencode/hy3-free` answered. So an account with no
+    /// credential is a working account, and requiring one would block the only
+    /// provider that does not need it.
+    #[test]
+    fn only_opencode_can_run_without_a_credential() {
+        assert!(key_is_optional("opencode"));
+        for provider in ["claude", "codex", "kimi", "gemini", "grok"] {
+            assert!(!key_is_optional(provider), "{provider} without a credential is a broken account, not a free one");
+        }
+    }
+
+    /// The wizard's login step is a read-only pane with a paste box, and
+    /// opencode's login is an arrow-key menu — it would render something nobody
+    /// could answer. So there is no interactive login, and the key path carries
+    /// the account instead.
+    ///
+    /// Verified that this loses nothing: with `ANTHROPIC_API_KEY` in the
+    /// environment, `opencode models` went from 0 to 15 `anthropic/` entries, so
+    /// the key genuinely reaches it. Without any credential at all it still
+    /// lists 7 free models.
+    #[test]
+    fn opencode_has_no_wizard_login_and_takes_a_key_instead() {
+        let spec = spec("opencode").unwrap();
+        assert!(spec.login_args.is_none(), "a TUI menu cannot be driven from the wizard's login pane");
+        assert_eq!(spec.key_env, "ANTHROPIC_API_KEY", "verified to be read from the environment");
+    }
+
     /// The credential count is the only stable part of `auth list` — the rows
     /// above it name whichever vendor was used. And the negative marker contains
     /// the positive one, which `read_text_probe` survives by checking the
@@ -768,7 +832,9 @@ mod tests {
     #[test]
     fn opencode_only_has_one_approval_flag() {
         assert_eq!(permission_args("opencode", Mode::Yolo), &["--auto"]);
-        for mode in [Mode::Plan, Mode::AskEdits, Mode::AutoEdit] {
+        // Read-only is an *agent*, not an approval flag — opencode ships one.
+        assert_eq!(permission_args("opencode", Mode::Plan), &["--agent", "plan"]);
+        for mode in [Mode::AskEdits, Mode::AutoEdit] {
             assert!(permission_args("opencode", mode).is_empty(), "{mode:?} must add no flag: opencode has none for it");
         }
         for mode in [Mode::Plan, Mode::AskEdits, Mode::AutoEdit, Mode::Yolo] {

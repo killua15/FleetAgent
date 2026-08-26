@@ -42,9 +42,35 @@ pub fn list_accounts(db: State<DbConnection>) -> Result<Vec<Account>, String> {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderAvailability {
     pub provider: String,
     pub available: bool,
+    /// Whether step 3 can offer logins already on this machine. Sent from here
+    /// rather than decided again in the wizard: the two lists drifting apart is
+    /// the exact bug this fixes — a frontend that offers adoption while the
+    /// backend returns nothing leaves the user on an empty screen with no way
+    /// forward.
+    pub can_adopt_login: bool,
+    /// Whether an account can be created with no credential. Travels with
+    /// availability for the same reason `can_adopt_login` does: the wizard
+    /// deciding this on its own is how the two sides drift apart.
+    pub key_optional: bool,
+}
+
+/// Whether a provider can adopt a login that already exists on this machine.
+///
+/// Only the Claude family. Kimi rides Claude Code's own binary and its
+/// `.claude*` directories, so adopting one is genuinely the same account;
+/// nothing else shares that convention.
+///
+/// opencode is deliberately absent even though it *does* keep a default login,
+/// at `~/.local/share/opencode/auth.json`. Adopting it would mean aiming that
+/// account's `XDG_DATA_HOME` at the shared `~/.local/share`, so it and every
+/// other opencode account would write the same `auth.json` — the isolation the
+/// provider was added for, undone at the moment of creation.
+pub(crate) fn can_adopt_existing_login(provider: &str) -> bool {
+    matches!(provider, "claude" | "kimi")
 }
 
 /// Lets the wizard's step 1 flag providers whose CLI isn't installed, rather
@@ -56,6 +82,8 @@ pub fn list_available_providers() -> Vec<ProviderAvailability> {
         .map(|p| ProviderAvailability {
             provider: p.to_string(),
             available: providers::is_provider_available(p),
+            can_adopt_login: can_adopt_existing_login(p),
+            key_optional: providers::key_is_optional(p),
         })
         .collect()
 }
@@ -65,6 +93,14 @@ pub fn list_available_providers() -> Vec<ProviderAvailability> {
 pub struct ApiKeyCheck {
     pub valid: bool,
     pub message: String,
+    /// True when Hangar has no way to check this provider's key — which is not
+    /// the same as the key being wrong, and must not read as it.
+    ///
+    /// Only Anthropic's endpoint is wired, so every other provider came back
+    /// `valid: false` and the wizard refused to continue. That is why no Kimi
+    /// account could ever be created: its key was never invalid, only
+    /// unverifiable, and the two were being treated the same.
+    pub unverifiable: bool,
 }
 
 /// Verifies an API key against the real provider endpoint before an account
@@ -75,11 +111,12 @@ pub async fn validate_api_key(provider: String, api_key: String) -> Result<ApiKe
         if provider != "claude" {
             return Ok(ApiKeyCheck {
                 valid: false,
-                message: format!("'{provider}' key validation isn't wired yet"),
+                unverifiable: true,
+                message: format!("Hangar can't verify a {provider} key — it will be used exactly as given"),
             });
         }
         if api_key.trim().is_empty() {
-            return Ok(ApiKeyCheck { valid: false, message: "empty key".to_string() });
+            return Ok(ApiKeyCheck { valid: false, unverifiable: false, message: "empty key".to_string() });
         }
 
         let output = Command::new("curl")
@@ -102,10 +139,10 @@ pub async fn validate_api_key(provider: String, api_key: String) -> Result<ApiKe
 
         let code = String::from_utf8_lossy(&output.stdout).trim().to_string();
         match code.as_str() {
-            "200" => Ok(ApiKeyCheck { valid: true, message: "Key verified".to_string() }),
-            "401" => Ok(ApiKeyCheck { valid: false, message: "Invalid API key".to_string() }),
-            "" => Ok(ApiKeyCheck { valid: false, message: "Network error reaching Anthropic".to_string() }),
-            other => Ok(ApiKeyCheck { valid: false, message: format!("Unexpected response ({other})") }),
+            "200" => Ok(ApiKeyCheck { valid: true, unverifiable: false, message: "Key verified".to_string() }),
+            "401" => Ok(ApiKeyCheck { valid: false, unverifiable: false, message: "Invalid API key".to_string() }),
+            "" => Ok(ApiKeyCheck { valid: false, unverifiable: true, message: "Network error reaching Anthropic".to_string() }),
+            other => Ok(ApiKeyCheck { valid: false, unverifiable: true, message: format!("Unexpected response ({other})") }),
         }
     })
     .await?
@@ -323,8 +360,25 @@ pub struct DiscoveredLogin {
 ///
 /// Same discover-on-disk-then-import shape as
 /// `commands::settings::list_discoverable_memory_files`.
+///
+/// **Only Claude has this convention**, and the `provider` argument exists to
+/// say so. What it scans for is `~/.claude*` holding a `.claude.json`, which
+/// means nothing to any other CLI — before this took a provider it ran for all
+/// of them, so choosing Codex or opencode opened a screen hunting for Claude
+/// logins, finding none, and looking like nothing had happened. Worse, on a
+/// machine that *did* have them they were offered for adoption, which would
+/// have pointed a non-Claude account at a Claude config directory.
+///
+/// opencode is deliberately absent even though it does keep a default login at
+/// `~/.local/share/opencode/auth.json`. Adopting it would mean aiming
+/// `XDG_DATA_HOME` at the *shared* `~/.local/share`, so that account and every
+/// other one would write the same `auth.json` — the isolation this provider was
+/// added for, undone at the moment of creation.
 #[tauri::command]
-pub async fn list_discoverable_logins<R: Runtime>(app: AppHandle<R>) -> Result<Vec<DiscoveredLogin>, String> {
+pub async fn list_discoverable_logins<R: Runtime>(app: AppHandle<R>, provider: String) -> Result<Vec<DiscoveredLogin>, String> {
+    if !can_adopt_existing_login(&provider) {
+        return Ok(Vec::new());
+    }
     crate::blocking::run_blocking(move || {
         let db = app.state::<DbConnection>();
         let taken: Vec<String> = {
@@ -749,6 +803,38 @@ pub async fn delete_account(app: AppHandle, id: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Adoption is offered for the Claude family and nobody else, and the
+    /// interesting half is the *negative*: offering it to a provider whose
+    /// discovery returns nothing is what leaves someone on an empty step with
+    /// no obvious way forward — which is how this was reported ("it doesn't
+    /// open anything").
+    ///
+    /// opencode is the case worth pinning. It does keep a default login, so the
+    /// tempting fix is to offer it; adopting it would point that account's
+    /// `XDG_DATA_HOME` at the shared `~/.local/share` and put every opencode
+    /// account back in one credential file.
+    #[test]
+    fn only_the_claude_family_can_adopt_an_existing_login() {
+        assert!(can_adopt_existing_login("claude"));
+        assert!(can_adopt_existing_login("kimi"), "Kimi is Claude Code pointed elsewhere — same directories");
+
+        for provider in ["opencode", "codex", "gemini", "grok", "nonesuch"] {
+            assert!(!can_adopt_existing_login(provider), "{provider} has no `.claude*` convention to adopt from");
+        }
+    }
+
+    /// The wizard reads this instead of repeating the list, so it has to travel
+    /// with availability rather than being a second source of truth.
+    #[test]
+    fn availability_carries_whether_adoption_is_possible() {
+        let list = list_available_providers();
+        let find = |p: &str| list.iter().find(|a| a.provider == p).unwrap_or_else(|| panic!("{p} must be offered"));
+
+        assert!(find("claude").can_adopt_login);
+        assert!(!find("opencode").can_adopt_login);
+        assert!(!find("codex").can_adopt_login);
+    }
     use rusqlite::Connection;
     use std::sync::Mutex as StdMutex;
 
