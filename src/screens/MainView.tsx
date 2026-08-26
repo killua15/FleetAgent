@@ -20,7 +20,7 @@ import { contextSeverity, contextSeverityColor, formatTokenCount, formatUsd } fr
 import { useClickOutside } from '../lib/useClickOutside';
 import { useRealUsage } from '../lib/useRealUsage';
 import { useNavigation } from '../nav/NavigationProvider';
-import { PROVIDER_META, type Account } from '../types/account';
+import { providerMeta, type Account } from '../types/account';
 import type {
   AccountUsageSummary,
   Effort,
@@ -291,7 +291,7 @@ export function MainView() {
               </div>
             )}
             {accounts.map((acc) => {
-              const meta = PROVIDER_META[acc.provider];
+              const meta = providerMeta(acc.provider);
               const accSessions = visibleSessions.filter((s) => s.accountId === acc.id);
               return (
                 <div className={styles.accountGroup} key={acc.id}>
@@ -489,7 +489,7 @@ function SessionPanelCard({
   onSubsessionCreated: (session: Session) => void;
   onOpenTerminal: () => void;
 }) {
-  const meta = PROVIDER_META[session.provider];
+  const meta = providerMeta(session.provider);
   const lastBlocks = blocks.slice(-4);
   const lastActivity = blocks.length > 0 ? blocks[blocks.length - 1].text : 'waiting for input…';
   const isRunning = session.status === 'running';

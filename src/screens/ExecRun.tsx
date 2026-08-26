@@ -4,7 +4,7 @@ import { invoke } from '../lib/invoke';
 import { Button } from '../components/ui/button';
 import { toastError, toastSuccess } from '../components/ErrorOverlay';
 import { useNavigation } from '../nav/NavigationProvider';
-import { PROVIDER_META, type Account } from '../types/account';
+import { providerMeta, type Account } from '../types/account';
 import type { AgentNode } from '../types/agentNode';
 import { BLOCK_TAG, type Project, type Session, type SessionBlock } from '../types/session';
 import styles from './ExecRun.module.css';
@@ -276,7 +276,7 @@ export function ExecRun() {
           {visibleNodes.map((n) => {
             const session = sessions.find((s) => s.nodeId === n.id);
             const account = session ? accounts.find((a) => a.id === session.accountId) : undefined;
-            const prov = account ? PROVIDER_META[account.provider] : null;
+            const prov = account ? providerMeta(account.provider) : null;
             const parent = n.parentId ? nodes.find((p) => p.id === n.parentId) : null;
             const blocks = session ? (blocksBySession[session.id] ?? []) : [];
             const lastBlock = blocks[blocks.length - 1];

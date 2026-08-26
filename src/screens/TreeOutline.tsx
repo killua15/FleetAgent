@@ -9,7 +9,7 @@ import { ConfirmDeleteDialog } from '../components/ConfirmDeleteDialog';
 import { useAgentTree, MAX_DEPTH, TEMPLATES, type Template } from '../hooks/useAgentTree';
 import { useNodeEditor } from '../hooks/useNodeEditor';
 import { useNavigation } from '../nav/NavigationProvider';
-import { PROVIDER_META, type Account } from '../types/account';
+import { providerMeta, UNKNOWN_PROVIDER_META, type Account } from '../types/account';
 import type { AgentNode, UpdateAgentNode } from '../types/agentNode';
 import type { Session } from '../types/session';
 import type { ProjectAccountRotation } from '../types/settings';
@@ -193,7 +193,7 @@ export function TreeOutline() {
 
         {ordered.map((n) => {
           const account = accounts.find((a) => a.id === n.accountId) ?? null;
-          const prov = account ? PROVIDER_META[account.provider] : null;
+          const prov = account ? providerMeta(account.provider) : null;
           const parent = n.parentId ? nodes.find((p) => p.id === n.parentId) : null;
           const isExpanded = expandedId === n.id;
           const canAdd = n.depth < MAX_DEPTH;
@@ -203,8 +203,8 @@ export function TreeOutline() {
                 <div className={styles.rowMain}>
                   <span className={styles.indent} style={{ width: n.depth * INDENT_PX }} />
                   {n.depth > 0 && <span className={styles.connector}>↳</span>}
-                  <span className={styles.provBadge} style={{ background: prov?.tintVar ?? 'var(--panel2)', color: prov?.colorVar ?? 'var(--dim)' }}>
-                    {prov?.letter ?? '?'}
+                  <span className={styles.provBadge} style={{ background: prov?.tintVar ?? UNKNOWN_PROVIDER_META.tintVar, color: prov?.colorVar ?? UNKNOWN_PROVIDER_META.colorVar }}>
+                    {prov?.letter ?? UNKNOWN_PROVIDER_META.letter}
                   </span>
                   <span className={styles.role}>{n.role}</span>
                   <span className={styles.promptPreview}>— {n.prompt || '(no prompt set)'}</span>

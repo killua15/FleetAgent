@@ -1,3 +1,5 @@
+import type { Provider } from './account';
+
 export type SessionMode = 'plan' | 'ask_edits' | 'auto_edit' | 'yolo';
 export type SessionStatus = 'waiting' | 'running' | 'reviewing' | 'done';
 export type BlockKind = 'you' | 'think' | 'edit' | 'cmd' | 'agent' | 'sum' | 'rev' | 'out';
@@ -34,7 +36,7 @@ export interface SessionView {
   worktreeKind: WorktreeKind | null;
   accountId: string;
   accountName: string;
-  provider: 'claude' | 'codex' | 'gemini' | 'grok';
+  provider: Provider;
   scope: 'work' | 'personal';
   model: string;
   effort: Effort;

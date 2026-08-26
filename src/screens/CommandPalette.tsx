@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboa
 import { invoke } from '../lib/invoke';
 import { useNavigation } from '../nav/NavigationProvider';
 import { useTheme } from '../theme/ThemeProvider';
-import { PROVIDER_META } from '../types/account';
+import { providerMeta } from '../types/account';
 import type { SessionView } from '../types/session';
 import styles from './CommandPalette.module.css';
 
@@ -123,7 +123,7 @@ export function CommandPalette() {
                 </span>
                 <span className={styles.rowProject}>{s.projectName}</span>
                 <span className={styles.spacer} />
-                <span className={styles.rowAccount} style={{ color: PROVIDER_META[s.provider].colorVar }}>
+                <span className={styles.rowAccount} style={{ color: providerMeta(s.provider).colorVar }}>
                   {s.accountName}
                 </span>
                 <span className={styles.rowStatus}>{s.status}</span>

@@ -4,7 +4,7 @@ import { AppTopBar } from '../components/AppTopBar';
 import { toastError } from '../components/ErrorOverlay';
 import { Button } from '../components/ui/button';
 import { useNavigation } from '../nav/NavigationProvider';
-import { PROVIDER_META, type Account } from '../types/account';
+import { providerMeta, type Account } from '../types/account';
 import type { Project } from '../types/session';
 import { TASK_SOURCE_META, type BoardTask, type TaskFetch, type TaskSource } from '../types/task';
 import type { TerminalInfo } from '../types/terminal';
@@ -270,7 +270,7 @@ export function TaskBoard() {
             <option value="">account…</option>
             {accounts.map((a) => (
               <option key={a.id} value={a.id}>
-                {a.name} · {PROVIDER_META[a.provider].name}
+                {a.name} · {providerMeta(a.provider).name}
               </option>
             ))}
           </select>

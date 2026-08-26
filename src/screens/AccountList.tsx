@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '../lib/invoke';
 import { useNavigation } from '../nav/NavigationProvider';
-import { PROVIDER_META, type Account } from '../types/account';
+import { providerMeta, type Account } from '../types/account';
 import type { AuthStatus } from '../types/login';
 import type { TerminalInfo } from '../types/terminal';
 import { Button } from '../components/ui/button';
@@ -114,7 +114,7 @@ export function AccountList() {
           <div className={styles.empty}>No accounts yet — add your first Claude, Codex or Gemini account.</div>
         )}
         {accounts.map((acc) => {
-          const meta = PROVIDER_META[acc.provider];
+          const meta = providerMeta(acc.provider);
           return (
             <div className={styles.row} key={acc.id}>
               <span className={styles.badge} style={{ background: meta.tintVar, color: meta.colorVar }}>

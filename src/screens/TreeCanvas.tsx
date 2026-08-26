@@ -10,7 +10,7 @@ import { useAgentTree, MAX_DEPTH, TEMPLATES } from '../hooks/useAgentTree';
 import { useElementWidth } from '../hooks/useElementWidth';
 import { useNodeEditor } from '../hooks/useNodeEditor';
 import { useNavigation } from '../nav/NavigationProvider';
-import { PROVIDER_META, type Account } from '../types/account';
+import { providerMeta, UNKNOWN_PROVIDER_META, type Account } from '../types/account';
 import type { AgentNode, UpdateAgentNode } from '../types/agentNode';
 import type { Session } from '../types/session';
 import type { ProjectAccountRotation } from '../types/settings';
@@ -292,7 +292,7 @@ export function TreeCanvas() {
             const p = pos[n.id];
             if (!p) return null;
             const account = accounts.find((a) => a.id === n.accountId) ?? null;
-            const prov = account ? PROVIDER_META[account.provider] : null;
+            const prov = account ? providerMeta(account.provider) : null;
             const session = sessions.find((s) => s.nodeId === n.id);
             const atMax = n.depth >= MAX_DEPTH;
             const isSel = n.id === selId;
@@ -309,9 +309,9 @@ export function TreeCanvas() {
                 <div className={styles.nodeHeader}>
                   <span
                     className={styles.nodeProvBadge}
-                    style={{ background: prov?.tintVar ?? 'var(--panel2)', color: prov?.colorVar ?? 'var(--dim)' }}
+                    style={{ background: prov?.tintVar ?? UNKNOWN_PROVIDER_META.tintVar, color: prov?.colorVar ?? UNKNOWN_PROVIDER_META.colorVar }}
                   >
-                    {prov?.letter ?? '?'}
+                    {prov?.letter ?? UNKNOWN_PROVIDER_META.letter}
                   </span>
                   <span className={styles.nodeRole}>{n.role}</span>
                   <span className={styles.spacer} />
