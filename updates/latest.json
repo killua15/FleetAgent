@@ -1,10 +1,10 @@
 {
-  "version": "0.6.8",
-  "notes": "Spend history now survives deleting a project or an account, the usage view covers any period instead of seven days, and two Macs on one profile finally add up.",
-  "pub_date": "2026-08-14T16:06:09.526713Z",
+  "version": "0.7.0",
+  "notes": "opencode joins as a provider, isolated per account by XDG_DATA_HOME and honest about what its plan mode covers. Folded terminal panels stay folded across a restart, and the crowding warning is yours to set. A graph group can index a scope's documents. And a provider added by a newer version no longer takes the screen down on an older one.",
+  "pub_date": "2026-08-26T19:14:47Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbEg1dy9JRENHR3RxdStVRnlwQ1ZYV2h5YUpZeVFhUTRLOEh6NmR1SjFvUDg1UENsUVd5UCtWbFZLemNTb2Q5T1d2TnRSTjJsd1hucmhzZWFFVE5PQlFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NzIzNTY5CWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKTUxzNTFiM2Q3SXMzNUY1Q2FOU3dLU1U5TzFLWEFqTk9KVjIxdFMrSjZPR01aLzRhUmwySi9NY0Z0V0ZPWmpIeFRLdUw3Uk1RZ2lldTcyZzRMSDIyRFE9PQo=",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbEV1RWtuSEFHOTdMM1FEZXRWTTFTSXg0S3RTUDYzVks0d3p3WmlFdVRkenVHZTRVaGxudTlrb0pDN1JsekxNUVFRUEJsUDd1MEpmTVJOV2ZvM0EzOHdNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3NzcxNjU3CWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKTDlQT09tU0NxdmlLKzRpU0RrSEpUTXBORzJNWkx5ZXJ5RUNtb2NWN2lZWnEvQlI4TU1UYkR2YnVKWGxDYzQ3akVTRUdkbGNuMlNFRURsZ25uRXpxQlE9PQo=",
       "url": "https://api.github.com/repos/killua15/FleetAgent/contents/updates/Hangar.app.tar.gz"
     }
   }
