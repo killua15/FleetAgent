@@ -1,5 +1,6 @@
 export interface ProviderAvailability {
   provider: string;
+  /** Its CLI is on PATH. Fixable by the user: go and install it. */
   available: boolean;
   /** Whether step 3 can offer logins already on this machine. Comes from Rust
    * so the two sides cannot disagree — a wizard that offers adoption while the
@@ -8,6 +9,9 @@ export interface ProviderAvailability {
   /** Whether an account can be created with no credential at all. True only for
    * opencode, which ships free models and genuinely runs without one. */
   keyOptional: boolean;
+  /** Hangar can run it as a specific account. Not fixable by the user — it's
+   * a gap in Hangar, so the wizard says so rather than implying otherwise. */
+  supported: boolean;
 }
 
 export interface ApiKeyCheck {

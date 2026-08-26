@@ -14,9 +14,11 @@ concurrency:
 
 jobs:
   build:
-    # macOS is the platform Hangar actually targets — `open -a Terminal`, the
-    # `resolve_binary` search paths, and the worktree cleanup all assume it —
-    # so testing anywhere else would be testing a configuration nobody runs.
+    # macOS is the platform Hangar is developed on and the one most of its
+    # assumptions were written against — `open -a Terminal`, the `resolve_binary`
+    # search paths, the worktree cleanup — so this is the job that has to stay
+    # green. Windows and Linux each have their own job below; between them they
+    # cover the three targets `release.yml` ships.
     runs-on: macos-latest
 
     steps:
@@ -132,3 +134,67 @@ jobs:
       - name: Compile backend and its tests
         working-directory: src-tauri
         run: cargo test --no-run
+
+  # Linux became a shipped target when `release.yml` grew an AppImage, and it is
+  # the one platform where the tests can actually *run* in CI — unlike Windows,
+  # which can only compile them (see above).
+  #
+  # Expect this to be the job that finds the macOS assumptions the README already
+  # admits to: `open -a Terminal`, `scutil --get ComputerName`, the `resolve_binary`
+  # search paths. That is the point of adding it. A red run here means a Linux
+  # build is not ready to hand to a beta tester, which is worth knowing before
+  # someone installs one, not after.
+  #
+  # `ubuntu-22.04` and not `ubuntu-latest`, matching `release.yml`: testing on a
+  # newer glibc than the one releases are built against tests a configuration
+  # nobody receives.
+  linux:
+    runs-on: ubuntu-22.04
+    name: Linux (test)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Same set as the release workflow — kept in sync by hand, because a
+      # missing one fails at link time with an error that names a `.pc` file
+      # rather than a package.
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf \
+            build-essential \
+            file \
+            wget
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # Same ordering constraint as the other jobs: `tauri-build` resolves
+      # `frontendDist` (../dist) at compile time.
+      - name: Build frontend
+        run: npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: linux
+
+      - name: Match the default branch developers have configured
+        run: git config --global init.defaultBranch main
+
+      - name: Test backend
+        working-directory: src-tauri
+        run: cargo test
