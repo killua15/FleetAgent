@@ -3,21 +3,28 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hangar — mission control for your coding agents</title>
-<meta name="description" content="Hangar reparte tus cuentas de agentes: rotación automática al agotarse la cuota, y la conversación sobrevive al cambio.">
+<title>Hangar — que tu suscripción de agentes no te pare</title>
+<meta name="description" content="Varios agentes en paralelo, cada uno en su worktree y bajo su propia cuenta. Un abanico de cinco gasta cinco cuotas, no una cinco veces más rápido.">
 <!--
   Una sola página, sin build y sin CDN: se abre con doble clic.
 
-  La paleta y las fuentes están copiadas de `src/styles/tokens.css`, no
-  aproximadas, para que quien llegue aquí y luego abra la app reconozca el mismo
-  producto. Dark es el tema por defecto de Hangar, así que es el `:root` de aquí
-  también, y el claro entra por `prefers-color-scheme` en vez de por un botón:
-  el tema es del sistema, el idioma es del lector.
+  Tres decisiones que explican cómo está hecha:
 
-  Bilingüe con un solo árbol DOM: cada texto traducible aparece dos veces, en un
-  `<span lang="es">` y un `<span lang="en">`, y el CSS oculta el que no toca
-  según el `lang` del documento. Dos páginas paralelas se desincronizan a la
-  tercera edición; así quien escribe ve las dos versiones juntas.
+  1. La paleta, las fuentes y los badges de proveedor salen de la app —
+     `src/styles/tokens.css` y `src/types/account.ts` — copiados, no
+     aproximados. Quien lea esto y luego abra Hangar reconoce el mismo producto.
+
+  2. El mockup del hero es **la interfaz de verdad reconstruida en HTML**, no
+     una captura ni un placeholder. No hay capturas hechas todavía, y un hueco
+     gris es peor que nada; pero la alternativa a una captura no es «ninguna
+     imagen», es dibujar la interfaz con los mismos tokens que la pintan. Lo que
+     enseña —  una cuenta agotada y la rotación continuando— es exactamente el
+     argumento de la página.
+
+  3. Bilingüe con diccionario y claves `data-i18n`, no duplicando el markup: con
+     este volumen de texto, dos copias de cada frase entre las etiquetas se
+     desincronizan a la tercera edición. `apply()` escribe nodos de texto
+     reales, seleccionables y legibles por un lector de pantalla.
 -->
 <style>
   :root {
@@ -27,9 +34,13 @@
     --acc: #b48cff; --accD: rgba(180, 140, 255, 0.13);
     --teal: #3ecfc0; --tealD: rgba(62, 207, 192, 0.12);
     --amber: #e0a458; --amberD: rgba(224, 164, 88, 0.12);
+    --red: #e56a7b; --redD: rgba(229, 106, 123, 0.12);
     --grn: #5fd39a; --grnD: rgba(95, 211, 154, 0.12);
-    --font-ui: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
-    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+    --on-acc: #14121c;
+    --shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+    --glow: radial-gradient(1100px 520px at 50% -120px, rgba(180, 140, 255, 0.2), transparent 68%);
+    --font-ui: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 
   @media (prefers-color-scheme: light) {
@@ -40,238 +51,804 @@
       --acc: #7d4fd6; --accD: rgba(125, 79, 214, 0.1);
       --teal: #0f9c8f; --tealD: rgba(15, 156, 143, 0.1);
       --amber: #b07a2a; --amberD: rgba(176, 122, 42, 0.12);
+      --red: #c94459; --redD: rgba(201, 68, 89, 0.1);
       --grn: #1f9d63; --grnD: rgba(31, 157, 99, 0.1);
+      --on-acc: #ffffff;
+      --shadow: 0 30px 80px rgba(30, 30, 60, 0.16);
+      --glow: radial-gradient(1100px 520px at 50% -120px, rgba(125, 79, 214, 0.13), transparent 68%);
     }
   }
 
   * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
 
   body {
     margin: 0;
-    background: var(--bg);
+    background: var(--bg) var(--glow) no-repeat;
     color: var(--txt);
     font-family: var(--font-ui);
-    line-height: 1.6;
+    line-height: 1.62;
     -webkit-font-smoothing: antialiased;
   }
 
-  /* Un solo ancho de lectura para todo. Una landing que alterna anchos por
-     sección se lee como tres páginas pegadas. */
-  .wrap { max-width: 760px; margin: 0 auto; padding: 0 22px; }
+  .wrap { max-width: 1020px; margin: 0 auto; padding: 0 24px; }
+  /* El texto en una medida corta aunque el mockup vaya ancho: una línea de 100
+     caracteres no se lee, por mucho sitio que haya. */
+  .prose { max-width: 640px; }
 
-  header { padding: 56px 0 8px; }
-
-  .topline {
-    display: flex; align-items: center; gap: 12px;
-    margin-bottom: 40px;
+  /* ── nav ────────────────────────────────────────────────────── */
+  .nav {
+    position: sticky; top: 0; z-index: 20;
+    /* Fallback opaco primero: si `color-mix` no se entiende, la declaración se
+       descarta entera y la barra se quedaría sin fondo — ilegible sobre el
+       contenido que pasa por debajo. Con el desenfoque pasa lo mismo y no
+       importa: sin él solo se pierde el efecto, no la legibilidad. */
+    background: var(--bg);
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    backdrop-filter: blur(14px) saturate(140%);
+    border-bottom: 1px solid transparent;
+    transition: border-color 180ms ease;
   }
-
-  .mark { font: 400 20px var(--font-mono); color: var(--acc); }
+  .nav.stuck { border-bottom-color: var(--line); }
+  .navIn { display: flex; align-items: center; gap: 12px; height: 56px; }
+  .mark { font: 400 18px var(--font-mono); color: var(--acc); }
   .wordmark { font: 600 15px var(--font-ui); letter-spacing: -0.01em; }
+  .pill {
+    font: 500 9px var(--font-mono); letter-spacing: 0.12em;
+    color: var(--amber); background: var(--amberD);
+    border: 1px solid rgba(224, 164, 88, 0.3);
+    border-radius: 100px; padding: 3px 9px; white-space: nowrap;
+  }
   .spacer { flex: 1; }
-
+  .navLink { font-size: 13px; color: var(--mut); text-decoration: none; }
+  .navLink:hover { color: var(--txt); }
   .langbtn {
-    font: 500 11px var(--font-mono);
-    color: var(--mut); background: transparent;
-    border: 1px solid var(--line2); border-radius: 6px;
-    padding: 4px 9px; cursor: pointer;
+    font: 500 11px var(--font-mono); color: var(--mut);
+    background: transparent; border: 1px solid var(--line2);
+    border-radius: 6px; padding: 4px 10px; cursor: pointer;
   }
   .langbtn:hover { border-color: var(--acc); color: var(--acc); }
+  @media (max-width: 700px) { .navLink { display: none; } }
 
+  /* ── hero ───────────────────────────────────────────────────── */
+  header { padding: 74px 0 0; text-align: center; }
   h1 {
-    font: 600 clamp(26px, 5.4vw, 40px) var(--font-ui);
-    line-height: 1.15; letter-spacing: -0.02em;
-    margin: 0 0 18px; max-width: 22ch;
+    font: 600 clamp(33px, 6.6vw, 58px) var(--font-ui);
+    line-height: 1.05; letter-spacing: -0.033em;
+    margin: 0 auto 22px; max-width: 20ch;
   }
-  h1 em { font-style: normal; color: var(--acc); }
+  h1 b { color: var(--acc); font-weight: 600; }
+  .lede {
+    font-size: 17.5px; color: var(--mut);
+    margin: 0 auto; max-width: 60ch;
+  }
+  .ctaRow {
+    display: flex; gap: 11px; justify-content: center;
+    flex-wrap: wrap; margin: 30px 0 8px;
+  }
+  .btnA, .btnB {
+    font: 500 14px var(--font-ui); text-decoration: none;
+    border-radius: 9px; padding: 11px 22px; white-space: nowrap;
+  }
+  .btnA { color: var(--on-acc); background: var(--acc); }
+  .btnA:hover { filter: brightness(1.09); }
+  .btnB { color: var(--txt); border: 1px solid var(--line2); }
+  .btnB:hover { border-color: var(--acc); color: var(--acc); }
+  .ctaSub { font: 400 12px var(--font-mono); color: var(--dim); }
 
-  .lede { font-size: 16.5px; color: var(--mut); margin: 0; max-width: 58ch; }
+  /* ── mockup de la app ───────────────────────────────────────── */
+  .shot {
+    margin: 46px 0 0; border: 1px solid var(--line2);
+    border-radius: 14px; overflow: hidden;
+    background: var(--bg2); box-shadow: var(--shadow);
+    text-align: left;
+  }
+  .shotBar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 13px; background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  .dots { display: flex; gap: 6px; }
+  .dots i { width: 9px; height: 9px; border-radius: 50%; display: block; }
+  .shotMark { font: 400 12px var(--font-mono); color: var(--acc); }
+  .shotNav { display: flex; gap: 3px; margin-left: 6px; flex-wrap: wrap; }
+  .shotNav span {
+    font: 500 10.5px var(--font-ui); color: var(--dim);
+    padding: 2px 8px; border-radius: 5px; white-space: nowrap;
+  }
+  .shotNav .on { color: var(--acc); background: var(--accD); }
+  .shotMode {
+    font: 500 9.5px var(--font-mono); color: var(--grn);
+    background: var(--grnD); border-radius: 5px; padding: 2px 7px;
+  }
 
+  .shotGrid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 1px;
+    background: var(--line);
+  }
+  .pane { background: var(--bg2); padding: 11px 13px 13px; min-width: 0; }
+  .paneHead { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
+  .badge {
+    font: 600 9.5px var(--font-mono); width: 17px; height: 17px;
+    border-radius: 5px; display: grid; place-items: center; flex: none;
+  }
+  .bC { color: var(--acc); background: var(--accD); }
+  .bX { color: var(--teal); background: var(--tealD); }
+  .paneName { font: 500 11.5px var(--font-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .paneBranch { font: 400 10px var(--font-mono); color: var(--dim); white-space: nowrap; }
+  .tag { font: 500 9px var(--font-mono); border-radius: 4px; padding: 1px 6px; margin-left: auto; flex: none; }
+  .tOk { color: var(--grn); background: var(--grnD); }
+  .tRun { color: var(--acc); background: var(--accD); }
+  .tOut { color: var(--red); background: var(--redD); }
+  .tNew { color: var(--amber); background: var(--amberD); }
+
+  .term { font: 400 10.5px/1.75 var(--font-mono); color: var(--mut); }
+  .term div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .term .pr { color: var(--acc); }
+  .term .ad { color: var(--grn); }
+  .term .rm { color: var(--red); }
+  .term .cost { color: var(--teal); }
+  .term .warn { color: var(--amber); }
+
+  /* La franja de cuota es el remate del mockup: es donde se ve una cuenta a
+     cero y la siguiente recogiendo el trabajo. */
+  .shotQuota {
+    display: flex; gap: 18px; flex-wrap: wrap;
+    padding: 11px 14px; background: var(--panel);
+    border-top: 1px solid var(--line);
+  }
+  .q { display: flex; align-items: center; gap: 8px; min-width: 150px; }
+  .qName { font: 400 10px var(--font-mono); color: var(--dim); white-space: nowrap; }
+  .qBar { width: 58px; height: 4px; border-radius: 3px; background: var(--line2); overflow: hidden; flex: none; }
+  .qBar i { display: block; height: 100%; border-radius: 3px; }
+  .qPct { font: 500 10px var(--font-mono); }
+
+  @media (max-width: 620px) {
+    .shotGrid { grid-template-columns: 1fr; }
+    .shotGrid .pane:nth-child(n+3) { display: none; }
+  }
+
+  /* ── el argumento ───────────────────────────────────────────── */
+  .claim {
+    margin: 74px auto 0; padding: 24px 26px; max-width: 720px;
+    background: var(--panel);
+    border: 1px solid var(--line); border-left: 2px solid var(--acc);
+    border-radius: 0 12px 12px 0;
+    font-size: 17px;
+  }
+  .claim b { color: var(--txt); font-weight: 600; }
+  .claim small { display: block; margin-top: 11px; font: 400 13px var(--font-ui); color: var(--dim); }
+
+  .fan { margin: 26px auto 0; max-width: 720px; }
+  .fan svg { width: 100%; height: auto; display: block; }
+  .fan text { font: 500 9.5px var(--font-mono); fill: var(--mut); }
+  .fan .lbl { fill: var(--dim); font-size: 8px; letter-spacing: 0.12em; }
+  .fan .node { fill: var(--panel); stroke: var(--line2); }
+  .fan .wire { stroke: var(--acc); fill: none; opacity: 0.5; }
+  .fan .acct { fill: var(--acc); font-size: 9px; }
+
+  /* ── secciones ──────────────────────────────────────────────── */
   h2 {
-    font: 600 10px var(--font-mono);
-    letter-spacing: 0.18em; color: var(--dim);
-    margin: 56px 0 16px; text-transform: uppercase;
+    font: 600 9.5px var(--font-mono); letter-spacing: 0.22em;
+    color: var(--dim); text-transform: uppercase;
+    margin: 82px 0 8px;
   }
-
+  .h2sub { font-size: 16px; color: var(--mut); margin: 0 0 22px; max-width: 62ch; }
   p { margin: 0 0 14px; }
 
   .card {
     background: var(--panel); border: 1px solid var(--line);
-    border-radius: 10px; padding: 18px 20px; margin-bottom: 10px;
+    border-radius: 12px; padding: 19px 21px;
   }
   .card h3 { font: 600 14.5px var(--font-ui); margin: 0 0 6px; }
   .card p { font-size: 13.5px; color: var(--mut); margin: 0; }
-
-  /* El detalle técnico en monospace: es lo que hace creíble la afirmación de
-     arriba, y quien lo reconoce es exactamente el lector objetivo. */
   .proof {
-    display: block; margin-top: 9px;
-    font: 400 11.5px var(--font-mono); color: var(--teal);
+    display: block; margin-top: 10px;
+    font: 400 11px var(--font-mono); color: var(--teal);
+    word-break: break-word;
   }
 
-  .grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
-  .grid .card { margin: 0; }
+  .stack { display: flex; flex-direction: column; gap: 11px; }
+  .grid { display: grid; gap: 11px; grid-template-columns: repeat(auto-fit, minmax(248px, 1fr)); }
 
+  /* ── comparativa ────────────────────────────────────────────── */
+  .cmp { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  .cmp th, .cmp td { text-align: left; padding: 13px 14px; border-bottom: 1px solid var(--line); }
+  .cmp thead th {
+    font: 600 9.5px var(--font-mono); letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--dim);
+  }
+  .cmp tbody th { font-weight: 500; color: var(--txt); }
+  .cmp td { color: var(--mut); }
+  .yes { color: var(--grn); font-weight: 600; }
+  .no { color: var(--dim); }
+  .cmpWrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+  .cmp tbody tr:last-child th, .cmp tbody tr:last-child td { border-bottom: 0; }
+
+  /* ── cifras ─────────────────────────────────────────────────── */
+  .stats {
+    display: grid; gap: 1px; margin: 22px 0 0;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    background: var(--line); border: 1px solid var(--line);
+    border-radius: 12px; overflow: hidden;
+  }
+  .stat { background: var(--panel); padding: 18px 20px; }
+  .stat b { display: block; font: 600 24px var(--font-mono); color: var(--acc); letter-spacing: -0.03em; }
+  .stat span { font-size: 12px; color: var(--dim); line-height: 1.45; display: block; }
+
+  /* ── faq ────────────────────────────────────────────────────── */
+  details {
+    border: 1px solid var(--line); border-radius: 11px;
+    background: var(--panel); padding: 0 18px; margin-bottom: 9px;
+  }
+  summary {
+    font: 500 14px var(--font-ui); cursor: pointer;
+    padding: 15px 0; list-style: none; display: flex; gap: 12px; align-items: baseline;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: '+'; color: var(--acc); font: 400 15px var(--font-mono); flex: none; }
+  details[open] summary::before { content: '−'; }
+  details p { font-size: 13.5px; color: var(--mut); margin: 0 0 16px 24px; }
+
+  /* ── honestidad ─────────────────────────────────────────────── */
   .honest {
+    border: 1px solid rgba(224, 164, 88, 0.3);
     border-left: 2px solid var(--amber);
     background: var(--amberD);
-    border-radius: 0 8px 8px 0;
-    padding: 16px 20px;
+    border-radius: 0 12px 12px 0; padding: 4px 24px 20px;
   }
-  .honest ul { margin: 0; padding-left: 18px; }
-  .honest li { font-size: 13.5px; color: var(--mut); margin-bottom: 7px; }
-  .honest li:last-child { margin-bottom: 0; }
+  .honest ul { margin: 0; padding-left: 17px; }
+  .honest li { font-size: 13.5px; color: var(--mut); margin-top: 11px; }
   .honest strong { color: var(--txt); font-weight: 600; }
 
+  /* ── cta final ──────────────────────────────────────────────── */
   .cta {
-    margin: 44px 0 0; padding: 26px 22px;
-    background: var(--panel2); border: 1px solid var(--line);
-    border-radius: 10px; text-align: center;
+    margin: 76px 0 0; padding: 44px 26px;
+    background: var(--panel2); border: 1px solid var(--line2);
+    border-radius: 14px; text-align: center;
   }
-  .cta h3 { font: 600 17px var(--font-ui); margin: 0 0 8px; }
-  .cta p { font-size: 13.5px; color: var(--mut); margin: 0 auto; max-width: 44ch; }
-  .invite {
-    display: inline-block; margin-top: 16px;
-    font: 500 13px var(--font-ui); color: var(--bg);
-    background: var(--acc); border-radius: 7px;
-    padding: 9px 18px; text-decoration: none;
-  }
-  .invite:hover { filter: brightness(1.08); }
+  .cta h3 { font: 600 25px var(--font-ui); margin: 0 0 11px; letter-spacing: -0.022em; }
+  .cta p { font-size: 14.5px; color: var(--mut); margin: 0 auto; max-width: 48ch; }
+  .ctaNote { display: block; margin-top: 14px; font: 400 11.5px var(--font-mono); color: var(--dim); }
 
   footer {
-    margin: 52px 0 44px; padding-top: 20px;
+    margin: 64px 0 48px; padding-top: 22px;
     border-top: 1px solid var(--line);
     font: 400 11.5px var(--font-mono); color: var(--dim);
-    display: flex; gap: 14px; flex-wrap: wrap;
+    display: flex; gap: 16px; flex-wrap: wrap;
   }
-
-  /* El idioma inactivo se oculta, pero existe en el DOM: el texto sigue siendo
-     seleccionable, copiable y legible por un lector de pantalla, que es lo que
-     un `content: attr()` habría roto. Se apoya en el atributo `lang` estándar,
-     así que el idioma también queda declarado correctamente para el navegador.
-     `html[lang]` no se oculta a sí mismo: el selector exige descendiente. */
-  html[lang='es'] [lang='en'],
-  html[lang='en'] [lang='es'] { display: none; }
 </style>
 </head>
 <body>
+
+<div class="nav" id="nav"><div class="wrap navIn">
+  <span class="mark">⌥</span>
+  <span class="wordmark">hangar</span>
+  <span class="pill" data-i18n="badge"></span>
+  <span class="spacer"></span>
+  <a class="navLink" href="#pillars" data-i18n="navHow"></a>
+  <a class="navLink" href="#numbers" data-i18n="navNumbers"></a>
+  <a class="navLink" href="#faq">FAQ</a>
+  <button class="langbtn" id="lang" type="button">EN</button>
+</div></div>
+
 <div class="wrap">
 
   <header>
-    <div class="topline">
-      <span class="mark">⌥</span>
-      <span class="wordmark">hangar</span>
-      <span class="spacer"></span>
-      <button class="langbtn" id="lang" type="button">EN / ES</button>
+    <h1 data-i18n-html="h1"></h1>
+    <p class="lede" data-i18n="lede"></p>
+    <div class="ctaRow">
+      <a class="btnA" href="mailto:dsalinas@technomar.com.br?subject=Hangar%20beta" data-i18n="ctaBtn"></a>
+      <a class="btnB" href="#pillars" data-i18n="ctaSee"></a>
+    </div>
+    <span class="ctaSub" data-i18n="ctaSub"></span>
+
+    <!-- La interfaz real reconstruida: cuatro agentes en paralelo, cada uno con
+         su cuenta, y una cuenta a cero con el trabajo continuando en otra. -->
+    <div class="shot">
+      <div class="shotBar">
+        <span class="dots"><i style="background:#f45c57"></i><i style="background:#f0b62f"></i><i style="background:#39c451"></i></span>
+        <span class="shotMark">⌥ hangar</span>
+        <span class="shotNav">
+          <span class="on">Terminals</span><span>Tasks</span><span>PRs</span><span>Git</span><span>Usage</span>
+        </span>
+        <span class="spacer"></span>
+        <span class="shotMode">ask-edits</span>
+      </div>
+
+      <div class="shotGrid">
+        <div class="pane">
+          <div class="paneHead">
+            <span class="badge bC">C</span>
+            <span class="paneName">work · api-gateway</span>
+            <span class="paneBranch">feat/rate-limit</span>
+            <span class="tag tRun" data-i18n="mkRun"></span>
+          </div>
+          <div class="term">
+            <div><span class="pr">›</span> claude</div>
+            <div data-i18n="mkEditing"></div>
+            <div><span class="ad">+128</span> <span class="rm">−14</span> · <span class="cost">$0.31</span></div>
+          </div>
+        </div>
+
+        <div class="pane">
+          <div class="paneHead">
+            <span class="badge bC">C</span>
+            <span class="paneName">personal · dashboard</span>
+            <span class="paneBranch">feat/charts</span>
+            <span class="tag tOk">✓</span>
+          </div>
+          <div class="term">
+            <div><span class="pr">›</span> claude --resume</div>
+            <div data-i18n="mkDone"></div>
+            <div><span class="ad">+64</span> <span class="rm">−9</span> · <span class="cost">$0.12</span></div>
+          </div>
+        </div>
+
+        <div class="pane">
+          <div class="paneHead">
+            <span class="badge bC">C</span>
+            <span class="paneName">work-2 · api-gateway</span>
+            <span class="paneBranch">feat/retries</span>
+            <span class="tag tNew" data-i18n="mkRotated"></span>
+          </div>
+          <div class="term">
+            <div><span class="warn">⚠</span> <span data-i18n="mkExhausted"></span></div>
+            <div><span class="pr">›</span> claude --resume <span class="cost">← work-2</span></div>
+            <div data-i18n="mkContinues"></div>
+          </div>
+        </div>
+
+        <div class="pane">
+          <div class="paneHead">
+            <span class="badge bX">X</span>
+            <span class="paneName">work · infra</span>
+            <span class="paneBranch">chore/tf-upgrade</span>
+            <span class="tag tRun" data-i18n="mkRun"></span>
+          </div>
+          <div class="term">
+            <div><span class="pr">›</span> codex</div>
+            <div data-i18n="mkPlanning"></div>
+            <div><span class="cost">$0.07</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="shotQuota">
+        <span class="q">
+          <span class="qName">work</span>
+          <span class="qBar"><i style="width:100%;background:var(--red)"></i></span>
+          <span class="qPct" style="color:var(--red)">100%</span>
+        </span>
+        <span class="q">
+          <span class="qName">work-2</span>
+          <span class="qBar"><i style="width:34%;background:var(--grn)"></i></span>
+          <span class="qPct" style="color:var(--grn)">34%</span>
+        </span>
+        <span class="q">
+          <span class="qName">personal</span>
+          <span class="qBar"><i style="width:61%;background:var(--amber)"></i></span>
+          <span class="qPct" style="color:var(--amber)">61%</span>
+        </span>
+        <span class="spacer"></span>
+        <span class="qName" data-i18n="mkForecast"></span>
+      </div>
     </div>
 
-    <h1><span lang="es">Que tu suscripción de agentes no te pare.</span><span lang="en">Your agent subscription shouldn't stop you.</span></h1>
+    <div class="claim">
+      <span data-i18n-html="claim"></span>
+      <small data-i18n="claimWhy"></small>
+    </div>
 
-    <p class="lede"><span lang="es">Hangar corre varias terminales de agente en paralelo, cada una en su propio worktree de git y bajo la cuenta que le toca. Cuando una cuenta se queda sin cuota, sigue con otra — y la conversación no se pierde.</span><span lang="en">Hangar runs several agent terminals in parallel, each in its own git worktree and under the account it's meant to use. When one account runs out of quota, it carries on with another — and the conversation survives the switch.</span></p>
+    <div class="fan">
+      <svg viewBox="0 0 640 168" role="img" aria-labelledby="fanTitle">
+        <title id="fanTitle" data-i18n="fanAlt"></title>
+        <text class="lbl" x="0" y="10" data-i18n="fanIn"></text>
+        <text class="lbl" x="430" y="10" data-i18n="fanOut"></text>
+        <rect class="node" x="0" y="62" width="122" height="34" rx="8"/>
+        <text x="14" y="84" data-i18n="fanPrompt"></text>
+        <path class="wire" d="M122 79 C 190 79, 196 24, 264 24"/>
+        <path class="wire" d="M122 79 C 190 79, 196 51, 264 51"/>
+        <path class="wire" d="M122 79 C 190 79, 210 79, 264 79"/>
+        <path class="wire" d="M122 79 C 190 79, 196 107, 264 107"/>
+        <path class="wire" d="M122 79 C 190 79, 196 134, 264 134"/>
+        <rect class="node" x="264" y="9" width="136" height="30" rx="7"/>
+        <text x="276" y="28">feat/a</text><text class="acct" x="430" y="28" data-i18n="fanAcct1"></text>
+        <rect class="node" x="264" y="36" width="136" height="30" rx="7"/>
+        <text x="276" y="55">feat/b</text><text class="acct" x="430" y="55" data-i18n="fanAcct2"></text>
+        <rect class="node" x="264" y="64" width="136" height="30" rx="7"/>
+        <text x="276" y="83">feat/c</text><text class="acct" x="430" y="83" data-i18n="fanAcct3"></text>
+        <rect class="node" x="264" y="92" width="136" height="30" rx="7"/>
+        <text x="276" y="111">feat/d</text><text class="acct" x="430" y="111" data-i18n="fanAcct4"></text>
+        <rect class="node" x="264" y="119" width="136" height="30" rx="7"/>
+        <text x="276" y="138">feat/e</text><text class="acct" x="430" y="138" data-i18n="fanAcct5"></text>
+      </svg>
+    </div>
   </header>
 
-  <h2><span lang="es">El problema</span><span lang="en">The problem</span></h2>
-  <p style="color: var(--mut); font-size: 15px;"><span lang="es">Los límites se agotan a mitad de una tarea. Cambias de cuenta a mano, el agente pierde el hilo de lo que estaba haciendo, y vuelves a explicarle el contexto desde cero. Si además reparte tres suscripciones entre trabajo y personal, nadie sabe cuál gastó qué.</span><span lang="en">Limits run out mid-task. You switch accounts by hand, the agent loses the thread of what it was doing, and you explain the context from scratch. And if you're juggling three subscriptions across work and personal, nobody knows which one spent what.</span></p>
-
-  <h2><span lang="es">Los tres pilares</span><span lang="en">The three pillars</span></h2>
-
-  <div class="card">
-    <h3><span lang="es">Aislamiento real por cuenta</span><span lang="en">Real per-account isolation</span></h3>
-    <p><span lang="es">Cada cuenta tiene su propio directorio de configuración del CLI. Dos cuentas nunca se pisan la sesión, y la frontera entre trabajo y personal se aplica, no solo se avisa.</span><span lang="en">Each account gets its own CLI config directory. Two accounts never overwrite each other's session, and the work/personal boundary is enforced rather than merely flagged.</span>
-      <span class="proof">CLAUDE_CONFIG_DIR · CODEX_HOME — one per account</span></p>
+  <h2 id="pillars" data-i18n="s1"></h2>
+  <p class="h2sub prose" data-i18n="s1sub"></p>
+  <div class="stack">
+    <div class="card">
+      <h3 data-i18n="p1t"></h3>
+      <p><span data-i18n="p1b"></span><span class="proof">CLAUDE_CONFIG_DIR · CODEX_HOME — uno por cuenta</span></p>
+    </div>
+    <div class="card">
+      <h3 data-i18n="p2t"></h3>
+      <p><span data-i18n="p2b"></span><span class="proof">auto · round_robin · manual — por proyecto y proveedor</span></p>
+    </div>
+    <div class="card">
+      <h3 data-i18n="p3t"></h3>
+      <p><span data-i18n="p3b"></span><span class="proof">transcript reubicado + --resume</span></p>
+    </div>
   </div>
 
-  <div class="card">
-    <h3><span lang="es">Rotación automática al agotarse</span><span lang="en">Automatic rotation on exhaustion</span></h3>
-    <p><span lang="es">Políticas por proyecto: qué cuentas puede usar y en qué orden. Cuando detecta que una está agotada, pasa a la siguiente permitida sin que tengas que estar mirando.</span><span lang="en">Per-project policies: which accounts it may use, and in what order. When it detects one is exhausted, it moves to the next allowed account without you watching.</span>
-      <span class="proof">auto · round_robin · manual — per project, per provider</span></p>
-  </div>
+  <h2 data-i18n="sCmp"></h2>
+  <p class="h2sub prose" data-i18n="sCmpSub"></p>
+  <div class="cmpWrap"><table class="cmp">
+    <thead><tr>
+      <th data-i18n="cmpH0"></th><th>Hangar</th><th data-i18n="cmpH2"></th>
+    </tr></thead>
+    <tbody>
+      <tr><th data-i18n="cmpR1"></th><td class="yes">✓</td><td class="no" data-i18n="cmpR1x"></td></tr>
+      <tr><th data-i18n="cmpR2"></th><td class="yes">✓</td><td class="no" data-i18n="cmpR2x"></td></tr>
+      <tr><th data-i18n="cmpR3"></th><td class="yes">✓</td><td class="no" data-i18n="cmpR3x"></td></tr>
+      <tr><th data-i18n="cmpR4"></th><td class="yes">✓</td><td class="no" data-i18n="cmpR4x"></td></tr>
+      <tr><th data-i18n="cmpR5"></th><td class="yes">✓</td><td class="no" data-i18n="cmpR5x"></td></tr>
+    </tbody>
+  </table></div>
 
-  <div class="card">
-    <h3><span lang="es">La conversación sobrevive al cambio</span><span lang="en">The conversation survives the switch</span></h3>
-    <p><span lang="es">Esto es lo que casi nadie hace: al cambiar de cuenta, el hilo se coloca donde el CLI de destino lo busca y se reanuda ahí. El agente sigue donde estaba.</span><span lang="en">This is the part almost nobody does: on an account switch, the transcript is placed where the destination CLI looks for it and resumed there. The agent picks up where it left off.</span>
-      <span class="proof">transcript relocated + --resume</span></p>
-  </div>
-
-  <h2><span lang="es">Y en el día a día</span><span lang="en">And day to day</span></h2>
-
+  <h2 data-i18n="s2"></h2>
+  <p class="h2sub prose" data-i18n="s2sub"></p>
   <div class="grid">
-    <div class="card">
-      <h3><span lang="es">Gasto en dólares, por turno</span><span lang="en">Spend in dollars, per turn</span></h3>
-      <p><span lang="es">No un porcentaje de cuota: lo que costó cada turno, en qué repositorio y con qué cuenta. Leído de los propios transcripts del CLI.</span><span lang="en">Not a quota percentage: what each turn cost, in which repo and under which account. Read from the CLI's own transcripts.</span></p>
-    </div>
-    <div class="card">
-      <h3><span lang="es">Cola que espera a la cuota</span><span lang="en">A queue that waits for quota</span></h3>
-      <p><span lang="es">Dejas trabajo encolado y arranca cuando vuelve la ventana, en vez de fallar contra ella.</span><span lang="en">Leave work queued and it starts when the window comes back, instead of failing against it.</span></p>
-    </div>
-    <div class="card">
-      <h3><span lang="es">Worktrees aislados</span><span lang="en">Isolated worktrees</span></h3>
-      <p><span lang="es">Cada agente en su rama y su directorio, así varios a la vez no se pelean por los mismos ficheros.</span><span lang="en">Each agent on its own branch and directory, so several at once never fight over the same files.</span></p>
-    </div>
-    <div class="card">
-      <h3><span lang="es">Cuatro modos de permiso</span><span lang="en">Four permission modes</span></h3>
-      <p><span lang="es">De solo lectura a sin preguntar, con cada llamada a herramienta pasando por aprobación si lo pides.</span><span lang="en">From read-only to no-questions-asked, with every tool call surfaced for approval if you want it.</span></p>
-    </div>
-    <div class="card">
-      <h3><span lang="es">Git y pull requests</span><span lang="en">Git and pull requests</span></h3>
-      <p><span lang="es">Diffs, ramas, crear PRs, y los comentarios de revisión de vuelta a la sesión que escribió el código.</span><span lang="en">Diffs, branches, opening PRs, and review comments sent back into the session that wrote the code.</span></p>
-    </div>
-    <div class="card">
-      <h3><span lang="es">Local primero</span><span lang="en">Local first</span></h3>
-      <p><span lang="es">El estado en SQLite y las credenciales en el llavero del sistema. Ni prompts ni transcripts ni ficheros salen de la máquina.</span><span lang="en">State in SQLite, credentials in the OS keychain. No prompt, transcript or file ever leaves the machine.</span></p>
-    </div>
+    <div class="card"><h3 data-i18n="e1t"></h3><p><span data-i18n="e1b"></span><span class="proof">leído del transcript del CLI, no estimado</span></p></div>
+    <div class="card"><h3 data-i18n="e2t"></h3><p><span data-i18n="e2b"></span><span class="proof">consumo/hora · horas restantes</span></p></div>
+    <div class="card"><h3 data-i18n="e3t"></h3><p data-i18n="e3b"></p></div>
+    <div class="card"><h3 data-i18n="e4t"></h3><p data-i18n="e4b"></p></div>
   </div>
 
-  <h2><span lang="es">Lo que todavía no es</span><span lang="en">What it isn't yet</span></h2>
+  <h2 data-i18n="s3"></h2>
+  <p class="h2sub prose" data-i18n="s3sub"></p>
+  <div class="grid">
+    <div class="card"><h3 data-i18n="f1t"></h3><p data-i18n="f1b"></p></div>
+    <div class="card"><h3 data-i18n="f2t"></h3><p data-i18n="f2b"></p></div>
+    <div class="card"><h3 data-i18n="f3t"></h3><p><span data-i18n="f3b"></span><span class="proof">plan · ask-edits · auto-edit · yolo</span></p></div>
+    <div class="card"><h3 data-i18n="f4t"></h3><p data-i18n="f4b"></p></div>
+    <div class="card"><h3 data-i18n="f5t"></h3><p data-i18n="f5b"></p></div>
+    <div class="card"><h3 data-i18n="f6t"></h3><p data-i18n="f6b"></p></div>
+  </div>
 
+  <h2 data-i18n="s4"></h2>
+  <p class="h2sub prose" data-i18n="s4sub"></p>
+  <div class="grid">
+    <div class="card"><h3 data-i18n="g1t"></h3><p><span data-i18n="g1b"></span><span class="proof">gh · glab, self-hosted incluido</span></p></div>
+    <div class="card"><h3 data-i18n="g2t"></h3><p data-i18n="g2b"></p></div>
+    <div class="card"><h3 data-i18n="g3t"></h3><p data-i18n="g3b"></p></div>
+    <div class="card"><h3 data-i18n="g4t"></h3><p><span data-i18n="g4b"></span><span class="proof">nada se escribe dentro de tu repositorio</span></p></div>
+    <div class="card"><h3 data-i18n="g5t"></h3><p data-i18n="g5b"></p></div>
+    <div class="card"><h3 data-i18n="g6t"></h3><p data-i18n="g6b"></p></div>
+  </div>
+
+  <h2 id="numbers" data-i18n="s5"></h2>
+  <div class="stats">
+    <div class="stat"><b>211</b><span data-i18n="n1"></span></div>
+    <div class="stat"><b>569</b><span data-i18n="n2"></span></div>
+    <div class="stat"><b>7</b><span data-i18n="n3"></span></div>
+    <div class="stat"><b>0</b><span data-i18n="n4"></span></div>
+  </div>
+
+  <h2 id="faq">FAQ</h2>
+  <details><summary data-i18n="q1"></summary><p data-i18n="a1"></p></details>
+  <details><summary data-i18n="q2"></summary><p data-i18n="a2"></p></details>
+  <details><summary data-i18n="q3"></summary><p data-i18n="a3"></p></details>
+  <details><summary data-i18n="q4"></summary><p data-i18n="a4"></p></details>
+  <details><summary data-i18n="q5"></summary><p data-i18n="a5"></p></details>
+
+  <h2 data-i18n="s6"></h2>
   <div class="honest">
     <ul>
-      <li><strong><span lang="es">Beta privada, por invitación.</span><span lang="en">Private beta, invite only.</span></strong>
-        <span lang="es">No hay descarga pública todavía.</span><span lang="en">There's no public download yet.</span></li>
-      <li><strong><span lang="es">Los binarios no están firmados.</span><span lang="en">The binaries aren't signed.</span></strong>
-        <span lang="es">En macOS hay que abrirla con clic derecho → Abrir la primera vez; en Windows, Más información → Ejecutar de todas formas. En Linux no hay ese aviso.</span><span lang="en">On macOS you right-click → Open the first time; on Windows, More info → Run anyway. Linux has no such gate.</span></li>
-      <li><strong><span lang="es">macOS y Linux hoy.</span><span lang="en">macOS and Linux today.</span></strong>
-        <span lang="es">Windows compila pero se prueba menos. En Linux hay .deb y .AppImage.</span><span lang="en">Windows builds but gets less testing. On Linux there's a .deb and an .AppImage.</span></li>
-      <li><strong><span lang="es">Claude Code y Codex.</span><span lang="en">Claude Code and Codex.</span></strong>
-        <span lang="es">Kimi, Grok y Gemini se reconocen, pero Hangar todavía no sabe comprobar su login, así que no puede distinguir una cuenta de otra.</span><span lang="en">Kimi, Grok and Gemini are recognised, but Hangar can't check their login state yet, so it can't tell two of their accounts apart.</span></li>
-      <li><strong><span lang="es">No hay companion móvil.</span><span lang="en">There's no mobile companion.</span></strong>
-        <span lang="es">El lado del escritorio está hecho; la app del teléfono no existe.</span><span lang="en">The desktop half is built; the phone app doesn't exist.</span></li>
+      <li><strong data-i18n="w1t"></strong> <span data-i18n="w1b"></span></li>
+      <li><strong data-i18n="w2t"></strong> <span data-i18n="w2b"></span></li>
+      <li><strong data-i18n="w3t"></strong> <span data-i18n="w3b"></span></li>
+      <li><strong data-i18n="w4t"></strong> <span data-i18n="w4b"></span></li>
+      <li><strong data-i18n="w5t"></strong> <span data-i18n="w5b"></span></li>
+      <li><strong data-i18n="w6t"></strong> <span data-i18n="w6b"></span></li>
     </ul>
   </div>
 
   <div class="cta">
-    <h3><span lang="es">¿Reparte varias suscripciones?</span><span lang="en">Juggling several subscriptions?</span></h3>
-    <p><span lang="es">Es para quien tiene dos o más cuentas de agentes y se queda parado a mitad de tarea. Si eres tú, escribe y te paso una invitación.</span><span lang="en">It's for people with two or more agent accounts who get stopped mid-task. If that's you, get in touch and I'll send an invite.</span></p>
-    <a class="invite" href="mailto:dsalinas@technomar.com.br?subject=Hangar%20beta"><span lang="es">Pedir una invitación</span><span lang="en">Ask for an invite</span></a>
+    <h3 data-i18n="ctaT"></h3>
+    <p data-i18n="ctaB"></p>
+    <div class="ctaRow">
+      <a class="btnA" href="mailto:dsalinas@technomar.com.br?subject=Hangar%20beta" data-i18n="ctaBtn"></a>
+    </div>
+    <span class="ctaNote" data-i18n="ctaNote"></span>
   </div>
 
   <footer>
     <span>hangar v0.6.8</span>
     <span>macOS · Linux · Windows</span>
     <span>AGPL-3.0</span>
-    <span lang="es">local-first</span><span lang="en">local-first</span>
+    <span data-i18n="foot"></span>
   </footer>
 
 </div>
 
 <script>
-  // El idioma se recuerda, porque nadie quiere volver a pulsarlo en cada
-  // visita; y se inicializa desde el navegador para que un lector inglés no
-  // aterrice en español.
-  const KEY = 'hangar.landing.lang';
-  const saved = localStorage.getItem(KEY);
-  const fromBrowser = (navigator.language || '').toLowerCase().startsWith('es') ? 'es' : 'en';
-  setLang(saved === 'es' || saved === 'en' ? saved : fromBrowser);
+  // Las dos versiones juntas, clave por clave: es la única disposición en la que
+  // quien edita una ve la otra y no la deja atrás.
+  const T = {
+    es: {
+      badge: 'BETA PRIVADA',
+      navHow: 'Cómo funciona', navNumbers: 'En números',
+      h1: 'Que tu suscripción de agentes <b>no te pare</b>.',
+      lede: 'Varias terminales de agente en paralelo, cada una en su propio worktree de git y bajo la cuenta que le toca. Cuando una se queda sin cuota, Hangar sigue con otra — y la conversación no se pierde.',
+      ctaBtn: 'Pedir una invitación',
+      ctaSee: 'Ver cómo funciona',
+      ctaSub: 'Trae tus propias suscripciones · macOS y Linux · sin telemetría',
 
-  function setLang(lang) {
+      mkRun: 'trabajando', mkRotated: 'rotó',
+      mkEditing: '● Editando src/limiter.rs…',
+      mkDone: '✓ Listo. 3 ficheros, tests en verde.',
+      mkExhausted: 'work se quedó sin cuota',
+      mkContinues: '● Sigue donde estaba, sin repetir contexto',
+      mkPlanning: '● Leyendo main.tf…',
+      mkForecast: 'a este ritmo: 2 h 10 min',
+
+      claim: 'Un abanico de cinco agentes gasta <b>cinco cuotas</b>, no una cinco veces más rápido.',
+      claimWhy: 'Eso solo lo puede hacer algo que ya le da a cada cuenta su propio directorio de configuración. Una herramienta con una única cuenta activa no puede, por muchos worktrees que corte.',
+      fanAlt: 'Un prompt se reparte a cinco ramas, cada una bajo su propia cuenta.',
+      fanIn: 'UN PROMPT', fanOut: 'SU PROPIA CUOTA', fanPrompt: 'una tarea',
+      fanAcct1: 'cuenta 1', fanAcct2: 'cuenta 2', fanAcct3: 'cuenta 3', fanAcct4: 'cuenta 4', fanAcct5: 'cuenta 5',
+
+      s1: 'Los tres pilares',
+      s1sub: 'Lo que ninguna otra herramienta junta, y de donde sale todo lo demás.',
+      p1t: 'Aislamiento real por cuenta',
+      p1b: 'Cada cuenta vive en su propio directorio de configuración del CLI. Dos cuentas nunca se pisan la sesión, y la frontera entre trabajo y personal se aplica, no solo se avisa.',
+      p2t: 'Rotación automática al agotarse',
+      p2b: 'Le dices a cada proyecto qué cuentas puede usar y en qué orden. Cuando detecta que una está agotada pasa a la siguiente permitida, sin que estés mirando. Nunca cambia una elección explícita que funciona.',
+      p3t: 'La conversación sobrevive al cambio',
+      p3b: 'Esto es lo que casi nadie hace: al cambiar de cuenta, el hilo se coloca donde el CLI de destino lo busca y se reanuda ahí. El agente sigue donde estaba, sin que le expliques nada otra vez.',
+
+      sCmp: 'Por qué no lo hace tu herramienta actual',
+      sCmpSub: 'No es falta de ganas: es que una cuenta activa global no se puede repartir. Todo lo de esta columna sale de ahí.',
+      cmpH0: 'Lo que quieres hacer', cmpH2: 'Con una cuenta activa global',
+      cmpR1: 'Dos cuentas trabajando a la vez', cmpR1x: 'se pisan la sesión',
+      cmpR2: 'Un abanico de cinco sin quintuplicar el gasto de una cuota', cmpR2x: 'una cuota, cinco veces más rápido',
+      cmpR3: 'Seguir cuando una cuenta se agota', cmpR3x: 'a mano, y pierdes el hilo',
+      cmpR4: 'Que el repo del trabajo no se commitee con tu nombre personal', cmpR4x: 'una identidad de git global',
+      cmpR5: 'Saber qué suscripción gastó qué, en qué repo', cmpR5x: 'un porcentaje, y de una sola',
+
+      s2: 'La economía de la cuota',
+      s2sub: 'Una suscripción fija rinde más cuando sabes exactamente en qué se fue. Esto es contabilidad, no un indicador de colores.',
+      e1t: 'Dólares por turno',
+      e1b: 'No un porcentaje: lo que costó cada turno, en qué repositorio y con qué cuenta. Los tokens de caché se cuentan aparte, porque se facturan distinto.',
+      e2t: 'Cuándo te vas a quedar sin',
+      e2b: 'Con las lecturas que ya toma calcula a qué ritmo consumes y cuántas horas te quedan. Saber que te quedan dos cambia lo que haces ahora.',
+      e3t: 'Topes que frenan lo nuevo',
+      e3b: 'Un límite mensual por cuenta, y un reparto de la cuota semanal por proyecto. Bloquean trabajo nuevo; jamás matan una ejecución en marcha.',
+      e4t: 'Una cola que espera',
+      e4b: 'Dejas tareas encoladas y arrancan solas cuando vuelve la ventana, en vez de fallar contra ella. Cada una en su propia rama.',
+
+      s3: 'La flota',
+      s3sub: 'Terminales de verdad, no un chat que las imita. Se lanzan a través de tu shell de login, así que se comportan como si escribieras el comando tú.',
+      f1t: 'Varias a la vez',
+      f1b: 'Una rejilla de terminales reales, cada una con su cuenta y su worktree, repartidas en dos filas conforme crecen. Las que minimizas siguen trabajando.',
+      f2t: 'Sobreviven al reinicio',
+      f2b: 'Cierras Hangar y al abrirlo las terminales vuelven, con su conversación donde la dejaste.',
+      f3t: 'Cuatro modos de permiso',
+      f3b: 'De solo lectura a sin preguntar, más un puente que te enseña cada llamada a herramienta para aprobarla — también en turnos sin interfaz.',
+      f4t: 'Identidad de git por proyecto',
+      f4b: 'El repositorio del trabajo deja de commitearse con tu nombre personal. Se configura una vez y desaparece como problema.',
+      f5t: 'Aviso de colisión',
+      f5b: 'Si otro agente está al otro lado de un contrato que tu tarea toca, te lo dice al crear la subsesión. Avisa, nunca bloquea.',
+      f6t: 'Worktrees aislados',
+      f6b: 'Cada agente en su rama y su directorio, partiendo de la rama base que elijas. Varios a la vez no se pelean por los mismos ficheros.',
+
+      s4: 'Y el trabajo alrededor del agente',
+      s4sub: 'Lo que hay entre «el agente escribió código» y «está mergeado».',
+      g1t: 'Pull y merge requests',
+      g1b: 'Crear PRs, seguir sus comentarios, y GitLab además de GitHub — incluidas instancias propias.',
+      g2t: 'Los comentarios vuelven al agente',
+      g2b: 'Una bandeja de revisión que manda los comentarios a la misma sesión que escribió el código. Sin copiar y pegar.',
+      g3t: 'De la tarea al worktree',
+      g3b: 'Tu tablero de ClickUp o tus issues de GitHub, filtrados a lo tuyo, con «abrir worktree y terminal» al final de cada fila.',
+      g4t: 'Skills por proyecto',
+      g4b: 'Una biblioteca de skills que eliges por proyecto, más las que quieres siempre. Llegan al CLI como flags al arrancar.',
+      g5t: 'Grafo de código, con la cifra',
+      g5b: 'Para que seis agentes no redescubran el repositorio uno por uno — y un informe que mide el ahorro sobre tus turnos reales. Opcional.',
+      g6t: 'Un grafo para varios repos',
+      g6b: 'Si tu sistema son tres repositorios, se indexan juntos y aparecen las costuras entre ellos.',
+
+      s5: 'En números',
+      n1: 'comandos del backend',
+      n2: 'tests automáticos',
+      n3: 'días que funciona sin conexión',
+      n4: 'prompts que salen de tu máquina',
+
+      q1: '¿Hangar me vende tokens o modelos?',
+      a1: 'No. Traes tus propias suscripciones y Hangar lanza sus CLIs. No revende nada ni se pone en medio de tus llamadas.',
+      q2: '¿Tener varias cuentas no va contra los términos?',
+      a2: 'Anthropic ha dicho que tener varias cuentas no los viola; lo que persiguen es compartirlas y revenderlas. Hangar organiza cuentas que son tuyas, cada una con su propia sesión.',
+      q3: '¿Sustituye a mi editor o a mi ADE?',
+      a3: 'No. Se instala al lado. Hangar es la capa que reparte cuentas y cuota; tu editor sigue siendo tu editor.',
+      q4: '¿Qué sale de mi máquina?',
+      a4: 'Ni prompts, ni transcripts, ni ficheros. El estado vive en SQLite y las credenciales en el llavero del sistema. Sale un inicio de sesión con Google y, solo si lo activas, un resumen diario de gasto: contadores, sin contenido.',
+      q5: '¿Y si solo tengo una cuenta?',
+      a5: 'Sigue sirviendo — worktrees en paralelo, gasto por turno, cola, PRs — pero la rotación necesita al menos dos del mismo proveedor. Es lo que hace que valga la pena.',
+
+      s6: 'Lo que todavía no es',
+      w1t: 'Beta privada, por invitación.', w1b: 'No hay descarga pública todavía.',
+      w2t: 'Los binarios no están firmados.', w2b: 'En macOS se abre con clic derecho → Abrir la primera vez; en Windows, Más información → Ejecutar de todas formas. Linux no tiene ese aviso.',
+      w3t: 'macOS y Linux hoy.', w3b: 'Windows compila pero se prueba menos. En Linux hay .deb y .AppImage.',
+      w4t: 'Claude Code y Codex.', w4b: 'Kimi, Grok y Gemini se reconocen, pero Hangar todavía no sabe comprobar su login, así que no puede distinguir una cuenta de otra.',
+      w5t: 'No hay companion móvil.', w5b: 'El lado del escritorio está hecho; la app del teléfono no existe.',
+      w6t: 'Pide una cuenta de Google para abrirse.', w6b: 'Es la puerta de la beta y del backup. Tu trabajo sigue sin salir de la máquina, y aguanta siete días sin conexión antes de volver a preguntar.',
+
+      ctaT: '¿Reparte varias suscripciones?',
+      ctaB: 'Es para quien tiene dos o más cuentas de agentes y se queda parado a mitad de tarea. Si eres tú, escribe y te paso una invitación.',
+      ctaNote: 'Trae tus propias suscripciones · Hangar no revende nada',
+      foot: 'local-first',
+    },
+
+    en: {
+      badge: 'PRIVATE BETA',
+      navHow: 'How it works', navNumbers: 'In numbers',
+      h1: "Your agent subscription <b>shouldn't stop you</b>.",
+      lede: 'Several agent terminals in parallel, each in its own git worktree and under the account it is meant to use. When one runs out of quota, Hangar carries on with another — and the conversation survives.',
+      ctaBtn: 'Ask for an invite',
+      ctaSee: 'See how it works',
+      ctaSub: 'Bring your own subscriptions · macOS and Linux · no telemetry',
+
+      mkRun: 'working', mkRotated: 'rotated',
+      mkEditing: '● Editing src/limiter.rs…',
+      mkDone: '✓ Done. 3 files, tests green.',
+      mkExhausted: 'work ran out of quota',
+      mkContinues: '● Picks up where it was, no context repeated',
+      mkPlanning: '● Reading main.tf…',
+      mkForecast: 'at this rate: 2 h 10 min',
+
+      claim: 'A fan-out of five agents spends <b>five quotas</b>, not one of them five times as fast.',
+      claimWhy: 'Only something that already gives every account its own config directory can do that. A tool with one globally-active account cannot, no matter how many worktrees it cuts.',
+      fanAlt: 'One prompt fans out to five branches, each under its own account.',
+      fanIn: 'ONE PROMPT', fanOut: 'ITS OWN QUOTA', fanPrompt: 'one task',
+      fanAcct1: 'account 1', fanAcct2: 'account 2', fanAcct3: 'account 3', fanAcct4: 'account 4', fanAcct5: 'account 5',
+
+      s1: 'The three pillars',
+      s1sub: 'What no other tool puts together, and where everything else comes from.',
+      p1t: 'Real per-account isolation',
+      p1b: "Each account lives in its own CLI config directory. Two accounts never overwrite each other's session, and the work/personal boundary is enforced rather than merely flagged.",
+      p2t: 'Automatic rotation on exhaustion',
+      p2b: 'You tell each project which accounts it may use, and in what order. When it detects one is exhausted it moves to the next allowed account, without you watching. It never overrides an explicit choice that works.',
+      p3t: 'The conversation survives the switch',
+      p3b: 'This is the part almost nobody does: on an account switch, the transcript is placed where the destination CLI looks for it and resumed there. The agent picks up where it left off, with nothing re-explained.',
+
+      sCmp: "Why your current tool doesn't do this",
+      sCmpSub: 'Not for lack of trying: one globally-active account cannot be shared out. Everything in that column follows from it.',
+      cmpH0: 'What you want to do', cmpH2: 'With one global active account',
+      cmpR1: 'Two accounts working at once', cmpR1x: 'they overwrite each other',
+      cmpR2: 'A fan-out of five without spending one quota five times as fast', cmpR2x: 'one quota, five times faster',
+      cmpR3: 'Carry on when an account runs out', cmpR3x: 'by hand, and you lose the thread',
+      cmpR4: 'Keep your personal name off the work repo', cmpR4x: 'one global git identity',
+      cmpR5: 'Know which subscription spent what, in which repo', cmpR5x: 'a percentage, for one of them',
+
+      s2: 'The economics of quota',
+      s2sub: 'A fixed subscription goes further when you know exactly where it went. This is accounting, not a coloured gauge.',
+      e1t: 'Dollars per turn',
+      e1b: 'Not a percentage: what each turn cost, in which repo and under which account. Cache tokens are counted separately, because they are billed differently.',
+      e2t: 'When you will run out',
+      e2b: 'From the readings it already takes, it works out how fast you are burning and how many hours are left. Knowing you have two changes what you do now.',
+      e3t: 'Caps that stop new work',
+      e3b: 'A monthly limit per account, and a share of the weekly quota per project. They block new work; they never kill a run in flight.',
+      e4t: 'A queue that waits',
+      e4b: 'Leave tasks queued and they start on their own when the window returns, instead of failing against it. Each on its own branch.',
+
+      s3: 'The fleet',
+      s3sub: 'Real terminals, not a chat imitating one. They are spawned through your login shell, so they behave exactly as if you typed the command yourself.',
+      f1t: 'Several at once',
+      f1b: 'A grid of real terminals, each with its own account and worktree, laid out across two rows as they grow. The ones you minimise keep working.',
+      f2t: 'They survive a relaunch',
+      f2b: 'Close Hangar and reopen it: the terminals come back, with their conversation where you left it.',
+      f3t: 'Four permission modes',
+      f3b: 'From read-only to no-questions-asked, plus a bridge that surfaces every tool call for approval — including in headless turns.',
+      f4t: 'Per-project git identity',
+      f4b: 'The work repo stops being committed to under your personal name. Set it once and it disappears as a problem.',
+      f5t: 'Collision warnings',
+      f5b: 'If another agent is on the other side of a contract your task touches, it says so when you create the subsession. It warns, never blocks.',
+      f6t: 'Isolated worktrees',
+      f6b: 'Each agent on its own branch and directory, cut from whichever base branch you pick. Several at once never fight over the same files.',
+
+      s4: 'And the work around the agent',
+      s4sub: 'What sits between "the agent wrote code" and "it is merged".',
+      g1t: 'Pull and merge requests',
+      g1b: 'Open PRs, track their comments, and GitLab as well as GitHub — self-hosted instances included.',
+      g2t: 'Review comments go back to the agent',
+      g2b: 'A review inbox that sends comments into the same session that wrote the code. No copy-pasting.',
+      g3t: 'From the task to the worktree',
+      g3b: 'Your ClickUp board or your GitHub issues, filtered to yours, with "open a worktree and a terminal" at the end of every row.',
+      g4t: 'Skills per project',
+      g4b: 'A library of skills you pick per project, plus the ones you always want. They reach the CLI as flags at launch.',
+      g5t: 'A code graph, with the number',
+      g5b: 'So six agents do not rediscover the repo one at a time — plus a report measuring the saving against your real turns. Optional.',
+      g6t: 'One graph across repos',
+      g6b: 'If your system is three repositories, they are indexed together and the seams between them show up.',
+
+      s5: 'In numbers',
+      n1: 'backend commands',
+      n2: 'automated tests',
+      n3: 'days it works with no connection',
+      n4: 'prompts that leave your machine',
+
+      q1: 'Does Hangar sell me tokens or models?',
+      a1: 'No. You bring your own subscriptions and Hangar launches their CLIs. It resells nothing and never sits between you and your calls.',
+      q2: "Isn't having several accounts against the terms?",
+      a2: 'Anthropic has said holding several accounts does not violate them; what they act on is sharing and reselling. Hangar organises accounts that are yours, each with its own session.',
+      q3: 'Does it replace my editor or my ADE?',
+      a3: 'No. It installs alongside. Hangar is the layer that shares out accounts and quota; your editor stays your editor.',
+      q4: 'What leaves my machine?',
+      a4: 'No prompts, no transcripts, no files. State lives in SQLite and credentials in the OS keychain. What does leave is a Google sign-in and, only if you switch it on, a daily spend roll-up: counters, no content.',
+      q5: 'What if I only have one account?',
+      a5: 'It still helps — parallel worktrees, per-turn spend, the queue, PRs — but rotation needs at least two on the same provider. That is the part that makes it worth it.',
+
+      s6: "What it isn't yet",
+      w1t: 'Private beta, invite only.', w1b: 'There is no public download yet.',
+      w2t: "The binaries aren't signed.", w2b: 'On macOS you right-click → Open the first time; on Windows, More info → Run anyway. Linux has no such gate.',
+      w3t: 'macOS and Linux today.', w3b: 'Windows builds but gets less testing. On Linux there is a .deb and an .AppImage.',
+      w4t: 'Claude Code and Codex.', w4b: "Kimi, Grok and Gemini are recognised, but Hangar can't check their login state yet, so it can't tell two of their accounts apart.",
+      w5t: 'There is no mobile companion.', w5b: "The desktop half is built; the phone app doesn't exist.",
+      w6t: 'It asks for a Google account to open.', w6b: 'That is the door to the beta and to backup. Your work still never leaves the machine, and it runs seven days offline before asking again.',
+
+      ctaT: 'Juggling several subscriptions?',
+      ctaB: "It's for people with two or more agent accounts who get stopped mid-task. If that's you, get in touch and I'll send an invite.",
+      ctaNote: 'Bring your own subscriptions · Hangar resells nothing',
+      foot: 'local-first',
+    },
+  };
+
+  const KEY = 'hangar.landing.lang';
+  const btn = document.getElementById('lang');
+
+  function apply(lang) {
+    const dict = T[lang];
     document.documentElement.lang = lang;
-    document.getElementById('lang').textContent = lang === 'es' ? 'EN / ES' : 'ES / EN';
+    // El botón ofrece el *otro* idioma, que es lo que se va a pulsar.
+    btn.textContent = lang === 'es' ? 'EN' : 'ES';
+
+    // Una clave que falte se pinta como ⟨clave⟩ en vez de dejar el hueco vacío:
+    // un texto que desaparece en silencio es un texto que nadie arregla.
+    for (const el of document.querySelectorAll('[data-i18n]')) {
+      const k = el.dataset.i18n;
+      el.textContent = k in dict ? dict[k] : `⟨${k}⟩`;
+    }
+    // `innerHTML` solo donde hace falta un <b>, y sobre cadenas nuestras: aquí
+    // no entra nada escrito por un usuario.
+    for (const el of document.querySelectorAll('[data-i18n-html]')) {
+      const k = el.dataset.i18nHtml;
+      el.innerHTML = k in dict ? dict[k] : `⟨${k}⟩`;
+    }
     localStorage.setItem(KEY, lang);
   }
 
-  document.getElementById('lang').addEventListener('click', () => {
-    setLang(document.documentElement.lang === 'es' ? 'en' : 'es');
-  });
+  // Un idioma al que le falte una clave que el otro tiene se avisa por consola,
+  // que es donde lo verá quien esté editando.
+  for (const [lang, dict] of Object.entries(T)) {
+    const other = Object.keys(T).find((l) => l !== lang);
+    const missing = Object.keys(T[other]).filter((k) => !(k in dict));
+    if (missing.length) console.warn(`[landing] faltan claves en ${lang}:`, missing);
+  }
+
+  const saved = localStorage.getItem(KEY);
+  const fromBrowser = (navigator.language || '').toLowerCase().startsWith('es') ? 'es' : 'en';
+  apply(saved === 'es' || saved === 'en' ? saved : fromBrowser);
+
+  btn.addEventListener('click', () => apply(document.documentElement.lang === 'es' ? 'en' : 'es'));
+
+  // La barra solo se separa del fondo cuando hay algo por encima. Un borde
+  // permanente en el tope de la página es una línea que no separa nada.
+  const nav = document.getElementById('nav');
+  const onScroll = () => nav.classList.toggle('stuck', window.scrollY > 8);
+  addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
 </script>
 </body>
 </html>
