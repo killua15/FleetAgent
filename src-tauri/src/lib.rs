@@ -325,6 +325,8 @@ pub fn run() {
             commands::graph::build_graph_group,
             commands::graph::graph_savings_report,
             commands::graph::graph_collisions,
+            commands::graph::set_graph_index_policy,
+            commands::graph::inspect_project_corpus,
             commands::onboarding::onboarding_progress,
             rotation::get_rotation_policy,
             rotation::set_rotation_policy,

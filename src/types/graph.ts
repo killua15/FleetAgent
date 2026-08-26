@@ -40,7 +40,37 @@ export interface GraphState {
   /** graphify's own HTML, once a build has produced it. Opened in the system
    * browser, never embedded: it pulls vis-network from a CDN. */
   htmlPath: string | null;
+  /** Whether this scope indexes documents as well as code. False everywhere
+   * until someone asks for it: code extraction is local AST and sends nothing,
+   * while indexing documents means their text reaches a model. */
+  withDocs: boolean;
+  /** The model that reads those documents. `null` means `defaultDocBackend`. */
+  docBackend: string | null;
+  /** What `null` resolves to, sent from Rust so this isn't hardcoded twice. */
+  defaultDocBackend: string;
 }
+
+/** What a build would find in a checkout, asked before spending one.
+ *
+ * `codeFiles` stops counting at one — every caller only asks "any?" — so it is
+ * a yes/no dressed as a number, and `otherFiles` is only meaningful when the
+ * answer was no. */
+export interface Indexable {
+  codeFiles: number;
+  otherFiles: number;
+}
+
+/** Backends graphify can read documents with, and what each one costs you.
+ *
+ * `claude-cli` is first because it is the only one that needs no new
+ * credential: it drives the `claude` binary on the subscription Hangar already
+ * manages. `ollama` is the only one where nothing leaves the machine. */
+export const DOC_BACKENDS: { id: string; label: string; leaves: string }[] = [
+  { id: 'claude-cli', label: 'Claude Code (tu suscripción)', leaves: 'Los documentos se envían a Anthropic, con tu cuenta y tu cuota.' },
+  { id: 'ollama', label: 'Ollama (local)', leaves: 'Nada sale de la máquina. Requiere Ollama instalado con un modelo.' },
+  { id: 'openai', label: 'OpenAI o compatible', leaves: 'Los documentos se envían al servidor configurado. Requiere OPENAI_API_KEY, o OPENAI_BASE_URL para uno local.' },
+  { id: 'gemini', label: 'Gemini', leaves: 'Los documentos se envían a Google. Requiere clave de API.' },
+];
 
 /** Projects the user has marked as one system. */
 export interface GraphGroup {
