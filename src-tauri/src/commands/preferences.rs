@@ -253,13 +253,15 @@ pub fn instruction_file(root: &std::path::Path, conn: &rusqlite::Connection, pro
     // ever fed that table to a turn — which is why its own screen is hidden.
     // A brief written where no agent reads it is a phase that ships broken.
     let brief = project_id.and_then(|id| graph_brief(root, conn, id));
+    let diagram = project_id.and_then(|id| diagram_note(conn, id, brief.is_some()));
 
-    let text = match (render_instructions(&prefs), &brief) {
-        (None, None) => return Ok(None),
-        (Some(instructions), None) => instructions,
-        (None, Some(brief)) => brief.clone(),
-        (Some(instructions), Some(brief)) => format!("{instructions}\n\n---\n\n{brief}"),
-    };
+    // Sections, in the order an agent should meet them: how to talk, what the
+    // code looks like, and only then what to do with a tool.
+    let sections: Vec<String> = [render_instructions(&prefs), brief.clone(), diagram].into_iter().flatten().collect();
+    if sections.is_empty() {
+        return Ok(None);
+    }
+    let text = sections.join("\n\n---\n\n");
     let dir = root.join("agent-instructions");
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     // One file per project (ids are UUIDs, so they are already safe as file
@@ -286,6 +288,38 @@ fn graph_brief(root: &std::path::Path, conn: &rusqlite::Connection, project_id: 
     std::fs::read_to_string(brief).ok().filter(|s| !s.trim().is_empty())
 }
 
+/// The note that pairs the diagram skill with the code graph, when a project
+/// has both.
+///
+/// Both already arrive at the agent on their own: the graph as an MCP server
+/// (`--mcp-config`), archify as a linked skill folder (`--add-dir`). What was
+/// missing is that nothing told the agent they belong together, so a diagram
+/// came out guessed from file names while the AST sat one tool call away.
+///
+/// **Deliberately a note and not a converter.** archify's own SKILL.md spends
+/// paragraphs on "at most 12 primary nodes", "one clear main path", "sparse
+/// labels" — its whole design assumes an agent composing the spec with
+/// judgement. Feeding it a graph of thousands of nodes mechanically would
+/// produce exactly the unreadable diagram those rules exist to prevent.
+///
+/// Composed here rather than written into the brief because the brief is
+/// generated when the graph is *built*, and skill selection changes after
+/// that. This runs at every terminal open, so it cannot claim a skill that has
+/// since been unticked.
+fn diagram_note(conn: &rusqlite::Connection, project_id: &str, has_graph: bool) -> Option<String> {
+    if !has_graph {
+        return None;
+    }
+    let selected = crate::commands::skills::selected_for_project(conn, project_id).ok()?;
+    if !selected.iter().any(|s| s == crate::commands::skills::ARCHIFY) {
+        return None;
+    }
+    Some(
+        "# Diagrams of this system\n\n         The `archify` skill and this repo's code graph are both available to you. When you draw          this system, resolve its parts with the graph's MCP tools (`query_graph`, `shortest_path`,          `god_nodes`) instead of inferring them from file names, so every node in the diagram          stands on a relation that is actually in the code.\n\n         Keep archify's own limits: a handful of primary nodes and one clear main path beat a          complete map nobody can read. The graph is there to make the few nodes you do draw the          right ones, not to be drawn in full.\n"
+            .to_string(),
+    )
+}
+
 /// The same instructions in the two shapes the CLIs want: a file for the ones
 /// that take a path, one line for the ones that take the text.
 #[derive(Debug, Clone)]
@@ -302,6 +336,46 @@ mod tests {
         AgentPreferences {
             conversation_language: conversation.map(str::to_string),
             comment_language: comment.map(str::to_string),
+        }
+    }
+
+    fn conn_with_skills(project: &str, names: &[&str]) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE project_skills (project_id TEXT NOT NULL, skill_name TEXT NOT NULL, PRIMARY KEY (project_id, skill_name));",
+        )
+        .unwrap();
+        for name in names {
+            conn.execute("INSERT INTO project_skills VALUES (?1, ?2)", rusqlite::params![project, name]).unwrap();
+        }
+        conn
+    }
+
+    /// La nota solo tiene sentido cuando existen las dos mitades. Con una sola,
+    /// le estaría hablando al agente de una herramienta que no tiene — que es
+    /// peor que callarse, porque la va a intentar usar.
+    #[test]
+    fn the_diagram_note_needs_both_halves() {
+        let both = conn_with_skills("p1", &["archify", "otra"]);
+        assert!(diagram_note(&both, "p1", true).is_some(), "grafo y skill: la nota va");
+        assert!(diagram_note(&both, "p1", false).is_none(), "sin grafo no hay nada que consultar");
+
+        let neither = conn_with_skills("p1", &["otra"]);
+        assert!(diagram_note(&neither, "p1", true).is_none(), "sin la skill no hay diagrama que orientar");
+
+        // Y desmarcarla la retira, porque esto se compone al abrir la terminal
+        // y no al construir el grafo.
+        let unticked = conn_with_skills("p1", &[]);
+        assert!(diagram_note(&unticked, "p1", true).is_none(), "desmarcada es desmarcada");
+    }
+
+    /// Nombra las herramientas reales del MCP del grafo: una nota que dijera
+    /// «usa el grafo» sin decir cómo es un deseo, no una instrucción.
+    #[test]
+    fn the_diagram_note_names_the_tools_it_expects_to_be_used() {
+        let note = diagram_note(&conn_with_skills("p1", &["archify"]), "p1", true).unwrap();
+        for tool in ["query_graph", "shortest_path", "god_nodes"] {
+            assert!(note.contains(tool), "falta {tool}: {note}");
         }
     }
 

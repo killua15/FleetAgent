@@ -289,6 +289,7 @@ pub fn run() {
             commands::skills::set_project_skill,
             commands::skills::list_always_on_skills,
             commands::skills::set_always_on_skill,
+            commands::skill_sources::suggested_skill_sources,
             commands::skill_sources::list_skill_sources,
             commands::skill_sources::add_skill_source,
             commands::skill_sources::remove_skill_source,

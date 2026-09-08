@@ -70,6 +70,15 @@ export interface SkillSource {
   label: string;
 }
 
+/** A repository offered as a starting point, from `suggested_skill_sources`.
+ * Curated in Rust rather than here so the list has one home and a test that
+ * catches a mistyped `owner/repo` before a user meets it as a 404. */
+export interface SuggestedSource {
+  repo: string;
+  label: string;
+  blurb: string;
+}
+
 /** A skill seen in a repository, not installed yet. */
 export interface RemoteSkill {
   name: string;

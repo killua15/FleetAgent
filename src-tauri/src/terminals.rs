@@ -675,6 +675,17 @@ pub(crate) fn account_command_line_full(
     // Code at Moonshot's Anthropic-compatible endpoint. Rendered into the
     // command line so what the picker previews is literally what runs.
     let extra: String = spec.extra_env.iter().map(|(k, v)| format!("{k}={} ", shell_quote(v))).collect();
+    // Y el entorno que calla a las skills que llaman a casa. Va junto al del
+    // proveedor porque es lo mismo —entorno fijo que la línea enseña— y se
+    // salta en un login por la misma razón que las skills: un login no ejecuta
+    // nada del proyecto, así que no hay skill a la que callar.
+    let silenced: String = match (init, skills_dir) {
+        (InitCommand::Login, _) | (_, None) => String::new(),
+        (_, Some(dir)) => crate::commands::skills::silencing_env(dir)
+            .iter()
+            .map(|(k, v)| format!("{k}={} ", shell_quote(v)))
+            .collect(),
+    };
     // The trailing prompt, if any — a positional first message. Shared by Start
     // and Resume (both open an interactive session that can carry one).
     let prompt_arg = || match prompt.map(str::trim).filter(|p| !p.is_empty()) {
@@ -775,7 +786,10 @@ pub(crate) fn account_command_line_full(
             None => return Err(format!("'{}' authenticates with an API key — there's no login to run", account.provider)),
         },
     };
-    Ok(format!("{}={config} {extra}{binary}{permissions}{instructions}{skills}{siblings}{graph}{args}", spec.config_dir_env))
+    Ok(format!(
+        "{}={config} {extra}{silenced}{binary}{permissions}{instructions}{skills}{siblings}{graph}{args}",
+        spec.config_dir_env
+    ))
 }
 
 /// The full script a terminal runs: change directory first, then the account's
@@ -2894,6 +2908,45 @@ mod tests {
         assert!(!line.contains("--append-system-prompt-file"), "codex la rechaza: {line}");
         assert!(!line.contains("prefs.md"), "ni la ruta suelta: {line}");
         assert!(line.contains("developer_instructions="), "pero sí la clave que entiende: {line}");
+    }
+
+    /// Archify trae en su propio SKILL.md la orden de ejecutar
+    /// `scripts/check-update.mjs`, que sale a la red. El README de Hangar
+    /// promete que nada sale de la máquina, y una skill instalada *desde*
+    /// Hangar es responsabilidad de Hangar.
+    #[test]
+    fn una_skill_que_llama_a_casa_sale_callada() {
+        if !crate::providers::is_provider_available("claude") {
+            return;
+        }
+        let claude = AccountForTerminal {
+            provider: "claude".to_string(),
+            billing: "sub".to_string(),
+            config_dir_path: "/tmp/cl".to_string(),
+            name: "Claude".to_string(),
+        };
+
+        let base = std::env::temp_dir().join(format!("hangar-silencing-{}", uuid::Uuid::new_v4()));
+        let skills = base.join(".claude").join("skills");
+        std::fs::create_dir_all(skills.join("otra")).unwrap();
+
+        // Una skill cualquiera no gana variables: la tabla es corta a propósito.
+        let otra = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, Some(&base), None, &[]).unwrap();
+        assert!(!otra.contains("ARCHIFY_UPDATE_CHECK_DISABLED"), "no se calla lo que no llama: {otra}");
+
+        std::fs::create_dir_all(skills.join("archify")).unwrap();
+        let con = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, Some(&base), None, &[]).unwrap();
+        assert!(con.contains("ARCHIFY_UPDATE_CHECK_DISABLED=1"), "got: {con}");
+        // Delante del binario, como el entorno del proveedor: la línea que la
+        // pantalla enseña tiene que ser la que corre.
+        let env_at = con.find("ARCHIFY_UPDATE_CHECK_DISABLED").unwrap();
+        assert!(env_at < con.find("claude").unwrap(), "la variable va antes del binario: {con}");
+
+        // Y un login no ejecuta nada del proyecto, así que no hay skill que callar.
+        let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, Some(&base), None, &[]).unwrap();
+        assert!(!login.contains("ARCHIFY_UPDATE_CHECK_DISABLED"), "un login no lleva skills: {login}");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// El directorio de skills entra solo cuando el proyecto tiene alguna

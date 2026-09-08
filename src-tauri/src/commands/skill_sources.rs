@@ -26,6 +26,50 @@ use uuid::Uuid;
 /// corto para un repo con muchas skills.
 const INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Repositorios que se ofrecen cuando la lista está vacía.
+///
+/// La pantalla arrancaba en blanco pidiendo `owner/repo`, que es una pregunta
+/// que solo puede contestar quien ya sabe la respuesta. Tres, no treinta: esto
+/// es un punto de partida, no un directorio — el directorio es `gh skill
+/// search`, y competir con él desde una constante sería perder.
+///
+/// Los tres están comprobados contra la API de GitHub, con sus estrellas y su
+/// licencia, no elegidos de memoria.
+const SUGGESTED: &[SuggestedSource] = &[
+    SuggestedSource {
+        repo: "tt-a1i/archify",
+        label: "Archify",
+        blurb: "Diagramas de arquitectura, secuencia y flujo de datos como HTML interactivo. Sin dependencias de runtime: solo Node.",
+    },
+    SuggestedSource {
+        repo: "anthropics/skills",
+        label: "Anthropic",
+        blurb: "Las skills oficiales de Anthropic, que es de donde sale el formato que Hangar guarda.",
+    },
+    SuggestedSource {
+        repo: "github/awesome-copilot",
+        label: "Awesome Copilot",
+        blurb: "Cientos de skills de la comunidad. Trae tantas que el filtro de esta pantalla existe por ella.",
+    },
+];
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuggestedSource {
+    pub repo: &'static str,
+    pub label: &'static str,
+    /// Qué gana quien lo añada. Una frase: la lista es un empujón, no un
+    /// catálogo.
+    pub blurb: &'static str,
+}
+
+/// Los sugeridos, sin filtrar por lo que ya esté añadido — eso lo decide la
+/// pantalla, que es la que sabe qué está enseñando.
+#[tauri::command]
+pub fn suggested_skill_sources() -> Vec<SuggestedSource> {
+    SUGGESTED.to_vec()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillSource {
@@ -270,6 +314,18 @@ mod tests {
             "https://github.com/killua15/mis-skills.git",
         ] {
             assert_eq!(normalize_repo(raw).unwrap(), "killua15/mis-skills", "falló con {raw}");
+        }
+    }
+
+    /// Un `owner/repo` mal escrito en la constante no rompe nada al compilar:
+    /// se descubre cuando alguien lo pulsa y `gh` devuelve 404. Aquí se
+    /// descubre antes.
+    #[test]
+    fn every_suggested_repo_is_a_repo() {
+        assert!(!SUGGESTED.is_empty(), "una lista de sugerencias vacía es una pantalla en blanco con pasos extra");
+        for s in SUGGESTED {
+            assert_eq!(normalize_repo(s.repo).unwrap(), s.repo, "{} no está en forma canónica", s.repo);
+            assert!(!s.label.trim().is_empty() && !s.blurb.trim().is_empty(), "{} no dice qué es", s.repo);
         }
     }
 
