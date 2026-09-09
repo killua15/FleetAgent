@@ -1,10 +1,10 @@
 {
-  "version": "0.8.0",
-  "notes": "Agent skills can be installed from three suggested repositories instead of a blank owner/repo field, and one that calls home is silenced on the command line where you can see it. Diagrams an agent draws are listed and opened per project, with a button to ask for one and a live view of what the run is doing. Underneath: headless turns finally get the project's skills, which they never had \u2014 reviews included.",
-  "pub_date": "2026-09-09T17:49:49Z",
+  "version": "0.8.1",
+  "notes": "Fixes the freeze that made Hangar need a restart. Writing to a terminal whose agent had stopped reading blocked the thread that serves the whole interface, with the lock every open terminal shares held \u2014 so every pane went silent at once. Measured before the fix: a single keystroke blocked for 31 seconds. And a background loop no longer dies for good on one panic, which was the other way a part of the app could stop until you reopened it.",
+  "pub_date": "2026-09-09T19:24:07Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbEJwc1NEUFhlVGZOMTJXblhkZWRhRVM3UGdMN3hrSDgyMW1qbDhzeEdLRXVpNUNvcm9lWEk2ZklZSEJyMmRuNjJ0VExTeG9Kam54VU1oL3BoSC9yRndJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4OTc2MTc4CWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKaE1LaTRlT0EzQXk1alN0U1ZScWYxdlRrVGhZUUgvMUMwZ1JxbW5PWG1ESmthSDNpSnQvajg5ZlRoMWowKzl0N2g5Q2Faa3ZOaGpzK3Bibmk1a0VIQXc9PQo=",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbFBVUU9tZjZEcjhlQUtQeTcxc3poczJWc2RaMThqcHN6V0o4RmpsdVBtOGczeHlNVS9DN1RISGtUUGRocnJpNGVPNGhDZkFYSWU2Y0FsNWlFOUpSOEFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4OTgxODMzCWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKeFlKZjcvSmd5WFpKcEVhZ3hQQnJiMGU5MnJlMTNxaXBMeFhHbDI0UFZZazIrUGF6aDdMdzY0UmNBb2pMaXU2VFZwRk5nV08zM0Z2QUhVSGtrbUx3Qnc9PQo=",
       "url": "https://api.github.com/repos/killua15/FleetAgent/contents/updates/Hangar.app.tar.gz"
     }
   }
