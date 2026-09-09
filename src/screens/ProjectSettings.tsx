@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '../lib/invoke';
 import { SettingsTabs } from '../components/SettingsTabs';
 import { toastError } from '../components/ErrorOverlay';
@@ -7,6 +7,7 @@ import { LANGUAGES } from '../lib/languages';
 import type { Project } from '../types/session';
 import type { AgentPreferences, Skill } from '../types/settings';
 import type { GraphState, GraphifyStatus } from '../types/graph';
+import type { Diagram } from '../types/diagram';
 import styles from './ProjectSettings.module.css';
 
 /**
@@ -194,6 +195,8 @@ export function ProjectSettings() {
 
               <CodeGraphField projectId={selected.id} graphify={graphify} />
 
+              <DiagramsField projectId={selected.id} />
+
               <p className={styles.footnote}>
                 Idiomas y skills llegan hoy a Claude, Kimi y Grok. Codex recibe el idioma por su propia configuración, pero todavía no
                 las skills — busca en otra ruta y no he podido verificarlo contra una ejecución real. Sus terminales funcionan
@@ -219,6 +222,70 @@ export function ProjectSettings() {
  * Sin `graphify` instalado esto no es un error ni un hueco: dice qué instalar y
  * se queda quieto.
  */
+/**
+ * Los diagramas que un agente ya entregó para este proyecto.
+ *
+ * Se abren en el navegador del sistema, no aquí, por la misma razón que el HTML
+ * del grafo: una página así se renderiza en blanco bajo el CSP de la app. Y hay
+ * una segunda razón propia — el HTML lo escribió lo que un agente compuso, y el
+ * navegador es mejor sitio para eso que el webview de la aplicación.
+ *
+ * La lista es del directorio que Hangar nombra, no del repo. Un diagrama que el
+ * agente dejara en otro sitio no aparece, y el texto de vacío lo dice en vez de
+ * dejar pensando que no hay ninguno.
+ */
+function DiagramsField({ projectId }: { projectId: string }) {
+  const [diagrams, setDiagrams] = useState<Diagram[] | null>(null);
+
+  const load = useCallback(() => {
+    setDiagrams(null);
+    invoke<Diagram[]>('list_project_diagrams', { projectId })
+      .then(setDiagrams)
+      .catch((e) => {
+        setDiagrams([]);
+        toastError(String(e));
+      });
+  }, [projectId]);
+
+  useEffect(load, [load]);
+
+  const open = (fileName: string) => invoke('open_diagram', { projectId, fileName }).catch((e) => toastError(String(e)));
+
+  return (
+    <div className={styles.field}>
+      <span className={styles.fieldLabel}>DIAGRAMAS</span>
+      <span className={styles.fieldHint}>
+        Lo que la skill <code>archify</code> ha entregado aquí. Se guardan en los datos de Hangar, nunca dentro de tu repo, y se abren
+        en tu navegador.
+      </span>
+
+      {diagrams === null ? (
+        <span className={styles.empty}>leyendo…</span>
+      ) : diagrams.length === 0 ? (
+        <span className={styles.empty}>
+          Ninguno todavía. Marca <code>archify</code> en <strong>Skills</strong> y pídele un diagrama a un agente de este proyecto: sabe
+          dónde dejarlo. Uno entregado en otra carpeta no aparece aquí.
+        </span>
+      ) : (
+        <div className={styles.skillList}>
+          {diagrams.map((d) => (
+            <button key={d.fileName} className={styles.skillRow} onClick={() => open(d.fileName)} title={`Abrir ${d.fileName}`}>
+              <span className={styles.skillInfo}>
+                <span className={styles.skillName}>{d.title}</span>
+                <span className={styles.skillDescription}>
+                  {d.generator ?? d.fileName}
+                  {d.modified && ` · ${new Date(d.modified).toLocaleString('es')}`}
+                  {d.bytes > 0 && ` · ${Math.round(d.bytes / 1024).toLocaleString('es')} KB`}
+                </span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CodeGraphField({ projectId, graphify }: { projectId: string; graphify: GraphifyStatus | null }) {
   const [state, setState] = useState<GraphState | null>(null);
   const [building, setBuilding] = useState(false);

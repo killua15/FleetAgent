@@ -288,36 +288,58 @@ fn graph_brief(root: &std::path::Path, conn: &rusqlite::Connection, project_id: 
     std::fs::read_to_string(brief).ok().filter(|s| !s.trim().is_empty())
 }
 
-/// The note that pairs the diagram skill with the code graph, when a project
-/// has both.
+/// Where a delivered diagram has to land for anyone to find it again.
 ///
-/// Both already arrive at the agent on their own: the graph as an MCP server
-/// (`--mcp-config`), archify as a linked skill folder (`--add-dir`). What was
-/// missing is that nothing told the agent they belong together, so a diagram
-/// came out guessed from file names while the AST sat one tool call away.
+/// The path is not baked in: `$HANGAR_DIAGRAMS` is set in the agent's shell
+/// (`terminals.rs`), so naming the variable survives the directory moving and
+/// keeps this text the same for every project.
+const DELIVER_NOTE: &str = r#"# Diagrams
+
+The `archify` skill is available to you. Deliver every diagram into the directory named by
+`$HANGAR_DIAGRAMS`, which is already set in your shell. Hangar lists what is in there and opens it,
+so a page written anywhere else is one nobody will find again.
+
+Keep archify's own limits: a handful of primary nodes and one clear main path beat a complete map
+nobody can read.
+"#;
+
+/// The half that needs a graph: what to resolve the parts of the drawing
+/// against.
 ///
 /// **Deliberately a note and not a converter.** archify's own SKILL.md spends
 /// paragraphs on "at most 12 primary nodes", "one clear main path", "sparse
 /// labels" — its whole design assumes an agent composing the spec with
 /// judgement. Feeding it a graph of thousands of nodes mechanically would
 /// produce exactly the unreadable diagram those rules exist to prevent.
+const GROUND_NOTE: &str = r#"This project's code graph is built. Resolve the parts of the system with its MCP tools
+(`query_graph`, `shortest_path`, `god_nodes`) rather than inferring them from file names, so every
+node in the diagram stands on a relation that is actually in the code. The graph is there to make the
+few nodes you do draw the right ones, not to be drawn in full.
+"#;
+
+/// What to tell an agent about drawing this system, in two independent halves.
+///
+/// The split is the point, and it fixes a real defect: both halves used to sit
+/// behind "the project has a graph", so a project without one got neither — yet
+/// **drawing needs the skill, not the graph**. The graph only makes the result
+/// better. So the delivery half travels whenever archify is selected, and only
+/// the grounding half waits for a graph.
 ///
 /// Composed here rather than written into the brief because the brief is
-/// generated when the graph is *built*, and skill selection changes after
-/// that. This runs at every terminal open, so it cannot claim a skill that has
-/// since been unticked.
+/// generated when the graph is *built*, and skill selection changes after that.
+/// This runs at every terminal open, so it cannot claim a skill that has since
+/// been unticked.
 fn diagram_note(conn: &rusqlite::Connection, project_id: &str, has_graph: bool) -> Option<String> {
-    if !has_graph {
-        return None;
-    }
     let selected = crate::commands::skills::selected_for_project(conn, project_id).ok()?;
     if !selected.iter().any(|s| s == crate::commands::skills::ARCHIFY) {
         return None;
     }
-    Some(
-        "# Diagrams of this system\n\n         The `archify` skill and this repo's code graph are both available to you. When you draw          this system, resolve its parts with the graph's MCP tools (`query_graph`, `shortest_path`,          `god_nodes`) instead of inferring them from file names, so every node in the diagram          stands on a relation that is actually in the code.\n\n         Keep archify's own limits: a handful of primary nodes and one clear main path beat a          complete map nobody can read. The graph is there to make the few nodes you do draw the          right ones, not to be drawn in full.\n"
-            .to_string(),
-    )
+    let mut note = DELIVER_NOTE.to_string();
+    if has_graph {
+        note.push('\n');
+        note.push_str(GROUND_NOTE);
+    }
+    Some(note)
 }
 
 /// The same instructions in the two shapes the CLIs want: a file for the ones
@@ -351,22 +373,32 @@ mod tests {
         conn
     }
 
-    /// La nota solo tiene sentido cuando existen las dos mitades. Con una sola,
-    /// le estaría hablando al agente de una herramienta que no tiene — que es
-    /// peor que callarse, porque la va a intentar usar.
+    /// Dibujar necesita la skill, no el grafo. Que las dos mitades estuvieran
+    /// detrás del grafo era el fallo: un proyecto sin grafo no recibía ninguna,
+    /// ni siquiera la de dónde entregar.
     #[test]
-    fn the_diagram_note_needs_both_halves() {
-        let both = conn_with_skills("p1", &["archify", "otra"]);
-        assert!(diagram_note(&both, "p1", true).is_some(), "grafo y skill: la nota va");
-        assert!(diagram_note(&both, "p1", false).is_none(), "sin grafo no hay nada que consultar");
+    fn the_delivery_half_does_not_wait_for_a_graph() {
+        let con_skill = conn_with_skills("p1", &["archify", "otra"]);
 
-        let neither = conn_with_skills("p1", &["otra"]);
-        assert!(diagram_note(&neither, "p1", true).is_none(), "sin la skill no hay diagrama que orientar");
+        let sin_grafo = diagram_note(&con_skill, "p1", false).expect("la entrega no depende del grafo");
+        assert!(sin_grafo.contains("$HANGAR_DIAGRAMS"), "tiene que decir dónde: {sin_grafo}");
+        assert!(!sin_grafo.contains("query_graph"), "sin grafo no se ofrece una herramienta que no existe: {sin_grafo}");
 
-        // Y desmarcarla la retira, porque esto se compone al abrir la terminal
-        // y no al construir el grafo.
-        let unticked = conn_with_skills("p1", &[]);
-        assert!(diagram_note(&unticked, "p1", true).is_none(), "desmarcada es desmarcada");
+        let con_grafo = diagram_note(&con_skill, "p1", true).expect("con las dos, las dos");
+        assert!(con_grafo.contains("$HANGAR_DIAGRAMS"));
+        assert!(con_grafo.contains("query_graph"));
+        assert!(con_grafo.len() > sin_grafo.len(), "la mitad del grafo se suma, no sustituye");
+    }
+
+    /// Sin la skill no hay nada que decir, con grafo o sin él — y desmarcarla
+    /// lo retira, porque esto se compone al abrir la terminal y no al construir
+    /// el grafo.
+    #[test]
+    fn no_skill_means_no_note_at_all() {
+        for (skills, con_grafo) in [(vec!["otra"], true), (vec!["otra"], false), (vec![], true), (vec![], false)] {
+            let conn = conn_with_skills("p1", &skills);
+            assert!(diagram_note(&conn, "p1", con_grafo).is_none(), "skills={skills:?} grafo={con_grafo}");
+        }
     }
 
     /// Nombra las herramientas reales del MCP del grafo: una nota que dijera
