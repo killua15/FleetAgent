@@ -1,10 +1,10 @@
 {
   "version": "0.8.1",
-  "notes": "Fixes the freeze that made Hangar need a restart. Writing to a terminal whose agent had stopped reading blocked the thread that serves the whole interface, with the lock every open terminal shares held \u2014 so every pane went silent at once. Measured before the fix: a single keystroke blocked for 31 seconds. And a background loop no longer dies for good on one panic, which was the other way a part of the app could stop until you reopened it.",
-  "pub_date": "2026-09-09T19:24:07Z",
+  "notes": "Hangar 0.8.1",
+  "pub_date": "2026-09-09T19:44:06Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbFBVUU9tZjZEcjhlQUtQeTcxc3poczJWc2RaMThqcHN6V0o4RmpsdVBtOGczeHlNVS9DN1RISGtUUGRocnJpNGVPNGhDZkFYSWU2Y0FsNWlFOUpSOEFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4OTgxODMzCWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKeFlKZjcvSmd5WFpKcEVhZ3hQQnJiMGU5MnJlMTNxaXBMeFhHbDI0UFZZazIrUGF6aDdMdzY0UmNBb2pMaXU2VFZwRk5nV08zM0Z2QUhVSGtrbUx3Qnc9PQo=",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbE5IcmZRVXJzSnlTcldJK1d6ZWtqM2FUbTh6Wmh2VHo4bnZOWnFsWDZseWYzK3dETDloNk9mOEMyYklRZTZwZW16aEt2Vmkrb1VPVG9leDl1dTNTaVE0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4OTgyMjc4CWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKczZ2eE9OS0xHK3QxRHZjNkFud29WVzhLaWsxRVJESXBpaXRYMUMyYjl5aVhkUEdid0R4ejY4cEpac1d5VjF2RHFQSDVCazduOHpWTnlsdFY2WTE1QVE9PQo=",
       "url": "https://api.github.com/repos/killua15/FleetAgent/contents/updates/Hangar.app.tar.gz"
     }
   }
