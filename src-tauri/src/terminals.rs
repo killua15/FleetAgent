@@ -620,7 +620,7 @@ pub(crate) fn account_command_line_with_mode(
     prompt: Option<&str>,
     mode: Option<crate::providers::Mode>,
 ) -> Result<String, String> {
-    account_command_line_full(account, init, session_uuid, prompt, mode, None, None, None, &[])
+    account_command_line_full(account, init, session_uuid, prompt, mode, None, None, None, &[], &[])
 }
 
 /// Everything Hangar adds to a terminal beyond the command itself: the user's
@@ -645,6 +645,12 @@ pub(crate) struct TerminalContext {
     /// agent can open the code the graph tells it about. Empty for a project
     /// in no group, which is the common case.
     pub sibling_dirs: Vec<std::path::PathBuf>,
+    /// Environment a *linked skill* needs, decided from the symlinks actually
+    /// in place (`skills::linked_skills`). Two rows today: the silenced update
+    /// check, and where diagrams go. Computed here, where the project id and
+    /// the app data directory are both known, rather than derived from a path
+    /// inside the command-line builder.
+    pub skill_env: Vec<(String, String)>,
 }
 
 /// Igual, más el fichero de preferencias del usuario (idioma de la conversación
@@ -664,6 +670,7 @@ pub(crate) fn account_command_line_full(
     skills_dir: Option<&std::path::Path>,
     graph_mcp: Option<&std::path::Path>,
     sibling_dirs: &[std::path::PathBuf],
+    skill_env: &[(String, String)],
 ) -> Result<String, String> {
     let spec = crate::providers::spec(&account.provider).ok_or_else(|| format!("unknown provider '{}'", account.provider))?;
     let binary = spec.binary;
@@ -675,6 +682,15 @@ pub(crate) fn account_command_line_full(
     // Code at Moonshot's Anthropic-compatible endpoint. Rendered into the
     // command line so what the picker previews is literally what runs.
     let extra: String = spec.extra_env.iter().map(|(k, v)| format!("{k}={} ", shell_quote(v))).collect();
+    // Y el entorno que piden las skills enlazadas: callar la llamada a casa de
+    // archify, y decirle dónde dejar los diagramas. Va junto al del proveedor
+    // porque es lo mismo —entorno fijo que la línea enseña— y se salta en un
+    // login por la misma razón que las skills: un login no ejecuta nada del
+    // proyecto, así que no hay skill en juego.
+    let silenced: String = match init {
+        InitCommand::Login => String::new(),
+        _ => skill_env.iter().map(|(k, v)| format!("{k}={} ", shell_quote(v))).collect(),
+    };
     // The trailing prompt, if any — a positional first message. Shared by Start
     // and Resume (both open an interactive session that can carry one).
     let prompt_arg = || match prompt.map(str::trim).filter(|p| !p.is_empty()) {
@@ -775,7 +791,10 @@ pub(crate) fn account_command_line_full(
             None => return Err(format!("'{}' authenticates with an API key — there's no login to run", account.provider)),
         },
     };
-    Ok(format!("{}={config} {extra}{binary}{permissions}{instructions}{skills}{siblings}{graph}{args}", spec.config_dir_env))
+    Ok(format!(
+        "{}={config} {extra}{silenced}{binary}{permissions}{instructions}{skills}{siblings}{graph}{args}",
+        spec.config_dir_env
+    ))
 }
 
 /// The full script a terminal runs: change directory first, then the account's
@@ -825,6 +844,7 @@ pub(crate) fn terminal_script_full(
             context.skills_dir.as_deref(),
             context.graph_mcp.as_deref(),
             &context.sibling_dirs,
+            &context.skill_env,
         )?
     ))
 }
@@ -988,7 +1008,21 @@ pub(crate) fn open_terminal_blocking<R: Runtime>(
         // al agente una herramienta que falla al usarla (§5.5).
         let graph_mcp = crate::commands::graph::mcp_config_for_project(&app, &conn, &project_id);
         let sibling_dirs = crate::commands::graph::sibling_dirs(&conn, &project_id);
-        (cwd, title, account, TerminalContext { instructions, skills_dir, graph_mcp, sibling_dirs })
+        // Lo que piden las skills que de verdad quedaron enlazadas. Se decide
+        // aquí, que es donde se conocen el id del proyecto y el directorio de
+        // datos, y no dentro del constructor de la línea de comandos — que solo
+        // tiene una ruta y tendría que hacer aritmética con ella para adivinar
+        // los dos.
+        let skill_env: Vec<(String, String)> = match (root.as_ref(), skills_dir.as_deref()) {
+            (Ok(root), Some(dir)) => {
+                let linked = crate::commands::skills::linked_skills(dir);
+                let mut env = crate::commands::skills::silencing_env(&linked);
+                env.extend(crate::commands::skills::diagrams_env(&linked, root, &project_id));
+                env
+            }
+            _ => Vec::new(),
+        };
+        (cwd, title, account, TerminalContext { instructions, skills_dir, graph_mcp, sibling_dirs, skill_env })
     };
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(format!("{cwd} no longer exists on disk — the worktree may have been removed"));
@@ -2852,18 +2886,18 @@ mod tests {
             return;
         }
 
-        let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[]).unwrap();
+        let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[], &[]).unwrap();
         assert!(!without.contains("--append-system-prompt-file"), "sin preferencias no se pasa nada: {without}");
 
         let prefs = sample_instructions();
-        let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, Some(&prefs), None, None, &[]).unwrap();
+        let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, Some(&prefs), None, None, &[], &[]).unwrap();
         assert!(with.contains("--append-system-prompt-file"), "got: {with}");
         assert!(with.contains("/tmp/hangar/prefs.md"), "got: {with}");
 
         // Un login no ejecuta nada del proyecto: no hay conversación a la que
         // ponerle idioma, y `claude auth login --append-system-prompt-file` no
         // es un comando válido.
-        let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, Some(&prefs), None, None, &[]).unwrap();
+        let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, Some(&prefs), None, None, &[], &[]).unwrap();
         assert!(!login.contains("--append-system-prompt-file"), "un login no lleva instrucciones: {login}");
     }
 
@@ -2890,10 +2924,80 @@ mod tests {
         }
 
         let prefs = sample_instructions();
-        let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, Some(&prefs), None, None, &[]).unwrap();
+        let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, Some(&prefs), None, None, &[], &[]).unwrap();
         assert!(!line.contains("--append-system-prompt-file"), "codex la rechaza: {line}");
         assert!(!line.contains("prefs.md"), "ni la ruta suelta: {line}");
         assert!(line.contains("developer_instructions="), "pero sí la clave que entiende: {line}");
+    }
+
+    /// Archify trae en su propio SKILL.md la orden de ejecutar
+    /// `scripts/check-update.mjs`, que sale a la red. El README de Hangar
+    /// promete que nada sale de la máquina, y una skill instalada *desde*
+    /// Hangar es responsabilidad de Hangar.
+    ///
+    /// Esta mitad comprueba la derivación: de los symlinks que hay de verdad al
+    /// entorno. La otra —que ese entorno se pinta en la línea— está en
+    /// `el_entorno_de_una_skill_se_pinta_delante_del_binario`.
+    #[test]
+    fn una_skill_que_llama_a_casa_sale_callada() {
+        let base = std::env::temp_dir().join(format!("hangar-silencing-{}", uuid::Uuid::new_v4()));
+        let skills = base.join(".claude").join("skills");
+        std::fs::create_dir_all(skills.join("otra")).unwrap();
+
+        // Una skill cualquiera no gana variables: la tabla es corta a propósito.
+        let linked = crate::commands::skills::linked_skills(&base);
+        assert!(crate::commands::skills::silencing_env(&linked).is_empty(), "no se calla lo que no llama: {linked:?}");
+
+        std::fs::create_dir_all(skills.join("archify")).unwrap();
+        let linked = crate::commands::skills::linked_skills(&base);
+        let env = crate::commands::skills::silencing_env(&linked);
+        assert_eq!(env, vec![("ARCHIFY_UPDATE_CHECK_DISABLED".to_string(), "1".to_string())], "got: {env:?}");
+
+        // Y el directorio de diagramas, que solo tiene sentido con la skill.
+        let app_data = base.join("app-data");
+        let diagrams = crate::commands::skills::diagrams_env(&linked, &app_data, "p1");
+        assert_eq!(diagrams.len(), 1, "got: {diagrams:?}");
+        assert_eq!(diagrams[0].0, "HANGAR_DIAGRAMS");
+        assert!(std::path::Path::new(&diagrams[0].1).is_dir(), "el directorio se crea, no se promete: {diagrams:?}");
+        assert!(
+            crate::commands::skills::diagrams_env(&["otra".to_string()], &app_data, "p1").is_empty(),
+            "sin la skill, una variable que nombra un directorio que nadie va a usar es ruido"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// El entorno de una skill se enseña, no se pone a escondidas: la línea que
+    /// previsualiza el selector tiene que ser la que corre.
+    #[test]
+    fn el_entorno_de_una_skill_se_pinta_delante_del_binario() {
+        if !crate::providers::is_provider_available("claude") {
+            return;
+        }
+        let claude = AccountForTerminal {
+            provider: "claude".to_string(),
+            billing: "sub".to_string(),
+            config_dir_path: "/tmp/cl".to_string(),
+            name: "Claude".to_string(),
+        };
+        let env = vec![
+            ("ARCHIFY_UPDATE_CHECK_DISABLED".to_string(), "1".to_string()),
+            ("HANGAR_DIAGRAMS".to_string(), "/tmp/app-data/diagrams/p1".to_string()),
+        ];
+
+        let sin = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[], &[]).unwrap();
+        assert!(!sin.contains("ARCHIFY_UPDATE_CHECK_DISABLED"), "sin entorno no se inventa nada: {sin}");
+
+        let con = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[], &env).unwrap();
+        assert!(con.contains("ARCHIFY_UPDATE_CHECK_DISABLED=1"), "got: {con}");
+        assert!(con.contains("HANGAR_DIAGRAMS=/tmp/app-data/diagrams/p1"), "got: {con}");
+        let first_env = con.find("ARCHIFY_UPDATE_CHECK_DISABLED").unwrap();
+        assert!(first_env < con.find("claude").unwrap(), "las variables van antes del binario: {con}");
+
+        // Un login no ejecuta nada del proyecto, así que no hay skill en juego.
+        let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, None, None, &[], &env).unwrap();
+        assert!(!login.contains("ARCHIFY_UPDATE_CHECK_DISABLED"), "un login no lleva skills: {login}");
+        assert!(!login.contains("HANGAR_DIAGRAMS"), "ni dónde dejar diagramas: {login}");
     }
 
     /// El directorio de skills entra solo cuando el proyecto tiene alguna
@@ -2909,15 +3013,15 @@ mod tests {
             name: "Claude".to_string(),
         };
         if crate::providers::is_provider_available("claude") {
-            let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[]).unwrap();
+            let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[], &[]).unwrap();
             assert!(!without.contains("--add-dir"), "sin skills marcadas no se pasa nada: {without}");
 
-            let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, Some(dir), None, &[]).unwrap();
+            let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, Some(dir), None, &[], &[]).unwrap();
             assert!(with.contains("--add-dir"), "got: {with}");
             assert!(with.contains("/tmp/hangar/projects/p1"), "got: {with}");
 
             // Un login no trabaja en el proyecto, así que no necesita sus skills.
-            let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, Some(dir), None, &[]).unwrap();
+            let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, Some(dir), None, &[], &[]).unwrap();
             assert!(!login.contains("--add-dir"), "un login no lleva skills: {login}");
         }
 
@@ -2928,7 +3032,7 @@ mod tests {
             name: "Codex".to_string(),
         };
         if crate::providers::is_provider_available("codex") {
-            let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, Some(dir), None, &[]).unwrap();
+            let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, Some(dir), None, &[], &[]).unwrap();
             assert!(!line.contains("--add-dir"), "codex no usa esa bandera: {line}");
         }
     }
@@ -2949,10 +3053,10 @@ mod tests {
         if crate::providers::is_provider_available("claude") {
             // El caso normal: sin grafo construido no se añade nada, y la
             // terminal abre exactamente como abría antes de que esto existiera.
-            let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[]).unwrap();
+            let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[], &[]).unwrap();
             assert!(!without.contains("--mcp-config"), "sin grafo no se pasa bandera: {without}");
 
-            let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, Some(config), &[]).unwrap();
+            let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, Some(config), &[], &[]).unwrap();
             assert!(with.contains("--mcp-config"), "got: {with}");
             assert!(with.contains("mcp-config.json"), "got: {with}");
             assert!(
@@ -2961,7 +3065,7 @@ mod tests {
             );
 
             // Un login no consulta código.
-            let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, None, Some(config), &[]).unwrap();
+            let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, None, Some(config), &[], &[]).unwrap();
             assert!(!login.contains("--mcp-config"), "un login no lleva grafo: {login}");
         }
 
@@ -2972,7 +3076,7 @@ mod tests {
             name: "Codex".to_string(),
         };
         if crate::providers::is_provider_available("codex") {
-            let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, None, Some(config), &[]).unwrap();
+            let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, None, Some(config), &[], &[]).unwrap();
             assert!(!line.contains("--mcp-config"), "codex no usa esa bandera: {line}");
         }
     }

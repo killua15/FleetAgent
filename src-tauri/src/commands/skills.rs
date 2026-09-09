@@ -23,6 +23,68 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tauri::State;
 
+/// The folder name of the diagram skill, named once because two places need
+/// it: the environment that silences its update check, and the note that pairs
+/// it with the code graph.
+pub const ARCHIFY: &str = "archify";
+
+/// Environment that stops an enabled skill from calling out, for the skills
+/// known to do it.
+///
+/// Not a general policy — Hangar cannot tell from a `SKILL.md` whether the
+/// scripts it ships touch the network. It is a short table of the ones checked
+/// by hand, and today it has one row: archify's own instructions tell the agent
+/// to "run the packaged checker `scripts/check-update.mjs`", which reaches a
+/// manifest over the network. Hangar's README promises nothing leaves the
+/// machine, and a skill the user installed *through Hangar* is Hangar's to be
+/// honest about.
+///
+/// Rendered into the visible command line rather than set on the process
+/// quietly, the same choice `ProviderSpec::extra_env` makes: what the picker
+/// previews is what runs, and someone reading it can see the silencing happen.
+const SILENCING_ENV: &[(&str, &str, &str)] = &[(ARCHIFY, "ARCHIFY_UPDATE_CHECK_DISABLED", "1")];
+
+/// The skills actually linked into a project's directory.
+///
+/// Read from the symlinks rather than from the saved selection: those are the
+/// skills the CLI will really see — `skills_dir` drops any whose folder went
+/// missing — so there is no second source of truth to drift. Everything that
+/// keys off "is this skill in play" starts here.
+pub fn linked_skills(skills_parent: &Path) -> Vec<String> {
+    let dir = skills_parent.join(".claude").join("skills");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    entries.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect()
+}
+
+/// Pure over the linked names, so the table can be tested without a filesystem.
+pub fn silencing_env(linked: &[String]) -> Vec<(String, String)> {
+    SILENCING_ENV
+        .iter()
+        .filter(|(skill, _, _)| linked.iter().any(|p| p == skill))
+        .map(|(_, key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
+/// Where a project's delivered diagrams go, handed to the agent so the
+/// instruction note can point at it by name.
+///
+/// Only when the diagram skill is actually linked: a variable naming a
+/// directory nothing will ever write to is noise on a command line someone
+/// reads. Hangar creates the directory here rather than hoping the agent will
+/// — `deliver` writes a file, it does not make a path.
+pub fn diagrams_env(linked: &[String], app_data: &Path, project_id: &str) -> Vec<(String, String)> {
+    if !linked.iter().any(|s| s == ARCHIFY) {
+        return Vec::new();
+    }
+    let dir = crate::diagrams::dir(app_data, project_id);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return Vec::new();
+    }
+    vec![("HANGAR_DIAGRAMS".to_string(), dir.to_string_lossy().to_string())]
+}
+
 /// One skill in the user's library.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

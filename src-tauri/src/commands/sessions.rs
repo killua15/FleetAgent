@@ -753,7 +753,7 @@ pub(crate) fn send_message_blocking(app: AppHandle, session_id: String, text: St
         process_manager::emit_block(&app, &session_id, "agent", &crate::rotation::switch_notice(switch));
     }
 
-    let (provider, billing, config_dir_path, account_id, cwd, name, model, effort, mode_str, resume, instructions, mcp_config) = {
+    let (provider, billing, config_dir_path, account_id, cwd, name, model, effort, mode_str, resume, instructions, mcp_config, skills_dir) = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let (account_id, project_id, name, model, effort, mode_str, resume, worktree_path): (
             String,
@@ -813,7 +813,15 @@ pub(crate) fn send_message_blocking(app: AppHandle, session_id: String, text: St
         // projects have no graph, and a turn must never be handed an MCP
         // pointing at one that isn't there (`GRAPHIFY_TRD.md` §5.5).
         let mcp_config = crate::commands::graph::mcp_config_for_project(&app, &conn, &project_id);
-        (provider, billing, config_dir_path, account_id, cwd, name, model, effort, mode_str, resume, instructions, mcp_config)
+        // Y las mismas skills que tendría una terminal de este proyecto. Antes
+        // no llegaban: un turno headless corría sin ellas y nadie lo decía.
+        let skills_dir = crate::app_data::root(&app)
+            .and_then(|root| crate::commands::skills::skills_dir(&root, &conn, &project_id))
+            .unwrap_or_else(|e| {
+                log::warn!("send_message: could not prepare this project's skills — {e}");
+                None
+            });
+        (provider, billing, config_dir_path, account_id, cwd, name, model, effort, mode_str, resume, instructions, mcp_config, skills_dir)
     };
 
     let api_key = if billing == "key" {
@@ -838,6 +846,7 @@ pub(crate) fn send_message_blocking(app: AppHandle, session_id: String, text: St
         prompt: text,
         instructions,
         mcp_config,
+        skills_dir,
     })
 }
 

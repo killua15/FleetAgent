@@ -1,12 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '../lib/invoke';
 import { SettingsTabs } from '../components/SettingsTabs';
 import { toastError } from '../components/ErrorOverlay';
 import { Spinner } from '../components/Spinner';
+import { AccountPickerButton } from '../components/AccountPickerButton';
+import { Button } from '../components/ui/button';
 import { LANGUAGES } from '../lib/languages';
 import type { Project } from '../types/session';
 import type { AgentPreferences, Skill } from '../types/settings';
 import type { GraphState, GraphifyStatus } from '../types/graph';
+import { ARCHIFY_SKILL, type Diagram } from '../types/diagram';
+import { advance, finish, IDLE, STAGE_LABEL, STAGES, type DiagramProgress } from '../lib/diagramProgress';
+import { listen } from '@tauri-apps/api/event';
 import styles from './ProjectSettings.module.css';
 
 /**
@@ -194,6 +199,13 @@ export function ProjectSettings() {
 
               <CodeGraphField projectId={selected.id} graphify={graphify} />
 
+              <DiagramsField
+                projectId={selected.id}
+                installed={skills.some((sk) => sk.name === ARCHIFY_SKILL)}
+                enabled={enabledSkills.includes(ARCHIFY_SKILL)}
+                onEnable={() => toggleSkill(ARCHIFY_SKILL, true)}
+              />
+
               <p className={styles.footnote}>
                 Idiomas y skills llegan hoy a Claude, Kimi y Grok. Codex recibe el idioma por su propia configuración, pero todavía no
                 las skills — busca en otra ruta y no he podido verificarlo contra una ejecución real. Sus terminales funcionan
@@ -219,6 +231,205 @@ export function ProjectSettings() {
  * Sin `graphify` instalado esto no es un error ni un hueco: dice qué instalar y
  * se queda quieto.
  */
+/**
+ * Los diagramas que un agente ya entregó para este proyecto.
+ *
+ * Se abren en el navegador del sistema, no aquí, por la misma razón que el HTML
+ * del grafo: una página así se renderiza en blanco bajo el CSP de la app. Y hay
+ * una segunda razón propia — el HTML lo escribió lo que un agente compuso, y el
+ * navegador es mejor sitio para eso que el webview de la aplicación.
+ *
+ * La lista es del directorio que Hangar nombra, no del repo. Un diagrama que el
+ * agente dejara en otro sitio no aparece, y el texto de vacío lo dice en vez de
+ * dejar pensando que no hay ninguno.
+ */
+function DiagramsField({
+  projectId,
+  installed,
+  enabled,
+  onEnable,
+}: {
+  projectId: string;
+  installed: boolean;
+  enabled: boolean;
+  onEnable: () => void;
+}) {
+  const [diagrams, setDiagrams] = useState<Diagram[] | null>(null);
+  const [asking, setAsking] = useState(false);
+  /** The turn currently drawing, and how far it has got. `null` when nothing
+   * is running — this lives only while the screen is open, so leaving and
+   * coming back loses the live view but not the work: it is a session, and it
+   * carries on. */
+  const [running, setRunning] = useState<{ sessionId: string; progress: DiagramProgress } | null>(null);
+  /** El `invoke` vuelve en milisegundos y el turno dura minutos, así que
+   * `asking` no basta para cerrar el botón: sin esto se pueden lanzar dos
+   * turnos sobre el mismo proyecto y pagar los dos. */
+  const inFlight = asking || (running !== null && running.progress.stage !== 'done' && running.progress.stage !== 'failed');
+
+  const load = useCallback(() => {
+    setDiagrams(null);
+    invoke<Diagram[]>('list_project_diagrams', { projectId })
+      .then(setDiagrams)
+      .catch((e) => {
+        setDiagrams([]);
+        toastError(String(e));
+      });
+  }, [projectId]);
+
+  useEffect(load, [load]);
+
+  const open = (fileName: string) => invoke('open_diagram', { projectId, fileName }).catch((e) => toastError(String(e)));
+
+  /**
+   * Lanza un turno headless que dibuja, o que actualiza si se le pasa la spec.
+   *
+   * No espera al resultado: un diagrama tarda minutos y bloquear esta pantalla
+   * mientras tanto sería peor que no tener el botón. El trabajo aparece como
+   * una sesión más —con su transcripción y su coste— y la lista se recarga al
+   * volver a esta pantalla.
+   */
+  const ask = async (accountId: string, specFileName: string | null) => {
+    setAsking(true);
+    try {
+      const sessionId = await invoke<string>('generate_project_diagram', { projectId, accountId, specFileName });
+      setRunning({ sessionId, progress: IDLE });
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setAsking(false);
+    }
+  };
+
+  // Los dos eventos que el runner ya emitía y nadie miraba desde aquí: cada
+  // bloque según llega, y el cambio de estado que dice que acabó.
+  useEffect(() => {
+    if (!running) return;
+    const output = listen<{ sessionId: string; kind: string; text: string }>('session-output', (event) => {
+      if (event.payload.sessionId !== running.sessionId) return;
+      setRunning((prev) => (prev ? { ...prev, progress: advance(prev.progress, event.payload) } : prev));
+    });
+    const status = listen<[string, string]>('session-status', (event) => {
+      const [sid, next] = event.payload;
+      if (sid !== running.sessionId || next === 'running') return;
+      // Se recarga aunque haya acabado mal: un intento fallido puede haber
+      // dejado una página anterior intacta, y esconderla no ayudaría.
+      setRunning((prev) => (prev ? { ...prev, progress: finish(prev.progress) } : prev));
+      load();
+    });
+    return () => {
+      output.then((f) => f());
+      status.then((f) => f());
+    };
+  }, [running?.sessionId, load]);
+
+  return (
+    <div className={styles.field}>
+      <span className={styles.fieldLabel}>DIAGRAMAS</span>
+      <span className={styles.fieldHint}>
+        Lo que la skill <code>archify</code> ha entregado aquí. Se guardan en los datos de Hangar, nunca dentro de tu repo, y se abren
+        en tu navegador.
+      </span>
+
+      {diagrams === null ? (
+        <span className={styles.empty}>leyendo…</span>
+      ) : diagrams.length === 0 ? (
+        <span className={styles.empty}>
+          Ninguno todavía. Uno que un agente entregue en otra carpeta tampoco aparece aquí.
+        </span>
+      ) : (
+        <div className={styles.skillList}>
+          {diagrams.map((d) => (
+            <div key={d.fileName} className={styles.skillRow}>
+              <button className={styles.skillInfo} onClick={() => open(d.fileName)} title={`Abrir ${d.fileName}`}>
+                <span className={styles.skillName}>{d.title}</span>
+                <span className={styles.skillDescription}>
+                  {d.generator ?? d.fileName}
+                  {d.modified && ` · ${new Date(d.modified).toLocaleString('es')}`}
+                  {d.bytes > 0 && ` · ${Math.round(d.bytes / 1024).toLocaleString('es')} KB`}
+                  {!d.specFileName && ' · sin spec, solo se puede rehacer'}
+                </span>
+              </button>
+              {enabled && d.specFileName && (
+                <AccountPickerButton
+                  label="actualizar"
+                  title="Un agente compara la spec con el código de ahora y la corrige. Gasta un turno."
+                  busy={inFlight}
+                  disabled={inFlight}
+                  onPick={(accountId) => ask(accountId, d.specFileName)}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {running && (
+        <div className={styles.skillList}>
+          <div className={styles.skillRow}>
+            <span className={styles.skillInfo}>
+              <span className={styles.skillName}>
+                {STAGES.map((stage, i) => {
+                  const at = STAGES.indexOf(running.progress.stage);
+                  const reached = running.progress.stage === 'done' || (at >= 0 && i <= at);
+                  return (
+                    <span key={stage} style={{ opacity: reached ? 1 : 0.35 }}>
+                      {i > 0 && ' › '}
+                      {STAGE_LABEL[stage]}
+                      {stage === 'validating' && running.progress.validationRounds > 1 && ` (${running.progress.validationRounds})`}
+                    </span>
+                  );
+                })}
+              </span>
+              <span className={styles.skillDescription}>
+                {running.progress.stage === 'done'
+                  ? 'Listo — la lista de abajo ya está al día.'
+                  : running.progress.stage === 'failed'
+                    ? 'El turno terminó sin llegar a compilar. Abre la sesión para ver dónde se quedó.'
+                    : (running.progress.lastAction ?? 'esperando al agente…')}
+              </span>
+            </span>
+          </div>
+        </div>
+      )}
+
+      {!installed ? (
+        // Esto sí está en otra pantalla, así que se dice dónde. Instalar es
+        // elegir un repo y pasar por el preview, y eso no se ataja desde aquí.
+        <span className={styles.fieldHint}>
+          Para dibujar hace falta la skill <code>archify</code>, que no está en tu biblioteca. Se instala en{' '}
+          <strong>Settings → Skills → repos</strong>; sale entre las sugeridas.
+        </span>
+      ) : !enabled ? (
+        // Y esto no: la casilla está en esta misma pantalla, unos centímetros
+        // más arriba. Mandar a alguien a buscarla sería un callejón con pasos
+        // extra.
+        <>
+          <Button size="sm" variant="ghost" onClick={onEnable}>
+            activar archify en este proyecto
+          </Button>
+          <span className={styles.fieldHint}>
+            Es la misma casilla de <strong>Skills</strong>, aquí arriba. Los agentes de este proyecto la tendrán a partir de la próxima
+            terminal o turno.
+          </span>
+        </>
+      ) : (
+        <>
+          <AccountPickerButton
+            label={diagrams && diagrams.length > 0 ? 'dibujar otro' : 'dibujar el primero'}
+            title="Un agente lee el proyecto y entrega un diagrama. Gasta un turno de la cuenta que elijas."
+            busy={inFlight}
+            disabled={inFlight || diagrams === null}
+            onPick={(accountId) => ask(accountId, null)}
+          />
+          <span className={styles.fieldHint}>
+            Se abre como una sesión más, así que puedes seguirla y ver lo que costó. Tarda unos minutos.
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
 function CodeGraphField({ projectId, graphify }: { projectId: string; graphify: GraphifyStatus | null }) {
   const [state, setState] = useState<GraphState | null>(null);
   const [building, setBuilding] = useState(false);

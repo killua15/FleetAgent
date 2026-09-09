@@ -1,0 +1,361 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "How a skill reaches an agent",
+    "subtitle": "Hangar - the road from a GitHub repo to a running CLI",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1320,
+      800
+    ],
+    "repository": {
+      "url": "https://github.com/killua15/FleetAgent",
+      "revision": "1a972084bf72768e4c19c05dc710a14696e4b85d"
+    },
+    "views": [
+      {
+        "id": "install",
+        "label": "Getting it",
+        "focus": [
+          "suggested",
+          "repo",
+          "preview",
+          "library"
+        ],
+        "note": "A repo becomes a folder on disk, and never without you seeing what is in it first."
+      },
+      {
+        "id": "spawn",
+        "label": "Reaching the agent",
+        "focus": [
+          "selection",
+          "linkdir",
+          "silenced",
+          "instructions",
+          "cmdline",
+          "agent"
+        ],
+        "note": "Assembled when the terminal opens, so unticking a skill takes effect immediately."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "suggested",
+      "type": "frontend",
+      "label": "Suggested sources",
+      "sublabel": "three, verified",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        180,
+        66
+      ],
+      "tag": "new",
+      "sources": [
+        {
+          "path": "src-tauri/src/commands/skill_sources.rs",
+          "line": 38,
+          "label": "SUGGESTED"
+        }
+      ]
+    },
+    {
+      "id": "repo",
+      "type": "external",
+      "label": "GitHub repo",
+      "sublabel": "tt-a1i/archify",
+      "pos": [
+        40,
+        190
+      ],
+      "size": [
+        180,
+        66
+      ],
+      "brand": "github"
+    },
+    {
+      "id": "preview",
+      "type": "security",
+      "label": "Mandatory preview",
+      "sublabel": "you read it, then confirm",
+      "pos": [
+        380,
+        115
+      ],
+      "size": [
+        190,
+        66
+      ],
+      "sources": [
+        {
+          "path": "src-tauri/src/commands/skill_sources.rs",
+          "line": 218,
+          "label": "preview_source_skill"
+        }
+      ]
+    },
+    {
+      "id": "library",
+      "type": "database",
+      "label": "Skill library",
+      "sublabel": "one copy on disk",
+      "pos": [
+        730,
+        115
+      ],
+      "size": [
+        180,
+        66
+      ],
+      "sources": [
+        {
+          "path": "src-tauri/src/commands/skills.rs",
+          "line": 95,
+          "label": "library_dir"
+        }
+      ]
+    },
+    {
+      "id": "selection",
+      "type": "database",
+      "label": "project_skills",
+      "sublabel": "ticked per project",
+      "pos": [
+        1070,
+        115
+      ],
+      "size": [
+        180,
+        66
+      ],
+      "sources": [
+        {
+          "path": "src-tauri/src/db/mod.rs",
+          "line": 574,
+          "label": "project_skills"
+        }
+      ]
+    },
+    {
+      "id": "linkdir",
+      "type": "backend",
+      "label": ".claude/skills",
+      "sublabel": "symlinks, not copies",
+      "pos": [
+        1070,
+        300
+      ],
+      "size": [
+        180,
+        66
+      ],
+      "sources": [
+        {
+          "path": "src-tauri/src/commands/skills.rs",
+          "line": 319,
+          "label": "skills_dir"
+        }
+      ]
+    },
+    {
+      "id": "silenced",
+      "type": "security",
+      "label": "Phone-home silenced",
+      "sublabel": "ARCHIFY_UPDATE_CHECK_DISABLED",
+      "pos": [
+        660,
+        430
+      ],
+      "size": [
+        210,
+        66
+      ],
+      "tag": "new",
+      "sources": [
+        {
+          "path": "src-tauri/src/commands/skills.rs",
+          "line": 51,
+          "label": "silencing_env"
+        }
+      ]
+    },
+    {
+      "id": "cmdline",
+      "type": "backend",
+      "label": "One command line",
+      "sublabel": "exactly what the picker shows",
+      "pos": [
+        1070,
+        520
+      ],
+      "size": [
+        180,
+        66
+      ],
+      "sources": [
+        {
+          "path": "src-tauri/src/terminals.rs",
+          "line": 790,
+          "label": "account_command_line_full"
+        }
+      ]
+    },
+    {
+      "id": "graph",
+      "type": "backend",
+      "label": "Code graph",
+      "sublabel": "AST, per scope",
+      "pos": [
+        40,
+        620
+      ],
+      "size": [
+        180,
+        66
+      ],
+      "sources": [
+        {
+          "path": "src-tauri/src/graph.rs",
+          "line": 617,
+          "label": "brief_path"
+        }
+      ]
+    },
+    {
+      "id": "instructions",
+      "type": "backend",
+      "label": "Instruction file",
+      "sublabel": "brief + pairing note",
+      "pos": [
+        380,
+        620
+      ],
+      "size": [
+        200,
+        66
+      ],
+      "tag": "new",
+      "sources": [
+        {
+          "path": "src-tauri/src/commands/preferences.rs",
+          "line": 309,
+          "label": "diagram_note"
+        }
+      ]
+    },
+    {
+      "id": "agent",
+      "type": "frontend",
+      "label": "The agent",
+      "sublabel": "in its own worktree",
+      "pos": [
+        1070,
+        700
+      ],
+      "size": [
+        180,
+        66
+      ],
+      "brand": "claude"
+    }
+  ],
+  "connections": [
+    {
+      "id": "suggest",
+      "from": "suggested",
+      "to": "preview",
+      "label": "one click"
+    },
+    {
+      "id": "listed",
+      "from": "repo",
+      "to": "preview",
+      "label": "gh skill"
+    },
+    {
+      "id": "confirmed",
+      "from": "preview",
+      "to": "library",
+      "label": "copies 7.3 MB",
+      "variant": "emphasis"
+    },
+    {
+      "id": "tick",
+      "from": "library",
+      "to": "selection",
+      "label": "you tick it"
+    },
+    {
+      "id": "link",
+      "from": "selection",
+      "to": "linkdir",
+      "label": "at open",
+      "labelDy": 70
+    },
+    {
+      "id": "adddir",
+      "from": "linkdir",
+      "to": "cmdline",
+      "label": "--add-dir",
+      "labelDy": 80
+    },
+    {
+      "id": "detect",
+      "from": "linkdir",
+      "to": "silenced",
+      "label": "archify linked",
+      "variant": "dashed"
+    },
+    {
+      "id": "env",
+      "from": "silenced",
+      "to": "cmdline",
+      "label": "env prefix",
+      "variant": "security"
+    },
+    {
+      "id": "brief",
+      "from": "graph",
+      "to": "instructions",
+      "label": "brief"
+    },
+    {
+      "id": "prompt",
+      "from": "instructions",
+      "to": "cmdline",
+      "label": "--append-system-prompt-file"
+    },
+    {
+      "id": "run",
+      "from": "cmdline",
+      "to": "agent",
+      "label": "runs",
+      "variant": "emphasis",
+      "labelDy": 55
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "What is new here",
+      "items": [
+        "Suggested sources: the screen no longer opens as a blank owner/repo field",
+        "The phone-home silenced, in the visible command line, not set quietly",
+        "The instruction file pairs the diagram skill with the code graph"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Two rules the shape enforces",
+      "items": [
+        "Nothing installs without the preview - a SKILL.md can pre-authorise its own scripts",
+        "Everything after the tick is assembled at terminal open, so nothing can go stale"
+      ]
+    }
+  ]
+}

@@ -3,7 +3,7 @@ import { invoke } from '../lib/invoke';
 import { toastError } from './ErrorOverlay';
 import { ConfirmDeleteDialog } from './ConfirmDeleteDialog';
 import { Button } from './ui/button';
-import type { RemoteSkill, SkillSource } from '../types/settings';
+import type { RemoteSkill, SkillSource, SuggestedSource } from '../types/settings';
 import styles from '../screens/SkillSettings.module.css';
 
 /**
@@ -22,6 +22,7 @@ import styles from '../screens/SkillSettings.module.css';
  */
 export function SkillSourcesTab({ onInstalled }: { onInstalled: () => void }) {
   const [sources, setSources] = useState<SkillSource[]>([]);
+  const [suggested, setSuggested] = useState<SuggestedSource[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [remote, setRemote] = useState<RemoteSkill[]>([]);
   const [loading, setLoading] = useState(false);
@@ -37,6 +38,7 @@ export function SkillSourcesTab({ onInstalled }: { onInstalled: () => void }) {
 
   useEffect(() => {
     loadSources();
+    invoke<SuggestedSource[]>('suggested_skill_sources').then(setSuggested).catch(() => {});
   }, []);
 
   const openSource = async (repo: string) => {
@@ -53,11 +55,12 @@ export function SkillSourcesTab({ onInstalled }: { onInstalled: () => void }) {
     }
   };
 
-  const add = async () => {
-    if (!input.trim()) return;
+  const add = async (repo?: string, label?: string) => {
+    const wanted = (repo ?? input).trim();
+    if (!wanted) return;
     setAdding(true);
     try {
-      const source = await invoke<SkillSource>('add_skill_source', { repo: input.trim(), label: null });
+      const source = await invoke<SkillSource>('add_skill_source', { repo: wanted, label: label ?? null });
       setInput('');
       await loadSources();
       openSource(source.repo);
@@ -94,6 +97,8 @@ export function SkillSourcesTab({ onInstalled }: { onInstalled: () => void }) {
     }
   };
 
+  const unadded = suggested.filter((s) => !sources.some((existing) => existing.repo === s.repo));
+
   const shown = remote.filter(
     (s) => !filter.trim() || s.name.includes(filter.trim()) || s.description.toLowerCase().includes(filter.trim().toLowerCase()),
   );
@@ -113,7 +118,7 @@ export function SkillSourcesTab({ onInstalled }: { onInstalled: () => void }) {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && add()}
           />
-          <Button size="sm" disabled={adding || !input.trim()} onClick={add}>
+          <Button size="sm" disabled={adding || !input.trim()} onClick={() => add()}>
             {adding ? '…' : 'añadir'}
           </Button>
         </div>
@@ -123,6 +128,28 @@ export function SkillSourcesTab({ onInstalled }: { onInstalled: () => void }) {
             Ninguno todavía. Añade el repo de skills de tu equipo — si es privado también funciona, porque Hangar usa tu sesión de{' '}
             <code>gh</code>.
           </span>
+        )}
+
+        {/* Pedir `owner/repo` a pelo es una pregunta que solo puede contestar
+         * quien ya sabe la respuesta. Se ofrecen los que aún no están, así que
+         * la sección se vacía sola a medida que se usan. */}
+        {unadded.length > 0 && (
+          <>
+            <div className={styles.listHead}>
+              <span className={styles.sectionLabel}>PARA EMPEZAR</span>
+            </div>
+            {unadded.map((s) => (
+              <div key={s.repo} className={styles.row}>
+                <span className={styles.rowMain}>
+                  <span className={styles.rowName}>{s.label}</span>
+                  <span className={styles.rowDescription}>{s.blurb}</span>
+                </span>
+                <Button size="sm" variant="ghost" disabled={adding} onClick={() => add(s.repo, s.label)}>
+                  añadir
+                </Button>
+              </div>
+            ))}
+          </>
         )}
 
         {sources.map((source) => (

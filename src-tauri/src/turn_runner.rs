@@ -207,6 +207,13 @@ pub struct TurnRequest<R: Runtime = tauri::Wry> {
     /// there is no graph (the common case). Resolved by the caller for the
     /// same reason as `instructions`.
     pub mcp_config: Option<std::path::PathBuf>,
+    /// The project's skills, as the directory `--add-dir` wants. Resolved by
+    /// the caller, same as the two above.
+    ///
+    /// Headless turns had none until now, which meant a review — or anything
+    /// else Hangar starts on your behalf — ran without the skills the same
+    /// project's terminal would have had.
+    pub skills_dir: Option<std::path::PathBuf>,
 }
 
 /// Runs one headless turn (`claude -p "<prompt>" --output-format
@@ -267,6 +274,7 @@ pub fn spawn_turn<R: Runtime>(req: TurnRequest<R>) -> Result<(), String> {
         use_permission_prompt,
         instructions: req.instructions.as_deref(),
         mcp_config: req.mcp_config.as_deref(),
+        skills_dir: req.skills_dir.as_deref(),
     });
 
     std::thread::spawn(move || {
@@ -1372,6 +1380,7 @@ mod tests {
             prompt: "say hello".to_string(),
             instructions: None,
             mcp_config: None,
+            skills_dir: None,
         })
         .expect("the first turn on a fresh session must not be refused");
 
