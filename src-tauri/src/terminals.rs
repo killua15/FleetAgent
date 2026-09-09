@@ -3377,6 +3377,122 @@ mod tests {
         assert!(err.contains("no terminal with id"), "got: {err}");
     }
 
+    /// El escenario del cuelgue, montado a propósito y con reloj.
+    ///
+    /// Una flota de seis terminales; en una de ellas corre un `sleep`, que **no
+    /// lee su entrada**, así que el búfer de la tty se llena y la escritura al
+    /// PTY se para de verdad. Contra eso se mide lo que antes se moría con ella:
+    ///
+    /// - que escribir a la atascada vuelva al instante (o falle diciendo que la
+    ///   cola está llena), pero nunca se quede colgado;
+    /// - que el candado global siga disponible, que es lo que necesitan los tres
+    ///   ticks (salida a 60 Hz, estados a 1 s, cola móvil a 10 Hz);
+    /// - que las otras cinco sigan aceptando y sacando texto.
+    ///
+    /// Con el código anterior este test se bloquea en la primera escritura que
+    /// llena el búfer: era un comando síncrono que escribía al PTY con el
+    /// candado global puesto. Comprobado volviendo atrás el cambio.
+    #[test]
+    fn a_terminal_that_stops_reading_does_not_take_the_others_with_it() {
+        use std::time::{Duration, Instant};
+
+        let dir = std::env::temp_dir().join(format!("hangar-stress-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = seed();
+        conn.execute(
+            "INSERT INTO projects (id, name, path, created_at) VALUES ('tmp','Temp',?1,'now')",
+            rusqlite::params![dir.to_string_lossy().to_string()],
+        )
+        .unwrap();
+        let app = tauri::test::mock_app();
+        app.manage(crate::db::DbConnection(Mutex::new(conn)));
+        app.manage(TerminalRegistry::new());
+        let handle = app.handle().clone();
+
+        let open = || {
+            open_terminal_blocking(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp".into() }, None, None, None, None, 80, 24)
+                .expect("opening a terminal in a real directory must succeed")
+        };
+        let stuck = open();
+        let others: Vec<TerminalInfo> = (0..5).map(|_| open()).collect();
+
+        // Que deje de leer: `sleep` no toca stdin, así que todo lo que llegue
+        // se queda en el búfer de la tty hasta que se llene.
+        write_terminal(handle.clone(), stuck.id.clone(), "sleep 30\n".to_string()).unwrap();
+        std::thread::sleep(Duration::from_millis(800));
+
+        // Ocho megas contra una terminal que no lee. Sin el arreglo, una de
+        // estas llamadas no vuelve.
+        let started = Instant::now();
+        let chunk = "x".repeat(8 * 1024);
+        let mut refused = 0;
+        for _ in 0..20_000 {
+            match write_terminal(handle.clone(), stuck.id.clone(), chunk.clone()) {
+                Ok(()) => {}
+                Err(e) => {
+                    assert!(e.contains("not reading its input"), "el rechazo tiene que decir por qué: {e}");
+                    refused += 1;
+                }
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "escribir a una terminal atascada bloqueó el hilo: {:?}",
+                started.elapsed()
+            );
+        }
+        let hammering = started.elapsed();
+        // El test comprueba su propia premisa: si nada se rechazó, el hilo
+        // escritor iba drenando y el PTY nunca llegó a atascarse — entonces
+        // esto no estaría midiendo el escenario del cuelgue, y pasar no
+        // significaría nada.
+        assert!(refused > 0, "la cola nunca se llenó: el PTY no llegó a bloquearse y el test no prueba lo que dice");
+
+        // El candado global tiene que seguir tomándose sin espera: es el que
+        // comparten los tres ticks, y perderlo era lo que enmudecía la app.
+        let lock_at = Instant::now();
+        {
+            let registry = handle.state::<TerminalRegistry>();
+            let map = registry.0.lock().expect("el candado global tiene que estar libre");
+            assert_eq!(map.len(), 6, "las seis siguen registradas");
+        }
+        assert!(lock_at.elapsed() < Duration::from_secs(1), "el candado global tardó {:?}", lock_at.elapsed());
+
+        // Y los ticks, que son los que de verdad se congelaban.
+        tick_terminal_output(&handle);
+        tick_terminal_states(&handle);
+        tick_mobile_tail(&handle);
+
+        // Las otras cinco tienen que seguir vivas: aceptar entrada y sacar texto.
+        for (i, info) in others.iter().enumerate() {
+            write_terminal(handle.clone(), info.id.clone(), format!("echo hangar-alive-{i}\n")).unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(25);
+        let mut alive = 0;
+        while Instant::now() < deadline && alive < others.len() {
+            alive = others
+                .iter()
+                .enumerate()
+                .filter(|(i, info)| {
+                    let registry = handle.state::<TerminalRegistry>();
+                    let map = registry.0.lock().unwrap();
+                    let buffer = map.get(&info.id).unwrap().scrollback.lock().unwrap();
+                    let text = String::from_utf8_lossy(&buffer.iter().copied().collect::<Vec<_>>()).to_string();
+                    text.matches(&format!("hangar-alive-{i}")).count() >= 2
+                })
+                .count();
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(alive, others.len(), "solo {alive} de {} terminales sanas respondieron", others.len());
+
+        eprintln!("  [estrés] 20000 escrituras de 8 KB en {hammering:?}, {refused} rechazadas por cola llena");
+
+        close_terminal(handle.clone(), stuck.id.clone()).unwrap();
+        for info in &others {
+            close_terminal(handle.clone(), info.id.clone()).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Attaching hands over the scrollback *and* the pane must not then be sent
     /// the same bytes again by the next flush.
     ///
