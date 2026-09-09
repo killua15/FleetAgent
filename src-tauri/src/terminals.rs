@@ -243,7 +243,16 @@ struct TerminalHandle {
     master: Box<dyn MasterPty + Send>,
     /// Shared so the deferred init-command thread can type into the shell
     /// after it's ready (see `open_terminal`), not only the keystroke command.
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// Encolar aquí es lo único que hace `write_terminal`.
+    ///
+    /// El writer del PTY vive dentro de un hilo propio y nadie más lo toca. Antes
+    /// era un `Arc<Mutex<…>>` que se bloqueaba **con el candado global del
+    /// registro puesto**, y como escribir a un PTY se para cuando el hijo no
+    /// vacía su entrada, una escritura atascada congelaba a la vez el hilo de
+    /// IPC y los tres ticks que ese candado protege — o sea, la app entera.
+    ///
+    /// Acotado: un PTY parado con un canal infinito es memoria sin techo.
+    writes: std::sync::mpsc::SyncSender<Vec<u8>>,
     child: Box<dyn Child + Send + Sync>,
     scrollback: Arc<Mutex<VecDeque<u8>>>,
     /// The channel of whoever is currently displaying this terminal, or
@@ -279,6 +288,14 @@ impl Activity {
         Activity { state: TerminalState::Idle, last_output: Instant::now(), title: None }
     }
 }
+
+/// Cuántas escrituras pendientes se aguantan por terminal antes de decir que no.
+///
+/// Generoso para tecleo humano y para un pegado grande, y aun así un techo: si
+/// el hijo dejó de leer del todo, esto es lo que separa «se acumula un rato» de
+/// «la memoria crece sin fin». Al llenarse, `write_terminal` devuelve error en
+/// vez de bloquear o tragarse la tecla en silencio.
+const WRITE_QUEUE_DEPTH: usize = 4096;
 
 pub struct TerminalRegistry(pub Mutex<HashMap<String, TerminalHandle>>);
 
@@ -1114,9 +1131,27 @@ pub(crate) fn open_terminal_blocking<R: Runtime>(
     drop(pair.slave);
 
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-    let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(pair.master.take_writer().map_err(|e| e.to_string())?));
+    let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    // Un hilo dueño del writer, alimentado por un canal. Que el orden lo fije el
+    // canal y no la carrera por un mutex es la mitad del arreglo: el frontend
+    // invoca `write_terminal` sin esperar (`TerminalPane.tsx:115`), así que dos
+    // pulsaciones que compitieran por un candado podrían llegar cambiadas.
+    let (writes, incoming) = std::sync::mpsc::sync_channel::<Vec<u8>>(WRITE_QUEUE_DEPTH);
 
     let id = Uuid::new_v4().to_string();
+    {
+        let id = id.clone();
+        std::thread::spawn(move || {
+            // Termina solo: cuando el handle se tira, el emisor muere y `recv`
+            // devuelve Err.
+            while let Ok(chunk) = incoming.recv() {
+                if let Err(e) = writer.write_all(&chunk).and_then(|()| writer.flush()) {
+                    log::warn!("terminal {id}: could not write to the pty: {e}");
+                    break;
+                }
+            }
+        });
+    }
     let info = TerminalInfo {
         // A terminal the user just asked for is never born folded; restore sets
         // it afterwards for the ones that were.
@@ -1229,7 +1264,10 @@ pub(crate) fn open_terminal_blocking<R: Runtime>(
     // blocking it would freeze the IPC dispatch thread (see `crate::blocking`).
     if let Some(line) = init_line {
         let scrollback = scrollback.clone();
-        let writer = writer.clone();
+        // Por el mismo canal que las teclas, y eso arregla de paso una carrera
+        // que ya existía: los dos competían por el mutex del writer, así que
+        // teclear rápido podía colar tu pulsación por delante del guion.
+        let writes = writes.clone();
         let id = id.clone();
         std::thread::spawn(move || {
             let deadline = Instant::now() + SHELL_READY_TIMEOUT;
@@ -1247,8 +1285,7 @@ pub(crate) fn open_terminal_blocking<R: Runtime>(
             // which looks the same as the bug this avoids.
             std::thread::sleep(SHELL_SETTLE);
 
-            let Ok(mut writer) = writer.lock() else { return };
-            if let Err(e) = writer.write_all(line.as_bytes()).and_then(|()| writer.flush()) {
+            if let Err(e) = writes.try_send(line.into_bytes()) {
                 log::warn!("terminal {id}: could not type the init command: {e}");
             }
         });
@@ -1258,7 +1295,7 @@ pub(crate) fn open_terminal_blocking<R: Runtime>(
         .0
         .lock()
         .map_err(|e| e.to_string())?
-        .insert(id.clone(), TerminalHandle { master: pair.master, writer, child, scrollback, sink, activity, mobile_tail, info: info.clone() });
+        .insert(id.clone(), TerminalHandle { master: pair.master, writes, child, scrollback, sink, activity, mobile_tail, info: info.clone() });
 
     // Mirror the terminal to disk so it can be reopened next launch. Only a
     // registered terminal is persisted, so this can't outlive the shell.
@@ -1339,15 +1376,30 @@ pub fn detach_terminal<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), 
     Ok(())
 }
 
+/// Encola lo tecleado; el hilo escritor de esa terminal lo saca.
+///
+/// **Sigue siendo síncrono a propósito.** Encolar es instantáneo, y que la IPC
+/// despache en serie es lo que garantiza que las pulsaciones lleguen en orden:
+/// el frontend invoca esto sin esperar la respuesta, así que repartir cada
+/// escritura a un hilo del pool las pondría a competir y «ls» podría salir
+/// «sl».
+///
+/// Lo que ya no hace es escribir al PTY con el candado global puesto. Esa era
+/// la forma que congelaba la app entera cuando el hijo dejaba de leer.
 #[tauri::command]
 pub fn write_terminal<R: Runtime>(app: AppHandle<R>, id: String, data: String) -> Result<(), String> {
-    let registry = app.state::<TerminalRegistry>();
-    let mut map = registry.0.lock().map_err(|e| e.to_string())?;
-    let handle = map.get_mut(&id).ok_or_else(|| format!("no terminal with id {id}"))?;
-    let mut writer = handle.writer.lock().map_err(|e| e.to_string())?;
-    writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
-    writer.flush().map_err(|e| e.to_string())?;
-    Ok(())
+    let writes = {
+        let registry = app.state::<TerminalRegistry>();
+        let map = registry.0.lock().map_err(|e| e.to_string())?;
+        map.get(&id).ok_or_else(|| format!("no terminal with id {id}"))?.writes.clone()
+    };
+    match writes.try_send(data.into_bytes()) {
+        Ok(()) => Ok(()),
+        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+            Err(format!("terminal {id} is not reading its input — {WRITE_QUEUE_DEPTH} writes are already waiting"))
+        }
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => Err(format!("terminal {id} is no longer running")),
+    }
 }
 
 /// Tells the PTY its real size. Without this the shell keeps its initial
@@ -3218,6 +3270,111 @@ mod tests {
         assert!(list_terminals(handle).unwrap().is_empty(), "a closed terminal must leave the registry");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// El orden de las pulsaciones tiene que salir del canal, no de una carrera.
+    ///
+    /// `TerminalPane.tsx` invoca `write_terminal` **sin esperar** la respuesta,
+    /// así que lo único que ordena las teclas es que la IPC despache en serie y
+    /// que encolar sea instantáneo. Si algún día alguien hace este comando
+    /// asíncrono «para que no bloquee», este test es el que lo caza: dos
+    /// escrituras repartidas a hilos distintos competirían y `ls` podría llegar
+    /// como `sl`.
+    #[test]
+    fn what_you_type_reaches_the_shell_in_the_order_you_typed_it() {
+        use std::time::{Duration, Instant};
+
+        let dir = std::env::temp_dir().join(format!("hangar-test-order-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = seed();
+        conn.execute(
+            "INSERT INTO projects (id, name, path, created_at) VALUES ('tmp','Temp',?1,'now')",
+            rusqlite::params![dir.to_string_lossy().to_string()],
+        )
+        .unwrap();
+        let app = tauri::test::mock_app();
+        app.manage(crate::db::DbConnection(Mutex::new(conn)));
+        app.manage(TerminalRegistry::new());
+        let handle = app.handle().clone();
+
+        let info = open_terminal_blocking(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp".into() }, None, None, None, None, 80, 24)
+            .expect("opening a terminal in a real directory must succeed");
+
+        // Una orden partida en trozos: solo llega entera si se conserva el orden.
+        for piece in ["echo hangar", "-order", "-ok\n"] {
+            write_terminal(handle.clone(), info.id.clone(), piece.to_string()).unwrap();
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut seen = false;
+        while Instant::now() < deadline {
+            let registry = handle.state::<TerminalRegistry>();
+            let map = registry.0.lock().unwrap();
+            let buffer = map.get(&info.id).unwrap().scrollback.lock().unwrap();
+            let text = String::from_utf8_lossy(&buffer.iter().copied().collect::<Vec<_>>()).to_string();
+            drop(buffer);
+            drop(map);
+            // Dos veces: el eco de lo tecleado y la salida del propio shell.
+            if text.matches("hangar-order-ok").count() >= 2 {
+                seen = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(seen, "los trozos tienen que llegar en orden y formar la orden entera");
+
+        close_terminal(handle.clone(), info.id.clone()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Escribir no puede quedarse con el candado global del registro: era la
+    /// forma exacta que congelaba la app entera, porque los tres ticks (salida
+    /// a 60 Hz, estados a 1 s, cola móvil a 10 Hz) lo necesitan.
+    #[test]
+    fn writing_does_not_sit_on_the_global_registry_lock() {
+        use std::time::{Duration, Instant};
+
+        let dir = std::env::temp_dir().join(format!("hangar-test-lock-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = seed();
+        conn.execute(
+            "INSERT INTO projects (id, name, path, created_at) VALUES ('tmp','Temp',?1,'now')",
+            rusqlite::params![dir.to_string_lossy().to_string()],
+        )
+        .unwrap();
+        let app = tauri::test::mock_app();
+        app.manage(crate::db::DbConnection(Mutex::new(conn)));
+        app.manage(TerminalRegistry::new());
+        let handle = app.handle().clone();
+
+        let info = open_terminal_blocking(handle.clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp".into() }, None, None, None, None, 80, 24)
+            .expect("opening a terminal in a real directory must succeed");
+
+        // Mucho más de lo que un humano teclea, para que si algo se bloqueara
+        // por escritura se notara en el reloj.
+        let started = Instant::now();
+        for _ in 0..500 {
+            write_terminal(handle.clone(), info.id.clone(), "x".to_string()).unwrap();
+        }
+        let elapsed = started.elapsed();
+        assert!(elapsed < Duration::from_secs(2), "500 escrituras encoladas tardaron {elapsed:?}: algo está bloqueando");
+
+        // Y el candado sigue tomándose sin espera: si `write_terminal` lo
+        // retuviera, esto competiría con él.
+        assert!(handle.state::<TerminalRegistry>().0.lock().is_ok());
+
+        close_terminal(handle.clone(), info.id.clone()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Una terminal que ya no existe se dice, no se traga.
+    #[test]
+    fn writing_to_a_terminal_that_is_gone_is_an_error() {
+        let app = tauri::test::mock_app();
+        app.manage(crate::db::DbConnection(Mutex::new(seed())));
+        app.manage(TerminalRegistry::new());
+        let err = write_terminal(app.handle().clone(), "no-existe".to_string(), "hola".to_string()).unwrap_err();
+        assert!(err.contains("no terminal with id"), "got: {err}");
     }
 
     /// Attaching hands over the scrollback *and* the pane must not then be sent
