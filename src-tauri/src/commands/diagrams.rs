@@ -108,7 +108,11 @@ fn generate_blocking<R: tauri::Runtime>(
     };
     let linked = skills_dir.as_deref().map(crate::commands::skills::linked_skills).unwrap_or_default();
     if !linked.iter().any(|s| s == crate::commands::skills::ARCHIFY) {
-        return Err("turn on the `archify` skill for this project first — Settings → Skills".to_string());
+        // The switch is on the same screen the button is on, so this says so
+        // rather than sending someone off to look for it. It is a backstop
+        // anyway: the UI offers turning it on instead of offering a button that
+        // is going to be refused.
+        return Err("the `archify` skill is off for this project — the tick is in Skills, on this same screen".to_string());
     }
 
     let api_key = if billing == "key" { Some(crate::credential_vault::get(&account_id)?) } else { None };

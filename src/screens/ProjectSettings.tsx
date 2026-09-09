@@ -4,11 +4,12 @@ import { SettingsTabs } from '../components/SettingsTabs';
 import { toastError } from '../components/ErrorOverlay';
 import { Spinner } from '../components/Spinner';
 import { AccountPickerButton } from '../components/AccountPickerButton';
+import { Button } from '../components/ui/button';
 import { LANGUAGES } from '../lib/languages';
 import type { Project } from '../types/session';
 import type { AgentPreferences, Skill } from '../types/settings';
 import type { GraphState, GraphifyStatus } from '../types/graph';
-import type { Diagram } from '../types/diagram';
+import { ARCHIFY_SKILL, type Diagram } from '../types/diagram';
 import styles from './ProjectSettings.module.css';
 
 /**
@@ -196,7 +197,12 @@ export function ProjectSettings() {
 
               <CodeGraphField projectId={selected.id} graphify={graphify} />
 
-              <DiagramsField projectId={selected.id} />
+              <DiagramsField
+                projectId={selected.id}
+                installed={skills.some((sk) => sk.name === ARCHIFY_SKILL)}
+                enabled={enabledSkills.includes(ARCHIFY_SKILL)}
+                onEnable={() => toggleSkill(ARCHIFY_SKILL, true)}
+              />
 
               <p className={styles.footnote}>
                 Idiomas y skills llegan hoy a Claude, Kimi y Grok. Codex recibe el idioma por su propia configuración, pero todavía no
@@ -235,7 +241,17 @@ export function ProjectSettings() {
  * agente dejara en otro sitio no aparece, y el texto de vacío lo dice en vez de
  * dejar pensando que no hay ninguno.
  */
-function DiagramsField({ projectId }: { projectId: string }) {
+function DiagramsField({
+  projectId,
+  installed,
+  enabled,
+  onEnable,
+}: {
+  projectId: string;
+  installed: boolean;
+  enabled: boolean;
+  onEnable: () => void;
+}) {
   const [diagrams, setDiagrams] = useState<Diagram[] | null>(null);
   const [asking, setAsking] = useState(false);
 
@@ -284,8 +300,7 @@ function DiagramsField({ projectId }: { projectId: string }) {
         <span className={styles.empty}>leyendo…</span>
       ) : diagrams.length === 0 ? (
         <span className={styles.empty}>
-          Ninguno todavía. Necesita la skill <code>archify</code> marcada en <strong>Skills</strong>. Uno que un agente entregue en
-          otra carpeta tampoco aparece aquí.
+          Ninguno todavía. Uno que un agente entregue en otra carpeta tampoco aparece aquí.
         </span>
       ) : (
         <div className={styles.skillList}>
@@ -300,7 +315,7 @@ function DiagramsField({ projectId }: { projectId: string }) {
                   {!d.specFileName && ' · sin spec, solo se puede rehacer'}
                 </span>
               </button>
-              {d.specFileName && (
+              {enabled && d.specFileName && (
                 <AccountPickerButton
                   label="actualizar"
                   title="Un agente compara la spec con el código de ahora y la corrige. Gasta un turno."
@@ -313,14 +328,40 @@ function DiagramsField({ projectId }: { projectId: string }) {
         </div>
       )}
 
-      <AccountPickerButton
-        label={diagrams && diagrams.length > 0 ? 'dibujar otro' : 'dibujar el primero'}
-        title="Un agente lee el proyecto y entrega un diagrama. Gasta un turno de la cuenta que elijas."
-        busy={asking}
-        disabled={diagrams === null}
-        onPick={(accountId) => ask(accountId, null)}
-      />
-      <span className={styles.fieldHint}>Se abre como una sesión más, así que puedes seguirla y ver lo que costó. Tarda unos minutos.</span>
+      {!installed ? (
+        // Esto sí está en otra pantalla, así que se dice dónde. Instalar es
+        // elegir un repo y pasar por el preview, y eso no se ataja desde aquí.
+        <span className={styles.fieldHint}>
+          Para dibujar hace falta la skill <code>archify</code>, que no está en tu biblioteca. Se instala en{' '}
+          <strong>Settings → Skills → repos</strong>; sale entre las sugeridas.
+        </span>
+      ) : !enabled ? (
+        // Y esto no: la casilla está en esta misma pantalla, unos centímetros
+        // más arriba. Mandar a alguien a buscarla sería un callejón con pasos
+        // extra.
+        <>
+          <Button size="sm" variant="ghost" onClick={onEnable}>
+            activar archify en este proyecto
+          </Button>
+          <span className={styles.fieldHint}>
+            Es la misma casilla de <strong>Skills</strong>, aquí arriba. Los agentes de este proyecto la tendrán a partir de la próxima
+            terminal o turno.
+          </span>
+        </>
+      ) : (
+        <>
+          <AccountPickerButton
+            label={diagrams && diagrams.length > 0 ? 'dibujar otro' : 'dibujar el primero'}
+            title="Un agente lee el proyecto y entrega un diagrama. Gasta un turno de la cuenta que elijas."
+            busy={asking}
+            disabled={diagrams === null}
+            onPick={(accountId) => ask(accountId, null)}
+          />
+          <span className={styles.fieldHint}>
+            Se abre como una sesión más, así que puedes seguirla y ver lo que costó. Tarda unos minutos.
+          </span>
+        </>
+      )}
     </div>
   );
 }

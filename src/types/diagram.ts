@@ -1,3 +1,11 @@
+/** The folder name of the diagram skill.
+ *
+ * Duplicated from `skills::ARCHIFY` in Rust rather than fetched: it is a
+ * constant, and a round-trip to learn a string that cannot change at runtime
+ * would be worse than this comment. If it ever moves, both move together.
+ */
+export const ARCHIFY_SKILL = 'archify';
+
 /** One diagram an agent delivered for a project, from `list_project_diagrams`.
  *
  * Read out of the page's own head — archify writes a `<title>` and a
