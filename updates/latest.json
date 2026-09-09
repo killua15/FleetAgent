@@ -1,10 +1,10 @@
 {
-  "version": "0.7.0",
-  "notes": "opencode joins as a provider, isolated per account by XDG_DATA_HOME and honest about what its plan mode covers. Folded terminal panels stay folded across a restart, and the crowding warning is yours to set. A graph group can index a scope's documents. And a provider added by a newer version no longer takes the screen down on an older one.",
-  "pub_date": "2026-08-26T19:14:47Z",
+  "version": "0.8.0",
+  "notes": "Agent skills can be installed from three suggested repositories instead of a blank owner/repo field, and one that calls home is silenced on the command line where you can see it. Diagrams an agent draws are listed and opened per project, with a button to ask for one and a live view of what the run is doing. Underneath: headless turns finally get the project's skills, which they never had \u2014 reviews included.",
+  "pub_date": "2026-09-09T17:49:49Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbEV1RWtuSEFHOTdMM1FEZXRWTTFTSXg0S3RTUDYzVks0d3p3WmlFdVRkenVHZTRVaGxudTlrb0pDN1JsekxNUVFRUEJsUDd1MEpmTVJOV2ZvM0EzOHdNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3NzcxNjU3CWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKTDlQT09tU0NxdmlLKzRpU0RrSEpUTXBORzJNWkx5ZXJ5RUNtb2NWN2lZWnEvQlI4TU1UYkR2YnVKWGxDYzQ3akVTRUdkbGNuMlNFRURsZ25uRXpxQlE9PQo=",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSaE85M0NRYzFxbEJwc1NEUFhlVGZOMTJXblhkZWRhRVM3UGdMN3hrSDgyMW1qbDhzeEdLRXVpNUNvcm9lWEk2ZklZSEJyMmRuNjJ0VExTeG9Kam54VU1oL3BoSC9yRndJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4OTc2MTc4CWZpbGU6SGFuZ2FyLmFwcC50YXIuZ3oKaE1LaTRlT0EzQXk1alN0U1ZScWYxdlRrVGhZUUgvMUMwZ1JxbW5PWG1ESmthSDNpSnQvajg5ZlRoMWowKzl0N2g5Q2Faa3ZOaGpzK3Bibmk1a0VIQXc9PQo=",
       "url": "https://api.github.com/repos/killua15/FleetAgent/contents/updates/Hangar.app.tar.gz"
     }
   }
