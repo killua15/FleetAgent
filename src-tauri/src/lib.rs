@@ -52,6 +52,34 @@ fn shutdown_children(app: &tauri::AppHandle) {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Un bucle de fondo que sobrevive a que su cuerpo entre en panic.
+///
+/// `thread::spawn(move || loop { … })` a secas tiene un final malo: si el cuerpo
+/// entra en panic una sola vez, el hilo muere y esa función no vuelve **hasta
+/// que se reinicia la app**. Los seis bucles de abajo son el latido de cosas
+/// que el usuario da por hechas —la salida de las terminales, el estado de las
+/// sesiones, el sondeo de PRs— así que perder uno se siente exactamente como
+/// que Hangar se colgó, que es el fallo que esto viene a cerrar.
+///
+/// Cada vuelta va envuelta, no el bucle entero: envolver el bucle solo movería
+/// el problema un nivel. Un panic se registra con el nombre del latido y la
+/// siguiente vuelta ocurre igual.
+/// `AssertUnwindSafe` porque `AppHandle` lleva mutabilidad interior y no es
+/// `RefUnwindSafe`. Es correcto aquí y no una tirita: tras un panic esto solo
+/// registra y vuelve a empezar de cero, sin leer nada que el panic haya podido
+/// dejar a medias. Y el estado compartido vive tras mutex, que al envenenarse
+/// hacen que los ticks salgan por su rama `else` en vez de propagar — cada uno
+/// de ellos ya está escrito como `let Ok(..) = ..lock() else { return }`.
+fn heartbeat(name: &'static str, body: impl Fn() + Send + 'static) {
+    std::thread::spawn(move || loop {
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(&body)).is_err() {
+            // El hook por defecto ya ha escrito el panic y su traza; esto es lo
+            // que dice cuál de los seis fue y que sigue vivo.
+            log::error!("background loop '{name}' panicked — it keeps running, but something in it is broken");
+        }
+    });
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -132,7 +160,7 @@ pub fn run() {
             // The PR screen reads the database these fill, so what they really
             // buy is a screen that paints with no network in its way.
             let poll_handle = app.handle().clone();
-            std::thread::spawn(move || loop {
+            heartbeat("pr-poll", move || {
                 std::thread::sleep(std::time::Duration::from_secs(300));
                 let hosts = commands::pull_requests::hosts_with_projects(&poll_handle);
                 let mut passes = Vec::new();
@@ -163,15 +191,18 @@ pub fn run() {
             // First pass after a short delay rather than immediately: launch is
             // already busy, and this is the least urgent thing competing for it.
             let login_handle = app.handle().clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(20));
-                loop {
-                    if commands::accounts::refresh_account_logins(&login_handle) {
-                        // The banner and the accounts screen both read the
-                        // table this just wrote.
-                        let _ = login_handle.emit("account-logins-checked", ());
-                    }
-                    std::thread::sleep(std::time::Duration::from_secs(1800));
+            // La espera corta de la primera vuelta se conserva con una bandera:
+            // `heartbeat` no distingue la primera de las demás, y arrancar el
+            // sondeo de logins en el instante del lanzamiento es justo lo que
+            // este bucle evitaba.
+            let first_login_pass = std::sync::atomic::AtomicBool::new(true);
+            heartbeat("account-logins", move || {
+                let wait = if first_login_pass.swap(false, std::sync::atomic::Ordering::Relaxed) { 20 } else { 1800 };
+                std::thread::sleep(std::time::Duration::from_secs(wait));
+                if commands::accounts::refresh_account_logins(&login_handle) {
+                    // The banner and the accounts screen both read the
+                    // table this just wrote.
+                    let _ = login_handle.emit("account-logins-checked", ());
                 }
             });
 
@@ -193,7 +224,7 @@ pub fn run() {
             // touches nothing else — and it's what lets the app tell you an
             // agent finished instead of making you notice.
             let state_handle = app.handle().clone();
-            std::thread::spawn(move || loop {
+            heartbeat("terminal-states", move || {
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 terminals::tick_terminal_states(&state_handle);
             });
@@ -204,7 +235,7 @@ pub fn run() {
             // one only does work when a PTY terminal without a session
             // actually has redacted text piled up.
             let mobile_tail_handle = app.handle().clone();
-            std::thread::spawn(move || loop {
+            heartbeat("mobile-tail", move || {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 terminals::tick_mobile_tail(&mobile_tail_handle);
             });
@@ -217,13 +248,13 @@ pub fn run() {
             // laggy terminal. Each tick is a mutex check and nothing else when
             // no terminal has spoken.
             let output_handle = app.handle().clone();
-            std::thread::spawn(move || loop {
+            heartbeat("terminal-output", move || {
                 std::thread::sleep(terminals::OUTPUT_FLUSH_INTERVAL);
                 terminals::tick_terminal_output(&output_handle);
             });
 
             let usage_handle = app.handle().clone();
-            std::thread::spawn(move || loop {
+            heartbeat("account-usage", move || {
                 terminals::poll_account_usage(&usage_handle);
                 // Right after sampling, because that's the only moment the
                 // answer to "does any account have room" can have changed.
@@ -463,4 +494,38 @@ pub fn run() {
                 shutdown_children(app_handle);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// Sin esto, un panic en el cuerpo mataba el hilo y esa función no volvía
+    /// hasta reiniciar la app — el síntoma que el usuario describe como «se
+    /// queda colgado y tengo que cerrar y abrir».
+    #[test]
+    fn a_panicking_heartbeat_keeps_beating() {
+        let beats = Arc::new(AtomicUsize::new(0));
+        let seen = beats.clone();
+        super::heartbeat("test", move || {
+            let n = beats.fetch_add(1, Ordering::SeqCst);
+            // Solo la primera vuelta explota: si el bucle muriera con ella, el
+            // contador se quedaría en 1 para siempre.
+            if n == 0 {
+                panic!("primera vuelta rota a propósito");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while seen.load(Ordering::SeqCst) < 4 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            seen.load(Ordering::SeqCst) >= 4,
+            "el latido murió con el panic: solo {} vueltas",
+            seen.load(Ordering::SeqCst)
+        );
+    }
 }
