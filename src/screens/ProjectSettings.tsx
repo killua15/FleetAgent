@@ -10,6 +10,8 @@ import type { Project } from '../types/session';
 import type { AgentPreferences, Skill } from '../types/settings';
 import type { GraphState, GraphifyStatus } from '../types/graph';
 import { ARCHIFY_SKILL, type Diagram } from '../types/diagram';
+import { advance, finish, IDLE, STAGE_LABEL, STAGES, type DiagramProgress } from '../lib/diagramProgress';
+import { listen } from '@tauri-apps/api/event';
 import styles from './ProjectSettings.module.css';
 
 /**
@@ -254,6 +256,15 @@ function DiagramsField({
 }) {
   const [diagrams, setDiagrams] = useState<Diagram[] | null>(null);
   const [asking, setAsking] = useState(false);
+  /** The turn currently drawing, and how far it has got. `null` when nothing
+   * is running — this lives only while the screen is open, so leaving and
+   * coming back loses the live view but not the work: it is a session, and it
+   * carries on. */
+  const [running, setRunning] = useState<{ sessionId: string; progress: DiagramProgress } | null>(null);
+  /** El `invoke` vuelve en milisegundos y el turno dura minutos, así que
+   * `asking` no basta para cerrar el botón: sin esto se pueden lanzar dos
+   * turnos sobre el mismo proyecto y pagar los dos. */
+  const inFlight = asking || (running !== null && running.progress.stage !== 'done' && running.progress.stage !== 'failed');
 
   const load = useCallback(() => {
     setDiagrams(null);
@@ -280,13 +291,36 @@ function DiagramsField({
   const ask = async (accountId: string, specFileName: string | null) => {
     setAsking(true);
     try {
-      await invoke<string>('generate_project_diagram', { projectId, accountId, specFileName });
+      const sessionId = await invoke<string>('generate_project_diagram', { projectId, accountId, specFileName });
+      setRunning({ sessionId, progress: IDLE });
     } catch (e) {
       toastError(String(e));
     } finally {
       setAsking(false);
     }
   };
+
+  // Los dos eventos que el runner ya emitía y nadie miraba desde aquí: cada
+  // bloque según llega, y el cambio de estado que dice que acabó.
+  useEffect(() => {
+    if (!running) return;
+    const output = listen<{ sessionId: string; kind: string; text: string }>('session-output', (event) => {
+      if (event.payload.sessionId !== running.sessionId) return;
+      setRunning((prev) => (prev ? { ...prev, progress: advance(prev.progress, event.payload) } : prev));
+    });
+    const status = listen<[string, string]>('session-status', (event) => {
+      const [sid, next] = event.payload;
+      if (sid !== running.sessionId || next === 'running') return;
+      // Se recarga aunque haya acabado mal: un intento fallido puede haber
+      // dejado una página anterior intacta, y esconderla no ayudaría.
+      setRunning((prev) => (prev ? { ...prev, progress: finish(prev.progress) } : prev));
+      load();
+    });
+    return () => {
+      output.then((f) => f());
+      status.then((f) => f());
+    };
+  }, [running?.sessionId, load]);
 
   return (
     <div className={styles.field}>
@@ -319,12 +353,42 @@ function DiagramsField({
                 <AccountPickerButton
                   label="actualizar"
                   title="Un agente compara la spec con el código de ahora y la corrige. Gasta un turno."
-                  busy={asking}
+                  busy={inFlight}
+                  disabled={inFlight}
                   onPick={(accountId) => ask(accountId, d.specFileName)}
                 />
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {running && (
+        <div className={styles.skillList}>
+          <div className={styles.skillRow}>
+            <span className={styles.skillInfo}>
+              <span className={styles.skillName}>
+                {STAGES.map((stage, i) => {
+                  const at = STAGES.indexOf(running.progress.stage);
+                  const reached = running.progress.stage === 'done' || (at >= 0 && i <= at);
+                  return (
+                    <span key={stage} style={{ opacity: reached ? 1 : 0.35 }}>
+                      {i > 0 && ' › '}
+                      {STAGE_LABEL[stage]}
+                      {stage === 'validating' && running.progress.validationRounds > 1 && ` (${running.progress.validationRounds})`}
+                    </span>
+                  );
+                })}
+              </span>
+              <span className={styles.skillDescription}>
+                {running.progress.stage === 'done'
+                  ? 'Listo — la lista de abajo ya está al día.'
+                  : running.progress.stage === 'failed'
+                    ? 'El turno terminó sin llegar a compilar. Abre la sesión para ver dónde se quedó.'
+                    : (running.progress.lastAction ?? 'esperando al agente…')}
+              </span>
+            </span>
+          </div>
         </div>
       )}
 
@@ -353,8 +417,8 @@ function DiagramsField({
           <AccountPickerButton
             label={diagrams && diagrams.length > 0 ? 'dibujar otro' : 'dibujar el primero'}
             title="Un agente lee el proyecto y entrega un diagrama. Gasta un turno de la cuenta que elijas."
-            busy={asking}
-            disabled={diagrams === null}
+            busy={inFlight}
+            disabled={inFlight || diagrams === null}
             onPick={(accountId) => ask(accountId, null)}
           />
           <span className={styles.fieldHint}>
