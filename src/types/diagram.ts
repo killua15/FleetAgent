@@ -12,6 +12,10 @@ export interface Diagram {
   /** From `<meta name="generator">`, e.g. `archify 2.16.0`. `null` for an HTML
    * file that does not say — listed anyway rather than hidden. */
   generator: string | null;
+  /** The archify spec the page was compiled from, when the agent left one next
+   * to it. `null` means the diagram can only be redrawn, not updated: archify
+   * compiles the page from this file, so refreshing one is an edit to it. */
+  specFileName: string | null;
   bytes: number;
   /** RFC 3339, or `null` when the filesystem would not say. */
   modified: string | null;

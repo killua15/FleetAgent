@@ -299,6 +299,11 @@ The `archify` skill is available to you. Deliver every diagram into the director
 `$HANGAR_DIAGRAMS`, which is already set in your shell. Hangar lists what is in there and opens it,
 so a page written anywhere else is one nobody will find again.
 
+Leave the JSON spec next to the page it compiled, under the same stem
+(`<name>.<type>.json` beside `<name>.html`). That spec is how the diagram gets updated later —
+without it the only way to refresh a drawing is to make a new one from nothing, losing every layout
+decision this run made.
+
 Keep archify's own limits: a handful of primary nodes and one clear main path beat a complete map
 nobody can read.
 "#;

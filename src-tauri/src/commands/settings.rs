@@ -473,6 +473,17 @@ fn trigger_review_blocking<R: Runtime>(app: AppHandle<R>, session_id: String) ->
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         crate::commands::graph::mcp_config_for_project(&app, &conn, &project_id)
     };
+    // A reviewer with the project's skills is the whole point of having a
+    // review skill; without this it ran with none and said nothing about it.
+    let skills_dir = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        crate::app_data::root(&app)
+            .and_then(|root| crate::commands::skills::skills_dir(&root, &conn, &project_id))
+            .unwrap_or_else(|e| {
+                log::warn!("trigger_review: could not prepare this project's skills — {e}");
+                None
+            })
+    };
 
     // Cloned rather than moved: `db` is borrowed from this handle and is still
     // needed below, to read back the session this just created.
@@ -491,6 +502,7 @@ fn trigger_review_blocking<R: Runtime>(app: AppHandle<R>, session_id: String) ->
         prompt: review_prompt,
         instructions,
         mcp_config,
+        skills_dir,
     })?;
 
     let conn = db.0.lock().map_err(|e| e.to_string())?;

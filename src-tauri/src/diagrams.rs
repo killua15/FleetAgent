@@ -48,6 +48,14 @@ pub struct Diagram {
     /// hiding a file that is sitting in the folder is worse than naming it
     /// plainly.
     pub generator: Option<String>,
+    /// The archify spec the page was compiled from, when it was left next to
+    /// it — `<name>.<type>.json` beside `<name>.html`.
+    ///
+    /// This is what makes "update" possible at all: archify compiles the page
+    /// from a typed spec, so bringing a diagram up to date is an edit to that
+    /// file. Without it the only option is drawing again from nothing, which
+    /// throws away every layout decision the last run made.
+    pub spec_file_name: Option<String>,
     pub bytes: u64,
     /// Modified time as an RFC 3339 string, or `None` when the filesystem
     /// will not say.
@@ -127,9 +135,11 @@ pub fn list(dir: &Path) -> Vec<Diagram> {
                 None => (None, None),
             };
             let meta = entry.metadata().ok();
+            let spec_file_name = find_spec(dir, path.file_stem()?.to_string_lossy().as_ref());
             Some(Diagram {
                 title: title.unwrap_or_else(|| file_name.clone()),
                 file_name,
+                spec_file_name,
                 generator,
                 bytes: meta.as_ref().map(|m| m.len()).unwrap_or(0),
                 modified: meta.and_then(|m| m.modified().ok()).map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339()),
@@ -139,6 +149,19 @@ pub fn list(dir: &Path) -> Vec<Diagram> {
     // Newest first: the one just delivered is the one being looked for.
     out.sort_by(|a, b| b.modified.cmp(&a.modified).then(a.file_name.cmp(&b.file_name)));
     out
+}
+
+/// The spec sitting next to a page, if the agent left one.
+///
+/// Matched on the page's stem rather than a fixed name because archify's own
+/// convention carries the diagram type in the middle:
+/// `skills-to-agent.architecture.json` compiles to `skills-to-agent.html`.
+fn find_spec(dir: &Path, stem: &str) -> Option<String> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .find(|name| name.starts_with(&format!("{stem}.")) && name.to_lowercase().ends_with(".json"))
 }
 
 /// The first `HEAD_BYTES` of a file, as lossy UTF-8.
@@ -168,6 +191,19 @@ pub fn is_safe_file_name(name: &str) -> bool {
         && !name.contains("..")
         && !Path::new(name).is_absolute()
         && Path::new(name).extension().is_some_and(|e| e.eq_ignore_ascii_case("html"))
+}
+
+/// Whether a spec name from the UI is safe to name in a prompt.
+///
+/// Same reasoning as `is_safe_file_name` — it ends up in a shell, expanded
+/// against `$HANGAR_DIAGRAMS` — with the extension archify writes.
+pub fn is_safe_spec_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains("..")
+        && !Path::new(name).is_absolute()
+        && Path::new(name).extension().is_some_and(|e| e.eq_ignore_ascii_case("json"))
 }
 
 #[cfg(test)]
@@ -235,6 +271,36 @@ mod tests {
         for good in ["diagrama.html", "skills-to-agent.HTML", "con espacios.html", "acentuado-á.html"] {
             assert!(is_safe_file_name(good), "debería aceptar {good:?}");
         }
+    }
+
+    /// Sin la spec, «actualizar» no existe: archify compila la página desde
+    /// ella, así que refrescar un diagrama es editar ese fichero.
+    #[test]
+    fn the_spec_beside_a_page_is_what_makes_an_update_possible() {
+        let root = std::env::temp_dir().join(format!("hangar-spec-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        // El nombre real que deja archify: el tipo va en medio.
+        std::fs::write(root.join("mapa.html"), REAL_HEAD).unwrap();
+        std::fs::write(root.join("mapa.architecture.json"), "{}").unwrap();
+        // Y una página entregada sin su spec, que es el caso que solo se puede
+        // volver a dibujar.
+        std::fs::write(root.join("suelta.html"), REAL_HEAD).unwrap();
+
+        let found = list(&root);
+        let mapa = found.iter().find(|d| d.file_name == "mapa.html").unwrap();
+        assert_eq!(mapa.spec_file_name.as_deref(), Some("mapa.architecture.json"), "got: {mapa:?}");
+        let suelta = found.iter().find(|d| d.file_name == "suelta.html").unwrap();
+        assert_eq!(suelta.spec_file_name, None, "una spec de otra página no cuenta: {suelta:?}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_spec_name_that_could_escape_is_refused_too() {
+        for bad in ["../otro.json", "sub/x.json", "x.html", "", "..", "a..b/c.json"] {
+            assert!(!is_safe_spec_name(bad), "debería rechazar {bad:?}");
+        }
+        assert!(is_safe_spec_name("mapa.architecture.json"));
     }
 
     #[test]

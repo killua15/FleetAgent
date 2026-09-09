@@ -292,6 +292,7 @@ pub fn run() {
             commands::skills::set_always_on_skill,
             commands::diagrams::list_project_diagrams,
             commands::diagrams::open_diagram,
+            commands::diagrams::generate_project_diagram,
             commands::skill_sources::suggested_skill_sources,
             commands::skill_sources::list_skill_sources,
             commands::skill_sources::add_skill_source,

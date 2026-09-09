@@ -3,6 +3,7 @@ import { invoke } from '../lib/invoke';
 import { SettingsTabs } from '../components/SettingsTabs';
 import { toastError } from '../components/ErrorOverlay';
 import { Spinner } from '../components/Spinner';
+import { AccountPickerButton } from '../components/AccountPickerButton';
 import { LANGUAGES } from '../lib/languages';
 import type { Project } from '../types/session';
 import type { AgentPreferences, Skill } from '../types/settings';
@@ -236,6 +237,7 @@ export function ProjectSettings() {
  */
 function DiagramsField({ projectId }: { projectId: string }) {
   const [diagrams, setDiagrams] = useState<Diagram[] | null>(null);
+  const [asking, setAsking] = useState(false);
 
   const load = useCallback(() => {
     setDiagrams(null);
@@ -251,6 +253,25 @@ function DiagramsField({ projectId }: { projectId: string }) {
 
   const open = (fileName: string) => invoke('open_diagram', { projectId, fileName }).catch((e) => toastError(String(e)));
 
+  /**
+   * Lanza un turno headless que dibuja, o que actualiza si se le pasa la spec.
+   *
+   * No espera al resultado: un diagrama tarda minutos y bloquear esta pantalla
+   * mientras tanto sería peor que no tener el botón. El trabajo aparece como
+   * una sesión más —con su transcripción y su coste— y la lista se recarga al
+   * volver a esta pantalla.
+   */
+  const ask = async (accountId: string, specFileName: string | null) => {
+    setAsking(true);
+    try {
+      await invoke<string>('generate_project_diagram', { projectId, accountId, specFileName });
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setAsking(false);
+    }
+  };
+
   return (
     <div className={styles.field}>
       <span className={styles.fieldLabel}>DIAGRAMAS</span>
@@ -263,25 +284,43 @@ function DiagramsField({ projectId }: { projectId: string }) {
         <span className={styles.empty}>leyendo…</span>
       ) : diagrams.length === 0 ? (
         <span className={styles.empty}>
-          Ninguno todavía. Marca <code>archify</code> en <strong>Skills</strong> y pídele un diagrama a un agente de este proyecto: sabe
-          dónde dejarlo. Uno entregado en otra carpeta no aparece aquí.
+          Ninguno todavía. Necesita la skill <code>archify</code> marcada en <strong>Skills</strong>. Uno que un agente entregue en
+          otra carpeta tampoco aparece aquí.
         </span>
       ) : (
         <div className={styles.skillList}>
           {diagrams.map((d) => (
-            <button key={d.fileName} className={styles.skillRow} onClick={() => open(d.fileName)} title={`Abrir ${d.fileName}`}>
-              <span className={styles.skillInfo}>
+            <div key={d.fileName} className={styles.skillRow}>
+              <button className={styles.skillInfo} onClick={() => open(d.fileName)} title={`Abrir ${d.fileName}`}>
                 <span className={styles.skillName}>{d.title}</span>
                 <span className={styles.skillDescription}>
                   {d.generator ?? d.fileName}
                   {d.modified && ` · ${new Date(d.modified).toLocaleString('es')}`}
                   {d.bytes > 0 && ` · ${Math.round(d.bytes / 1024).toLocaleString('es')} KB`}
+                  {!d.specFileName && ' · sin spec, solo se puede rehacer'}
                 </span>
-              </span>
-            </button>
+              </button>
+              {d.specFileName && (
+                <AccountPickerButton
+                  label="actualizar"
+                  title="Un agente compara la spec con el código de ahora y la corrige. Gasta un turno."
+                  busy={asking}
+                  onPick={(accountId) => ask(accountId, d.specFileName)}
+                />
+              )}
+            </div>
           ))}
         </div>
       )}
+
+      <AccountPickerButton
+        label={diagrams && diagrams.length > 0 ? 'dibujar otro' : 'dibujar el primero'}
+        title="Un agente lee el proyecto y entrega un diagrama. Gasta un turno de la cuenta que elijas."
+        busy={asking}
+        disabled={diagrams === null}
+        onPick={(accountId) => ask(accountId, null)}
+      />
+      <span className={styles.fieldHint}>Se abre como una sesión más, así que puedes seguirla y ver lo que costó. Tarda unos minutos.</span>
     </div>
   );
 }

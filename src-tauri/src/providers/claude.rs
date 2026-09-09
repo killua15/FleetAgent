@@ -82,6 +82,16 @@ pub struct TurnArgs<'a> {
     /// (`GRAPHIFY_TRD.md` §5.2). Additive: Hangar never passes
     /// `--strict-mcp-config`, which would suppress the user's own servers.
     pub mcp_config: Option<&'a std::path::Path>,
+    /// A directory containing `.claude/skills/`, or `None` when this project
+    /// has nothing selected.
+    ///
+    /// A headless turn used to get none, ever. That was a hole rather than a
+    /// decision: an interactive terminal has had `--add-dir` since skills
+    /// shipped, so the same project answered the same question differently
+    /// depending on which surface asked it — and anything Hangar itself starts
+    /// (a review, a generated diagram) ran without the user's skills without
+    /// saying so.
+    pub skills_dir: Option<&'a std::path::Path>,
 }
 
 /// Args for one headless turn: `claude -p "<prompt>" --output-format
@@ -135,6 +145,11 @@ pub fn build_turn_args(args: TurnArgs) -> Vec<String> {
     if let Some(config) = args.mcp_config {
         out.extend(super::mcp_config_args("claude", &config.to_string_lossy()));
     }
+    // Same routing again: `skills_args` is the one place that knows the flag,
+    // shared with the interactive terminal so the two cannot drift.
+    if let Some(dir) = args.skills_dir {
+        out.extend(super::skills_args("claude", &dir.to_string_lossy()));
+    }
     out
 }
 
@@ -176,6 +191,39 @@ pub fn is_exhaustion_signal(line: &str) -> bool {
 }
 
 #[cfg(test)]
+mod skills_in_headless_tests {
+    use super::*;
+
+    fn args_with(skills: Option<&std::path::Path>) -> Vec<String> {
+        build_turn_args(TurnArgs {
+            mode: Mode::Plan,
+            prompt: "dibuja esto",
+            resume: None,
+            model: "",
+            effort: "high",
+            name: "t",
+            use_permission_prompt: false,
+            instructions: None,
+            mcp_config: None,
+            skills_dir: skills,
+        })
+    }
+
+    /// Un turno headless no recibía ninguna skill, nunca. No era una decisión:
+    /// la terminal interactiva lleva `--add-dir` desde que existen, así que el
+    /// mismo proyecto contestaba distinto según qué superficie preguntara.
+    #[test]
+    fn a_headless_turn_gets_the_project_skills_too() {
+        let with = args_with(Some(std::path::Path::new("/tmp/hangar/projects/p1")));
+        let at = with.iter().position(|a| a == "--add-dir").expect("la bandera tiene que estar");
+        assert_eq!(with[at + 1], "/tmp/hangar/projects/p1", "y con el directorio detrás: {with:?}");
+
+        let without = args_with(None);
+        assert!(!without.iter().any(|a| a == "--add-dir"), "sin skills marcadas no se pasa nada: {without:?}");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -191,6 +239,7 @@ mod tests {
             use_permission_prompt: false,
             instructions: None,
             mcp_config: None,
+            skills_dir: None,
         });
         assert_eq!(
             args,
@@ -213,6 +262,7 @@ mod tests {
             use_permission_prompt: false,
             instructions: None,
             mcp_config: None,
+            skills_dir: None,
         });
         assert_eq!(args.last().cloned(), Some("session-123".to_string()));
         assert_eq!(args[args.len() - 2], "--resume");
@@ -232,6 +282,7 @@ mod tests {
             use_permission_prompt: false,
             instructions: None,
             mcp_config: None,
+            skills_dir: None,
         });
         assert!(args.contains(&"hi".to_string()), "prompt must be a positional arg when not using the stdio protocol");
         assert!(!args.contains(&"--permission-prompt-tool".to_string()));
@@ -250,6 +301,7 @@ mod tests {
             use_permission_prompt: true,
             instructions: None,
             mcp_config: None,
+            skills_dir: None,
         });
         // The prompt must NOT appear as a `-p` positional arg — it goes over
         // stdin instead (see turn_runner::spawn_turn).
