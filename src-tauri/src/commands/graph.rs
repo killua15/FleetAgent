@@ -10,20 +10,36 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Lo que hay que ponerle de entorno a graphify para que encuentre su backend.
+/// Lo que hay que ponerle de entorno a graphify para que su backend funcione.
 ///
-/// graphify busca `claude` (u `ollama`) **por su nombre en `$PATH`**, y el hijo
+/// Dos cosas, y las dos aprendidas a golpes.
+///
+/// **El `PATH`**: graphify busca `claude` (u `ollama`) por su nombre, y el hijo
 /// de una app de escritorio hereda un `PATH` sin `~/.local/bin`. Hangar ya
-/// resuelve ese problema para lo que ejecuta él, pero resolver una ruta no
-/// ayuda a un nieto que busca por su cuenta.
+/// resuelve eso para lo que ejecuta él, pero resolver una ruta no ayuda a un
+/// nieto que busca por su cuenta.
 ///
-/// Devuelve error —**antes** de lanzar nada— cuando se piden documentos y el
-/// binario del backend no aparece. Ese fallo costaba hasta ahora una
-/// construcción entera muerta a la mitad, y en un grupo la de todos los
+/// **La cuenta**: con el `PATH` arreglado, `claude -p` seguía saliendo con
+/// código 1 y sin decir nada. Ejecutado a mano con ese mismo entorno:
+/// *"Failed to authenticate: OAuth session expired"*, y pidiéndoselo al perfil
+/// por defecto, *"Not logged in"*. Sin `CLAUDE_CONFIG_DIR`, el `claude` de
+/// graphify cae a `~/.claude` — un perfil que Hangar no gestiona, no mide y no
+/// mantiene vivo — mientras las cuentas del usuario están a un directorio de
+/// distancia. Aislar aquí es lo mismo que Hangar hace para cada terminal y cada
+/// turno.
+///
+/// Devuelve error **antes** de lanzar nada cuando falta algo. Ese fallo costaba
+/// una construcción entera muerta a la mitad, y en un grupo la de todos los
 /// miembros, para acabar diciendo lo mismo.
-fn docs_backend_env(policy: graph::IndexPolicy, backend: Option<&str>) -> Result<Option<(String, String)>, String> {
+fn docs_backend_env(
+    policy: graph::IndexPolicy,
+    backend: Option<&str>,
+    account: Option<&DocsAccount>,
+) -> Result<Vec<(String, String)>, String> {
     if policy != graph::IndexPolicy::WithDocs {
-        return Ok(None);
+        // Solo código: ni una variable, ni una llamada a un modelo. Es lo que
+        // sostiene la promesa del §3, y por eso este camino no se toca.
+        return Ok(Vec::new());
     }
     let named = backend.map(str::trim).filter(|b| !b.is_empty()).unwrap_or(graph::DEFAULT_DOC_BACKEND);
     let Some(dir) = graph::backend_bin_dir(backend) else {
@@ -32,7 +48,47 @@ fn docs_backend_env(policy: graph::IndexPolicy, backend: Option<&str>) -> Result
              Install it, or switch this scope back to code-only."
         ));
     };
-    Ok(Some(("PATH".to_string(), graph::path_with(&dir, std::env::var("PATH").ok().as_deref()))))
+    let mut env = vec![("PATH".to_string(), graph::path_with(&dir, std::env::var("PATH").ok().as_deref()))];
+
+    // `ollama` corre en local y no tiene cuentas; solo el backend que habla con
+    // Anthropic necesita saber con cuál.
+    if named == graph::DEFAULT_DOC_BACKEND {
+        let Some(account) = account else {
+            return Err(
+                "indexing documents runs `claude` for every file, so it spends a real account's quota — \
+                 pick which one before building."
+                    .to_string(),
+            );
+        };
+        env.extend(crate::providers::claude::env_for_account(&account.config_dir_path, account.api_key.as_deref()));
+    }
+    Ok(env)
+}
+
+/// La cuenta con la que se indexan los documentos de un ámbito.
+///
+/// Se elige al pulsar «construir», no en un ajuste, por la misma razón que en
+/// los diagramas: gasta cuota de verdad, y elegir en el momento es más honesto
+/// que una preferencia puesta una vez y olvidada. Y no se pide en absoluto
+/// cuando el ámbito está en solo-código, que es el caso normal.
+struct DocsAccount {
+    config_dir_path: String,
+    api_key: Option<String>,
+}
+
+/// Lee la cuenta pedida, o `None` cuando no se pidió ninguna.
+fn read_docs_account(conn: &rusqlite::Connection, account_id: Option<&str>) -> Result<Option<DocsAccount>, String> {
+    let Some(account_id) = account_id else { return Ok(None) };
+    let (provider, billing, config_dir_path): (String, String, String) = conn
+        .query_row("SELECT provider, billing, config_dir_path FROM accounts WHERE id = ?1", rusqlite::params![account_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map_err(|e| format!("account lookup failed: {e}"))?;
+    if provider != "claude" {
+        return Err(format!("the document backend drives Claude Code, so it needs a Claude account — that one is {provider}."));
+    }
+    let api_key = if billing == "key" { Some(crate::credential_vault::get(account_id)?) } else { None };
+    Ok(Some(DocsAccount { config_dir_path, api_key }))
 }
 
 use crate::db::DbConnection;
@@ -207,17 +263,22 @@ pub fn get_project_graph(app: AppHandle, db: State<DbConnection>, project_id: St
 /// a *synchronous* command — 6 s of running `graphify` on the thread that draws
 /// the window is 6 s of a frozen app, so the wait happens on the blocking pool.
 #[tauri::command]
-pub async fn build_project_graph(app: AppHandle, project_id: String) -> Result<GraphState, String> {
+pub async fn build_project_graph(app: AppHandle, project_id: String, account_id: Option<String>) -> Result<GraphState, String> {
     crate::blocking::run_blocking(move || {
         let db = app.state::<DbConnection>();
-        build_project_graph_inner(&app, &db, &project_id)
+        build_project_graph_inner(&app, &db, &project_id, account_id.as_deref())
     })
     .await?
 }
 
 /// `build_project_graph`'s body, reachable without a command invocation so the
 /// post-merge rebuild can run it on a background thread.
-fn build_project_graph_inner<R: tauri::Runtime>(app: &AppHandle<R>, db: &DbConnection, project_id: &str) -> Result<GraphState, String> {
+fn build_project_graph_inner<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    db: &DbConnection,
+    project_id: &str,
+    account_id: Option<&str>,
+) -> Result<GraphState, String> {
     let binary = graph::detect()
         .ok_or_else(|| format!("graphify isn't installed — run `{}` and reopen this screen", graph::INSTALL_HINT))?;
 
@@ -251,7 +312,11 @@ fn build_project_graph_inner<R: tauri::Runtime>(app: &AppHandle<R>, db: &DbConne
 
     let mut cmd = Command::new(&binary);
     cmd.args(graph::build_args(&repo, &out, policy, backend.as_deref()));
-    if let Some((key, value)) = docs_backend_env(policy, backend.as_deref())? {
+    let docs_account = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        read_docs_account(&conn, account_id)?
+    };
+    for (key, value) in docs_backend_env(policy, backend.as_deref(), docs_account.as_ref())? {
         cmd.env(key, value);
     }
     let output = crate::process_timeout::run_with_timeout(cmd, BUILD_TIMEOUT);
@@ -289,12 +354,10 @@ fn build_project_graph_inner<R: tauri::Runtime>(app: &AppHandle<R>, db: &DbConne
             // Same folding-in of graphify's stdout as the group path: with
             // `--code-only`, "graph is empty" alone doesn't say that every file
             // in the repo was a document.
-            let detail = member_failure_detail(
-                &name,
-                &repo,
-                &String::from_utf8_lossy(&failed.stdout),
-                &String::from_utf8_lossy(&failed.stderr),
-            );
+            let stdout = String::from_utf8_lossy(&failed.stdout);
+            let stderr = String::from_utf8_lossy(&failed.stderr);
+            log_graphify_failure(&name, &stdout, &stderr);
+            let detail = member_failure_detail(&name, &repo, &stdout, &stderr);
             record_failure(&conn, &project_id, &detail)?;
             return Err(format!("the graph build failed: {detail}"));
         }
@@ -331,7 +394,11 @@ pub fn rebuild_after_merge<R: tauri::Runtime>(app: &AppHandle<R>, project_id: &s
     let project_id = project_id.to_string();
     std::thread::spawn(move || {
         let Some(db) = app.try_state::<DbConnection>() else { return };
-        match build_project_graph_inner(&app, &db, &project_id) {
+        // Sin cuenta: una reconstrucción automática no elige por ti en qué
+        // cuota gastar. Si el ámbito indexa documentos, esto falla y deja el
+        // grafo anterior marcado como viejo — que es el estado honesto, y el
+        // botón sigue ahí.
+        match build_project_graph_inner(&app, &db, &project_id, None) {
             Ok(_) => log::info!("rebuild_after_merge: refreshed the graph for {project_id}"),
             // A failed background rebuild leaves the previous graph in place and
             // marked stale, which is the honest state — and the user still has
@@ -417,18 +484,56 @@ fn read_index_policy(conn: &Connection, kind: ScopeKind, scope_id: &str) -> (gra
 /// entire explanation when a docs-only folder yields nothing. Reading only the
 /// last stderr line throws that away, so it is folded back in here rather than
 /// re-derived: no second copy of graphify's extension list to drift out of sync.
+/// How many of graphify's last stderr lines survive into the message.
+///
+/// One was not enough, and the reason is graphify's own wording: *"all semantic
+/// chunks failed … **see per-chunk errors above**"*. Keeping only the final
+/// line kept the one sentence that points at the explanation and dropped the
+/// explanation.
+const FAILURE_TAIL_LINES: usize = 12;
+
+/// And a ceiling in bytes, because this ends up in a card in the UI. graphify
+/// can print a line per failed chunk, and there were 312 of them in the report
+/// that prompted this.
+const FAILURE_TAIL_BYTES: usize = 1200;
+
 fn member_failure_detail(name: &str, repo: &Path, stdout: &str, stderr: &str) -> String {
-    let last = stderr
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .last()
-        .unwrap_or("graphify exited with an error");
+    let lines: Vec<&str> = stderr.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let tail = if lines.is_empty() {
+        "graphify exited with an error".to_string()
+    } else {
+        // Read in the order graphify printed them: the last line is usually the
+        // summary and the ones above it are the causes, so reversing would put
+        // the conclusion before its evidence.
+        let from = lines.len().saturating_sub(FAILURE_TAIL_LINES);
+        let mut kept = String::new();
+        for line in &lines[from..] {
+            if kept.len() + line.len() + 1 > FAILURE_TAIL_BYTES {
+                kept.push('…');
+                break;
+            }
+            if !kept.is_empty() {
+                kept.push('\n');
+            }
+            kept.push_str(line);
+        }
+        kept
+    };
 
     match stdout.lines().map(str::trim).rev().find(|l| l.contains("--code-only") && l.contains("skipping")) {
-        Some(skipped) => format!("{name} ({}): {last} — {skipped}", repo.display()),
-        None => format!("{name} ({}): {last}", repo.display()),
+        Some(skipped) => format!("{name} ({}): {tail} — {skipped}", repo.display()),
+        None => format!("{name} ({}): {tail}", repo.display()),
     }
+}
+
+/// The whole of what graphify said, into the log.
+///
+/// The card has to fit on a screen; the log does not, and it is where you look
+/// when the card is not enough. Until this existed there was not one line of
+/// graphify's output anywhere — which is how a failure whose own message says
+/// "see the errors above" left no above to see.
+fn log_graphify_failure(name: &str, stdout: &str, stderr: &str) {
+    log::warn!("graphify failed for {name}\n--- stdout ---\n{}\n--- stderr ---\n{}", stdout.trim(), stderr.trim());
 }
 
 fn mark_building(conn: &Connection, kind: ScopeKind, scope_id: &str, graph_path: &Path) -> Result<(), String> {
@@ -698,11 +803,11 @@ pub fn get_graph_bridges(app: AppHandle, group_id: String) -> Result<Vec<graph::
 /// Off the UI thread for the same reason as `build_project_graph`, and more so:
 /// this runs one `extract` per member project before merging them.
 #[tauri::command]
-pub async fn build_graph_group(app: AppHandle, group_id: String) -> Result<GraphState, String> {
-    crate::blocking::run_blocking(move || build_graph_group_blocking(app, group_id)).await?
+pub async fn build_graph_group(app: AppHandle, group_id: String, account_id: Option<String>) -> Result<GraphState, String> {
+    crate::blocking::run_blocking(move || build_graph_group_blocking(app, group_id, account_id.as_deref())).await?
 }
 
-fn build_graph_group_blocking(app: AppHandle, group_id: String) -> Result<GraphState, String> {
+fn build_graph_group_blocking(app: AppHandle, group_id: String, account_id: Option<&str>) -> Result<GraphState, String> {
     let db = app.state::<DbConnection>();
     let binary = graph::detect()
         .ok_or_else(|| format!("graphify isn't installed — run `{}` and reopen this screen", graph::INSTALL_HINT))?;
@@ -752,6 +857,15 @@ fn build_graph_group_blocking(app: AppHandle, group_id: String) -> Result<GraphS
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         read_index_policy(&conn, ScopeKind::Group, &group_id)
     };
+    // Una sola vez para todos los miembros: es un grafo del grupo, así que la
+    // cuota sale de una cuenta, no de una por repositorio.
+    let docs_account = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        match read_docs_account(&conn, account_id) {
+            Ok(account) => account,
+            Err(e) => return fail_group(&db, &group_id, &e),
+        }
+    };
 
     let mut member_graphs = Vec::new();
     let mut shas = Vec::new();
@@ -765,23 +879,22 @@ fn build_graph_group_blocking(app: AppHandle, group_id: String) -> Result<GraphS
 
         let mut cmd = Command::new(&binary);
         cmd.args(graph::build_args(&repo, &member_out, policy, backend.as_deref()));
-        match docs_backend_env(policy, backend.as_deref()) {
-            Ok(Some((key, value))) => {
-                cmd.env(key, value);
+        match docs_backend_env(policy, backend.as_deref(), docs_account.as_ref()) {
+            Ok(env) => {
+                for (key, value) in env {
+                    cmd.env(key, value);
+                }
             }
-            Ok(None) => {}
             // Antes de lanzar el primer miembro, no después del tercero.
             Err(e) => return fail_group(&db, &group_id, &e),
         }
         match crate::process_timeout::run_with_timeout(cmd, BUILD_TIMEOUT) {
             Ok(o) if o.status.success() => {}
             Ok(o) => {
-                let detail = member_failure_detail(
-                    project_name,
-                    &repo,
-                    &String::from_utf8_lossy(&o.stdout),
-                    &String::from_utf8_lossy(&o.stderr),
-                );
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                log_graphify_failure(project_name, &stdout, &stderr);
+                let detail = member_failure_detail(project_name, &repo, &stdout, &stderr);
                 return fail_group(&db, &group_id, &detail);
             }
             Err(e) => return fail_group(&db, &group_id, &format!("{project_name} ({repo_path}): {e}")),
@@ -1197,6 +1310,80 @@ mod tests {
         // Empty streams are the timeout-shaped case: still named, still no guess.
         let empty = member_failure_detail("thing", Path::new("/r/thing"), "", "  \n\n");
         assert_eq!(empty, "thing (/r/thing): graphify exited with an error");
+    }
+
+    /// El fallo que motivó esto: graphify dice «mira los errores de arriba» y
+    /// Hangar se quedaba con esa única línea, tirando el arriba.
+    #[test]
+    fn the_lines_that_explain_the_failure_survive_not_just_the_verdict() {
+        let stderr = "\
+[graphify extract] chunk 1/4 failed: Credit balance is too low
+[graphify extract] chunk 2/4 failed: Credit balance is too low
+[graphify extract] chunk 3/4 failed: Credit balance is too low
+error: all semantic chunks failed for backend 'claude-cli' (312 uncached files) - see per-chunk errors above.
+";
+        let detail = member_failure_detail("tms-server", Path::new("/r/tms"), "", stderr);
+
+        assert!(detail.contains("all semantic chunks failed"), "el veredicto sigue: {detail}");
+        assert!(detail.contains("Credit balance is too low"), "y la causa, que es lo que faltaba: {detail}");
+        // En el orden en que graphify las imprimió: la conclusión va al final,
+        // después de su evidencia.
+        assert!(
+            detail.find("chunk 1/4").unwrap() < detail.find("all semantic chunks").unwrap(),
+            "las causas van antes del resumen: {detail}"
+        );
+    }
+
+    /// Una línea por chunk fallido, y había 312. Esto acaba en una tarjeta.
+    #[test]
+    fn a_flood_of_chunk_errors_is_capped() {
+        let stderr: String = (0..400).map(|i| format!("chunk {i} failed: something went wrong here\n")).collect();
+        let detail = member_failure_detail("ruidoso", Path::new("/r/x"), "", &stderr);
+
+        assert!(detail.len() < 2000, "no puede crecer sin límite: {} bytes", detail.len());
+        assert!(detail.contains("chunk 399"), "las últimas son las que importan: {detail}");
+        assert!(!detail.contains("chunk 0 "), "las primeras 400 no caben: {detail}");
+    }
+
+    /// El camino de solo código no gana ni una variable. Es lo que sostiene la
+    /// promesa del §3, y por eso se fija aquí y no solo en los argumentos.
+    #[test]
+    fn code_only_gets_no_environment_at_all() {
+        let env = docs_backend_env(graph::IndexPolicy::CodeOnly, None, None).unwrap();
+        assert!(env.is_empty(), "solo código no habla con ningún modelo: {env:?}");
+        // Ni siquiera si alguien pasa una cuenta por error.
+        let account = DocsAccount { config_dir_path: "/x".into(), api_key: None };
+        assert!(docs_backend_env(graph::IndexPolicy::CodeOnly, Some("claude-cli"), Some(&account)).unwrap().is_empty());
+    }
+
+    /// Sin cuenta no se construye: `claude` caería al perfil por defecto, que es
+    /// el que estaba caducado y produjo el fallo reportado.
+    #[test]
+    fn indexing_documents_refuses_without_an_account() {
+        let err = docs_backend_env(graph::IndexPolicy::WithDocs, Some("claude-cli"), None).unwrap_err();
+        assert!(err.contains("pick which one"), "tiene que decir qué falta: {err}");
+        assert!(err.contains("quota"), "y por qué importa: {err}");
+    }
+
+    /// Con cuenta, el aislamiento viaja igual que en una terminal o un turno.
+    #[test]
+    fn the_account_travels_as_the_same_isolation_every_other_surface_uses() {
+        let account = DocsAccount { config_dir_path: "/Users/me/.claude-work".into(), api_key: None };
+        let env = docs_backend_env(graph::IndexPolicy::WithDocs, Some("claude-cli"), Some(&account)).unwrap();
+
+        let config = env.iter().find(|(k, _)| k == "CLAUDE_CONFIG_DIR").expect("sin esto cae al perfil por defecto");
+        assert_eq!(config.1, "/Users/me/.claude-work");
+        assert!(env.iter().any(|(k, _)| k == "PATH"), "y el PATH sigue haciendo falta: {env:?}");
+    }
+
+    /// `ollama` corre en local y no tiene cuentas, así que pedir una sería
+    /// inventarse un requisito.
+    #[test]
+    fn a_local_backend_needs_no_account() {
+        // Puede fallar por no estar instalado, pero nunca por falta de cuenta.
+        if let Err(e) = docs_backend_env(graph::IndexPolicy::WithDocs, Some("ollama"), None) {
+            assert!(!e.contains("pick which one"), "ollama no gasta cuota de nadie: {e}");
+        }
     }
 
     fn db_with_project(path: &str) -> Connection {
