@@ -440,10 +440,10 @@ function CodeGraphField({ projectId, graphify }: { projectId: string; graphify: 
     invoke<GraphState>('get_project_graph', { projectId }).then(setState).catch((e) => toastError(String(e)));
   }, [projectId, graphify?.installed]);
 
-  const build = async () => {
+  const build = async (accountId: string | null) => {
     setBuilding(true);
     try {
-      setState(await invoke<GraphState>('build_project_graph', { projectId }));
+      setState(await invoke<GraphState>('build_project_graph', { projectId, accountId }));
     } catch (e) {
       toastError(String(e));
       // El backend ya dejó el fallo escrito; releerlo es lo que hace que el
@@ -501,9 +501,22 @@ function CodeGraphField({ projectId, graphify }: { projectId: string; graphify: 
           </div>
 
           <div className={styles.skillList}>
-            <button className={styles.select} disabled={building} onClick={build}>
-              {building ? <Spinner label="indexando…" /> : state?.status === 'ready' ? 'Reconstruir el grafo' : 'Construir el grafo'}
-            </button>
+            {state?.withDocs ? (
+              // Indexar documentos ejecuta `claude` por cada fichero, así que
+              // gasta cuota de una cuenta concreta. Se elige al pedirlo, igual
+              // que en los diagramas, en vez de en un ajuste que se olvida.
+              <AccountPickerButton
+                label={building ? 'construyendo…' : 'construir con…'}
+                title="Indexar documentos gasta cuota de la cuenta que elijas."
+                busy={building}
+                disabled={building}
+                onPick={(accountId) => build(accountId)}
+              />
+            ) : (
+              <button className={styles.select} disabled={building} onClick={() => build(null)}>
+                {building ? <Spinner label="indexando…" /> : state?.status === 'ready' ? 'Reconstruir el grafo' : 'Construir el grafo'}
+              </button>
+            )}
             {state?.htmlPath && (
               <button
                 className={styles.select}

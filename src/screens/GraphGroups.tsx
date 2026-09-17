@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '../lib/invoke';
+import { AccountPickerButton } from '../components/AccountPickerButton';
 import { SettingsTabs } from '../components/SettingsTabs';
 import { toastError } from '../components/ErrorOverlay';
 import { Spinner } from '../components/Spinner';
@@ -105,11 +106,11 @@ export function GraphGroups() {
     }
   };
 
-  const build = async () => {
+  const build = async (accountId: string | null) => {
     if (!selectedId) return;
     setBuilding(true);
     try {
-      setState(await invoke<GraphState>('build_graph_group', { groupId: selectedId }));
+      setState(await invoke<GraphState>('build_graph_group', { groupId: selectedId, accountId }));
       setBridges(await invoke<Bridge[]>('get_graph_bridges', { groupId: selectedId }));
       await reloadGroups();
     } catch (e) {
@@ -232,9 +233,21 @@ export function GraphGroups() {
                 <DocsPolicy state={state} onChange={setState} />
 
 
-                <button className={styles.btnPrimary} disabled={building || members.length < 2} onClick={build}>
-                  {building ? <Spinner label="indexando y fusionando…" /> : state?.status === 'ready' ? 'Reconstruir el grafo' : 'Construir el grafo'}
-                </button>
+                {state?.withDocs ? (
+                  // Con documentos, indexar corre `claude` por fichero: la
+                  // cuota sale de una cuenta y se elige aquí, no en un ajuste.
+                  <AccountPickerButton
+                    label={building ? 'construyendo…' : 'construir con…'}
+                    title="Indexar documentos gasta cuota de la cuenta que elijas."
+                    busy={building}
+                    disabled={building || members.length < 2}
+                    onPick={(accountId) => build(accountId)}
+                  />
+                ) : (
+                  <button className={styles.btnPrimary} disabled={building || members.length < 2} onClick={() => build(null)}>
+                    {building ? <Spinner label="indexando y fusionando…" /> : state?.status === 'ready' ? 'Reconstruir el grafo' : 'Construir el grafo'}
+                  </button>
+                )}
 
                 <SavingsPanel groupId={selected.id} memberProjects={memberProjects} savings={savings} onLoad={setSavings} />
               </>
