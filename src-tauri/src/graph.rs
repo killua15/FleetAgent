@@ -135,6 +135,59 @@ impl IndexPolicy {
 /// nothing leaving at all, which is why this is configurable and not hardcoded.
 pub const DEFAULT_DOC_BACKEND: &str = "claude-cli";
 
+/// The binary each doc backend shells out to, by the backend's own name.
+///
+/// graphify looks these up **itself**, by bare name on `$PATH`. That is the
+/// whole reason this exists: Hangar already resolves binaries it runs directly
+/// (`providers::resolve_binary`, which exists because a GUI app launched from
+/// Finder inherits a `PATH` without `~/.local/bin`), but resolving a path does
+/// nothing for a grandchild that searches for itself. Reported as
+/// *"backend 'claude-cli' requires the `claude` CLI on $PATH"* with `claude`
+/// sitting in `~/.local/bin` all along.
+fn backend_binary(backend: &str) -> Option<&'static str> {
+    match backend.trim() {
+        "claude-cli" => Some("claude"),
+        "ollama" => Some("ollama"),
+        // An unknown backend is graphify's to complain about, and its message
+        // is better than a guess made here.
+        _ => None,
+    }
+}
+
+/// The directory to put in front of graphify's `PATH` so it can find its
+/// backend, or `None` when there is nothing useful to add.
+///
+/// `None` covers both "we don't know this backend" and "we could not find its
+/// binary" — `resolve_binary` falls back to the bare name, which has no
+/// directory, and inventing one would be worse than leaving `PATH` alone.
+pub fn backend_bin_dir(backend: Option<&str>) -> Option<PathBuf> {
+    let backend = backend.map(str::trim).filter(|b| !b.is_empty()).unwrap_or(DEFAULT_DOC_BACKEND);
+    let resolved = crate::providers::resolve_binary(backend_binary(backend)?);
+    PathBuf::from(resolved).parent().filter(|p| !p.as_os_str().is_empty()).map(Path::to_path_buf)
+}
+
+/// `dir` in front of an inherited `PATH`.
+///
+/// Prepended, never replacing: graphify needs its own interpreter and whatever
+/// else its environment carries, so wiping `PATH` would trade one missing
+/// binary for several.
+///
+/// Built with `join_paths` rather than a `:` of our own, because this repo also
+/// ships a Windows installer and there the separator is `;`.
+pub fn path_with(dir: &Path, inherited: Option<&str>) -> String {
+    let rest = inherited.filter(|p| !p.is_empty()).unwrap_or_default();
+    // Las entradas vacías se tiran, y no por estética: una entrada vacía en
+    // `PATH` significa *el directorio actual* en Unix, así que dejarla haría
+    // que graphify buscara binarios dentro del repo que está indexando.
+    let inherited_dirs = std::env::split_paths(rest).filter(|p| !p.as_os_str().is_empty());
+    let entries = std::iter::once(dir.to_path_buf()).chain(inherited_dirs);
+    std::env::join_paths(entries)
+        .map(|joined| joined.to_string_lossy().into_owned())
+        // A directory with the separator in its name cannot be joined; leaving
+        // `PATH` untouched beats handing the child a mangled one.
+        .unwrap_or_else(|_| rest.to_string())
+}
+
 /// Extensions graphify's AST pass recognises — near enough, for a warning.
 ///
 /// A deliberate and acknowledged copy of the tail of graphify's own
@@ -682,6 +735,66 @@ mod tests {
     /// below pin the *default* rather than the feature: a new scope, a NULL
     /// column and an unreadable value must all come out code-only, because that
     /// is the difference between "nothing leaves" and "your notes leave".
+    /// Cada backend busca su binario por nombre, y ese mapeo es lo único que
+    /// Hangar puede aportar: un backend que no conoce se lo deja a graphify,
+    /// cuyo mensaje es mejor que una suposición nuestra.
+    #[test]
+    fn every_known_backend_names_the_binary_it_shells_out_to() {
+        assert_eq!(backend_binary("claude-cli"), Some("claude"));
+        assert_eq!(backend_binary("ollama"), Some("ollama"));
+        assert_eq!(backend_binary(" claude-cli "), Some("claude"), "el valor viene de la base y puede traer espacios");
+        assert_eq!(backend_binary("un-backend-que-no-existe"), None);
+        assert_eq!(backend_binary(""), None);
+    }
+
+    /// Anteponer, nunca reemplazar: graphify necesita su propio intérprete y lo
+    /// que traiga su entorno, así que borrar el `PATH` cambiaría un binario
+    /// que falta por varios.
+    #[test]
+    fn the_backend_directory_goes_in_front_without_losing_the_rest() {
+        let sep = if cfg!(windows) { ';' } else { ':' };
+        let inherited = format!("/usr/bin{sep}/bin");
+        let built = path_with(Path::new("/Users/me/.local/bin"), Some(&inherited));
+
+        let entries: Vec<String> = std::env::split_paths(&built).map(|p| p.display().to_string()).collect();
+        assert_eq!(entries[0], "/Users/me/.local/bin", "el directorio del backend va primero: {built}");
+        assert!(entries.contains(&"/usr/bin".to_string()), "lo heredado sigue ahí: {built}");
+        assert!(entries.contains(&"/bin".to_string()), "entero, no solo el primero: {built}");
+    }
+
+    /// Un `PATH` vacío o ausente no debe producir uno con un separador suelto.
+    /// No es cosmético: una entrada vacía significa «el directorio actual», así
+    /// que graphify buscaría binarios dentro del repo que está indexando.
+    #[test]
+    fn an_empty_inherited_path_is_just_the_directory() {
+        for inherited in [None, Some("")] {
+            let built = path_with(Path::new("/opt/bin"), inherited);
+            assert_eq!(built, "/opt/bin", "got: {built:?} para {inherited:?}");
+        }
+    }
+
+    /// La comprobación que de verdad importa, y que solo se puede hacer en una
+    /// máquina con Claude Code instalado: que el backend por defecto se
+    /// resuelva **sin** el `PATH` del shell, que es la situación exacta de la
+    /// app empaquetada y el origen del fallo reportado.
+    ///
+    /// `#[ignore]` porque depende de la máquina, como los demás que hablan con
+    /// CLIs reales. Ejecutado aquí con `PATH=/usr/bin:/bin`, donde `claude` no
+    /// aparece, y aun así resuelto por `install_locations`.
+    #[test]
+    #[ignore = "needs Claude Code installed; run with PATH=/usr/bin:/bin to reproduce the packaged app"]
+    fn the_default_backend_resolves_without_a_shell_path() {
+        let dir = backend_bin_dir(None).expect("claude tiene que encontrarse aunque no esté en PATH");
+        assert!(dir.join("claude").exists() || dir.join("claude.cmd").exists(), "no hay claude en {}", dir.display());
+    }
+
+    /// `resolve_binary` cae al nombre pelado cuando no encuentra nada, y de ahí
+    /// no sale ningún directorio. Inventarse uno sería peor que dejar el `PATH`
+    /// en paz.
+    #[test]
+    fn a_backend_whose_binary_is_nowhere_adds_no_directory() {
+        assert_eq!(backend_bin_dir(Some("un-backend-que-no-existe")), None);
+    }
     #[test]
     fn a_build_is_code_only_unless_docs_were_explicitly_asked_for() {
         let repo = Path::new("/repos/thing");
