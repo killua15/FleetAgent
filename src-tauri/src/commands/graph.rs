@@ -289,12 +289,10 @@ fn build_project_graph_inner<R: tauri::Runtime>(app: &AppHandle<R>, db: &DbConne
             // Same folding-in of graphify's stdout as the group path: with
             // `--code-only`, "graph is empty" alone doesn't say that every file
             // in the repo was a document.
-            let detail = member_failure_detail(
-                &name,
-                &repo,
-                &String::from_utf8_lossy(&failed.stdout),
-                &String::from_utf8_lossy(&failed.stderr),
-            );
+            let stdout = String::from_utf8_lossy(&failed.stdout);
+            let stderr = String::from_utf8_lossy(&failed.stderr);
+            log_graphify_failure(&name, &stdout, &stderr);
+            let detail = member_failure_detail(&name, &repo, &stdout, &stderr);
             record_failure(&conn, &project_id, &detail)?;
             return Err(format!("the graph build failed: {detail}"));
         }
@@ -417,18 +415,56 @@ fn read_index_policy(conn: &Connection, kind: ScopeKind, scope_id: &str) -> (gra
 /// entire explanation when a docs-only folder yields nothing. Reading only the
 /// last stderr line throws that away, so it is folded back in here rather than
 /// re-derived: no second copy of graphify's extension list to drift out of sync.
+/// How many of graphify's last stderr lines survive into the message.
+///
+/// One was not enough, and the reason is graphify's own wording: *"all semantic
+/// chunks failed … **see per-chunk errors above**"*. Keeping only the final
+/// line kept the one sentence that points at the explanation and dropped the
+/// explanation.
+const FAILURE_TAIL_LINES: usize = 12;
+
+/// And a ceiling in bytes, because this ends up in a card in the UI. graphify
+/// can print a line per failed chunk, and there were 312 of them in the report
+/// that prompted this.
+const FAILURE_TAIL_BYTES: usize = 1200;
+
 fn member_failure_detail(name: &str, repo: &Path, stdout: &str, stderr: &str) -> String {
-    let last = stderr
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .last()
-        .unwrap_or("graphify exited with an error");
+    let lines: Vec<&str> = stderr.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let tail = if lines.is_empty() {
+        "graphify exited with an error".to_string()
+    } else {
+        // Read in the order graphify printed them: the last line is usually the
+        // summary and the ones above it are the causes, so reversing would put
+        // the conclusion before its evidence.
+        let from = lines.len().saturating_sub(FAILURE_TAIL_LINES);
+        let mut kept = String::new();
+        for line in &lines[from..] {
+            if kept.len() + line.len() + 1 > FAILURE_TAIL_BYTES {
+                kept.push('…');
+                break;
+            }
+            if !kept.is_empty() {
+                kept.push('\n');
+            }
+            kept.push_str(line);
+        }
+        kept
+    };
 
     match stdout.lines().map(str::trim).rev().find(|l| l.contains("--code-only") && l.contains("skipping")) {
-        Some(skipped) => format!("{name} ({}): {last} — {skipped}", repo.display()),
-        None => format!("{name} ({}): {last}", repo.display()),
+        Some(skipped) => format!("{name} ({}): {tail} — {skipped}", repo.display()),
+        None => format!("{name} ({}): {tail}", repo.display()),
     }
+}
+
+/// The whole of what graphify said, into the log.
+///
+/// The card has to fit on a screen; the log does not, and it is where you look
+/// when the card is not enough. Until this existed there was not one line of
+/// graphify's output anywhere — which is how a failure whose own message says
+/// "see the errors above" left no above to see.
+fn log_graphify_failure(name: &str, stdout: &str, stderr: &str) {
+    log::warn!("graphify failed for {name}\n--- stdout ---\n{}\n--- stderr ---\n{}", stdout.trim(), stderr.trim());
 }
 
 fn mark_building(conn: &Connection, kind: ScopeKind, scope_id: &str, graph_path: &Path) -> Result<(), String> {
@@ -776,12 +812,10 @@ fn build_graph_group_blocking(app: AppHandle, group_id: String) -> Result<GraphS
         match crate::process_timeout::run_with_timeout(cmd, BUILD_TIMEOUT) {
             Ok(o) if o.status.success() => {}
             Ok(o) => {
-                let detail = member_failure_detail(
-                    project_name,
-                    &repo,
-                    &String::from_utf8_lossy(&o.stdout),
-                    &String::from_utf8_lossy(&o.stderr),
-                );
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                log_graphify_failure(project_name, &stdout, &stderr);
+                let detail = member_failure_detail(project_name, &repo, &stdout, &stderr);
                 return fail_group(&db, &group_id, &detail);
             }
             Err(e) => return fail_group(&db, &group_id, &format!("{project_name} ({repo_path}): {e}")),
@@ -1197,6 +1231,39 @@ mod tests {
         // Empty streams are the timeout-shaped case: still named, still no guess.
         let empty = member_failure_detail("thing", Path::new("/r/thing"), "", "  \n\n");
         assert_eq!(empty, "thing (/r/thing): graphify exited with an error");
+    }
+
+    /// El fallo que motivó esto: graphify dice «mira los errores de arriba» y
+    /// Hangar se quedaba con esa única línea, tirando el arriba.
+    #[test]
+    fn the_lines_that_explain_the_failure_survive_not_just_the_verdict() {
+        let stderr = "\
+[graphify extract] chunk 1/4 failed: Credit balance is too low
+[graphify extract] chunk 2/4 failed: Credit balance is too low
+[graphify extract] chunk 3/4 failed: Credit balance is too low
+error: all semantic chunks failed for backend 'claude-cli' (312 uncached files) - see per-chunk errors above.
+";
+        let detail = member_failure_detail("tms-server", Path::new("/r/tms"), "", stderr);
+
+        assert!(detail.contains("all semantic chunks failed"), "el veredicto sigue: {detail}");
+        assert!(detail.contains("Credit balance is too low"), "y la causa, que es lo que faltaba: {detail}");
+        // En el orden en que graphify las imprimió: la conclusión va al final,
+        // después de su evidencia.
+        assert!(
+            detail.find("chunk 1/4").unwrap() < detail.find("all semantic chunks").unwrap(),
+            "las causas van antes del resumen: {detail}"
+        );
+    }
+
+    /// Una línea por chunk fallido, y había 312. Esto acaba en una tarjeta.
+    #[test]
+    fn a_flood_of_chunk_errors_is_capped() {
+        let stderr: String = (0..400).map(|i| format!("chunk {i} failed: something went wrong here\n")).collect();
+        let detail = member_failure_detail("ruidoso", Path::new("/r/x"), "", &stderr);
+
+        assert!(detail.len() < 2000, "no puede crecer sin límite: {} bytes", detail.len());
+        assert!(detail.contains("chunk 399"), "las últimas son las que importan: {detail}");
+        assert!(!detail.contains("chunk 0 "), "las primeras 400 no caben: {detail}");
     }
 
     fn db_with_project(path: &str) -> Connection {
