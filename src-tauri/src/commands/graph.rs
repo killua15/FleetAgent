@@ -10,6 +10,31 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Lo que hay que ponerle de entorno a graphify para que encuentre su backend.
+///
+/// graphify busca `claude` (u `ollama`) **por su nombre en `$PATH`**, y el hijo
+/// de una app de escritorio hereda un `PATH` sin `~/.local/bin`. Hangar ya
+/// resuelve ese problema para lo que ejecuta él, pero resolver una ruta no
+/// ayuda a un nieto que busca por su cuenta.
+///
+/// Devuelve error —**antes** de lanzar nada— cuando se piden documentos y el
+/// binario del backend no aparece. Ese fallo costaba hasta ahora una
+/// construcción entera muerta a la mitad, y en un grupo la de todos los
+/// miembros, para acabar diciendo lo mismo.
+fn docs_backend_env(policy: graph::IndexPolicy, backend: Option<&str>) -> Result<Option<(String, String)>, String> {
+    if policy != graph::IndexPolicy::WithDocs {
+        return Ok(None);
+    }
+    let named = backend.map(str::trim).filter(|b| !b.is_empty()).unwrap_or(graph::DEFAULT_DOC_BACKEND);
+    let Some(dir) = graph::backend_bin_dir(backend) else {
+        return Err(format!(
+            "indexing documents needs the `{named}` backend's CLI, and it isn't on this machine. \
+             Install it, or switch this scope back to code-only."
+        ));
+    };
+    Ok(Some(("PATH".to_string(), graph::path_with(&dir, std::env::var("PATH").ok().as_deref()))))
+}
+
 use crate::db::DbConnection;
 use crate::graph::{self, ScopeKind};
 use chrono::Utc;
@@ -226,6 +251,9 @@ fn build_project_graph_inner<R: tauri::Runtime>(app: &AppHandle<R>, db: &DbConne
 
     let mut cmd = Command::new(&binary);
     cmd.args(graph::build_args(&repo, &out, policy, backend.as_deref()));
+    if let Some((key, value)) = docs_backend_env(policy, backend.as_deref())? {
+        cmd.env(key, value);
+    }
     let output = crate::process_timeout::run_with_timeout(cmd, BUILD_TIMEOUT);
 
     let conn = db.0.lock().map_err(|e| e.to_string())?;
@@ -737,6 +765,14 @@ fn build_graph_group_blocking(app: AppHandle, group_id: String) -> Result<GraphS
 
         let mut cmd = Command::new(&binary);
         cmd.args(graph::build_args(&repo, &member_out, policy, backend.as_deref()));
+        match docs_backend_env(policy, backend.as_deref()) {
+            Ok(Some((key, value))) => {
+                cmd.env(key, value);
+            }
+            Ok(None) => {}
+            // Antes de lanzar el primer miembro, no después del tercero.
+            Err(e) => return fail_group(&db, &group_id, &e),
+        }
         match crate::process_timeout::run_with_timeout(cmd, BUILD_TIMEOUT) {
             Ok(o) if o.status.success() => {}
             Ok(o) => {
