@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { invoke } from '../lib/invoke';
+import { supabase, SUPABASE_PUBLISHABLE_KEY } from '../lib/supabase';
 import { Button } from './ui/button';
 import styles from './UpdateBanner.module.css';
 
@@ -30,15 +31,26 @@ export function UpdateBanner() {
   useEffect(() => {
     let stopped = false;
 
-    // The releases live in a private repository, so the check carries a token
-    // — read from the OS keychain at this moment rather than compiled in, so
-    // the binary itself holds no credential and a copy of the app grants
-    // nobody anything. No token means no update, which is the right answer for
-    // a machine that was never set up for them.
+    // The check carries the tester's own Supabase session, which is also what
+    // the Edge Function gates on (`profiles.approved`): the closed beta decides
+    // who gets a build server-side, instead of every machine holding a token
+    // someone pasted in by hand. Signed out means no update, which is the right
+    // answer for a session the beta can't identify.
+    //
+    // These same headers are what downloads the artifact — the updater reuses
+    // them — so the private Storage bucket needs no signed URL. Note there is no
+    // `Accept` here on purpose: the plugin sets `application/json` for the
+    // manifest and `application/octet-stream` for the download, and pinning one
+    // would break the other.
     const look = () => {
       if (stopped) return;
-      invoke<Record<string, string> | null>('update_request_headers')
-        .then((headers) => check(headers ? { headers } : undefined))
+      supabase.auth
+        .getSession()
+        .then(({ data }) => {
+          const token = data.session?.access_token;
+          if (!token) return null;
+          return check({ headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_PUBLISHABLE_KEY } });
+        })
         .then((found) => {
           // Never replace one already on screen: the user may be mid-install,
           // and re-rendering the banner under them would reset it. That same
@@ -51,7 +63,7 @@ export function UpdateBanner() {
             });
           }
         })
-        // Quietly: no network, no token, or an endpoint that has no release yet
+        // Quietly: no network, no session, or an endpoint that has no release yet
         // are all normal, and none of them is worth a toast.
         .catch(() => {});
     };

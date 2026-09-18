@@ -218,14 +218,15 @@ jobs:
   # (see the `release: vX.Y.Z` commits) — `bundle` produces a signed tarball
   # nobody published anywhere the app would look.
   #
-  # Apple Silicon only, even though `bundle` now uploads an updater artifact for
-  # all four targets. That is deliberate and temporary: this job publishes by
-  # *committing the binary to `main`*, which adds ~9 MB to the repository
-  # permanently (`.git` is already ~196 MB), and doing that four times per
-  # release would quadruple a problem that is about to be deleted rather than
-  # solved. The replacement — artifacts in object storage, manifest served per
-  # platform — reads the same `updater-<target>` artifacts this job ignores, so
-  # nothing here needs to grow first.
+  # Apple Silicon only, and now on its way out: `publish-to-supabase` below is
+  # the replacement, and it serves all four platforms from object storage
+  # instead of committing ~9 MB to `main` per release.
+  #
+  # It stays for exactly as long as someone is still running a version that
+  # points at this endpoint. That version can only be moved off it by an update
+  # delivered *here*, so deleting this job before the last tester is past it
+  # would strand them on the build they have. Delete it, and `updates/`, once
+  # nobody is.
   publish-update-manifest:
     needs: bundle
     if: github.ref_type == 'tag'
@@ -280,3 +281,112 @@ jobs:
           fi
           git commit -m "release: ${GITHUB_REF_NAME}"
           git push origin HEAD:main
+
+  # Where an update actually comes from now: the artifacts go to Supabase Storage
+  # and a row per platform goes to `app_releases`, which the `updates` Edge
+  # Function reads and gates on `profiles.approved`.
+  #
+  # This is what gives the other three platforms a channel at all. The job above
+  # can only publish Apple Silicon because publishing there means committing the
+  # binary to `main` — four platforms would mean ~120 MB of new history per
+  # release, and the Linux AppImage alone is ~90 MB of it.
+  #
+  # Both jobs run for now, on purpose: whoever is on a version that still points
+  # at the GitHub endpoint can only be handed the release that moves them off it
+  # through that same old endpoint. Once every tester is past that version, the
+  # job above and `updates/` go away.
+  publish-to-supabase:
+    needs: bundle
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      # Every target, unlike the job above, which takes only Apple Silicon.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: updater-*
+          path: artifacts
+
+      - name: Upload the artifacts and register the release
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+
+          # The Rust target triple is what CI builds with; `{os}-{arch}` is what
+          # the updater asks with (`updater_os()`/`updater_arch()` in the plugin).
+          # The rows have to be keyed by the second, or the app asks for a
+          # platform nothing answers to.
+          # Pairs rather than an associative array: `declare -A` needs bash 4,
+          # which the runner has and macOS's own bash does not, and this script
+          # is worth being able to run by hand before spending a build on it.
+          targets="
+            aarch64-apple-darwin:darwin-aarch64
+            x86_64-apple-darwin:darwin-x86_64
+            x86_64-pc-windows-msvc:windows-x86_64
+            x86_64-unknown-linux-gnu:linux-x86_64
+          "
+
+          published=0
+          for pair in $targets; do
+            triple="${pair%%:*}"
+            target="${pair##*:}"
+            dir="artifacts/updater-$triple"
+            # A platform whose build failed must not fail the release: the matrix
+            # is `fail-fast: false` precisely so a broken Linux bundle doesn't
+            # withhold macOS. Its row simply isn't written, and its testers stay
+            # on what they have.
+            if [ ! -d "$dir" ]; then
+              echo "::warning::no updater artifact for $triple — skipping $target"
+              continue
+            fi
+            sig=$(find "$dir" -maxdepth 1 -name '*.sig' -print -quit)
+            artifact="${sig%.sig}"
+            if [ -z "$sig" ] || [ ! -f "$artifact" ]; then
+              echo "::warning::no signed artifact under $dir — skipping $target"
+              continue
+            fi
+            signature=$(cat "$sig")
+            object_path="$version/$target/$(basename "$artifact")"
+
+            # `x-upsert` so re-running a release over itself replaces the object
+            # rather than failing on the second attempt — the whole point of
+            # `workflow_dispatch` being available for a re-cut.
+            curl --fail-with-body -sS -X POST \
+              "$SUPABASE_URL/storage/v1/object/updates/$object_path" \
+              -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+              -H "x-upsert: true" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary "@$artifact" > /dev/null
+
+            # Upserted on (version, target, channel), so a re-cut updates the row
+            # in place instead of leaving two rows the function has to choose between.
+            curl --fail-with-body -sS -X POST \
+              "$SUPABASE_URL/rest/v1/app_releases?on_conflict=version,target,channel" \
+              -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+              -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+              -H "Content-Type: application/json" \
+              -H "Prefer: resolution=merge-duplicates" \
+              -d "$(python3 -c '
+          import json, os, sys
+          print(json.dumps({
+              "version": sys.argv[1],
+              "target": sys.argv[2],
+              "object_path": sys.argv[3],
+              "signature": sys.argv[4],
+              "notes": f"Hangar {sys.argv[1]}",
+              "channel": "beta",
+              "published": True,
+          }))' "$version" "$target" "$object_path" "$signature")" > /dev/null
+
+            echo "published $target → $object_path"
+            published=$((published + 1))
+          done
+
+          # Zero means the release reached nobody, which is a failed release even
+          # though every step "worked".
+          if [ "$published" -eq 0 ]; then
+            echo "no artifact was published to Supabase" >&2
+            exit 1
+          fi

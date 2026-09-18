@@ -109,10 +109,28 @@ La pieza central es sustituir el endpoint del updater por una **Edge Function de
 un PAT a mano** en los ajustes. Con amigos ya es incómodo; con desconocidos es inviable.
 
 1. **Artefactos a Supabase Storage**, no commiteados al repo. Elimina de paso el crecimiento
-   permanente de `.git`.
-2. **Edge Function `updates`** que recibe la sesión de Supabase del tester —
-   `update_request_headers` ya inyecta cabeceras, solo cambia lo que llevan dentro — y devuelve el
-   manifiesto de su plataforma. **Esto es lo que elimina el PAT.**
+   permanente de `.git`. — **Escrito, sin desplegar**: bucket privado `updates` y tabla
+   `app_releases` en `supabase/migrations/20260918000000_app_releases.sql`, y el job
+   `publish-to-supabase` del workflow de release sube los cuatro artefactos y escribe una fila por
+   plataforma.
+2. **Edge Function `updates`** que recibe la sesión de Supabase del tester y devuelve el manifiesto
+   de su plataforma. **Esto es lo que elimina el PAT.** — **Escrita, sin desplegar**:
+   `supabase/functions/updates/index.ts`. Las cabeceras ya no salen de `update_request_headers` sino
+   de la sesión (`UpdateBanner.tsx`), y el endpoint de `tauri.conf.json` apunta a la función.
+
+   Lo que **falta** para que esto viva: aplicar la migración, desplegar la función, y crear los
+   secretos `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` en el repo.
+
+   Dos cosas que este diseño da por hechas, y conviene no romper al tocarlo. El updater **reutiliza
+   las cabeceras de la comprobación para descargar el binario**
+   (`tauri-plugin-updater/src/updater.rs`), y por eso el bucket puede ser privado sin URLs firmadas:
+   el JWT del tester ya viaja en la descarga y lo resuelve RLS. Y por eso mismo **no se fija ninguna
+   cabecera `Accept`**: el plugin pone `application/json` para el manifiesto y
+   `application/octet-stream` para el binario, y fijar una rompe la otra.
+
+   `update_access.rs` y su campo en ajustes siguen ahí pero ya no los usa nadie: se borran cuando se
+   borre el job `publish-update-manifest`, que es cuando ningún tester siga en una versión que apunte
+   al endpoint de GitHub.
 3. **Códigos de invitación** de un solo uso que al canjearse ponen `approved = true`. Es lo que se
    reparte por WhatsApp a los amigos y, más adelante, en el directo.
 4. **Feedback desde dentro de la app**: un comando que adjunte versión, plataforma, `machine_id` y
