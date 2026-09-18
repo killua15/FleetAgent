@@ -1295,6 +1295,9 @@ fn record_open_prs_for_project<R: Runtime>(
     let (owner, repo_name) = (&repo.namespace, &repo.name);
     let self_login = snapshot.viewer_login.as_deref();
     let still_open: Vec<i64> = snapshot.prs.iter().map(|pr| pr.number).collect();
+    // Sent only once `conn` is released: `notify_if_enabled` locks the DB itself,
+    // and calling it with the guard still held was a thread waiting on itself.
+    let mut notifications: Vec<(&'static str, String)> = Vec::new();
 
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     prune_closed_foreign_prs(&conn, repo, &still_open)?;
@@ -1350,13 +1353,16 @@ fn record_open_prs_for_project<R: Runtime>(
                 Forge::Github => "New pull request",
                 Forge::Gitlab => "New merge request",
             };
-            crate::notifications::notify_if_enabled(
-                app,
-                |s| s.notify_pr_comments,
+            notifications.push((
                 title,
-                &format!("{} {}{}: {}", repo.path(), repo.forge.number_sigil(), pr.number, pr.title.as_deref().unwrap_or("(untitled)")),
-            );
+                format!("{} {}{}: {}", repo.path(), repo.forge.number_sigil(), pr.number, pr.title.as_deref().unwrap_or("(untitled)")),
+            ));
         }
+    }
+    drop(conn);
+
+    for (title, body) in notifications {
+        crate::notifications::notify_if_enabled(app, |s| s.notify_pr_comments, title, &body);
     }
     Ok(())
 }
@@ -2685,5 +2691,47 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&remote_dir);
         let _ = std::fs::remove_dir_all(&work_dir);
+    }
+
+    /// Discovering someone else's PR notifies, and `notify_if_enabled` locks the
+    /// DB to read the settings. Called while this function still held the lock,
+    /// that was a thread waiting on itself: the poller froze holding the DB, and
+    /// the whole UI froze behind it (hang reports of 2026-09-17). Run on its own
+    /// thread with a timeout so a regression fails here instead of hanging
+    /// `cargo test`.
+    #[test]
+    fn record_open_prs_for_project_does_not_deadlock_when_a_foreign_pr_is_discovered() {
+        let app = tauri::test::mock_app();
+        app.manage(setup_db_with_open_pr("proj1", "Project One", "pr1"));
+        let snapshot = RepoPrSnapshot {
+            viewer_login: Some("killua15".into()),
+            review_requested: HashSet::new(),
+            prs: vec![forges::SnapshotPr {
+                number: 7,
+                url: "https://github.com/killua15/Hangar/pull/7".into(),
+                title: Some("Someone else's change".into()),
+                created_at: "now".into(),
+                updated_at: "now".into(),
+                state: "open".into(),
+                author_login: Some("a-stranger".into()),
+                assignees: vec![],
+                head_branch: Some("feat/theirs".into()),
+                base_branch: Some("main".into()),
+                comments: forges::PendingComments::Ready(vec![]),
+            }],
+        };
+
+        let handle = app.handle().clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let db = handle.state::<DbConnection>();
+            let _ = tx.send(record_open_prs_for_project(&handle, &db, "proj1", &hangar_repo(), &snapshot));
+        });
+        let result = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("record_open_prs_for_project deadlocked on the DB mutex");
+        result.unwrap();
+
+        let db = app.state::<DbConnection>();
+        let relation: String = db.0.lock().unwrap().query_row("SELECT relation FROM pull_requests WHERE number = 7", [], |row| row.get(0)).unwrap();
+        assert_eq!(relation, "other");
     }
 }
