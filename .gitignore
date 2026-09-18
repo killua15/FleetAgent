@@ -39,3 +39,7 @@ src-tauri/target
 
 # La sesión de Supabase del cliente de prueba del puente. Es un refresh token.
 contract/.bridge-session.json
+
+# Lo que el CLI de Supabase deja al enlazar el proyecto: refs, versiones y la
+# cadena de conexión de la base remota. Estado de esta máquina, no del repo.
+supabase/.temp/
