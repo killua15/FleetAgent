@@ -543,6 +543,23 @@
   background: var(--tealD);
 }
 
+.removeProjectLink {
+  flex: none;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--dim);
+  font: 500 11px var(--font-ui);
+  cursor: pointer;
+}
+
+.removeProjectLink:hover {
+  border-color: var(--red);
+  background: var(--redD);
+  color: var(--red);
+}
+
 .worktreeForm {
   display: flex;
   flex-direction: column;

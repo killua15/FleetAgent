@@ -281,6 +281,7 @@ pub fn run() {
             commands::projects::create_project,
             commands::projects::ensure_project_for_path,
             commands::projects::update_project,
+            commands::projects::set_project_hidden,
             commands::projects::delete_project,
             commands::sessions::start_session,
             commands::sessions::create_subsession,

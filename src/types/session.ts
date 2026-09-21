@@ -58,6 +58,8 @@ export interface Project {
   name: string;
   path: string;
   defaultSetupCommand: string | null;
+  /** Taken off the terminal pickers' recents; sessions and worktrees are kept. */
+  hidden: boolean;
   createdAt: string;
 }
 

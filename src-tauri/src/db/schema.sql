@@ -42,6 +42,10 @@ CREATE TABLE IF NOT EXISTS projects (
   -- project (e.g. `npm install`), remembered so the next subsession dialog
   -- can default to it instead of starting blank every time.
   default_setup_command  TEXT,
+  -- Taken off the terminal pickers' "recent projects" list by the user. Only
+  -- hides the row: sessions, worktrees and history stay, and choosing the
+  -- folder again brings it back.
+  hidden_in_pickers      INTEGER NOT NULL DEFAULT 0,
   created_at             TEXT NOT NULL
 );
 

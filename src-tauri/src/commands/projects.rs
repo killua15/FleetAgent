@@ -13,6 +13,8 @@ pub struct Project {
     pub name: String,
     pub path: String,
     pub default_setup_command: Option<String>,
+    /// Taken off the terminal pickers' recents; see `set_project_hidden`.
+    pub hidden: bool,
     pub created_at: String,
 }
 
@@ -29,6 +31,7 @@ fn row_to_project(row: &rusqlite::Row) -> rusqlite::Result<Project> {
         name: row.get("name")?,
         path: row.get("path")?,
         default_setup_command: row.get("default_setup_command")?,
+        hidden: row.get::<_, i64>("hidden_in_pickers")? != 0,
         created_at: row.get("created_at")?,
     })
 }
@@ -86,7 +89,14 @@ pub fn ensure_project_for_path(db: State<DbConnection>, path: String) -> Result<
 
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     if let Ok(existing) = conn.query_row("SELECT * FROM projects WHERE path = ?1", params![trimmed], row_to_project) {
-        return Ok(existing);
+        if !existing.hidden {
+            return Ok(existing);
+        }
+        // Choosing a folder the user had taken off the recents is asking for
+        // it back.
+        conn.execute("UPDATE projects SET hidden_in_pickers = 0 WHERE id = ?1", params![existing.id])
+            .map_err(|e| e.to_string())?;
+        return Ok(Project { hidden: false, ..existing });
     }
 
     let name = std::path::Path::new(trimmed)
@@ -117,6 +127,21 @@ pub fn update_project(db: State<DbConnection>, id: String, name: String) -> Resu
     let name = if name.trim().is_empty() { "untitled project".to_string() } else { name.trim().to_string() };
     conn.execute("UPDATE projects SET name = ?2 WHERE id = ?1", params![id, name]).map_err(|e| e.to_string())?;
     conn.query_row("SELECT * FROM projects WHERE id = ?1", params![id], row_to_project).map_err(|e| e.to_string())
+}
+
+/// Takes a project off (or puts it back on) the terminal pickers' "recent
+/// projects" list. Deliberately not `delete_project`: hiding a folder from a
+/// list must not cost its sessions, history or worktrees.
+#[tauri::command]
+pub fn set_project_hidden(db: State<DbConnection>, id: String, hidden: bool) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let changed = conn
+        .execute("UPDATE projects SET hidden_in_pickers = ?2 WHERE id = ?1", params![id, hidden as i64])
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err("project not found".to_string());
+    }
+    Ok(())
 }
 
 /// Same shape as `accounts::delete_account`: clean up any worktrees on disk
@@ -231,6 +256,44 @@ mod tests {
 
         let cleared = update_project(db, created.id, "   ".to_string()).unwrap();
         assert_eq!(cleared.name, "untitled project");
+    }
+
+    #[test]
+    fn set_project_hidden_only_hides_the_row() {
+        let app = setup_test_app();
+        let db = app.state::<DbConnection>();
+        let project = create_project(db.clone(), NewProject { name: "noisy".to_string(), path: "/tmp/noisy".to_string() }).unwrap();
+        assert!(!project.hidden, "a new project must show up in the pickers");
+
+        set_project_hidden(db.clone(), project.id.clone(), true).unwrap();
+        let all = list_projects(db.clone()).unwrap();
+        assert_eq!(all.len(), 1, "hiding must keep the row, unlike delete_project");
+        assert!(all[0].hidden);
+
+        set_project_hidden(db.clone(), project.id.clone(), false).unwrap();
+        assert!(!list_projects(db.clone()).unwrap()[0].hidden);
+
+        assert!(set_project_hidden(db, "missing".to_string(), true).is_err());
+    }
+
+    #[test]
+    fn ensure_project_for_path_brings_a_hidden_project_back() {
+        let app = setup_test_app();
+        let db = app.state::<DbConnection>();
+
+        let dir = std::env::temp_dir().join(format!("hangar-test-hidden-project-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.to_string_lossy().to_string();
+
+        let created = ensure_project_for_path(db.clone(), path.clone()).unwrap();
+        set_project_hidden(db.clone(), created.id.clone(), true).unwrap();
+
+        let again = ensure_project_for_path(db.clone(), path).unwrap();
+        assert_eq!(again.id, created.id, "choosing the folder again must reuse the row, not duplicate it");
+        assert!(!again.hidden, "choosing the folder again must bring it back to the list");
+        assert!(!list_projects(db).unwrap()[0].hidden, "and the un-hide must be persisted");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Real end-to-end cascade: a project with a session, a copy-kind

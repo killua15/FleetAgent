@@ -178,8 +178,23 @@ export function Terminals() {
     const picked = await open({ directory: true, multiple: false, title: 'Choose a project folder' });
     if (typeof picked !== 'string') return null;
     const project = await invoke<Project>('ensure_project_for_path', { path: picked });
-    setProjects((prev) => (prev.some((p) => p.id === project.id) ? prev : [...prev, project]));
+    // Replacing, not skipping, a known row: choosing a folder that was taken
+    // off the list brings it back, and the backend has just un-hidden it.
+    setProjects((prev) => (prev.some((p) => p.id === project.id) ? prev.map((p) => (p.id === project.id ? project : p)) : [...prev, project]));
     return project;
+  };
+
+  /** Takes a folder off the pickers' recents. Only hides the row — its
+   * sessions, history and worktrees stay; `delete_project` is not this. */
+  const hideProject = async (id: string) => {
+    const setHidden = (hidden: boolean) => setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, hidden } : p)));
+    setHidden(true);
+    try {
+      await invoke('set_project_hidden', { id, hidden: true });
+    } catch (e) {
+      setHidden(false);
+      toastError(String(e));
+    }
   };
 
   /** Loads each account's login state once, lazily — every account picker
@@ -404,6 +419,10 @@ export function Terminals() {
   const panels = terminals.filter((t) => !collapsed[t.id]);
   const effectiveGridColumns = gridColumns === 'auto' ? autoGridColumns(panels.length) : gridColumns;
 
+  // What the pickers offer. The sidebar still gets every project: a terminal
+  // open in a hidden one must keep its group.
+  const pickerProjects = projects.filter((p) => !p.hidden);
+
   const pickedAccount = accounts.find((a) => a.id === pickedAccountId);
   const pickedAuth = pickedAccountId ? auth[pickedAccountId] : undefined;
 
@@ -529,7 +548,8 @@ export function Terminals() {
           ) : (
             <div className={styles.pickerGroup}>
               <span className={styles.pickerGroupTitle}>RECENT PROJECTS</span>
-              {projects.map((p) => (
+              {pickerProjects.length === 0 && <span className={styles.pickerEmpty}>no recent projects — explore a folder below</span>}
+              {pickerProjects.map((p) => (
                 <div key={p.id} className={styles.projectRowWrap}>
                   <button className={styles.pickerRow} onClick={() => openForTarget({ kind: 'project', id: p.id })}>
                     <span className={styles.pickerName}>{p.name}</span>
@@ -546,6 +566,14 @@ export function Terminals() {
                       ⑃ new worktree…
                     </button>
                   )}
+                  <button
+                    className={styles.removeProjectLink}
+                    aria-label={`Remove ${p.name} from this list`}
+                    title="Remove from this list — sessions and worktrees are kept"
+                    onClick={() => hideProject(p.id)}
+                  >
+                    ✕
+                  </button>
                 </div>
               ))}
               <button className={styles.exploreRow} onClick={exploreAndOpen}>
@@ -556,11 +584,11 @@ export function Terminals() {
         </div>
       )}
 
-      {fanOpen && <FanOutPicker projects={projects} accounts={accounts} auth={auth} busy={opening} onClose={() => setFanOpen(false)} onLaunch={runFanOut} />}
+      {fanOpen && <FanOutPicker projects={pickerProjects} accounts={accounts} auth={auth} busy={opening} onClose={() => setFanOpen(false)} onLaunch={runFanOut} />}
 
       {multiOpen && (
         <MultiTerminalPicker
-          projects={projects}
+          projects={pickerProjects}
           accounts={accounts}
           auth={auth}
           authLoading={authLoading}

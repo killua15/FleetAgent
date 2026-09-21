@@ -265,6 +265,12 @@ const MIGRATIONS: &[Migration] = &[
         run: graph_index_policy,
         transactional: true,
     },
+    Migration {
+        version: 31,
+        name: "project_hidden_in_pickers",
+        run: project_hidden_in_pickers,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -979,6 +985,16 @@ fn open_terminal_minimized(conn: &Connection) -> Result<(), String> {
         .map_err(|e| format!("could not add open_terminals.minimized: {e}"))
 }
 
+/// Lets the user take a folder off the terminal pickers' recents without
+/// `delete_project`, which would also take its sessions and worktrees.
+fn project_hidden_in_pickers(conn: &Connection) -> Result<(), String> {
+    if has_column(conn, "projects", "hidden_in_pickers")? {
+        return Ok(());
+    }
+    conn.execute_batch("ALTER TABLE projects ADD COLUMN hidden_in_pickers INTEGER NOT NULL DEFAULT 0;")
+        .map_err(|e| format!("could not add projects.hidden_in_pickers: {e}"))
+}
+
 /// Adds `opencode` to the providers an account may have.
 ///
 /// The same 12-step rebuild as `allow_grok_provider`, for the same reason:
@@ -1532,6 +1548,30 @@ mod tests {
         let fresh = fresh_db();
         assert!(has_column(&fresh, "accounts", "exhausted_at").unwrap(), "schema.sql must declare it for new databases");
         accounts_exhausted_at(&fresh).expect("re-running where schema.sql already added it must be a no-op, not a startup failure");
+    }
+
+    #[test]
+    fn the_hidden_in_pickers_migration_adds_the_column_and_tolerates_it_already_existing() {
+        let legacy = Connection::open_in_memory().unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE projects (
+                   id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL,
+                   default_setup_command TEXT, created_at TEXT NOT NULL
+                 );
+                 INSERT INTO projects (id, name, path, created_at) VALUES ('p1', 'Repo', '/repo', 'now');",
+            )
+            .unwrap();
+        assert!(!has_column(&legacy, "projects", "hidden_in_pickers").unwrap(), "the fixture has to start without the column for this to prove anything");
+
+        project_hidden_in_pickers(&legacy).unwrap();
+        assert!(has_column(&legacy, "projects", "hidden_in_pickers").unwrap(), "an existing database must gain the column");
+        let hidden: i64 = legacy.query_row("SELECT hidden_in_pickers FROM projects WHERE id = 'p1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(hidden, 0, "existing projects must stay visible");
+
+        let fresh = fresh_db();
+        assert!(has_column(&fresh, "projects", "hidden_in_pickers").unwrap(), "schema.sql must declare it for new databases");
+        project_hidden_in_pickers(&fresh).expect("re-running where schema.sql already added it must be a no-op, not a startup failure");
     }
 
     /// The table has to appear on a database that predates it, survive the
