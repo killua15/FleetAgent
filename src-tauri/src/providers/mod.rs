@@ -215,6 +215,53 @@ pub fn resolve_binary(name: &str) -> String {
     resolved
 }
 
+/// `PATH` with the resolved binary's own directory in front.
+///
+/// A GUI app inherits launchd's `PATH=/usr/bin:/bin:/usr/sbin:/sbin` — the
+/// running app was measured with exactly that — while a terminal gets the
+/// user's. `resolve_binary` bridges half the gap by finding the executable at
+/// an absolute path, but that isn't enough for a CLI that is a *script*:
+/// `codex` starts with `#!/usr/bin/env node`, so launching it still needs
+/// `node` on the child's `PATH`, and without it the child prints
+/// `env: node: No such file or directory` and exits 127.
+///
+/// The fix is one directory: an nvm-installed `codex` sits in the same `bin`
+/// as the `node` that runs it. So the child gets to see its own neighbours,
+/// which is what a login shell would have done for it.
+pub(crate) fn path_including_binary_dir(binary: &str, current: Option<&str>) -> Option<String> {
+    let resolved = resolve_binary(binary);
+    let dir = std::path::Path::new(&resolved).parent()?.to_str()?.to_string();
+    // `resolve_binary` returns the bare name when it found nothing to resolve;
+    // its "parent" is then the empty string, which would only poison `PATH`.
+    if dir.is_empty() {
+        return None;
+    }
+    match current {
+        Some(path) if path.split(':').any(|entry| entry == dir) => None,
+        Some(path) => Some(format!("{dir}:{path}")),
+        None => Some(dir),
+    }
+}
+
+/// `git`, resolved, with `git-lfs`'s directory on the child's `PATH`.
+///
+/// Resolving `git` to an absolute path isn't enough: git runs its own helpers
+/// — the LFS filter above all — by name, through the `PATH` it inherited. From
+/// a Finder-launched app that is launchd's bare one, so a repo with LFS files
+/// failed every `worktree add` with `git-lfs: command not found` on a machine
+/// where Homebrew had installed it. Every git spawn goes through here so none
+/// of them can miss it.
+pub(crate) fn git_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new(resolve_binary("git"));
+    // `path_including_binary_dir` joins with `:`; Git for Windows ships
+    // `git-lfs` beside `git` anyway.
+    #[cfg(unix)]
+    if let Some(path) = path_including_binary_dir("git-lfs", std::env::var("PATH").ok().as_deref()) {
+        cmd.env("PATH", path);
+    }
+    cmd
+}
+
 /// Resolving can end up spawning a login shell, which costs a few hundred
 /// milliseconds — and `resolve_binary` is called on every terminal open, every
 /// auth probe and every `gh` call.
@@ -936,14 +983,38 @@ mod tests {
 
         let resolved = resolve_binary("hangar-fake-cli");
         let unresolvable = resolve_binary("definitely-not-a-real-cli-xyz");
+        let prepended = path_including_binary_dir("hangar-fake-cli", Some("/usr/bin"));
+        let already_there = path_including_binary_dir("hangar-fake-cli", Some(&format!("/usr/bin:{}", dir.display())));
+        let nothing_to_add = path_including_binary_dir("definitely-not-a-real-cli-xyz", Some("/usr/bin"));
 
         std::env::set_var("PATH", original_path);
 
         assert_eq!(resolved, fake_cli.to_string_lossy(), "a binary on PATH must resolve to its absolute location");
         assert!(std::path::Path::new(&resolved).is_absolute());
         assert_eq!(unresolvable, "definitely-not-a-real-cli-xyz", "an unresolvable name must fall back to the bare name");
+        assert_eq!(prepended, Some(format!("{}:/usr/bin", dir.display())), "the binary's directory goes in front of the child's PATH");
+        assert_eq!(already_there, None, "a directory already on PATH must not be added twice");
+        assert_eq!(nothing_to_add, None, "an unresolved binary must leave PATH alone");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The worktree failure this exists for: git found by absolute path, but
+    /// `git-lfs` invisible to it. Only meaningful where `git-lfs` is installed
+    /// outside the inherited PATH, so it bails otherwise rather than testing
+    /// the machine.
+    #[cfg(unix)]
+    #[test]
+    fn git_children_can_find_git_lfs() {
+        let lfs = resolve_binary("git-lfs");
+        let Some(lfs_dir) = std::path::Path::new(&lfs).parent().filter(|d| d.is_absolute()) else { return };
+        let inherited = std::env::var("PATH").unwrap_or_default();
+        if std::env::split_paths(&inherited).any(|d| d == lfs_dir) {
+            return;
+        }
+        let cmd = git_command();
+        let path = cmd.get_envs().find(|(k, _)| *k == "PATH").and_then(|(_, v)| v).expect("git must get an explicit PATH");
+        assert!(std::env::split_paths(path).any(|d| d == lfs_dir), "git-lfs's directory must be on git's PATH: {path:?}");
     }
 
     /// Only the provider *mapping* is machine-independent — whether a given

@@ -7,6 +7,8 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use uuid::Uuid;
 
+use crate::providers::path_including_binary_dir;
+
 /// A running interactive CLI login. Kept alive in the registry so we can
 /// write the pasted OAuth code to its stdin and kill it on cancel.
 pub struct LoginProc {
@@ -165,34 +167,6 @@ pub(crate) fn login_env_for(provider: &str, config_dir: &str) -> Vec<(String, St
         }
     }
     env
-}
-
-/// `PATH` with the resolved binary's own directory in front.
-///
-/// A GUI app inherits launchd's `PATH=/usr/bin:/bin:/usr/sbin:/sbin` — the
-/// running app was measured with exactly that — while a terminal gets the
-/// user's. `resolve_binary` bridges half the gap by finding the executable at
-/// an absolute path, but that isn't enough for a CLI that is a *script*:
-/// `codex` starts with `#!/usr/bin/env node`, so launching it still needs
-/// `node` on the child's `PATH`, and without it the child prints
-/// `env: node: No such file or directory` and exits 127.
-///
-/// The fix is one directory: an nvm-installed `codex` sits in the same `bin`
-/// as the `node` that runs it. So the child gets to see its own neighbours,
-/// which is what a login shell would have done for it.
-fn path_including_binary_dir(binary: &str, current: Option<&str>) -> Option<String> {
-    let resolved = crate::providers::resolve_binary(binary);
-    let dir = std::path::Path::new(&resolved).parent()?.to_str()?.to_string();
-    // `resolve_binary` returns the bare name when it found nothing to resolve;
-    // its "parent" is then the empty string, which would only poison `PATH`.
-    if dir.is_empty() {
-        return None;
-    }
-    match current {
-        Some(path) if path.split(':').any(|entry| entry == dir) => None,
-        Some(path) => Some(format!("{dir}:{path}")),
-        None => Some(dir),
-    }
 }
 
 /// Starts an interactive `claude auth login` for a brand-new account.

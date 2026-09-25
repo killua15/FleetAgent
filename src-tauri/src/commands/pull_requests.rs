@@ -33,7 +33,7 @@ pub(crate) fn git_capture_with_env(cwd: &Path, args: &[&str], env: &[(String, St
     // `git rev-parse HEAD: No such file or directory` instead of naming the
     // thing to install. Cheap: binary resolution is cached process-wide.
     crate::capabilities::Capability::GitWork.check_offline().map_err(|b| b.message())?;
-    let mut cmd = Command::new(providers::resolve_binary("git"));
+    let mut cmd = providers::git_command();
     cmd.args(args).current_dir(cwd);
     for (k, v) in env {
         cmd.env(k, v);
@@ -70,7 +70,7 @@ pub(crate) fn detect_default_branch(cwd: &Path) -> String {
 /// ref exists at all, `resolve_session_for_pr_branch` leaves it alone
 /// rather than guessing whether it's safe to reuse or move.
 pub(crate) fn local_branch_exists(cwd: &Path, branch: &str) -> bool {
-    Command::new(providers::resolve_binary("git"))
+    providers::git_command()
         .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
         .current_dir(cwd)
         .status()

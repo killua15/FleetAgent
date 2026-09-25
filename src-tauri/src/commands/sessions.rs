@@ -164,7 +164,7 @@ pub(crate) fn unique_worktree_dir(project_path: &str, slug: &str) -> PathBuf {
 }
 
 fn project_is_git_repo(project_path: &str) -> bool {
-    Command::new(providers::resolve_binary("git"))
+    providers::git_command()
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(project_path)
         .output()
@@ -177,7 +177,7 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<(), String> {
     // creating a worktree is where a missing git hurts most, because the
     // session is already half-created when it fails.
     crate::capabilities::Capability::GitWork.check_offline().map_err(|b| b.message())?;
-    let output = Command::new(providers::resolve_binary("git"))
+    let output = providers::git_command()
         .args(args)
         .current_dir(cwd)
         .output()
@@ -1058,7 +1058,7 @@ pub fn get_account_usage_summary(db: State<DbConnection>, account_id: String, si
 /// a safe fallback if git isn't available or the command fails.
 fn git_status_map(cwd: &Path) -> HashMap<String, FileStatus> {
     let mut map = HashMap::new();
-    let Ok(output) = Command::new(providers::resolve_binary("git")).args(["status", "--porcelain"]).current_dir(cwd).output() else {
+    let Ok(output) = providers::git_command().args(["status", "--porcelain"]).current_dir(cwd).output() else {
         return map;
     };
     if !output.status.success() {
@@ -1628,7 +1628,7 @@ mod subsession_tests {
             .expect("creating a linked worktree in a real git repo should succeed");
 
         assert!(worktree_dir.join("README.md").is_file(), "worktree should have the parent's committed files");
-        let list_output = Command::new(providers::resolve_binary("git"))
+        let list_output = providers::git_command()
             .args(["worktree", "list"])
             .current_dir(&project_dir)
             .output()
@@ -1644,7 +1644,7 @@ mod subsession_tests {
         }]);
 
         assert!(!worktree_dir.exists(), "cleanup should remove the worktree directory");
-        let branch_list = Command::new(providers::resolve_binary("git"))
+        let branch_list = providers::git_command()
             .args(["branch", "--list", &branch])
             .current_dir(&project_dir)
             .output()
@@ -1790,7 +1790,7 @@ mod subsession_tests {
         assert_eq!(session.worktree_branch.as_deref(), Some("T2"), "no `hangar/` prefix — the branch is the task's");
 
         let worktree = std::path::PathBuf::from(session.worktree_path.clone().unwrap());
-        let head = Command::new(providers::resolve_binary("git"))
+        let head = providers::git_command()
             .args(["rev-parse", "--abbrev-ref", "HEAD"])
             .current_dir(&worktree)
             .output()
@@ -1989,7 +1989,7 @@ mod subsession_tests {
         let worktree_dir = std::path::Path::new(&worktree_path);
         assert!(worktree_dir.join("README.md").is_file(), "worktree should check out the parent repo's committed files");
 
-        let list_output = Command::new(providers::resolve_binary("git"))
+        let list_output = providers::git_command()
             .args(["worktree", "list"])
             .current_dir(&project_dir)
             .output()
@@ -2039,7 +2039,7 @@ mod subsession_tests {
         assert!(worktree_dir.join("app.txt").is_file());
 
         // The agent must actually be able to run git commands in the copy.
-        let status = Command::new(providers::resolve_binary("git"))
+        let status = providers::git_command()
             .args(["status"])
             .current_dir(&worktree_dir)
             .output()

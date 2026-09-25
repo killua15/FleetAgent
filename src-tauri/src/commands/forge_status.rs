@@ -496,7 +496,7 @@ pub async fn clone_instance_repo(app: AppHandle, clone_url: String, parent_dir: 
     }
 
     let destination = crate::blocking::run_blocking(move || {
-        let mut cmd = std::process::Command::new(crate::providers::resolve_binary("git"));
+        let mut cmd = crate::providers::git_command();
         cmd.args(["clone", &clone_url, &destination.to_string_lossy()]);
         // Cloning a large repo can outlast the 25s default that suits an API
         // call, so this one gets its own bound rather than borrowing that one.
