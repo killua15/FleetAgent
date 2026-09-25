@@ -44,7 +44,12 @@ function isNewer(candidate: string, current: string): boolean {
 
 Deno.serve(async (req) => {
   const url = new URL(req.url);
-  const target = url.searchParams.get('target');
+  // The updater fills `{{target}}` with the OS alone (`darwin`) and sends the
+  // architecture separately, while CI keys rows by `darwin-aarch64` — so the two
+  // are joined here, or every Mac is told there is nothing new.
+  const os = url.searchParams.get('target');
+  const arch = url.searchParams.get('arch');
+  const target = os && arch && !os.includes('-') ? `${os}-${arch}` : os;
   const currentVersion = url.searchParams.get('current_version');
   if (!target) {
     return Response.json({ error: 'target is required' }, { status: 400 });
