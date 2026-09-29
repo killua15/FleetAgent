@@ -188,6 +188,13 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether `branch` is already there to check out — locally, or on `origin`,
+/// where `git worktree add <dir> <branch>` makes the tracking branch itself.
+fn branch_exists_locally_or_on_origin(project: &Path, branch: &str) -> bool {
+    crate::commands::pull_requests::local_branch_exists(project, branch)
+        || run_git(project, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{branch}")]).is_ok()
+}
+
 /// Real `git worktree` off the project's existing repo, branched from the
 /// project's local HEAD (not the remote default) so the subsession starts
 /// from whatever's already checked out, including uncommitted... no —
@@ -549,6 +556,14 @@ pub(crate) async fn create_worktree_on_branch<R: tauri::Runtime>(
             return Err(format!("{project_path} isn't a git repository, so Hangar can't cut a worktree for it."));
         }
 
+        // A task reopened after its worktree was deleted still has its branch —
+        // with the work on it. Creating it again with `-b` only fails; checking
+        // it out is what reopening means.
+        let branch = match branch {
+            WorktreeBranch::Exact { name, .. } if branch_exists_locally_or_on_origin(Path::new(&project_path), &name) => WorktreeBranch::Existing(name),
+            other => other,
+        };
+
         let session_id = create_worktree_session(
             &app,
             &db,
@@ -625,6 +640,12 @@ pub(crate) fn create_worktree_session<R: tauri::Runtime>(app: &AppHandle<R>, db:
         let branch = input.branch.resolved_name();
 
         let worktree_kind = if is_git {
+            // A folder deleted by hand leaves its registration behind, and git
+            // then refuses both its branch ("already checked out") and its path.
+            // Prune only drops registrations whose folder is gone.
+            if let Err(e) = run_git(Path::new(project_path), &["worktree", "prune"]) {
+                log::warn!("create_worktree_session: git worktree prune failed: {e}");
+            }
             match &input.branch {
                 // Attaching, not creating: the branch is already there and the
                 // point is to work on it.
@@ -2103,6 +2124,43 @@ mod subsession_tests {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "T2", "git inside the worktree must report the task's branch");
+
+        let _ = std::fs::remove_dir_all(&project_dir);
+    }
+
+    /// Reopening a task after its worktree folder was deleted by hand. The
+    /// board always asks to *create* the task branch; by now it exists, with
+    /// work on it, and git still holds the dead folder's registration. Both
+    /// used to fail the reopen — `-b` on an existing branch, then the branch
+    /// "already checked out" at a path that isn't there.
+    #[test]
+    fn reopening_a_task_whose_worktree_folder_was_deleted_checks_its_branch_out_again() {
+        let project_dir = make_temp_dir("task-reopen");
+        run_git(&project_dir, &["init"]).unwrap();
+        std::fs::write(project_dir.join("README.md"), "hi").unwrap();
+        run_git(&project_dir, &["add", "-A"]).unwrap();
+        run_git(&project_dir, &["commit", "-m", "init"]).unwrap();
+        let (app, account_id, project_id) = setup_test_app_with_account_and_project(project_dir.to_str().unwrap());
+        let open_task = || {
+            tauri::async_runtime::block_on(create_worktree_on_branch(
+                app.handle().clone(),
+                project_id.clone(),
+                WorktreeBranch::Exact { name: "T9".to_string(), base: None },
+                account_id.clone(),
+            ))
+        };
+
+        let first = open_task().expect("the first open creates the branch");
+        let worktree = PathBuf::from(first.worktree_path.clone().unwrap());
+        std::fs::write(worktree.join("work.txt"), "done").unwrap();
+        run_git(&worktree, &["add", "-A"]).unwrap();
+        run_git(&worktree, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "task work"]).unwrap();
+        std::fs::remove_dir_all(&worktree).unwrap();
+
+        let reopened = open_task().expect("reopening must check the existing branch out, not fail on -b");
+        let again = PathBuf::from(reopened.worktree_path.unwrap());
+        assert_eq!(again, worktree, "the dead registration is pruned, so the task gets its own path back");
+        assert!(again.join("work.txt").exists(), "the work on the branch must come back with it");
 
         let _ = std::fs::remove_dir_all(&project_dir);
     }
