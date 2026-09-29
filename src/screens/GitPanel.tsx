@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { invoke } from '../lib/invoke';
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 import { Button } from '../components/ui/button';
@@ -7,10 +7,12 @@ import { Spinner } from '../components/Spinner';
 import { toastError, toastSuccess } from '../components/ErrorOverlay';
 import { useNavigation } from '../nav/NavigationProvider';
 import { GitIdentityForm } from '../components/GitIdentityForm';
+import { ConfirmDeleteDialog } from '../components/ConfirmDeleteDialog';
 import { ForgePicker } from '../components/ForgePicker';
 import { useForgeHost } from '../hooks/useForgeHost';
 import { collectForgeHosts, matchesForgeHost, resolveForgeHost } from '../lib/forgeHosts';
-import type { ProjectGitOverview, WorktreeGitStatus } from '../types/gitPanel';
+import type { ProjectGitOverview, WorktreeGitStatus, WorktreePruneResult } from '../types/gitPanel';
+import type { Session } from '../types/session';
 import { FORGE_CHANGE_SHORT, FORGE_LABEL, FORGE_SIGIL, type PrComment, type ProjectPrInbox } from '../types/pullRequest';
 import styles from './GitPanel.module.css';
 
@@ -78,6 +80,51 @@ export function GitPanel() {
     }
   };
 
+  // A session's worktree opens its own terminal, started as its account. An
+  // orphan has no session to open, so it gets one first — nothing on disk
+  // moves, the session just starts pointing at the folder already there.
+  const openWorktree = async (projectId: string, wt: WorktreeGitStatus) => {
+    try {
+      let sessionId = wt.sessionId;
+      let accountId = wt.accountId;
+      if (!sessionId) {
+        const session = await invoke<Session>('adopt_worktree', { projectId, path: wt.path, accountId: null });
+        sessionId = session.id;
+        accountId = session.accountId;
+      }
+      navigate('terminals', { openFor: { kind: 'session', id: sessionId }, accountId: accountId ?? undefined });
+    } catch (e) {
+      toastError(String(e));
+    }
+  };
+
+  // Throws rather than toasting: `ConfirmDeleteDialog` shows the error in the
+  // dialog the user is still looking at.
+  const deleteWorktree = async (projectId: string, wt: WorktreeGitStatus, deleteBranch: boolean) => {
+    if (wt.sessionId) {
+      await invoke('delete_session', { sessionId: wt.sessionId });
+    } else {
+      await invoke('remove_worktree', { projectId, path: wt.path, deleteBranch });
+    }
+    await load();
+    toastSuccess(`Deleted ${wt.sessionName}`);
+  };
+
+  const [pruning, setPruning] = useState(false);
+  const pruneWorktrees = async (projectId: string) => {
+    setPruning(true);
+    try {
+      const result = await invoke<WorktreePruneResult>('prune_worktrees', { projectId });
+      await load();
+      const cleaned = result.prunedRegistrations + result.clearedSessions;
+      toastSuccess(cleaned === 0 ? 'Nothing to prune' : `Pruned ${cleaned} worktree${cleaned === 1 ? '' : 's'} whose folder was gone`);
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setPruning(false);
+    }
+  };
+
   const hostOptions = collectForgeHosts(overview);
   const activeHost = resolveForgeHost(forgeHost, hostOptions);
   const visibleProjects = overview.filter((p) => matchesForgeHost(p, activeHost));
@@ -120,7 +167,7 @@ export function GitPanel() {
           )}
           {visibleProjects.map((p) => {
             const isSel = p.projectId === selectedProjectId;
-            const activeWorktrees = p.worktrees.length;
+            const worktreeCount = p.worktrees.length;
             return (
               <button
                 key={p.projectId}
@@ -131,7 +178,7 @@ export function GitPanel() {
                 <span className={styles.spacer} />
                 {p.currentBranch && <span className={styles.branchBadge}>⑃ {p.currentBranch}</span>}
                 {p.dirty && <span className={styles.dirtyDot} title="Uncommitted changes" />}
-                {activeWorktrees > 0 && <span className={styles.countBadge}>{activeWorktrees}</span>}
+                {worktreeCount > 0 && <span className={styles.countBadge}>{worktreeCount}</span>}
               </button>
             );
           })}
@@ -161,12 +208,27 @@ export function GitPanel() {
                   here, and which credential pushes. */}
               <GitIdentityForm projectId={selected.projectId} projectName={selected.projectName} />
 
-              <span className={styles.sectionLabel}>ACTIVE WORKTREES</span>
-              {selected.worktrees.length === 0 && <span className={styles.dimText}>No active worktrees for this project.</span>}
+              <div className={styles.sectionHeader}>
+                <span className={styles.sectionLabel}>WORKTREES · {selected.worktrees.length}</span>
+                <span className={styles.spacer} />
+                {selected.worktrees.some((wt) => wt.missing) && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={pruning}
+                    onClick={() => pruneWorktrees(selected.projectId)}
+                    title="Forget worktrees whose folder is gone: git's registrations, and the path on sessions that pointed at them"
+                  >
+                    {pruning ? <Spinner label="pruning…" /> : '⌫ Prune'}
+                  </Button>
+                )}
+              </div>
+              {selected.worktrees.length === 0 && <span className={styles.dimText}>No worktrees for this project.</span>}
               {selected.worktrees.map((wt) => (
                 <WorktreeCard
-                  key={wt.sessionId}
+                  key={wt.sessionId ?? wt.path}
                   worktree={wt}
+                  defaultBranch={selected.defaultBranch}
                   busy={busyKey}
                   pendingComments={wt.linkedPr ? commentsForPr(wt.linkedPr.id) : []}
                   onFetch={() => runAction(wt.path, 'fetch', 'git_fetch')}
@@ -174,7 +236,9 @@ export function GitPanel() {
                   onPush={() => runAction(wt.path, 'push', 'git_push')}
                   onHistory={() => navigate('git-history', { path: wt.path, label: wt.sessionName })}
                   onChanges={() => navigate('changes', { path: wt.path, label: wt.sessionName })}
-                  onOpenSession={() => navigate('agent-panel', { sessionId: wt.sessionId })}
+                  onOpenSession={wt.sessionId ? () => navigate('agent-panel', { sessionId: wt.sessionId }) : undefined}
+                  onOpenTerminal={() => openWorktree(selected.projectId, wt)}
+                  onDelete={(deleteBranch) => deleteWorktree(selected.projectId, wt, deleteBranch)}
                   onOpenPr={wt.linkedPr ? () => openUrl(wt.linkedPr!.url) : undefined}
                   onOpenComments={wt.linkedPr ? () => setOpenCommentsForPr(wt.linkedPr!.id) : undefined}
                 />
@@ -221,6 +285,7 @@ function GitActions({
   onPush,
   onHistory,
   onChanges,
+  extra,
 }: {
   path: string;
   busy: BusyKey | null;
@@ -229,6 +294,8 @@ function GitActions({
   onPush: () => void;
   onHistory: () => void;
   onChanges: () => void;
+  /** Trailing buttons only some cards have — a worktree's open/delete. */
+  extra?: ReactNode;
 }) {
   const isBusy = (verb: 'fetch' | 'pull' | 'push') => busy === `${path}:${verb}`;
   const anyBusy = busy?.startsWith(`${path}:`) ?? false;
@@ -257,6 +324,7 @@ function GitActions({
       <Button size="sm" variant="outline" onClick={() => invoke('open_path_in_terminal', { path })}>
         Open in Terminal
       </Button>
+      {extra}
     </div>
   );
 }
@@ -307,6 +375,7 @@ function RepoCard({
 
 function WorktreeCard({
   worktree,
+  defaultBranch,
   busy,
   pendingComments,
   onFetch,
@@ -315,10 +384,13 @@ function WorktreeCard({
   onHistory,
   onChanges,
   onOpenSession,
+  onOpenTerminal,
+  onDelete,
   onOpenPr,
   onOpenComments,
 }: {
   worktree: WorktreeGitStatus;
+  defaultBranch: string | null;
   busy: BusyKey | null;
   pendingComments: PrComment[];
   onFetch: () => void;
@@ -326,16 +398,42 @@ function WorktreeCard({
   onPush: () => void;
   onHistory: () => void;
   onChanges: () => void;
-  onOpenSession: () => void;
+  /** Absent for an orphan: there's no session to open yet. */
+  onOpenSession?: () => void;
+  onOpenTerminal: () => void;
+  onDelete: (deleteBranch: boolean) => Promise<void>;
   onOpenPr?: () => void;
   onOpenComments?: () => void;
 }) {
+  const isOrphan = worktree.sessionId === null;
+  const deleteButton = (
+    <WorktreeDeleteButton worktree={worktree} defaultBranch={defaultBranch} isOrphan={isOrphan} onDelete={onDelete} />
+  );
   return (
-    <div className={styles.repoCard}>
+    <div className={worktree.missing ? styles.repoCardMissing : styles.repoCard}>
       <div className={styles.repoCardHeader}>
-        <button className={styles.sessionLink} onClick={onOpenSession} title="Open this session in Hangar">
-          {worktree.sessionName}
-        </button>
+        {onOpenSession ? (
+          <button className={styles.sessionLink} onClick={onOpenSession} title="Open this session in Hangar">
+            {worktree.sessionName}
+          </button>
+        ) : (
+          <span className={styles.sessionName} title={worktree.path}>
+            {worktree.sessionName}
+          </span>
+        )}
+        {isOrphan && (
+          <span
+            className={styles.orphanBadge}
+            title={
+              worktree.external
+                ? 'Git has this worktree, but it lives outside .hangar/worktrees — most likely another tool made it'
+                : 'Git has this worktree, but no Hangar session owns it — often left behind by a failed attempt'
+            }
+          >
+            {worktree.external ? 'external' : 'orphan'}
+          </span>
+        )}
+        {worktree.missing && <span className={styles.orphanBadge}>folder is gone</span>}
         {onOpenPr && (
           <button
             className={styles.prLink}
@@ -358,11 +456,87 @@ function WorktreeCard({
         )}
         <span className={styles.spacer} />
         {worktree.branch && <span className={styles.branchBadge}>⑃ {worktree.branch}</span>}
-        <AheadBehind ahead={worktree.ahead} behind={worktree.behind} />
+        {!worktree.missing && <AheadBehind ahead={worktree.ahead} behind={worktree.behind} />}
         {worktree.dirty && <span className={styles.dirtyDot} title="Uncommitted changes" />}
       </div>
-      <GitActions path={worktree.path} busy={busy} onFetch={onFetch} onPull={onPull} onPush={onPush} onHistory={onHistory} onChanges={onChanges} />
+      {worktree.missing ? (
+        // Nothing to run git in. Only the session row is left to deal with —
+        // an orphan's leftover registration is what Prune is for.
+        <div className={styles.actions}>
+          <span className={styles.dimText}>{worktree.path}</span>
+          <span className={styles.spacer} />
+          {!isOrphan && deleteButton}
+        </div>
+      ) : (
+        <GitActions
+          path={worktree.path}
+          busy={busy}
+          onFetch={onFetch}
+          onPull={onPull}
+          onPush={onPush}
+          onHistory={onHistory}
+          onChanges={onChanges}
+          extra={
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={onOpenTerminal}
+                title={isOrphan ? 'Give this worktree a session, then open its terminal' : "Open this worktree's terminal in Hangar"}
+              >
+                {isOrphan ? '⌗ Adopt & open' : '⌗ Open'}
+              </Button>
+              {deleteButton}
+            </>
+          }
+        />
+      )}
     </div>
+  );
+}
+
+/** Delete, with what would be lost said up front — uncommitted changes and
+ * commits that exist nowhere else are the two things `--force` takes silently. */
+function WorktreeDeleteButton({
+  worktree,
+  defaultBranch,
+  isOrphan,
+  onDelete,
+}: {
+  worktree: WorktreeGitStatus;
+  defaultBranch: string | null;
+  isOrphan: boolean;
+  onDelete: (deleteBranch: boolean) => Promise<void>;
+}) {
+  const [deleteBranch, setDeleteBranch] = useState(false);
+  const risks = [
+    worktree.dirty && 'it has uncommitted changes',
+    worktree.ahead > 0 && `${worktree.ahead} commit${worktree.ahead === 1 ? ' is' : 's are'} not on ${defaultBranch ? `origin/${defaultBranch}` : 'the upstream'}`,
+  ].filter(Boolean);
+  const what = isOrphan
+    ? `Removes the folder ${worktree.path}.`
+    : worktree.missing
+      ? 'Deletes the session and its conversation. Its folder is already gone.'
+      : `Deletes the session, its folder and ${worktree.branch ? `branch ${worktree.branch}` : 'its copy'}.`;
+  const description = risks.length > 0 ? `${what} Careful: ${risks.join(', and ')}.` : what;
+  return (
+    <ConfirmDeleteDialog
+      trigger={
+        <Button size="sm" variant="outline">
+          ✕ Delete
+        </Button>
+      }
+      title={`Delete ${worktree.sessionName}?`}
+      description={description}
+      onConfirm={() => onDelete(deleteBranch)}
+    >
+      {isOrphan && worktree.branch && (
+        <label className={styles.checkRow}>
+          <input type="checkbox" checked={deleteBranch} onChange={(e) => setDeleteBranch(e.target.checked)} />
+          Also delete branch <code>{worktree.branch}</code>
+        </label>
+      )}
+    </ConfirmDeleteDialog>
   );
 }
 

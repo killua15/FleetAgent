@@ -72,13 +72,13 @@ fn fetch_open_prs_for_project(conn: &Connection, project_id: &str) -> Result<Vec
 /// number back out of its `hangar/pr-<number>-review` branch name — or the
 /// pre-rename `fleet/pr-<number>-review`, since worktrees created by the old
 /// build still carry that name and must keep linking to their PR.
-fn match_linked_pr<'a>(prs: &'a [PullRequestInfo], session_id: &str, branch: Option<&str>) -> Option<&'a PullRequestInfo> {
+fn match_linked_pr<'a>(prs: &'a [PullRequestInfo], session_id: Option<&str>, branch: Option<&str>) -> Option<&'a PullRequestInfo> {
     if let Some(b) = branch {
         if let Some(pr) = prs.iter().find(|pr| pr.head_branch.as_deref() == Some(b)) {
             return Some(pr);
         }
     }
-    if let Some(pr) = prs.iter().find(|pr| pr.session_id.as_deref() == Some(session_id)) {
+    if let Some(pr) = session_id.and_then(|id| prs.iter().find(|pr| pr.session_id.as_deref() == Some(id))) {
         return Some(pr);
     }
     let branch = branch?;
@@ -94,6 +94,7 @@ fn match_linked_pr<'a>(prs: &'a [PullRequestInfo], session_id: &str, branch: Opt
 struct WorktreeRow {
     session_id: String,
     session_name: String,
+    account_id: Option<String>,
     path: String,
     branch: Option<String>,
     kind: String,
@@ -105,6 +106,54 @@ struct ProjectRow {
     path: String,
     worktrees: Vec<WorktreeRow>,
     open_prs: Vec<PullRequestInfo>,
+}
+
+/// Every worktree of one project: the ones sessions own, plus the ones only
+/// git knows about.
+///
+/// Sessions come first and keep their order. A session whose folder is gone is
+/// kept as `missing` rather than dropped — dropping it is what hid stale rows
+/// until now, with nothing to clean them up from. Orphans come from `git
+/// worktree list` minus the main worktree and minus anything a session owns.
+fn collect_worktrees(
+    project_root: &Path,
+    is_repo: bool,
+    sessions: Vec<WorktreeRow>,
+    open_prs: &[PullRequestInfo],
+    fallback_upstream: &str,
+) -> Vec<WorktreeGitStatus> {
+    use crate::commands::sessions::{list_worktree_entries, same_path, LEGACY_WORKTREES_DIR, WORKTREES_DIR};
+
+    let hangar_dirs = [project_root.join(WORKTREES_DIR).join("worktrees"), project_root.join(LEGACY_WORKTREES_DIR).join("worktrees")];
+    let is_external = |path: &str| !hangar_dirs.iter().any(|dir| Path::new(path).starts_with(dir));
+    let status = |session_id: Option<String>, account_id: Option<String>, name: String, path: String, branch: Option<String>, kind: String, missing: bool| {
+        let (ahead, behind, dirty) = if missing {
+            (0, 0, false)
+        } else {
+            let root = Path::new(&path);
+            let (ahead, behind) = ahead_behind_vs_upstream(root, fallback_upstream);
+            (ahead, behind, is_dirty(root))
+        };
+        let linked_pr = match_linked_pr(open_prs, session_id.as_deref(), branch.as_deref()).cloned();
+        let external = is_external(&path);
+        WorktreeGitStatus { session_id, session_name: name, account_id, branch, kind, path, ahead, behind, dirty, linked_pr, missing, external }
+    };
+
+    let entries = if is_repo { list_worktree_entries(project_root).unwrap_or_default() } else { Vec::new() };
+    let mut out = Vec::with_capacity(sessions.len() + entries.len());
+    for wt in &sessions {
+        let missing = !Path::new(&wt.path).is_dir();
+        out.push(status(Some(wt.session_id.clone()), wt.account_id.clone(), wt.session_name.clone(), wt.path.clone(), wt.branch.clone(), wt.kind.clone(), missing));
+    }
+    for entry in entries.into_iter().skip(1) {
+        if sessions.iter().any(|wt| same_path(&wt.path, &entry.path)) {
+            continue;
+        }
+        let name = Path::new(&entry.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| entry.path.clone());
+        let missing = entry.prunable || !Path::new(&entry.path).is_dir();
+        out.push(status(None, None, name, entry.path, entry.branch, "linked".to_string(), missing));
+    }
+    out
 }
 
 #[tauri::command]
@@ -131,13 +180,13 @@ pub async fn get_git_overview<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Proje
                 let open_prs = fetch_open_prs_for_project(&conn, &id)?;
                 let mut wt_stmt = conn
                     .prepare(
-                        "SELECT id, name, worktree_path, worktree_branch, worktree_kind
+                        "SELECT id, name, worktree_path, worktree_branch, worktree_kind, account_id
                          FROM sessions WHERE project_id = ?1 AND worktree_path IS NOT NULL ORDER BY started_at DESC",
                     )
                     .map_err(|e| e.to_string())?;
                 let worktrees = wt_stmt
                     .query_map(params![id], |row| {
-                        Ok(WorktreeRow { session_id: row.get(0)?, session_name: row.get(1)?, path: row.get(2)?, branch: row.get(3)?, kind: row.get(4)? })
+                        Ok(WorktreeRow { session_id: row.get(0)?, session_name: row.get(1)?, path: row.get(2)?, branch: row.get(3)?, kind: row.get(4)?, account_id: row.get(5)? })
                     })
                     .map_err(|e| e.to_string())?
                     .collect::<Result<Vec<_>, _>>()
@@ -170,30 +219,7 @@ pub async fn get_git_overview<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Proje
             };
 
             let fallback_upstream = default_branch.as_deref().map(|b| format!("origin/{b}")).unwrap_or_default();
-            let mut worktrees = Vec::with_capacity(row.worktrees.len());
-            for wt in row.worktrees {
-                let wt_root = Path::new(&wt.path);
-                if !wt_root.is_dir() {
-                    // Stale row (worktree removed on disk without the DB
-                    // being updated) — skip it rather than fail the whole
-                    // project's overview over one dangling entry.
-                    continue;
-                }
-                let (wt_ahead, wt_behind) = ahead_behind_vs_upstream(wt_root, &fallback_upstream);
-                let wt_dirty = is_dirty(wt_root);
-                let linked_pr = match_linked_pr(&row.open_prs, &wt.session_id, wt.branch.as_deref()).cloned();
-                worktrees.push(WorktreeGitStatus {
-                    session_id: wt.session_id,
-                    session_name: wt.session_name,
-                    branch: wt.branch,
-                    kind: wt.kind,
-                    path: wt.path,
-                    ahead: wt_ahead,
-                    behind: wt_behind,
-                    dirty: wt_dirty,
-                    linked_pr,
-                });
-            }
+            let worktrees = collect_worktrees(root, is_repo, row.worktrees, &row.open_prs, &fallback_upstream);
 
             overviews.push(ProjectGitOverview {
                 project_id: row.id,
@@ -674,6 +700,49 @@ mod tests {
         dir
     }
 
+    /// What the panel lists for one project: a session's worktree, a session
+    /// whose folder is gone (kept, marked missing — it used to vanish from
+    /// the list), and one git knows about that no session owns, made outside
+    /// `.hangar/worktrees` so it reads as another tool's.
+    #[test]
+    fn worktrees_include_orphans_and_sessions_whose_folder_is_gone() {
+        let repo = make_temp_dir("collect");
+        git_capture(&repo, &["init"]).unwrap();
+        std::fs::write(repo.join("README.md"), "hi").unwrap();
+        git_capture(&repo, &["add", "-A"]).unwrap();
+        git_capture(&repo, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "init"]).unwrap();
+
+        let owned = repo.join(".hangar/worktrees/owned");
+        std::fs::create_dir_all(owned.parent().unwrap()).unwrap();
+        git_capture(&repo, &["worktree", "add", &owned.to_string_lossy(), "-b", "owned"]).unwrap();
+        let outside = make_temp_dir("collect-outside").join("elsewhere");
+        git_capture(&repo, &["worktree", "add", &outside.to_string_lossy(), "-b", "elsewhere"]).unwrap();
+
+        let row = |id: &str, path: &Path| WorktreeRow {
+            session_id: id.to_string(),
+            session_name: id.to_string(),
+            account_id: None,
+            path: path.to_string_lossy().into_owned(),
+            branch: None,
+            kind: "linked".to_string(),
+        };
+        let sessions = vec![row("s-owned", &owned), row("s-gone", &repo.join(".hangar/worktrees/gone"))];
+        let list = collect_worktrees(&repo, true, sessions, &[], "");
+
+        assert_eq!(list.len(), 3, "{list:?}");
+        assert_eq!(list[0].session_id.as_deref(), Some("s-owned"));
+        assert!(!list[0].missing && !list[0].external);
+        assert_eq!(list[1].session_id.as_deref(), Some("s-gone"));
+        assert!(list[1].missing, "a session whose folder is gone is shown, not dropped");
+        assert_eq!(list[2].session_id, None, "a worktree no session owns is an orphan");
+        assert_eq!(list[2].session_name, "elsewhere");
+        assert_eq!(list[2].branch.as_deref(), Some("elsewhere"));
+        assert!(list[2].external);
+
+        let _ = std::fs::remove_dir_all(&repo);
+        let _ = std::fs::remove_dir_all(outside.parent().unwrap());
+    }
+
     /// The two lists have to stay apart. A file edited *now* and a file this
     /// branch changed *earlier* are different questions with different
     /// answers, and one file can be in both at once — which is exactly the
@@ -841,21 +910,21 @@ mod tests {
         let pr_review = sample_pr("pr-review", "other-session-2", None, 30);
         let prs = vec![pr_head, pr_session, pr_review];
 
-        let matched = match_linked_pr(&prs, "session-1", Some("feature/x")).unwrap();
+        let matched = match_linked_pr(&prs, Some("session-1"), Some("feature/x")).unwrap();
         assert_eq!(matched.id, "pr-head");
 
-        let matched = match_linked_pr(&prs, "session-2", Some("unrelated-branch")).unwrap();
+        let matched = match_linked_pr(&prs, Some("session-2"), Some("unrelated-branch")).unwrap();
         assert_eq!(matched.id, "pr-session");
 
-        let matched = match_linked_pr(&prs, "session-3", Some("hangar/pr-30-review")).unwrap();
+        let matched = match_linked_pr(&prs, Some("session-3"), Some("hangar/pr-30-review")).unwrap();
         assert_eq!(matched.id, "pr-review");
 
         // A worktree created before the Fleet → Hangar rename still carries
         // the old branch name and must keep linking to its PR.
-        let matched = match_linked_pr(&prs, "session-3", Some("fleet/pr-30-review")).unwrap();
+        let matched = match_linked_pr(&prs, Some("session-3"), Some("fleet/pr-30-review")).unwrap();
         assert_eq!(matched.id, "pr-review");
 
-        assert!(match_linked_pr(&prs, "session-4", Some("no-match")).is_none());
+        assert!(match_linked_pr(&prs, Some("session-4"), Some("no-match")).is_none());
     }
 
     fn sample_pr(id: &str, session_id: &str, head_branch: Option<String>, number: i64) -> PullRequestInfo {

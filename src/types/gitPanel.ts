@@ -1,11 +1,15 @@
 import type { Forge, PullRequestInfo } from './pullRequest';
 
-/** One active worktree (linked `git worktree` or copied folder) branched off
- * a project, with its live git status — matches `WorktreeGitStatus` in
- * `models.rs`. */
+/** One worktree of a project, with its live git status — a session's (linked
+ * `git worktree` or copied folder), or an orphan git lists but no session
+ * owns. Matches `WorktreeGitStatus` in `models.rs`. */
 export interface WorktreeGitStatus {
-  sessionId: string;
+  /** `null` for an orphan. */
+  sessionId: string | null;
+  /** The session's name, or the directory's for an orphan. */
   sessionName: string;
+  /** The session's account; `null` for an orphan. */
+  accountId: string | null;
   branch: string | null;
   kind: string;
   path: string;
@@ -13,6 +17,16 @@ export interface WorktreeGitStatus {
   behind: number;
   dirty: boolean;
   linkedPr: PullRequestInfo | null;
+  /** The folder is gone — no git status; prune clears it. */
+  missing: boolean;
+  /** Outside `<project>/.hangar/worktrees`, so most likely another tool's. */
+  external: boolean;
+}
+
+/** What `prune_worktrees` cleaned up. Matches `WorktreePruneResult` in `models.rs`. */
+export interface WorktreePruneResult {
+  prunedRegistrations: number;
+  clearedSessions: number;
 }
 
 /** One project's repo status in the git panel — its own root checkout plus

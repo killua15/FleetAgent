@@ -15,7 +15,6 @@ use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
 use std::path::Path;
-use std::process::Command;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use uuid::Uuid;
 

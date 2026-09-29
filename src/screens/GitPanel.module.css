@@ -195,3 +195,34 @@
   gap: 8px;
   padding: 12px 14px;
 }
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.repoCardMissing {
+  composes: repoCard;
+  opacity: 0.6;
+}
+
+.sessionName {
+  font: 500 12px var(--font-mono);
+  color: var(--mut);
+}
+
+.orphanBadge {
+  font: 500 10px var(--font-mono);
+  color: var(--dim);
+  border: 1px solid var(--line);
+  padding: 0 6px;
+  border-radius: 4px;
+}
+
+.checkRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: 400 12px var(--font-ui);
+}

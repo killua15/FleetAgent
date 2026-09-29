@@ -574,6 +574,46 @@ pub(crate) async fn create_worktree_on_branch<R: tauri::Runtime>(
     .await?
 }
 
+/// A session row that owns a worktree — what both cutting a new worktree and
+/// adopting an existing one end up writing.
+struct WorktreeSessionRow<'a> {
+    id: &'a str,
+    name: &'a str,
+    project_id: &'a str,
+    parent_session_id: Option<&'a str>,
+    worktree_path: &'a str,
+    worktree_branch: Option<&'a str>,
+    worktree_kind: &'a str,
+    account_id: &'a str,
+    model: &'a str,
+    effort: &'a str,
+    mode: &'a str,
+    started_at: &'a str,
+}
+
+fn insert_worktree_session(conn: &Connection, row: &WorktreeSessionRow) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO sessions (id, name, project_id, node_id, parent_session_id, worktree_path, worktree_branch, worktree_kind, account_id, model, effort, mode, status, pid, provider_session_id, started_at, ended_at)
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'waiting', NULL, NULL, ?12, NULL)",
+        params![
+            row.id,
+            row.name,
+            row.project_id,
+            row.parent_session_id,
+            row.worktree_path,
+            row.worktree_branch,
+            row.worktree_kind,
+            row.account_id,
+            row.model,
+            row.effort,
+            row.mode,
+            row.started_at,
+        ],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
 /// The worktree creation itself — unchanged behaviour, just no longer tied to
 /// having a parent session.
 pub(crate) fn create_worktree_session<R: tauri::Runtime>(app: &AppHandle<R>, db: &DbConnection, input: WorktreeRequest) -> Result<String, String> {
@@ -615,25 +655,23 @@ pub(crate) fn create_worktree_session<R: tauri::Runtime>(app: &AppHandle<R>, db:
         let name = if input.name.trim().is_empty() { "untitled worktree".to_string() } else { input.name.trim().to_string() };
         {
             let conn = db.0.lock().map_err(|e| e.to_string())?;
-            conn.execute(
-                "INSERT INTO sessions (id, name, project_id, node_id, parent_session_id, worktree_path, worktree_branch, worktree_kind, account_id, model, effort, mode, status, pid, provider_session_id, started_at, ended_at)
-                 VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'waiting', NULL, NULL, ?12, NULL)",
-                params![
-                    session_id,
-                    name,
-                    input.project_id,
-                    input.parent_session_id,
-                    worktree_dir.to_string_lossy().to_string(),
-                    worktree_branch,
+            insert_worktree_session(
+                &conn,
+                &WorktreeSessionRow {
+                    id: &session_id,
+                    name: &name,
+                    project_id: &input.project_id,
+                    parent_session_id: input.parent_session_id.as_deref(),
+                    worktree_path: &worktree_dir.to_string_lossy(),
+                    worktree_branch: worktree_branch.as_deref(),
                     worktree_kind,
-                    input.account_id,
-                    input.model,
-                    input.effort,
-                    input.mode,
-                    now,
-                ],
-            )
-            .map_err(|e| e.to_string())?;
+                    account_id: &input.account_id,
+                    model: &input.model,
+                    effort: &input.effort,
+                    mode: &input.mode,
+                    started_at: &now,
+                },
+            )?;
             if let Some(cmd) = &input.setup_command {
                 let _ = conn.execute("UPDATE projects SET default_setup_command = ?2 WHERE id = ?1", params![input.project_id, cmd]);
             }
@@ -957,6 +995,145 @@ pub async fn delete_session<R: tauri::Runtime>(app: AppHandle<R>, session_id: St
     .await?
 }
 
+/// Removes a worktree no session owns — the git panel's delete for an orphan.
+/// A session's worktree goes through `delete_session` instead, which also takes
+/// the session; refusing it here keeps a live session from losing its folder
+/// underneath it.
+pub(crate) fn remove_worktree_blocking(db: &DbConnection, project_id: &str, path: &str, delete_branch: bool) -> Result<(), String> {
+    let project_path = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        if session_owning_worktree(&conn, project_id, path)?.is_some() {
+            return Err("this worktree belongs to a session — delete the session instead".to_string());
+        }
+        project_path_of(&conn, project_id)?
+    };
+    let entry = secondary_worktree_entry(&project_path, path)?;
+    run_git(Path::new(&project_path), &["worktree", "remove", "--force", &entry.path])?;
+    if delete_branch {
+        if let Some(branch) = &entry.branch {
+            run_git(Path::new(&project_path), &["branch", "-D", branch])?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn remove_worktree<R: tauri::Runtime>(app: AppHandle<R>, project_id: String, path: String, delete_branch: bool) -> Result<(), String> {
+    crate::blocking::run_blocking(move || remove_worktree_blocking(&app.state::<DbConnection>(), &project_id, &path, delete_branch)).await?
+}
+
+/// Drops what points at a worktree folder that no longer exists: git's own
+/// registrations (`git worktree prune`) and sessions still pointing at one.
+///
+/// The sessions are kept, not deleted — their conversation is still worth
+/// having — and only lose the dead path, so their terminal opens in the
+/// project instead of failing on a folder that isn't there.
+pub(crate) fn prune_worktrees_blocking(db: &DbConnection, project_id: &str) -> Result<crate::models::WorktreePruneResult, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let project_path = project_path_of(&conn, project_id)?;
+
+    let pruned_registrations = if project_is_git_repo(&project_path) {
+        let prunable = list_worktree_entries(Path::new(&project_path))?.iter().filter(|e| e.prunable).count();
+        run_git(Path::new(&project_path), &["worktree", "prune"])?;
+        prunable
+    } else {
+        0
+    };
+
+    let mut stmt = conn
+        .prepare("SELECT id, worktree_path FROM sessions WHERE project_id = ?1 AND worktree_path IS NOT NULL")
+        .map_err(|e| e.to_string())?;
+    let gone: Vec<String> = stmt
+        .query_map(params![project_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .filter(|(_, path)| !Path::new(path).exists())
+        .map(|(id, _)| id)
+        .collect();
+    drop(stmt);
+    for id in &gone {
+        conn.execute("UPDATE sessions SET worktree_path = NULL, worktree_branch = NULL, worktree_kind = NULL WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(crate::models::WorktreePruneResult { pruned_registrations, cleared_sessions: gone.len() })
+}
+
+#[tauri::command]
+pub async fn prune_worktrees<R: tauri::Runtime>(app: AppHandle<R>, project_id: String) -> Result<crate::models::WorktreePruneResult, String> {
+    crate::blocking::run_blocking(move || prune_worktrees_blocking(&app.state::<DbConnection>(), &project_id)).await?
+}
+
+/// Gives an orphan worktree a session, so a terminal or an agent can be opened
+/// on it like on any worktree Hangar cut itself. Nothing on disk moves: the
+/// session just starts pointing at the folder that is already there.
+pub(crate) fn adopt_worktree_blocking<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    db: &DbConnection,
+    project_id: &str,
+    path: &str,
+    account_id: Option<&str>,
+) -> Result<Session, String> {
+    let (project_path, model, account_id) = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        // No account named: whichever last worked in this project, else any —
+        // an orphan has no history to say whose it was.
+        let account_id: String = match account_id {
+            Some(id) => conn.query_row("SELECT id FROM accounts WHERE id = ?1", params![id], |row| row.get(0)),
+            None => conn
+                .query_row("SELECT account_id FROM sessions WHERE project_id = ?1 ORDER BY started_at DESC LIMIT 1", params![project_id], |row| row.get(0))
+                .or_else(|_| conn.query_row("SELECT id FROM accounts ORDER BY created_at ASC LIMIT 1", [], |row| row.get(0))),
+        }
+        .map_err(|e| format!("account lookup failed: {e}"))?;
+        if session_owning_worktree(&conn, project_id, path)?.is_some() {
+            return Err("this worktree already belongs to a session".to_string());
+        }
+        let model: String = conn
+            .query_row("SELECT model FROM sessions WHERE project_id = ?1 ORDER BY started_at DESC LIMIT 1", params![project_id], |row| row.get(0))
+            .unwrap_or_default();
+        (project_path_of(&conn, project_id)?, model, account_id)
+    };
+    let entry = secondary_worktree_entry(&project_path, path)?;
+    if entry.prunable || !Path::new(&entry.path).is_dir() {
+        return Err(format!("{} no longer exists on disk — prune it instead", entry.path));
+    }
+
+    let session_id = Uuid::new_v4().to_string();
+    let name = Path::new(&entry.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "adopted worktree".to_string());
+    {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        insert_worktree_session(
+            &conn,
+            &WorktreeSessionRow {
+                id: &session_id,
+                name: &name,
+                project_id,
+                parent_session_id: None,
+                worktree_path: &entry.path,
+                worktree_branch: entry.branch.as_deref(),
+                worktree_kind: "linked",
+                account_id: &account_id,
+                model: &model,
+                effort: TERMINAL_WORKTREE_EFFORT,
+                mode: TERMINAL_WORKTREE_MODE,
+                started_at: &Utc::now().to_rfc3339(),
+            },
+        )?;
+    }
+    crate::git_identity::apply_identity_to_worktree(app, project_id, Path::new(&entry.path));
+
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    conn.query_row("SELECT * FROM sessions WHERE id = ?1", params![session_id], row_to_session).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn adopt_worktree<R: tauri::Runtime>(app: AppHandle<R>, project_id: String, path: String, account_id: Option<String>) -> Result<Session, String> {
+    crate::blocking::run_blocking(move || {
+        let db = app.state::<DbConnection>();
+        adopt_worktree_blocking(&app, &db, &project_id, &path, account_id.as_deref())
+    })
+    .await?
+}
+
 #[tauri::command]
 pub fn list_session_blocks(db: State<DbConnection>, session_id: String) -> Result<Vec<SessionBlock>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
@@ -1267,26 +1444,92 @@ pub struct BranchAvailability {
     pub checked_out_at: Option<String>,
 }
 
-/// Parses `git worktree list --porcelain` into (path, branch) pairs.
+/// One block of `git worktree list --porcelain`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct WorktreeEntry {
+    pub path: String,
+    /// `None` when the worktree is on a detached HEAD.
+    pub branch: Option<String>,
+    /// Git's own verdict that the directory is gone and the registration is
+    /// only waiting for `git worktree prune`.
+    pub prunable: bool,
+}
+
+/// Parses `git worktree list --porcelain` into its blocks, main worktree first.
 ///
 /// Pure, because the format is the whole risk: the porcelain output puts each
 /// worktree in a block of `worktree <path>` / `HEAD <sha>` / `branch
 /// refs/heads/<name>`, with detached ones simply missing the branch line — and
 /// a parser that assumed a fixed shape would silently mis-attribute branches.
-pub(crate) fn parse_worktree_list(output: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let mut path: Option<String> = None;
+pub(crate) fn parse_worktree_entries(output: &str) -> Vec<WorktreeEntry> {
+    let mut out: Vec<WorktreeEntry> = Vec::new();
     for line in output.lines() {
         if let Some(rest) = line.strip_prefix("worktree ") {
-            path = Some(rest.trim().to_string());
-        } else if let Some(rest) = line.strip_prefix("branch ") {
-            let branch = rest.trim().strip_prefix("refs/heads/").unwrap_or(rest.trim()).to_string();
-            if let Some(path) = path.clone() {
-                out.push((path, branch));
+            out.push(WorktreeEntry { path: rest.trim().to_string(), branch: None, prunable: false });
+        } else if let Some(entry) = out.last_mut() {
+            if let Some(rest) = line.strip_prefix("branch ") {
+                entry.branch = Some(rest.trim().strip_prefix("refs/heads/").unwrap_or(rest.trim()).to_string());
+            } else if line == "prunable" || line.starts_with("prunable ") {
+                entry.prunable = true;
             }
         }
     }
     out
+}
+
+/// (path, branch) for every worktree that has a branch — what the branch
+/// lookups need, detached ones left out.
+pub(crate) fn parse_worktree_list(output: &str) -> Vec<(String, String)> {
+    parse_worktree_entries(output).into_iter().filter_map(|e| Some((e.path, e.branch?))).collect()
+}
+
+/// The project's worktrees as git sees them, main worktree first.
+pub(crate) fn list_worktree_entries(project_path: &Path) -> Result<Vec<WorktreeEntry>, String> {
+    crate::commands::pull_requests::git_capture(project_path, &["worktree", "list", "--porcelain"]).map(|out| parse_worktree_entries(&out))
+}
+
+/// Whether two paths name the same directory. Canonicalized when they exist,
+/// because git reports `/private/tmp/...` for a `/tmp/...` it was given, and
+/// a plain string compare would call the same worktree two different ones.
+pub(crate) fn same_path(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// The entry for `path` among the project's worktrees — but never the main
+/// one. Every action on a worktree goes through here, so what the panel is
+/// allowed to delete or adopt is decided by git's own list, not by whatever
+/// path the frontend sent.
+fn secondary_worktree_entry(project_path: &str, path: &str) -> Result<WorktreeEntry, String> {
+    let entries = list_worktree_entries(Path::new(project_path))?;
+    entries
+        .into_iter()
+        .skip(1)
+        .find(|e| same_path(&e.path, path))
+        .ok_or_else(|| format!("{path} isn't one of this project's worktrees"))
+}
+
+/// The session that owns the worktree at `path`, if any.
+fn session_owning_worktree(conn: &Connection, project_id: &str, path: &str) -> Result<Option<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, worktree_path FROM sessions WHERE project_id = ?1 AND worktree_path IS NOT NULL")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![project_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().find(|(_, p)| same_path(p, path)).map(|(id, _)| id))
+}
+
+fn project_path_of(conn: &Connection, project_id: &str) -> Result<String, String> {
+    conn.query_row("SELECT path FROM projects WHERE id = ?1", params![project_id], |row| row.get(0))
+        .map_err(|e| format!("project lookup failed: {e}"))
 }
 
 /// Whether a branch can be checked out into a new worktree, and if not, why.
@@ -1728,6 +1971,70 @@ mod subsession_tests {
         let output = "worktree /repo\nHEAD abc123\nbranch refs/heads/main\n\nworktree /repo/.hangar/worktrees/t2\nHEAD def456\nbranch refs/heads/T2\n\nworktree /repo/.hangar/worktrees/loose\nHEAD 999\ndetached\n";
         let parsed = parse_worktree_list(output);
         assert_eq!(parsed, vec![("/repo".to_string(), "main".to_string()), ("/repo/.hangar/worktrees/t2".to_string(), "T2".to_string())]);
+    }
+
+    /// Detached and prunable entries are what the git panel's orphan list is
+    /// made of — the first has no branch to show, the second no folder.
+    #[test]
+    fn worktree_entries_keep_detached_and_prunable_ones() {
+        let output = "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\nworktree /repo/.hangar/worktrees/loose\nHEAD 999\ndetached\n\nworktree /gone\nHEAD 111\nbranch refs/heads/old\nprunable gitdir file points to non-existent location\n";
+        let entries = parse_worktree_entries(output);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[1], WorktreeEntry { path: "/repo/.hangar/worktrees/loose".to_string(), branch: None, prunable: false });
+        assert_eq!(entries[2], WorktreeEntry { path: "/gone".to_string(), branch: Some("old".to_string()), prunable: true });
+    }
+
+    /// The git panel's three actions against a real repo: an orphan can be
+    /// adopted, removed with or without its branch, and a session whose folder
+    /// vanished is pointed back at the project by prune without being deleted.
+    /// The main worktree is never a valid target.
+    #[test]
+    fn orphan_worktrees_can_be_adopted_removed_and_pruned() {
+        let project_dir = make_temp_dir("worktree-manage");
+        run_git(&project_dir, &["init"]).unwrap();
+        std::fs::write(project_dir.join("README.md"), "hi").unwrap();
+        run_git(&project_dir, &["add", "-A"]).unwrap();
+        run_git(&project_dir, &["commit", "-m", "init"]).unwrap();
+        let project_path = project_dir.to_str().unwrap().to_string();
+        let (app, account_id, project_id) = setup_test_app_with_account_and_project(&project_path);
+        let db = app.state::<DbConnection>();
+
+        let wt = |name: &str| project_dir.join(".hangar/worktrees").join(name);
+        for name in ["keep", "drop", "adopt"] {
+            std::fs::create_dir_all(wt(name).parent().unwrap()).unwrap();
+            run_git(&project_dir, &["worktree", "add", &wt(name).to_string_lossy(), "-b", name]).unwrap();
+        }
+        let branch_exists = |name: &str| run_git(&project_dir, &["rev-parse", "--verify", &format!("refs/heads/{name}")]).is_ok();
+
+        let main_refused = remove_worktree_blocking(&db, &project_id, &project_path, false);
+        assert!(main_refused.is_err(), "the main worktree must never be removable from here");
+        assert!(remove_worktree_blocking(&db, &project_id, "/not/a/worktree", false).is_err());
+
+        remove_worktree_blocking(&db, &project_id, &wt("keep").to_string_lossy(), false).unwrap();
+        assert!(!wt("keep").exists());
+        assert!(branch_exists("keep"), "without delete_branch the branch stays");
+        remove_worktree_blocking(&db, &project_id, &wt("drop").to_string_lossy(), true).unwrap();
+        assert!(!branch_exists("drop"));
+
+        let session = adopt_worktree_blocking(app.handle(), &db, &project_id, &wt("adopt").to_string_lossy(), None).unwrap();
+        assert_eq!(session.account_id, account_id, "with no account named, the project's last one is used");
+        assert_eq!(session.name, "adopt");
+        assert!(
+            remove_worktree_blocking(&db, &project_id, &wt("adopt").to_string_lossy(), false).is_err(),
+            "a session's worktree goes through delete_session, not here"
+        );
+        assert!(adopt_worktree_blocking(app.handle(), &db, &project_id, &wt("adopt").to_string_lossy(), Some(&account_id)).is_err(), "adopting twice must fail");
+
+        std::fs::remove_dir_all(wt("adopt")).unwrap();
+        let result = prune_worktrees_blocking(&db, &project_id).unwrap();
+        assert_eq!(result.pruned_registrations, 1);
+        assert_eq!(result.cleared_sessions, 1);
+        let conn = db.0.lock().unwrap();
+        let path: Option<String> = conn.query_row("SELECT worktree_path FROM sessions WHERE id = ?1", params![session.id], |r| r.get(0)).unwrap();
+        assert_eq!(path, None, "the session is kept, only its dead path goes");
+        drop(conn);
+
+        let _ = std::fs::remove_dir_all(&project_dir);
     }
 
     /// The case that decides the whole task flow: a branch already checked out

@@ -450,14 +450,21 @@ pub struct ProjectPrInbox {
     pub entries: Vec<PrInboxEntry>,
 }
 
-/// One active worktree (a subsession branched off a project via a real `git
-/// worktree`, or a copied folder with its own fresh git init) shown in the
-/// git panel, with its live git status — computed on demand, not cached.
+/// One worktree of a project shown in the git panel, with its live git status
+/// — computed on demand, not cached. Usually a subsession's (a real `git
+/// worktree`, or a copied folder with its own fresh git init), but also one git
+/// knows about that no session owns: debris from a failed `worktree add`, or
+/// one another tool made.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeGitStatus {
-    pub session_id: String,
+    /// `None` for an orphan — a worktree git lists but no session owns.
+    pub session_id: Option<String>,
+    /// The session's name, or the directory's for an orphan.
     pub session_name: String,
+    /// The session's account — what its terminal starts the CLI as. `None`
+    /// for an orphan.
+    pub account_id: Option<String>,
     pub branch: Option<String>,
     pub kind: String,
     pub path: String,
@@ -468,6 +475,21 @@ pub struct WorktreeGitStatus {
     /// lets the git panel surface "Send to agent" review comments right
     /// next to the worktree they belong to.
     pub linked_pr: Option<PullRequestInfo>,
+    /// The directory is gone: a session still points at it, or git still has
+    /// it registered. No git status is computed for it; prune clears it.
+    pub missing: bool,
+    /// Outside `<project>/.hangar/worktrees`, so most likely another tool's.
+    pub external: bool,
+}
+
+/// What `prune_worktrees` cleaned up, for the toast that reports it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreePruneResult {
+    /// Registrations git dropped because their directory was gone.
+    pub pruned_registrations: usize,
+    /// Sessions whose worktree folder was gone, now pointed back at the project.
+    pub cleared_sessions: usize,
 }
 
 /// One project's repo status in the git panel: its own root checkout plus
