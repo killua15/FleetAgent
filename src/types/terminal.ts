@@ -38,6 +38,23 @@ export interface TerminalInfo {
   /** A name the user typed for this panel, which wins over `title`. Persisted,
    * so it survives a restart — a name that vanished would be worse than none. */
   displayName: string | null;
+  /** Continues on its own once its usage limit resets — the user's per-panel
+   * choice. Changing it relaunches the CLI, so the panel gets a new terminal. */
+  autoContinue: boolean;
+}
+
+/** A terminal's auto-continue state, from `list_auto_continue` and the
+ * `terminal-auto-continue` event. */
+export interface AutoContinueStatus {
+  id: string;
+  enabled: boolean;
+  /** When Hangar will type the continuation itself — only in the cases Claude
+   * Code won't (a reset over a day out, or a relaunch mid-wait). */
+  resumeAt: string | null;
+  /** `resumeAt` is a retry: no reset time was reported to take it from. */
+  estimated: boolean;
+  /** Changed mid-turn; applied (CLI relaunched) when the turn ends. */
+  pendingRelaunch: boolean;
 }
 
 /** The account the out-of-quota banner offers to reopen a terminal under. */

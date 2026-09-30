@@ -139,6 +139,10 @@ pub struct TerminalInfo {
     /// because restore reopens every terminal with a new id and anything keyed
     /// by the old one is already stale.
     pub minimized: bool,
+    /// Continues on its own once its usage limit resets — the user's per-panel
+    /// choice (`auto_continue.rs`). Decides the `--settings` its CLI started
+    /// with, so changing it relaunches the CLI.
+    pub auto_continue: bool,
 }
 
 /// What a terminal's agent is doing, as far as Hangar can tell from the
@@ -268,6 +272,7 @@ struct TerminalHandle {
     /// ones: a session-backed terminal's PTY still exists underneath
     /// `send_message`, it just has no mobile screen wired to read this today.
     mobile_tail: Arc<Mutex<crate::bridge::redact::PtyTail>>,
+    auto: Arc<Mutex<AutoContinue>>,
     info: TerminalInfo,
 }
 
@@ -286,6 +291,75 @@ struct Activity {
 impl Activity {
     fn new() -> Self {
         Activity { state: TerminalState::Idle, last_output: Instant::now(), title: None }
+    }
+}
+
+/// A terminal's auto-continue state (see `auto_continue.rs`), shared by the
+/// reader thread that notices Claude Code giving up, the keystroke path that
+/// cancels on the user's own input, and the tick that types the prompt.
+#[derive(Debug, Default)]
+struct AutoContinue {
+    enabled: bool,
+    /// When Hangar will type the continuation. Only ever set in the two cases
+    /// Claude Code declines to wait itself.
+    resume_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// `resume_at` is a retry, not the reported reset: there was no
+    /// `rate_limits` reading to take the time from.
+    estimated: bool,
+    /// The check changed mid-turn; the CLI is relaunched with the new
+    /// `--settings` once the turn ends rather than cut off.
+    pending_relaunch: bool,
+    /// Recent plain text, so a phrase split across two reads is still seen.
+    recent: String,
+}
+
+/// With no reset time to go on, try again after this long. The prompt either
+/// runs or meets the limit again, and then Claude Code says so and this re-arms.
+const AUTO_CONTINUE_RETRY: chrono::Duration = chrono::Duration::minutes(30);
+
+/// Never sooner than this after arming, however stale the reading: a reset
+/// time already in the past would otherwise fire on the next tick, into a
+/// limit that may not have lifted.
+const AUTO_CONTINUE_MIN_WAIT: chrono::Duration = chrono::Duration::minutes(2);
+
+/// What the pane shows about a terminal's auto-continue.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoContinueStatus {
+    pub id: String,
+    pub enabled: bool,
+    pub resume_at: Option<String>,
+    pub estimated: bool,
+    pub pending_relaunch: bool,
+}
+
+fn auto_status(id: &str, auto: &AutoContinue) -> AutoContinueStatus {
+    AutoContinueStatus {
+        id: id.to_string(),
+        enabled: auto.enabled,
+        resume_at: auto.resume_at.map(|t| t.to_rfc3339()),
+        estimated: auto.estimated,
+        pending_relaunch: auto.pending_relaunch,
+    }
+}
+
+fn emit_auto<R: Runtime>(app: &AppHandle<R>, id: &str, auto: &AutoContinue) {
+    let _ = app.emit("terminal-auto-continue", auto_status(id, auto));
+}
+
+/// When to type the continuation for an account whose CLI just gave up: the
+/// reported reset plus jitter, never sooner than `AUTO_CONTINUE_MIN_WAIT`, and a
+/// plain retry when nothing was reported. Returns the time and whether it's the
+/// estimated kind.
+fn arm_time(root: Option<&std::path::Path>, account_id: Option<&str>) -> (chrono::DateTime<chrono::Utc>, bool) {
+    let now = chrono::Utc::now();
+    let reported = root
+        .zip(account_id)
+        .and_then(|(root, account)| crate::auto_continue::latest_rate_limits(root, account))
+        .and_then(|limits| crate::auto_continue::resume_at(&limits, crate::auto_continue::random_jitter()));
+    match reported {
+        Some(at) => (at.max(now + AUTO_CONTINUE_MIN_WAIT), false),
+        None => (now + AUTO_CONTINUE_RETRY, true),
     }
 }
 
@@ -637,7 +711,7 @@ pub(crate) fn account_command_line_with_mode(
     prompt: Option<&str>,
     mode: Option<crate::providers::Mode>,
 ) -> Result<String, String> {
-    account_command_line_full(account, init, session_uuid, prompt, mode, None, None, None, &[], &[])
+    account_command_line_full(account, init, session_uuid, prompt, mode, None, None, None, &[], &[], None)
 }
 
 /// Everything Hangar adds to a terminal beyond the command itself: the user's
@@ -668,6 +742,10 @@ pub(crate) struct TerminalContext {
     /// the app data directory are both known, rather than derived from a path
     /// inside the command-line builder.
     pub skill_env: Vec<(String, String)>,
+    /// This terminal's `--settings` file (`auto_continue::write_terminal_settings`):
+    /// whether Claude Code waits out a usage limit here, and the status line
+    /// that reports the reset time. `None` outside a claude account terminal.
+    pub settings_file: Option<std::path::PathBuf>,
 }
 
 /// Igual, más el fichero de preferencias del usuario (idioma de la conversación
@@ -688,6 +766,7 @@ pub(crate) fn account_command_line_full(
     graph_mcp: Option<&std::path::Path>,
     sibling_dirs: &[std::path::PathBuf],
     skill_env: &[(String, String)],
+    settings_file: Option<&std::path::Path>,
 ) -> Result<String, String> {
     let spec = crate::providers::spec(&account.provider).ok_or_else(|| format!("unknown provider '{}'", account.provider))?;
     let binary = spec.binary;
@@ -774,6 +853,14 @@ pub(crate) fn account_command_line_full(
         (_, None) => String::new(),
     };
 
+    // Claude Code only (`--settings` is its flag; Kimi runs the same binary),
+    // and never for a login, which starts no session to wait in.
+    let settings: String = match (init, settings_file) {
+        (InitCommand::Login, _) => String::new(),
+        (_, Some(file)) if binary == "claude" => format!(" --settings {}", shell_path(&file.to_string_lossy())),
+        _ => String::new(),
+    };
+
     let args = match init {
         InitCommand::Start => match (spec.session, session_uuid) {
             // Hangar owns the id so it can locate this exact transcript later.
@@ -809,7 +896,7 @@ pub(crate) fn account_command_line_full(
         },
     };
     Ok(format!(
-        "{}={config} {extra}{silenced}{binary}{permissions}{instructions}{skills}{siblings}{graph}{args}",
+        "{}={config} {extra}{silenced}{binary}{permissions}{instructions}{skills}{siblings}{graph}{settings}{args}",
         spec.config_dir_env
     ))
 }
@@ -862,6 +949,7 @@ pub(crate) fn terminal_script_full(
             context.graph_mcp.as_deref(),
             &context.sibling_dirs,
             &context.skill_env,
+            context.settings_file.as_deref(),
         )?
     ))
 }
@@ -981,7 +1069,25 @@ pub(crate) fn open_terminal_blocking<R: Runtime>(
     cols: u16,
     rows: u16,
 ) -> Result<TerminalInfo, String> {
-    let (cwd, title, account, context) = {
+    open_terminal_with(app, target, account_id, init, session_uuid, init_prompt, cols, rows, false)
+}
+
+/// `open_terminal_blocking` plus the per-terminal auto-continue choice, which
+/// only a restore and a relaunch have to carry: a new terminal starts with it
+/// off.
+#[allow(clippy::too_many_arguments)]
+fn open_terminal_with<R: Runtime>(
+    app: AppHandle<R>,
+    target: TerminalTarget,
+    account_id: Option<String>,
+    init: Option<InitCommand>,
+    session_uuid: Option<String>,
+    init_prompt: Option<String>,
+    cols: u16,
+    rows: u16,
+    auto_continue: bool,
+) -> Result<TerminalInfo, String> {
+    let (cwd, title, account, mut context) = {
         let db = app.state::<DbConnection>();
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let (cwd, title, project_id) = resolve_target_with_project(&conn, &target)?;
@@ -1039,7 +1145,7 @@ pub(crate) fn open_terminal_blocking<R: Runtime>(
             }
             _ => Vec::new(),
         };
-        (cwd, title, account, TerminalContext { instructions, skills_dir, graph_mcp, sibling_dirs, skill_env })
+        (cwd, title, account, TerminalContext { instructions, skills_dir, graph_mcp, sibling_dirs, skill_env, settings_file: None })
     };
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(format!("{cwd} no longer exists on disk — the worktree may have been removed"));
@@ -1061,6 +1167,22 @@ pub(crate) fn open_terminal_blocking<R: Runtime>(
         (Some(_), Some(InitCommand::Resume)) if mintable => Some(session_uuid.ok_or("resuming a terminal needs a session id")?),
         _ => None,
     };
+
+    // Minted before the command line, because the command names this
+    // terminal's own `--settings` file.
+    let id = Uuid::new_v4().to_string();
+    let status_root = crate::app_data::root(&app).ok();
+    if let (Some(account), Some(InitCommand::Start | InitCommand::Resume)) = (&account, init) {
+        let is_claude = crate::providers::spec(&account.provider).is_some_and(|s| s.binary == "claude");
+        if let (true, Some(root)) = (is_claude, status_root.as_ref()) {
+            match crate::auto_continue::write_terminal_settings(root, &id, auto_continue, std::path::Path::new(&account.config_dir_path)) {
+                Ok(path) => context.settings_file = Some(path),
+                // Without it Claude Code falls back to its own default (wait
+                // on) — worth a log line, not a terminal that won't open.
+                Err(e) => log::warn!("open_terminal: could not write the terminal's settings — {e}"),
+            }
+        }
+    }
 
     // Resolve the command before spawning anything: a missing CLI should
     // surface as an error the user can act on, not as a terminal that opens
@@ -1103,6 +1225,10 @@ pub(crate) fn open_terminal_blocking<R: Runtime>(
             account_vars.extend(crate::git_identity::git_env_for_project(&app, &project_id));
         }
     }
+    // Where the status line wrapper files this account's reset times.
+    if let Some(id) = &account_id {
+        account_vars.push((crate::auto_continue::STATUS_KEY_ENV.to_string(), id.clone()));
+    }
     let account_name = account.as_ref().map(|a| a.name.clone());
 
     let pty = native_pty_system();
@@ -1138,7 +1264,6 @@ pub(crate) fn open_terminal_blocking<R: Runtime>(
     // pulsaciones que compitieran por un candado podrían llegar cambiadas.
     let (writes, incoming) = std::sync::mpsc::sync_channel::<Vec<u8>>(WRITE_QUEUE_DEPTH);
 
-    let id = Uuid::new_v4().to_string();
     {
         let id = id.clone();
         std::thread::spawn(move || {
@@ -1167,18 +1292,23 @@ pub(crate) fn open_terminal_blocking<R: Runtime>(
         // A fresh terminal has no name of its own; `restore_terminals` puts back
         // the one the user typed before, via `rename_terminal`.
         display_name: None,
+        auto_continue,
     };
 
     let scrollback = Arc::new(Mutex::new(VecDeque::new()));
     let sink: Arc<Mutex<Option<TerminalSink>>> = Arc::new(Mutex::new(None));
     let activity = Arc::new(Mutex::new(Activity::new()));
     let mobile_tail = Arc::new(Mutex::new(crate::bridge::redact::PtyTail::new(rows.max(1), cols.max(1))));
+    let auto = Arc::new(Mutex::new(AutoContinue { enabled: auto_continue, ..AutoContinue::default() }));
 
     {
         let scrollback = scrollback.clone();
         let sink = sink.clone();
         let activity = activity.clone();
         let mobile_tail = mobile_tail.clone();
+        let auto = auto.clone();
+        let status_root = status_root.clone();
+        let status_account = account_id.clone();
         let id = id.clone();
         let app_for_reader = app.clone();
         std::thread::spawn(move || {
@@ -1232,6 +1362,26 @@ pub(crate) fn open_terminal_blocking<R: Runtime>(
                         // throttles the emit, this just keeps the buffer current.
                         if let Ok(mut tail) = mobile_tail.lock() {
                             tail.ingest(chunk);
+                        }
+                        // Claude Code saying it won't wait out this limit — one of
+                        // the two gaps Hangar covers, and only where the user asked.
+                        if let Ok(mut auto) = auto.lock() {
+                            if auto.enabled {
+                                auto.recent.push_str(&crate::auto_continue::plain_text(chunk));
+                                if auto.recent.len() > 4096 {
+                                    let keep_from = auto.recent.len() - 2048;
+                                    let start = auto.recent.char_indices().map(|(i, _)| i).find(|&i| i >= keep_from).unwrap_or(0);
+                                    auto.recent = auto.recent[start..].to_string();
+                                }
+                                if crate::auto_continue::native_gave_up(&auto.recent) {
+                                    auto.recent.clear();
+                                    let (at, estimated) = arm_time(status_root.as_deref(), status_account.as_deref());
+                                    auto.resume_at = Some(at);
+                                    auto.estimated = estimated;
+                                    log::info!("terminal {id}: Claude Code won't wait out this limit — Hangar continues it at {at}");
+                                    emit_auto(&app_for_reader, &id, &auto);
+                                }
+                            }
                         }
                     }
                     Err(_) => break,
@@ -1295,7 +1445,7 @@ pub(crate) fn open_terminal_blocking<R: Runtime>(
         .0
         .lock()
         .map_err(|e| e.to_string())?
-        .insert(id.clone(), TerminalHandle { master: pair.master, writes, child, scrollback, sink, activity, mobile_tail, info: info.clone() });
+        .insert(id.clone(), TerminalHandle { master: pair.master, writes, child, scrollback, sink, activity, mobile_tail, auto, info: info.clone() });
 
     // Mirror the terminal to disk so it can be reopened next launch. Only a
     // registered terminal is persisted, so this can't outlive the shell.
@@ -1324,9 +1474,9 @@ fn persist_terminal<R: Runtime>(app: &AppHandle<R>, info: &TerminalInfo) {
         TargetKind::Session => "session",
     };
     if let Err(e) = conn.execute(
-        "INSERT OR REPLACE INTO open_terminals (id, target_kind, source_id, account_id, session_uuid, display_name, minimized, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        rusqlite::params![info.id, kind, info.source_id, info.account_id, info.session_uuid, info.display_name, info.minimized, chrono::Utc::now().to_rfc3339()],
+        "INSERT OR REPLACE INTO open_terminals (id, target_kind, source_id, account_id, session_uuid, display_name, minimized, auto_continue, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![info.id, kind, info.source_id, info.account_id, info.session_uuid, info.display_name, info.minimized, info.auto_continue, chrono::Utc::now().to_rfc3339()],
     ) {
         log::warn!("persist_terminal: {e}");
     }
@@ -1388,11 +1538,21 @@ pub fn detach_terminal<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), 
 /// la forma que congelaba la app entera cuando el hijo dejaba de leer.
 #[tauri::command]
 pub fn write_terminal<R: Runtime>(app: AppHandle<R>, id: String, data: String) -> Result<(), String> {
-    let writes = {
+    let (writes, auto) = {
         let registry = app.state::<TerminalRegistry>();
         let map = registry.0.lock().map_err(|e| e.to_string())?;
-        map.get(&id).ok_or_else(|| format!("no terminal with id {id}"))?.writes.clone()
+        let handle = map.get(&id).ok_or_else(|| format!("no terminal with id {id}"))?;
+        (handle.writes.clone(), handle.auto.clone())
     };
+    // The user took over: whatever they typed is the next move, not ours.
+    if crate::auto_continue::is_user_input(&data) {
+        if let Ok(mut auto) = auto.lock() {
+            if auto.resume_at.take().is_some() {
+                log::info!("terminal {id}: auto-continue cancelled — the user typed first");
+                emit_auto(&app, &id, &auto);
+            }
+        }
+    }
     match writes.try_send(data.into_bytes()) {
         Ok(()) => Ok(()),
         Err(std::sync::mpsc::TrySendError::Full(_)) => {
@@ -1440,6 +1600,9 @@ pub fn close_terminal<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), S
     // NOT come back next launch. (`kill_all` on app exit deliberately skips
     // this, which is exactly what distinguishes "forget" from "remember".)
     forget_terminal(&app, &id);
+    if let Ok(root) = crate::app_data::root(&app) {
+        crate::auto_continue::forget_terminal(&root, &id);
+    }
     Ok(())
 }
 
@@ -1459,6 +1622,7 @@ struct PersistedTerminal {
     session_uuid: Option<String>,
     display_name: Option<String>,
     minimized: bool,
+    auto_continue: bool,
 }
 
 /// Reopens the terminals that were open when Hangar last closed — the first
@@ -1493,7 +1657,7 @@ fn restore_terminals_blocking<R: Runtime>(app: AppHandle<R>, cols: u16, rows: u1
         let db = app.state::<DbConnection>();
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT target_kind, source_id, account_id, session_uuid, display_name, minimized FROM open_terminals ORDER BY created_at ASC")
+            .prepare("SELECT target_kind, source_id, account_id, session_uuid, display_name, minimized, auto_continue FROM open_terminals ORDER BY created_at ASC")
             .map_err(|e| e.to_string())?;
         let collected: Vec<PersistedTerminal> = stmt
             .query_map([], |r| {
@@ -1504,6 +1668,7 @@ fn restore_terminals_blocking<R: Runtime>(app: AppHandle<R>, cols: u16, rows: u1
                     session_uuid: r.get(3)?,
                     display_name: r.get(4)?,
                     minimized: r.get::<_, i64>(5)? != 0,
+                    auto_continue: r.get::<_, i64>(6)? != 0,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -1522,7 +1687,9 @@ fn restore_terminals_blocking<R: Runtime>(app: AppHandle<R>, cols: u16, rows: u1
         };
         let (init, session_uuid) = decide_restore_init(&app, &row);
         let target = TerminalTarget { kind, id: row.source_id.clone() };
-        match open_terminal_blocking(app.clone(), target, row.account_id.clone(), init, session_uuid, None, cols, rows) {
+        // The choice comes back with the panel: a restart is exactly when Claude
+        // Code's own wait is lost, so this is when it matters most.
+        match open_terminal_with(app.clone(), target, row.account_id.clone(), init, session_uuid, None, cols, rows, row.auto_continue) {
             Ok(mut info) => {
                 // The name the user gave this panel is part of what "restore"
                 // means — without it, three panels on one project come back
@@ -1929,6 +2096,7 @@ pub fn list_terminal_states<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Termina
 pub fn tick_terminal_states<R: Runtime>(app: &AppHandle<R>) {
     let Some(registry) = app.try_state::<TerminalRegistry>() else { return };
     let mut newly_waiting = Vec::new();
+    let mut to_relaunch: Vec<String> = Vec::new();
     {
         let Ok(map) = registry.0.lock() else { return };
         for (id, handle) in map.iter() {
@@ -1936,8 +2104,22 @@ pub fn tick_terminal_states<R: Runtime>(app: &AppHandle<R>) {
             if act.state == TerminalState::Working && act.last_output.elapsed() >= QUIET_BEFORE_WAITING {
                 act.state = TerminalState::Waiting;
                 newly_waiting.push((id.clone(), handle.info.title.clone(), act.title.clone(), handle.info.clone()));
+                if handle.auto.lock().map(|a| a.pending_relaunch).unwrap_or(false) {
+                    to_relaunch.push(id.clone());
+                }
             }
         }
+    }
+
+    // An auto-continue change made mid-turn, applied now that the turn is over.
+    for id in to_relaunch {
+        let app = app.clone();
+        std::thread::spawn(move || match relaunch_terminal(&app, &id) {
+            Ok(info) => {
+                let _ = app.emit("terminal-replaced", TerminalReplaced { old_id: id, info });
+            }
+            Err(e) => log::warn!("terminal {id}: could not relaunch with the new auto-continue setting: {e}"),
+        });
     }
 
     for (id, panel_title, agent_title, info) in newly_waiting {
@@ -1958,6 +2140,127 @@ pub fn tick_terminal_states<R: Runtime>(app: &AppHandle<R>) {
             &agent_title.unwrap_or_else(|| format!("{panel_title} finished its turn")),
         );
     }
+}
+
+/// A terminal the backend swapped for a new one, so the pane can follow it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalReplaced {
+    pub old_id: String,
+    pub info: TerminalInfo,
+}
+
+/// Types the continuation into every terminal whose armed time has come.
+///
+/// Only when the agent isn't mid-output: if something else already got it
+/// going again — the user, or Claude Code after all — a prompt typed into a
+/// running turn would be noise at best.
+pub fn tick_auto_continue<R: Runtime>(app: &AppHandle<R>) {
+    let Some(registry) = app.try_state::<TerminalRegistry>() else { return };
+    let Ok(map) = registry.0.lock() else { return };
+    let now = chrono::Utc::now();
+    for (id, handle) in map.iter() {
+        let Ok(mut auto) = handle.auto.lock() else { continue };
+        let due = auto.enabled && auto.resume_at.is_some_and(|at| at <= now);
+        if !due {
+            continue;
+        }
+        let working = handle.activity.lock().map(|a| a.state == TerminalState::Working).unwrap_or(true);
+        if working {
+            continue;
+        }
+        auto.resume_at = None;
+        match handle.writes.try_send(format!("{}\r", crate::auto_continue::CONTINUE_PROMPT).into_bytes()) {
+            Ok(()) => log::info!("terminal {id}: usage limit reset — typed the continuation"),
+            Err(e) => log::warn!("terminal {id}: could not type the continuation: {e}"),
+        }
+        emit_auto(app, id, &auto);
+    }
+}
+
+/// Every terminal's auto-continue state, for the first render; after that the
+/// panes follow `terminal-auto-continue`.
+#[tauri::command]
+pub fn list_auto_continue<R: Runtime>(app: AppHandle<R>) -> Result<Vec<AutoContinueStatus>, String> {
+    let registry = app.state::<TerminalRegistry>();
+    let map = registry.0.lock().map_err(|e| e.to_string())?;
+    Ok(map.iter().filter_map(|(id, h)| h.auto.lock().ok().map(|a| auto_status(id, &a))).collect())
+}
+
+/// Turns auto-continue on or off for one terminal, and returns the terminal to
+/// show — a new one when the CLI had to be relaunched.
+///
+/// Claude Code reads `--settings` only at startup, so for a claude terminal the
+/// change means relaunching it on the same conversation (`--resume`). Not in
+/// the middle of a turn, though: that would cut the agent off, so it's marked
+/// pending and `tick_terminal_states` does it when the turn ends.
+#[tauri::command]
+pub async fn set_terminal_auto_continue<R: Runtime>(app: AppHandle<R>, id: String, enabled: bool) -> Result<TerminalInfo, String> {
+    crate::blocking::run_blocking(move || set_terminal_auto_continue_blocking(&app, &id, enabled)).await?
+}
+
+fn set_terminal_auto_continue_blocking<R: Runtime>(app: &AppHandle<R>, id: &str, enabled: bool) -> Result<TerminalInfo, String> {
+    let (info, relaunch_now) = {
+        let registry = app.state::<TerminalRegistry>();
+        let mut map = registry.0.lock().map_err(|e| e.to_string())?;
+        let handle = map.get_mut(id).ok_or_else(|| format!("no terminal with id {id}"))?;
+        handle.info.auto_continue = enabled;
+        let runs_claude = handle.info.session_uuid.is_some() && handle.info.account_id.is_some();
+        let working = handle.activity.lock().map(|a| a.state == TerminalState::Working).unwrap_or(false);
+        let mut auto = handle.auto.lock().map_err(|e| e.to_string())?;
+        auto.enabled = enabled;
+        if !enabled {
+            auto.resume_at = None;
+        }
+        auto.pending_relaunch = runs_claude && working;
+        emit_auto(app, id, &auto);
+        (handle.info.clone(), runs_claude && !working)
+    };
+    persist_terminal(app, &info);
+    if relaunch_now {
+        relaunch_terminal(app, id)
+    } else {
+        Ok(info)
+    }
+}
+
+/// Reopens a terminal's CLI on the same conversation with its current
+/// auto-continue setting, keeping the panel's name and fold. Resumes when the
+/// transcript is there and starts fresh otherwise — the same decision a restore
+/// makes, for the same reasons.
+fn relaunch_terminal<R: Runtime>(app: &AppHandle<R>, id: &str) -> Result<TerminalInfo, String> {
+    let old = {
+        let registry = app.state::<TerminalRegistry>();
+        let map = registry.0.lock().map_err(|e| e.to_string())?;
+        map.get(id).ok_or_else(|| format!("no terminal with id {id}"))?.info.clone()
+    };
+    let row = PersistedTerminal {
+        target_kind: match old.kind {
+            TargetKind::Project => "project".to_string(),
+            TargetKind::Session => "session".to_string(),
+        },
+        source_id: old.source_id.clone(),
+        account_id: old.account_id.clone(),
+        session_uuid: old.session_uuid.clone(),
+        display_name: old.display_name.clone(),
+        minimized: old.minimized,
+        auto_continue: old.auto_continue,
+    };
+    let (init, session_uuid) = decide_restore_init(app, &row);
+    let target = TerminalTarget { kind: old.kind, id: old.source_id.clone() };
+    // Open before closing, like an account switch: if the new one can't start,
+    // the user keeps the one they had.
+    let mut info = open_terminal_with(app.clone(), target, old.account_id.clone(), init, session_uuid, None, 80, 24, old.auto_continue)?;
+    close_terminal(app.clone(), id.to_string())?;
+    if let Some(name) = old.display_name {
+        let _ = rename_terminal(app.clone(), info.id.clone(), name.clone());
+        info.display_name = Some(name);
+    }
+    if old.minimized {
+        let _ = set_terminal_minimized(app.clone(), info.id.clone(), true);
+        info.minimized = true;
+    }
+    Ok(info)
 }
 
 /// Flushes any redacted-tail text that's piled up past its debounce or size
@@ -2938,18 +3241,18 @@ mod tests {
             return;
         }
 
-        let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[], &[]).unwrap();
+        let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[], &[], None).unwrap();
         assert!(!without.contains("--append-system-prompt-file"), "sin preferencias no se pasa nada: {without}");
 
         let prefs = sample_instructions();
-        let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, Some(&prefs), None, None, &[], &[]).unwrap();
+        let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, Some(&prefs), None, None, &[], &[], None).unwrap();
         assert!(with.contains("--append-system-prompt-file"), "got: {with}");
         assert!(with.contains("/tmp/hangar/prefs.md"), "got: {with}");
 
         // Un login no ejecuta nada del proyecto: no hay conversación a la que
         // ponerle idioma, y `claude auth login --append-system-prompt-file` no
         // es un comando válido.
-        let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, Some(&prefs), None, None, &[], &[]).unwrap();
+        let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, Some(&prefs), None, None, &[], &[], None).unwrap();
         assert!(!login.contains("--append-system-prompt-file"), "un login no lleva instrucciones: {login}");
     }
 
@@ -2976,7 +3279,7 @@ mod tests {
         }
 
         let prefs = sample_instructions();
-        let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, Some(&prefs), None, None, &[], &[]).unwrap();
+        let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, Some(&prefs), None, None, &[], &[], None).unwrap();
         assert!(!line.contains("--append-system-prompt-file"), "codex la rechaza: {line}");
         assert!(!line.contains("prefs.md"), "ni la ruta suelta: {line}");
         assert!(line.contains("developer_instructions="), "pero sí la clave que entiende: {line}");
@@ -3037,17 +3340,17 @@ mod tests {
             ("HANGAR_DIAGRAMS".to_string(), "/tmp/app-data/diagrams/p1".to_string()),
         ];
 
-        let sin = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[], &[]).unwrap();
+        let sin = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[], &[], None).unwrap();
         assert!(!sin.contains("ARCHIFY_UPDATE_CHECK_DISABLED"), "sin entorno no se inventa nada: {sin}");
 
-        let con = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[], &env).unwrap();
+        let con = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[], &env, None).unwrap();
         assert!(con.contains("ARCHIFY_UPDATE_CHECK_DISABLED=1"), "got: {con}");
         assert!(con.contains("HANGAR_DIAGRAMS=/tmp/app-data/diagrams/p1"), "got: {con}");
         let first_env = con.find("ARCHIFY_UPDATE_CHECK_DISABLED").unwrap();
         assert!(first_env < con.find("claude").unwrap(), "las variables van antes del binario: {con}");
 
         // Un login no ejecuta nada del proyecto, así que no hay skill en juego.
-        let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, None, None, &[], &env).unwrap();
+        let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, None, None, &[], &env, None).unwrap();
         assert!(!login.contains("ARCHIFY_UPDATE_CHECK_DISABLED"), "un login no lleva skills: {login}");
         assert!(!login.contains("HANGAR_DIAGRAMS"), "ni dónde dejar diagramas: {login}");
     }
@@ -3065,15 +3368,15 @@ mod tests {
             name: "Claude".to_string(),
         };
         if crate::providers::is_provider_available("claude") {
-            let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[], &[]).unwrap();
+            let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[], &[], None).unwrap();
             assert!(!without.contains("--add-dir"), "sin skills marcadas no se pasa nada: {without}");
 
-            let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, Some(dir), None, &[], &[]).unwrap();
+            let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, Some(dir), None, &[], &[], None).unwrap();
             assert!(with.contains("--add-dir"), "got: {with}");
             assert!(with.contains("/tmp/hangar/projects/p1"), "got: {with}");
 
             // Un login no trabaja en el proyecto, así que no necesita sus skills.
-            let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, Some(dir), None, &[], &[]).unwrap();
+            let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, Some(dir), None, &[], &[], None).unwrap();
             assert!(!login.contains("--add-dir"), "un login no lleva skills: {login}");
         }
 
@@ -3084,7 +3387,7 @@ mod tests {
             name: "Codex".to_string(),
         };
         if crate::providers::is_provider_available("codex") {
-            let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, Some(dir), None, &[], &[]).unwrap();
+            let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, Some(dir), None, &[], &[], None).unwrap();
             assert!(!line.contains("--add-dir"), "codex no usa esa bandera: {line}");
         }
     }
@@ -3105,10 +3408,10 @@ mod tests {
         if crate::providers::is_provider_available("claude") {
             // El caso normal: sin grafo construido no se añade nada, y la
             // terminal abre exactamente como abría antes de que esto existiera.
-            let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[], &[]).unwrap();
+            let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[], &[], None).unwrap();
             assert!(!without.contains("--mcp-config"), "sin grafo no se pasa bandera: {without}");
 
-            let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, Some(config), &[], &[]).unwrap();
+            let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, Some(config), &[], &[], None).unwrap();
             assert!(with.contains("--mcp-config"), "got: {with}");
             assert!(with.contains("mcp-config.json"), "got: {with}");
             assert!(
@@ -3117,7 +3420,7 @@ mod tests {
             );
 
             // Un login no consulta código.
-            let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, None, Some(config), &[], &[]).unwrap();
+            let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, None, Some(config), &[], &[], None).unwrap();
             assert!(!login.contains("--mcp-config"), "un login no lleva grafo: {login}");
         }
 
@@ -3128,7 +3431,7 @@ mod tests {
             name: "Codex".to_string(),
         };
         if crate::providers::is_provider_available("codex") {
-            let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, None, Some(config), &[], &[]).unwrap();
+            let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, None, Some(config), &[], &[], None).unwrap();
             assert!(!line.contains("--mcp-config"), "codex no usa esa bandera: {line}");
         }
     }
@@ -3883,6 +4186,7 @@ mod tests {
             account_id: account_id.map(str::to_string),
             session_uuid: session_uuid.map(str::to_string),
             display_name: None,
+            auto_continue: false,
         }
     }
 
@@ -3891,6 +4195,164 @@ mod tests {
         let conn = db.0.lock().unwrap();
         let mut stmt = conn.prepare("SELECT id FROM open_terminals ORDER BY created_at").unwrap();
         stmt.query_map([], |r| r.get(0)).unwrap().filter_map(Result::ok).collect()
+    }
+
+    /// `--settings` is Claude Code's flag and a login starts no session to wait
+    /// in: it rides on claude Start/Resume only. Skipped where the CLIs aren't
+    /// installed, like the other command-line tests.
+    #[test]
+    fn the_auto_continue_settings_ride_on_claude_sessions_only() {
+        let claude = account("sub", "/Users/killua/.claude-David");
+        let file = std::path::Path::new("/data/terminals/t1.settings.json");
+        let Ok(start) = account_command_line_full(&claude, InitCommand::Start, Some("u1"), None, None, None, None, None, &[], &[], Some(file)) else { return };
+        assert!(start.contains(" --settings /data/terminals/t1.settings.json"), "got: {start}");
+        let resume = account_command_line_full(&claude, InitCommand::Resume, Some("u1"), None, None, None, None, None, &[], &[], Some(file)).unwrap();
+        assert!(resume.contains(" --settings "), "got: {resume}");
+        let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, None, None, &[], &[], Some(file)).unwrap();
+        assert!(!login.contains("--settings"), "a login waits for nothing: {login}");
+
+        let codex = AccountForTerminal { provider: "codex".to_string(), ..account("sub", "/Users/killua/.codex-test") };
+        if let Ok(line) = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, None, None, &[], &[], Some(file)) {
+            assert!(!line.contains("--settings"), "not Codex's flag: {line}");
+        }
+    }
+
+    #[test]
+    fn the_auto_continue_choice_is_persisted_for_the_restore() {
+        let app = tauri::test::mock_app();
+        app.manage(crate::db::DbConnection(Mutex::new(seed())));
+        let mut info = info_for("t1", TargetKind::Project, "proj1", Some("acc1"), Some("uuid-1"));
+        info.auto_continue = true;
+        persist_terminal(app.handle(), &info);
+        let db = app.state::<crate::db::DbConnection>();
+        let stored: i64 = db.0.lock().unwrap().query_row("SELECT auto_continue FROM open_terminals WHERE id = 't1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(stored, 1);
+    }
+
+    fn app_with_shell_project() -> (tauri::App<tauri::test::MockRuntime>, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("hangar-test-autocontinue-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = seed();
+        conn.execute("INSERT INTO projects (id, name, path, created_at) VALUES ('tmp','Temp',?1,'now')", rusqlite::params![dir.to_string_lossy().to_string()]).unwrap();
+        let app = tauri::test::mock_app();
+        app.manage(crate::db::DbConnection(Mutex::new(conn)));
+        app.manage(TerminalRegistry::new());
+        (app, dir)
+    }
+
+    fn open_shell(app: &tauri::App<tauri::test::MockRuntime>) -> TerminalInfo {
+        open_terminal_blocking(app.handle().clone(), TerminalTarget { kind: TargetKind::Project, id: "tmp".into() }, None, None, None, None, 80, 24).unwrap()
+    }
+
+    fn with_auto<T>(app: &tauri::App<tauri::test::MockRuntime>, id: &str, f: impl FnOnce(&mut AutoContinue) -> T) -> T {
+        let registry = app.state::<TerminalRegistry>();
+        let map = registry.0.lock().unwrap();
+        let mut auto = map.get(id).unwrap().auto.lock().unwrap();
+        f(&mut auto)
+    }
+
+    fn scrollback_text(app: &tauri::App<tauri::test::MockRuntime>, id: &str) -> String {
+        let registry = app.state::<TerminalRegistry>();
+        let map = registry.0.lock().unwrap();
+        let buffer = map.get(id).unwrap().scrollback.lock().unwrap();
+        String::from_utf8_lossy(&buffer.iter().copied().collect::<Vec<_>>()).to_string()
+    }
+
+    fn set_waiting(app: &tauri::App<tauri::test::MockRuntime>, id: &str) {
+        let registry = app.state::<TerminalRegistry>();
+        let map = registry.0.lock().unwrap();
+        map.get(id).unwrap().activity.lock().unwrap().state = TerminalState::Waiting;
+    }
+
+    fn wait_until(mut done: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            if done() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        false
+    }
+
+    /// Claude Code's give-up line arms a marked terminal and only a marked one.
+    /// With no `rate_limits` on record (a plain shell has no account) the time
+    /// is the estimated retry, and says so.
+    #[test]
+    fn the_give_up_message_arms_only_a_marked_terminal() {
+        let (app, dir) = app_with_shell_project();
+        let marked = open_shell(&app);
+        let unmarked = open_shell(&app);
+        with_auto(&app, &marked.id, |a| a.enabled = true);
+
+        for info in [&marked, &unmarked] {
+            write_terminal(app.handle().clone(), info.id.clone(), "printf 'so this task will not %s\\n' 'resume on its own'\n".to_string()).unwrap();
+        }
+        assert!(wait_until(|| with_auto(&app, &marked.id, |a| a.resume_at.is_some())), "the marked terminal must arm");
+        assert!(with_auto(&app, &marked.id, |a| a.estimated));
+        assert!(wait_until(|| scrollback_text(&app, &unmarked.id).contains("resume on its own")));
+        assert!(with_auto(&app, &unmarked.id, |a| a.resume_at.is_none()), "an unmarked terminal is never armed");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The tick types the prompt into the armed, due, idle terminal and nowhere
+    /// else — not into one that isn't marked, and not into one mid-turn.
+    #[test]
+    fn the_tick_types_the_continuation_only_where_it_is_due() {
+        let (app, dir) = app_with_shell_project();
+        let due = open_shell(&app);
+        let unmarked = open_shell(&app);
+        let busy = open_shell(&app);
+        let past = chrono::Utc::now() - chrono::Duration::seconds(1);
+        with_auto(&app, &due.id, |a| {
+            a.enabled = true;
+            a.resume_at = Some(past);
+        });
+        with_auto(&app, &unmarked.id, |a| a.resume_at = Some(past));
+        with_auto(&app, &busy.id, |a| {
+            a.enabled = true;
+            a.resume_at = Some(past);
+        });
+        for info in [&due, &unmarked] {
+            set_waiting(&app, &info.id);
+        }
+        {
+            let registry = app.state::<TerminalRegistry>();
+            let map = registry.0.lock().unwrap();
+            let mut act = map.get(&busy.id).unwrap().activity.lock().unwrap();
+            act.state = TerminalState::Working;
+            act.last_output = Instant::now();
+        }
+
+        tick_auto_continue(app.handle());
+
+        assert!(wait_until(|| scrollback_text(&app, &due.id).contains(crate::auto_continue::CONTINUE_PROMPT)), "the due terminal gets the prompt");
+        assert!(with_auto(&app, &due.id, |a| a.resume_at.is_none()), "sent once");
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(!scrollback_text(&app, &unmarked.id).contains(crate::auto_continue::CONTINUE_PROMPT));
+        assert!(!scrollback_text(&app, &busy.id).contains(crate::auto_continue::CONTINUE_PROMPT));
+        assert!(with_auto(&app, &busy.id, |a| a.resume_at.is_some()), "mid-turn: still armed for later");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The user typing first is the user deciding; a focus report is not.
+    #[test]
+    fn typing_cancels_an_armed_continuation_but_a_focus_report_does_not() {
+        let (app, dir) = app_with_shell_project();
+        let info = open_shell(&app);
+        let later = chrono::Utc::now() + chrono::Duration::hours(1);
+        with_auto(&app, &info.id, |a| {
+            a.enabled = true;
+            a.resume_at = Some(later);
+        });
+        write_terminal(app.handle().clone(), info.id.clone(), "\x1b[I".to_string()).unwrap();
+        assert!(with_auto(&app, &info.id, |a| a.resume_at.is_some()));
+        write_terminal(app.handle().clone(), info.id.clone(), "l".to_string()).unwrap();
+        assert!(with_auto(&app, &info.id, |a| a.resume_at.is_none()));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3934,7 +4396,7 @@ mod tests {
     fn restore_starts_a_plain_shell_when_there_was_no_account() {
         let app = tauri::test::mock_app();
         app.manage(crate::db::DbConnection(Mutex::new(seed())));
-        let row = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: None, session_uuid: None, display_name: None, minimized: false };
+        let row = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: None, session_uuid: None, display_name: None, minimized: false, auto_continue: false };
         assert_eq!(decide_restore_init(app.handle(), &row), (None, None));
     }
 
@@ -3958,11 +4420,11 @@ mod tests {
         let handle = app.handle();
 
         // Transcript present → resume that exact session.
-        let with = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: Some("accR".into()), session_uuid: Some(uuid.into()), display_name: None , minimized: false };
+        let with = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: Some("accR".into()), session_uuid: Some(uuid.into()), display_name: None , minimized: false, auto_continue: false };
         assert_eq!(decide_restore_init(handle, &with), (Some(InitCommand::Resume), Some(uuid.to_string())));
 
         // Same account, a session id with no transcript on disk → fresh start.
-        let without = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: Some("accR".into()), session_uuid: Some("no-such-uuid".into()), display_name: None , minimized: false };
+        let without = PersistedTerminal { target_kind: "project".into(), source_id: "proj1".into(), account_id: Some("accR".into()), session_uuid: Some("no-such-uuid".into()), display_name: None , minimized: false, auto_continue: false };
         assert_eq!(decide_restore_init(handle, &without), (Some(InitCommand::Start), None));
 
         let _ = std::fs::remove_dir_all(&cfg);

@@ -359,6 +359,9 @@ CREATE TABLE IF NOT EXISTS open_terminals (
   -- `restore_terminals` reopens each terminal with a new id, so anything keyed
   -- by that id is stale the moment the app restarts.
   minimized    INTEGER NOT NULL DEFAULT 0,
+  -- Continues on its own when its usage limit resets (see `auto_continue.rs`).
+  -- Decides the `--settings` the CLI starts with, so a restore needs it.
+  auto_continue INTEGER NOT NULL DEFAULT 0,
   created_at   TEXT NOT NULL
 );
 

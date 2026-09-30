@@ -13,7 +13,8 @@ import { useNavigation } from '../nav/NavigationProvider';
 import { autoGridColumns, shouldWarnAboutPanels } from '../lib/gridLayout';
 import { formatHoursLeft, providerMeta, type Account, type AccountAuth, type AccountNeedsLogin, type FanOutProjection } from '../types/account';
 import type { Project, Session } from '../types/session';
-import { TERMINAL_STATE_META, type FanOutBranch, type InitCommand, type SuggestedAccount, type TerminalActivity, type TerminalInfo, type TerminalTarget } from '../types/terminal';
+import { TERMINAL_STATE_META, type AutoContinueStatus, type FanOutBranch, type InitCommand, type SuggestedAccount, type TerminalActivity, type TerminalInfo, type TerminalTarget } from '../types/terminal';
+import { formatResumeAt } from '../lib/autoContinue';
 import styles from './Terminals.module.css';
 
 
@@ -91,6 +92,7 @@ export function Terminals() {
   // Live agent state per terminal, keyed by id. Seeded once and then driven by
   // events — polling six PTYs for "are you done" would be the wrong shape.
   const [activity, setActivity] = useState<Record<string, TerminalActivity>>({});
+  const [autoContinue, setAutoContinue] = useState<Record<string, AutoContinueStatus>>({});
   // The panel the sidebar last sent you to, highlighted briefly so a click on a
   // row of twelve lands somewhere visible instead of scrolling silently.
   const [focusedId, setFocusedId] = useState<string | null>(null);
@@ -141,6 +143,25 @@ export function Terminals() {
     });
     return () => {
       unlisten.then((f) => f());
+    };
+  }, []);
+
+  // Auto-continue: a snapshot, then the event stream — plus the backend swapping
+  // a terminal for its relaunch when a change made mid-turn is applied.
+  useEffect(() => {
+    invoke<AutoContinueStatus[]>('list_auto_continue')
+      .then((list) => setAutoContinue(Object.fromEntries(list.map((a) => [a.id, a]))))
+      .catch(() => {});
+    const unlistenStatus = listen<AutoContinueStatus>('terminal-auto-continue', (event) => {
+      setAutoContinue((prev) => ({ ...prev, [event.payload.id]: event.payload }));
+    });
+    const unlistenReplaced = listen<{ oldId: string; info: TerminalInfo }>('terminal-replaced', (event) => {
+      const { oldId, info } = event.payload;
+      setTerminals((prev) => prev.map((t) => (t.id === oldId ? info : t)));
+    });
+    return () => {
+      unlistenStatus.then((f) => f());
+      unlistenReplaced.then((f) => f());
     };
   }, []);
 
@@ -394,6 +415,17 @@ export function Terminals() {
       toastError(String(e));
     } finally {
       setSwitchingId(null);
+    }
+  };
+
+  // Claude Code reads the setting only at startup, so the backend may hand back
+  // a relaunched terminal — swapped in place, like an account switch.
+  const toggleAutoContinue = async (terminal: TerminalInfo) => {
+    try {
+      const info = await invoke<TerminalInfo>('set_terminal_auto_continue', { id: terminal.id, enabled: !terminal.autoContinue });
+      setTerminals((prev) => prev.map((t) => (t.id === terminal.id ? info : t)));
+    } catch (e) {
+      toastError(String(e));
     }
   };
 
@@ -680,6 +712,10 @@ export function Terminals() {
                         onManagePool={() => navigate('rotation-settings')}
                       />
                     )}
+                    {/* Only a claude session has a usage limit to wait out. */}
+                    {t.accountId && t.sessionUuid && (
+                      <AutoContinueToggle terminal={t} status={autoContinue[t.id]} onToggle={() => toggleAutoContinue(t)} />
+                    )}
                     {t.accountName && !t.accountId && (
                       <span className={styles.accountBadge} title={`Running with ${t.accountName}'s credentials`}>
                         {t.accountName}
@@ -728,6 +764,34 @@ export function Terminals() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** The panel's auto-continue switch, and what it's waiting for when armed.
+ *
+ * On means Claude Code waits out the usage limit and carries on by itself;
+ * Hangar steps in only where Claude Code says it won't (a reset more than a day
+ * out, or a relaunch mid-wait) — that's when a time shows here. */
+function AutoContinueToggle({ terminal, status, onToggle }: { terminal: TerminalInfo; status?: AutoContinueStatus; onToggle: () => void }) {
+  const on = terminal.autoContinue;
+  const label = !on
+    ? '⏰'
+    : status?.pendingRelaunch
+      ? '⏰ …'
+      : status?.resumeAt
+        ? `⏰ ${formatResumeAt(status.resumeAt)}`
+        : '⏰ on';
+  const title = !on
+    ? 'Auto-continue is off: if the usage limit stops this task, it waits for you. Click to continue it on its own once the limit resets.'
+    : status?.pendingRelaunch
+      ? 'Applies when the current turn ends — Claude Code reads this setting only when it starts, so the CLI is relaunched on the same conversation.'
+      : status?.resumeAt
+        ? `Continues ${formatResumeAt(status.resumeAt)}${status.estimated ? ' (no reset time was reported — this is a retry)' : ''}. Typing in the terminal cancels it. Click to turn auto-continue off.`
+        : 'Auto-continue is on: if the usage limit stops this task, it continues on its own 2–3 minutes after the reset. Click to turn it off.';
+  return (
+    <Button variant={on ? 'secondary' : 'ghost'} size="sm" title={title} onClick={onToggle} style={on ? undefined : { color: 'var(--dim)' }}>
+      {label}
+    </Button>
   );
 }
 

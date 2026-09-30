@@ -1,4 +1,5 @@
 mod app_data;
+mod auto_continue;
 mod auth;
 mod blocking;
 mod capabilities;
@@ -227,6 +228,7 @@ pub fn run() {
             heartbeat("terminal-states", move || {
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 terminals::tick_terminal_states(&state_handle);
+                terminals::tick_auto_continue(&state_handle);
             });
 
             // Own, faster loop — the mobile tail's `EMIT_DEBOUNCE` (250ms) is
@@ -445,6 +447,8 @@ pub fn run() {
             task_sources::list_project_tasks,
             task_sources::list_source_tasks,
             terminals::list_terminal_states,
+            terminals::list_auto_continue,
+            terminals::set_terminal_auto_continue,
             terminals::rename_terminal,
             terminals::set_terminal_minimized,
             run_queue::enqueue_run,

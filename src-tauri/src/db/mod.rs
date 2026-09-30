@@ -271,6 +271,12 @@ const MIGRATIONS: &[Migration] = &[
         run: project_hidden_in_pickers,
         transactional: true,
     },
+    Migration {
+        version: 32,
+        name: "open_terminal_auto_continue",
+        run: open_terminal_auto_continue,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -983,6 +989,18 @@ fn open_terminal_minimized(conn: &Connection) -> Result<(), String> {
     }
     conn.execute_batch("ALTER TABLE open_terminals ADD COLUMN minimized INTEGER NOT NULL DEFAULT 0;")
         .map_err(|e| format!("could not add open_terminals.minimized: {e}"))
+}
+
+/// Whether a terminal continues on its own when its usage limit resets. On the
+/// row that survives a restart for the same reason as `minimized`: it decides
+/// the `--settings` the CLI is relaunched with, and a restart is precisely one
+/// of the moments Claude Code's own wait is lost.
+fn open_terminal_auto_continue(conn: &Connection) -> Result<(), String> {
+    if has_column(conn, "open_terminals", "auto_continue")? {
+        return Ok(());
+    }
+    conn.execute_batch("ALTER TABLE open_terminals ADD COLUMN auto_continue INTEGER NOT NULL DEFAULT 0;")
+        .map_err(|e| format!("could not add open_terminals.auto_continue: {e}"))
 }
 
 /// Lets the user take a folder off the terminal pickers' recents without
