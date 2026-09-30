@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { check, type Update } from '@tauri-apps/plugin-updater';
+import type { Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { invoke } from '../lib/invoke';
-import { supabase, SUPABASE_PUBLISHABLE_KEY } from '../lib/supabase';
+import { checkForUpdate } from '../lib/updates';
 import { Button } from './ui/button';
 import styles from './UpdateBanner.module.css';
 
@@ -44,13 +44,7 @@ export function UpdateBanner() {
     // would break the other.
     const look = () => {
       if (stopped) return;
-      supabase.auth
-        .getSession()
-        .then(({ data }) => {
-          const token = data.session?.access_token;
-          if (!token) return null;
-          return check({ headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_PUBLISHABLE_KEY } });
-        })
+      checkForUpdate()
         .then((found) => {
           // Never replace one already on screen: the user may be mid-install,
           // and re-rendering the banner under them would reset it. That same
@@ -91,7 +85,16 @@ export function UpdateBanner() {
   const install = async () => {
     setState('installing');
     try {
-      await update.downloadAndInstall();
+      // Checked again, not reused: the banner's `Update` downloads with the
+      // token it was found with, which is an hour from expiring the moment it
+      // appears (see `checkForUpdate`).
+      const fresh = await checkForUpdate();
+      if (!fresh) {
+        // Already on it (installed elsewhere), or signed out since.
+        setDismissed(true);
+        return;
+      }
+      await fresh.downloadAndInstall();
       setState('done');
     } catch (e) {
       setError(String(e));

@@ -1,15 +1,12 @@
 name: Release
 
-# Tag-driven, not push-driven: a release is a deliberate act, and cutting one on
-# every merge to main would produce a wall of versions nobody asked for.
+# Manual only. Releases are cut on the Mac with `npm run release <version>`
+# (`scripts/release.sh`), which builds, signs and publishes to Supabase for
+# free. A tag push used to run this — ~130 billable minutes a release, macOS
+# counting x10 — for three platforms nobody was updating from.
 #
-#   npm version patch && git push --follow-tags
-#
-# `workflow_dispatch` is there for the first run and for re-cutting a build when
-# the tag is fine but the run failed (a runner hiccup, an expired secret).
+# Kept for the day Windows or Linux are needed: run it from the Actions tab.
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
 
 # The job needs to create the release and upload assets to it.
@@ -172,7 +169,7 @@ jobs:
           releaseDraft: true
           prerelease: false
 
-      # Feeds `publish-update-manifest` below — `createUpdaterArtifacts: true`
+      # Feeds `publish-to-supabase` below — `createUpdaterArtifacts: true`
       # in `tauri.conf.json` makes `tauri-action` emit this `.tar.gz` +
       # `.tar.gz.sig` pair next to the `.app`/`.dmg`, signed with
       # `TAURI_SIGNING_PRIVATE_KEY` above regardless of Apple codesigning.
@@ -200,8 +197,8 @@ jobs:
           echo "artifact=${sig%.sig}" >> "$GITHUB_OUTPUT"
           echo "signature=$sig" >> "$GITHUB_OUTPUT"
 
-      # One artifact per target, so `publish-update-manifest` can assemble a
-      # manifest covering every platform instead of only Apple Silicon.
+      # One artifact per target, so `publish-to-supabase` can publish every
+      # platform that built.
       - uses: actions/upload-artifact@v4
         with:
           name: updater-${{ matrix.target }}
@@ -210,91 +207,17 @@ jobs:
             ${{ steps.updater.outputs.signature }}
           if-no-files-found: error
 
-  # The auto-update channel Hangar itself checks (`update_access.rs`,
-  # `tauri.conf.json`'s updater `endpoints`) isn't GitHub Releases at all — a
-  # private repo's release asset ids change every release, so the app instead
-  # reads a fixed path, `updates/latest.json` + `updates/Hangar.app.tar.gz`,
-  # committed straight to `main`. Before this job that step was still manual
-  # (see the `release: vX.Y.Z` commits) — `bundle` produces a signed tarball
-  # nobody published anywhere the app would look.
+  # Where an update comes from: the artifacts go to Supabase Storage and a row
+  # per platform goes to `app_releases`, which the `updates` Edge Function reads
+  # and gates on `profiles.approved`. `scripts/release.sh` does the same for
+  # Apple Silicon from the Mac; this is the path for the other platforms.
   #
-  # Apple Silicon only, and now on its way out: `publish-to-supabase` below is
-  # the replacement, and it serves all four platforms from object storage
-  # instead of committing ~9 MB to `main` per release.
+  # Tag refs only, since the version comes from the tag: when running it by
+  # hand, pick the release's tag (not `main`) in the "Use workflow from" menu.
   #
-  # It stays for exactly as long as someone is still running a version that
-  # points at this endpoint. That version can only be moved off it by an update
-  # delivered *here*, so deleting this job before the last tester is past it
-  # would strand them on the build they have. Delete it, and `updates/`, once
-  # nobody is.
-  publish-update-manifest:
-    needs: bundle
-    if: github.ref_type == 'tag'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: updater-aarch64-apple-darwin
-          path: artifact
-
-      - name: Assemble updates/latest.json
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          pub_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          tarball=$(find artifact -maxdepth 1 -name '*.app.tar.gz' -print -quit)
-          signature=$(cat "$tarball.sig")
-
-          mkdir -p updates
-          cp "$tarball" updates/Hangar.app.tar.gz
-          python3 - "$version" "$pub_date" "$signature" > updates/latest.json <<'PYEOF'
-          import json, sys
-          version, pub_date, signature = sys.argv[1:4]
-          print(json.dumps({
-              "version": version,
-              "notes": f"Hangar {version}",
-              "pub_date": pub_date,
-              "platforms": {
-                  "darwin-aarch64": {
-                      "signature": signature,
-                      "url": "https://api.github.com/repos/killua15/FleetAgent/contents/updates/Hangar.app.tar.gz",
-                  },
-              },
-          }, indent=2))
-          PYEOF
-
-      - name: Commit and push the update manifest
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add updates/latest.json updates/Hangar.app.tar.gz
-          if git diff --cached --quiet; then
-            echo "nothing changed, skipping commit"
-            exit 0
-          fi
-          git commit -m "release: ${GITHUB_REF_NAME}"
-          git push origin HEAD:main
-
-  # Where an update actually comes from now: the artifacts go to Supabase Storage
-  # and a row per platform goes to `app_releases`, which the `updates` Edge
-  # Function reads and gates on `profiles.approved`.
-  #
-  # This is what gives the other three platforms a channel at all. The job above
-  # can only publish Apple Silicon because publishing there means committing the
-  # binary to `main` — four platforms would mean ~120 MB of new history per
-  # release, and the Linux AppImage alone is ~90 MB of it.
-  #
-  # Both jobs run for now, on purpose: whoever is on a version that still points
-  # at the GitHub endpoint can only be handed the release that moves them off it
-  # through that same old endpoint. Once every tester is past that version, the
-  # job above and `updates/` go away.
+  # The old `updates/` channel (a manifest and a tarball committed to `main`)
+  # is frozen at 0.8.9. Anyone still on it updates once to 0.8.9, which reads
+  # this channel, and never needs it again.
   publish-to-supabase:
     needs: bundle
     if: github.ref_type == 'tag'

@@ -1,8 +1,10 @@
 name: CI
 
+# Not on every push: the same checks run locally before each release
+# (`scripts/release.sh`), and on GitHub they cost minutes this private repo
+# doesn't have to spare. Run it from the Actions tab when you want it.
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
   pull_request:
 
 # A second push to the same branch makes the first run's result irrelevant —
