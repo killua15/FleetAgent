@@ -1,0 +1,153 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Cómo se actualiza Hangar",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    {
+      "id": "mac",
+      "label": "Tu Mac (release)"
+    },
+    {
+      "id": "supabase",
+      "label": "Supabase"
+    },
+    {
+      "id": "app",
+      "label": "App Hangar instalada"
+    }
+  ],
+  "phases": [
+    {
+      "id": "publish",
+      "label": "Publicar",
+      "fromCol": 0,
+      "toCol": 2,
+      "variant": "emphasis"
+    },
+    {
+      "id": "deliver",
+      "label": "Entregar",
+      "fromCol": 3,
+      "toCol": 5
+    }
+  ],
+  "mainPath": [
+    "release",
+    "sign",
+    "storage",
+    "catalog",
+    "gate",
+    "install",
+    "restart"
+  ],
+  "nodes": [
+    {
+      "id": "release",
+      "lane": "mac",
+      "col": 0,
+      "type": "frontend",
+      "label": "npm run release",
+      "sublabel": "bump + tests",
+      "tag": "0 min de Actions",
+      "width": 118
+    },
+    {
+      "id": "sign",
+      "lane": "mac",
+      "col": 1,
+      "type": "security",
+      "label": "Build firmada",
+      "sublabel": "~/.tauri/hangar.key"
+    },
+    {
+      "id": "storage",
+      "lane": "supabase",
+      "col": 2,
+      "type": "database",
+      "label": "Storage updates/",
+      "sublabel": "Hangar.app.tar.gz",
+      "width": 122
+    },
+    {
+      "id": "catalog",
+      "lane": "supabase",
+      "col": 3,
+      "type": "database",
+      "label": "app_releases",
+      "sublabel": "versión + firma"
+    },
+    {
+      "id": "gate",
+      "lane": "supabase",
+      "col": 4,
+      "type": "security",
+      "label": "Edge Function updates",
+      "sublabel": "JWT + approved",
+      "width": 156
+    },
+    {
+      "id": "check",
+      "lane": "app",
+      "col": 3,
+      "type": "frontend",
+      "label": "runUpdateCheck",
+      "sublabel": "cada 30 min"
+    },
+    {
+      "id": "install",
+      "lane": "app",
+      "col": 4,
+      "type": "backend",
+      "label": "downloadAndInstall",
+      "sublabel": "mismo token fresco",
+      "width": 136
+    },
+    {
+      "id": "restart",
+      "lane": "app",
+      "col": 5,
+      "type": "frontend",
+      "label": "Restart",
+      "sublabel": "único paso tuyo"
+    }
+  ],
+  "edges": [
+    {
+      "from": "release",
+      "to": "sign"
+    },
+    {
+      "from": "sign",
+      "to": "storage",
+      "label": "sube"
+    },
+    {
+      "from": "storage",
+      "to": "catalog",
+      "label": "registra"
+    },
+    {
+      "from": "catalog",
+      "to": "gate",
+      "label": "última versión"
+    },
+    {
+      "from": "check",
+      "to": "gate",
+      "label": "target + arch"
+    },
+    {
+      "from": "gate",
+      "to": "install",
+      "label": "URL + firma"
+    },
+    {
+      "from": "install",
+      "to": "restart",
+      "label": "instalada"
+    }
+  ]
+}

@@ -93,7 +93,7 @@ La buena noticia es que **ya está construido el 70% de un TestFlight propio**:
 | Pieza de un programa de beta | Lo que ya existe |
 |---|---|
 | Lista de invitados | `profiles.approved`, que solo el service role puede cambiar |
-| Canal de entrega cerrado | `src-tauri/src/update_access.rs` + endpoint privado del updater |
+| Canal de entrega cerrado | Edge Function `updates` (sesión + `profiles.approved`) + bucket privado — ver [UPDATES.md](UPDATES.md) |
 | Quién corre qué versión y dónde | `profiles.app_version`, `profiles.last_machine`, tabla `machines` |
 | Identidad del tester | OAuth de Google funcionando, refresh token en el llavero |
 | Firma de los **artefactos** | La clave minisign del updater — **independiente de Apple y de Microsoft** |
