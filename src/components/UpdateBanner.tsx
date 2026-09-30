@@ -1,17 +1,17 @@
 import { useEffect, useState } from 'react';
-import type { Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
-import { invoke } from '../lib/invoke';
-import { checkForUpdate } from '../lib/updates';
+import { runUpdateCheck, useUpdateStatus } from '../lib/updates';
 import { Button } from './ui/button';
 import styles from './UpdateBanner.module.css';
 
 /**
- * Tells you a new version exists, and installs it when you say so.
+ * Keeps Hangar up to date on its own and says when a restart would finish it.
  *
- * Never on its own: an app that restarts itself in the middle of six live agent
- * terminals is worse than an app that's a version behind. So the check is
- * automatic and the install is a button.
+ * Checking, downloading and installing all happen in the background
+ * (`runUpdateCheck`); the one thing left to the user is the restart. That
+ * stays theirs: an app that restarts itself in the middle of six live agent
+ * terminals is worse than one that's a version behind — and the new build is
+ * already on disk, so the next launch runs it either way.
  *
  * The updater signs with its own keypair, which is why this works on a build
  * Apple never signed — Gatekeeper is paid once, at the first install, instead
@@ -23,110 +23,68 @@ import styles from './UpdateBanner.module.css';
 const CHECK_EVERY_MS = 30 * 60 * 1000;
 
 export function UpdateBanner() {
-  const [update, setUpdate] = useState<Update | null>(null);
-  const [state, setState] = useState<'idle' | 'installing' | 'done' | 'failed'>('idle');
-  const [error, setError] = useState<string | null>(null);
-  const [dismissed, setDismissed] = useState(false);
+  const status = useUpdateStatus();
+  const [dismissedFor, setDismissedFor] = useState<string | null>(null);
 
   useEffect(() => {
-    let stopped = false;
-
-    // The check carries the tester's own Supabase session, which is also what
-    // the Edge Function gates on (`profiles.approved`): the closed beta decides
-    // who gets a build server-side, instead of every machine holding a token
-    // someone pasted in by hand. Signed out means no update, which is the right
-    // answer for a session the beta can't identify.
-    //
-    // These same headers are what downloads the artifact — the updater reuses
-    // them — so the private Storage bucket needs no signed URL. Note there is no
-    // `Accept` here on purpose: the plugin sets `application/json` for the
-    // manifest and `application/octet-stream` for the download, and pinning one
-    // would break the other.
-    const look = () => {
-      if (stopped) return;
-      checkForUpdate()
-        .then((found) => {
-          // Never replace one already on screen: the user may be mid-install,
-          // and re-rendering the banner under them would reset it. That same
-          // "only on the null→found transition" check is what keeps the OS
-          // notification to once per version instead of once per 30-minute poll.
-          if (found && !stopped) {
-            setUpdate((current) => {
-              if (!current) invoke('notify_update_available', { version: found.version }).catch(() => {});
-              return current ?? found;
-            });
-          }
-        })
-        // Quietly: no network, no session, or an endpoint that has no release yet
-        // are all normal, and none of them is worth a toast.
-        .catch(() => {});
-    };
-
+    // Quietly: no network, no session, or no newer build are all normal. A
+    // real failure lands in the status (and in `hangar.log`), not a toast.
+    const look = () => void runUpdateCheck();
     look();
-
     // Checking only at launch meant a version published while you worked was
     // invisible until you happened to restart — which, for an app you leave
     // open all day with six agents in it, is never.
     const timer = window.setInterval(look, CHECK_EVERY_MS);
     // And on coming back to the window: it costs nothing and it's the moment
     // you'd want to know.
-    const onFocus = () => look();
-    window.addEventListener('focus', onFocus);
-
+    window.addEventListener('focus', look);
     return () => {
-      stopped = true;
       window.clearInterval(timer);
-      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('focus', look);
     };
   }, []);
 
-  if (!update || dismissed) return null;
+  if (status.phase === 'installing') {
+    return (
+      <div className={styles.banner}>
+        <span className={styles.version}>v{status.version}</span>
+        <span className={styles.text}>Downloading the new version…</span>
+      </div>
+    );
+  }
 
-  const install = async () => {
-    setState('installing');
-    try {
-      // Checked again, not reused: the banner's `Update` downloads with the
-      // token it was found with, which is an hour from expiring the moment it
-      // appears (see `checkForUpdate`).
-      const fresh = await checkForUpdate();
-      if (!fresh) {
-        // Already on it (installed elsewhere), or signed out since.
-        setDismissed(true);
-        return;
-      }
-      await fresh.downloadAndInstall();
-      setState('done');
-    } catch (e) {
-      setError(String(e));
-      setState('failed');
-    }
-  };
-
-  return (
-    <div className={styles.banner}>
-      <span className={styles.version}>v{update.version}</span>
-      <span className={styles.text}>
-        {state === 'done'
-          ? 'Installed — restart to run it.'
-          : state === 'failed'
-            ? `Update failed: ${error}`
-            : 'A new version of Hangar is available.'}
-      </span>
-      <span className={styles.spacer} />
-      {state === 'done' ? (
-        // Restarting is the user's call even here: they may have an agent
-        // mid-turn, and the update is already on disk either way.
+  if (status.phase === 'ready' && dismissedFor !== status.version) {
+    return (
+      <div className={styles.banner}>
+        <span className={styles.version}>v{status.version}</span>
+        <span className={styles.text}>Installed — restart Hangar to run it.</span>
+        <span className={styles.spacer} />
+        {/* Restarting is the user's call: they may have an agent mid-turn. */}
         <Button size="sm" onClick={() => relaunch()}>
           Restart
         </Button>
-      ) : (
-        <Button size="sm" disabled={state === 'installing'} onClick={install}>
-          {state === 'installing' ? 'installing…' : 'Update'}
+        <button className={styles.dismiss} onClick={() => setDismissedFor(status.version)}>
+          ✕
+        </button>
+      </div>
+    );
+  }
+
+  if (status.phase === 'failed' && status.version && dismissedFor !== status.version) {
+    return (
+      <div className={styles.banner}>
+        <span className={styles.version}>v{status.version}</span>
+        <span className={styles.text}>Update failed: {status.error}</span>
+        <span className={styles.spacer} />
+        <Button size="sm" onClick={() => void runUpdateCheck()}>
+          Retry
         </Button>
-      )}
-      <button className={styles.dismiss} onClick={() => setDismissed(true)}>
-        ✕
-      </button>
-    </div>
-  );
+        <button className={styles.dismiss} onClick={() => setDismissedFor(status.version)}>
+          ✕
+        </button>
+      </div>
+    );
+  }
+
+  return null;
 }

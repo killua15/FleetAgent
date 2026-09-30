@@ -33,14 +33,14 @@ pub(crate) fn notify_if_enabled<R: Runtime>(app: &AppHandle<R>, is_enabled: impl
     }
 }
 
-/// Called from `UpdateBanner.tsx` once per newly-detected version — the
+/// Called from `src/lib/updates.ts` once per installed version — the
 /// updater check itself runs in JS (`@tauri-apps/plugin-updater`), so this is
 /// the bridge back into the one place that's allowed to show a real
 /// notification. The frontend is responsible for not calling this twice for
 /// the same version (it re-checks every 30 minutes).
 #[tauri::command]
 pub fn notify_update_available<R: Runtime>(app: AppHandle<R>, version: String) {
-    notify_if_enabled(&app, |s| s.notify_update_available, "Hangar update available", &format!("v{version} is ready to install"));
+    notify_if_enabled(&app, |s| s.notify_update_available, "Hangar update ready", &format!("v{version} is installed — restart Hangar to run it"));
 }
 
 /// Sends one on demand and reports what happened.

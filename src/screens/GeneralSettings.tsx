@@ -3,7 +3,8 @@ import { useAuth } from '../auth/AuthProvider';
 import { summarizePlan } from '../auth/plan';
 import { invoke } from '../lib/invoke';
 import { toastError } from '../components/ErrorOverlay';
-import { check } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
+import { runUpdateCheck, useUpdateStatus } from '../lib/updates';
 import { PairPhoneDialog } from '../components/PairPhoneDialog';
 import { getVersion } from '@tauri-apps/api/app';
 import { SettingsTabs } from '../components/SettingsTabs';
@@ -393,7 +394,7 @@ export function GeneralSettings() {
           <Pane id="machine" active={pane}>
           <section className={styles.section}>
             <span className={styles.sectionLabel}>UPDATES</span>
-            <UpdateAccessRow />
+            <UpdatesRow />
           </section>
           </Pane>
 
@@ -822,77 +823,48 @@ function PhoneRow() {
   );
 }
 
-function UpdateAccessRow() {
-  const [stored, setStored] = useState(false);
-  const [token, setToken] = useState('');
-  const [saving, setSaving] = useState(false);
+/** The running version, a way to check by hand, and what the background
+ * updater is doing — the same state the banner shows (`useUpdateStatus`).
+ * There is nothing to configure: updates come on the signed-in session. */
+function UpdatesRow() {
   const [version, setVersion] = useState('');
-  // What the last check actually said. The banner stays silent by design — an
-  // absent token, no network, or simply being up to date are all normal — but
-  // silence made "is this working?" unanswerable, which cost a release cut to
-  // find out the answer was "you already installed it".
-  const [checked, setChecked] = useState<string | null>(null);
-  const [checking, setChecking] = useState(false);
+  const status = useUpdateStatus();
 
   useEffect(() => {
-    invoke<boolean>('has_update_access').then(setStored).catch(() => setStored(false));
     getVersion().then(setVersion).catch(() => {});
   }, []);
 
-  const checkNow = async () => {
-    setChecking(true);
-    setChecked(null);
-    try {
-      const headers = await invoke<Record<string, string> | null>('update_request_headers');
-      const found = await check(headers ? { headers } : undefined);
-      setChecked(found ? `v${found.version} is available — restart Hangar to see the update bar.` : `Up to date. Nothing newer than v${version}.`);
-    } catch (e) {
-      setChecked(`Check failed: ${e}`);
-    } finally {
-      setChecking(false);
-    }
-  };
-
-  const save = async (next: string | null) => {
-    setSaving(true);
-    try {
-      await invoke('set_update_access', { token: next });
-      setStored(Boolean(next));
-      setToken('');
-    } catch (e) {
-      toastError(String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
+  const busy = status.phase === 'checking' || status.phase === 'installing';
+  const line =
+    status.phase === 'checking'
+      ? 'Checking…'
+      : status.phase === 'installing'
+        ? `Downloading v${status.version}…`
+        : status.phase === 'ready'
+          ? `v${status.version} is installed — restart Hangar to run it.`
+          : status.phase === 'upToDate'
+            ? "You're on the latest version."
+            : status.phase === 'failed'
+              ? `Update failed: ${status.error}`
+              : null;
 
   return (
     <div className={styles.notifList}>
       <div className={styles.updateRow}>
-        <input
-          className={styles.updateInput}
-          type="password"
-          placeholder={stored ? '•••••••• stored — paste a new one to replace it' : 'GitHub token with read access to the releases repo'}
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-        />
-        <Button size="sm" disabled={saving || !token.trim()} onClick={() => save(token.trim())}>
-          {saving ? 'saving…' : 'Save'}
-        </Button>
-        {stored && (
-          <Button size="sm" variant="outline" disabled={saving} onClick={() => save(null)}>
-            remove
+        <span className={styles.updateHint}>{version ? `Hangar v${version}` : 'Hangar'}</span>
+        {status.phase === 'ready' ? (
+          <Button size="sm" onClick={() => relaunch()}>
+            Restart
+          </Button>
+        ) : (
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => void runUpdateCheck()}>
+            {busy ? 'checking…' : 'Check for updates'}
           </Button>
         )}
-        <Button size="sm" variant="outline" disabled={checking} onClick={checkNow}>
-          {checking ? 'checking…' : 'Check now'}
-        </Button>
       </div>
-      {checked && <span className={styles.updateHint}>{checked}</span>}
-      {version && <span className={styles.updateHint}>Running v{version}.</span>}
+      {line && <span className={styles.updateHint}>{line}</span>}
       <span className={styles.updateHint}>
-        Stored in the macOS keychain, never in the app or the database. A fine-grained token with read-only <code>Contents</code> on the
-        releases repository is enough — nothing else. Without one, Hangar simply never finds an update.
+        New versions download and install on their own; restarting is the only step left to you.
       </span>
     </div>
   );

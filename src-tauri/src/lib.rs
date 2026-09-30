@@ -26,7 +26,7 @@ mod run_queue;
 mod task_sources;
 mod terminals;
 mod turn_runner;
-mod update_access;
+mod updater;
 mod usage_meter;
 mod usage_scraper;
 
@@ -108,6 +108,8 @@ pub fn run() {
             // `db::init` creates the directory, so a later call would find a
             // fresh empty one and skip the migration.
             app_data::migrate(&app.handle());
+            // Off the startup path: a keychain call can prompt or stall.
+            std::thread::spawn(updater::forget_legacy_token);
             let conn = match db::init(&app.handle()) {
                 Ok(conn) => conn,
                 Err(e) => {
@@ -459,9 +461,7 @@ pub fn run() {
             usage_meter::list_project_spend,
             usage_meter::usage_report,
             usage_meter::daily_usage_since,
-            update_access::update_request_headers,
-            update_access::has_update_access,
-            update_access::set_update_access,
+            updater::log_update_error,
             terminals::refresh_all_quotas,
             notifications::send_test_notification,
             notifications::notify_update_available,
