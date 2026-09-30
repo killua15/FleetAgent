@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "test": "vitest run",
     "test:watch": "vitest",
-    "release": "bash scripts/release.sh"
+    "release": "bash scripts/release.sh",
+    "release:guided": "bash scripts/hangar-release.command"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",

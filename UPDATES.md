@@ -17,6 +17,13 @@ npm run release  →  Supabase (Storage + app_releases)  →  Edge Function `upd
 
 ## 1. Publicar una versión
 
+**Lo más fácil:** doble clic en `scripts/hangar-release.command` (abre Terminal), o
+`npm run release:guided`. Comprueba y prepara la máquina (te pide la clave de Supabase si falta),
+propone la siguiente versión, te deja elegir entre publicar, probar sin publicar o solo sacar el zip
+para otro Mac, y al final ofrece dejar ese zip en el Escritorio.
+
+Si prefieres el comando directo:
+
 ```bash
 npm run release -- 0.8.12 "Qué cambió"          # publica de verdad
 npm run release -- 0.8.12 --dry-run             # todo menos publicar
