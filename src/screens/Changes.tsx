@@ -2,24 +2,18 @@ import { useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '../lib/invoke';
 import { AppTopBar } from '../components/AppTopBar';
+import { ChangesList } from '../components/ChangesList';
 import { CodeView } from '../components/CodeView';
 import { toastError } from '../components/ErrorOverlay';
 import { Button } from '../components/ui/button';
 import { useNavigation } from '../nav/NavigationProvider';
-import type { ChangedFile, WorktreeChanges } from '../types/gitPanel';
+import type { WorktreeChanges } from '../types/gitPanel';
+import type { ReviewItem } from '../lib/review';
 import type { TerminalActivity } from '../types/terminal';
 import styles from './Changes.module.css';
 
 /** GitHub Desktop's shape, because it's the one that got this right: the list
  * of files on the left, the diff filling everything else. */
-const STATUS_LETTER: Record<ChangedFile['status'], string> = {
-  added: 'A',
-  modified: 'M',
-  deleted: 'D',
-  untracked: '?',
-  touched: '·',
-};
-
 export function Changes() {
   const { current, navigate } = useNavigation();
   const path = current.params?.path as string | undefined;
@@ -29,7 +23,7 @@ export function Changes() {
   const [loading, setLoading] = useState(false);
   // Which file is open, and from which list — the same file can be in both
   // with different content, so the list is part of the identity.
-  const [selected, setSelected] = useState<{ file: ChangedFile; committed: boolean } | null>(null);
+  const [selected, setSelected] = useState<ReviewItem | null>(null);
   const [diff, setDiff] = useState<{ oldText: string; newText: string } | null>(null);
 
   const load = async () => {
@@ -92,48 +86,6 @@ export function Changes() {
     };
   }, [path, selected?.file.path, selected?.committed]);
 
-  const total = (files: ChangedFile[]) =>
-    files.reduce((sum, f) => ({ added: sum.added + f.added, removed: sum.removed + f.removed }), { added: 0, removed: 0 });
-
-  const section = (title: string, hint: string, files: ChangedFile[], committed: boolean) => {
-    const sum = total(files);
-    return (
-      <div className={styles.section}>
-        <div className={styles.sectionHead}>
-          <span className={styles.sectionTitle}>{title}</span>
-          <span className={styles.sectionHint}>{hint}</span>
-          <span className={styles.spacer} />
-          {files.length > 0 && (
-            <span className={styles.counts}>
-              <span className={styles.added}>+{sum.added}</span> <span className={styles.removed}>−{sum.removed}</span>
-            </span>
-          )}
-        </div>
-        {files.length === 0 && <span className={styles.sectionEmpty}>nothing</span>}
-        {files.map((file) => {
-          const active = selected?.file.path === file.path && selected.committed === committed;
-          return (
-            <button
-              key={`${committed}-${file.path}`}
-              className={active ? styles.fileActive : styles.file}
-              onClick={() => setSelected({ file, committed })}
-              title={file.path}
-            >
-              <span className={`${styles.status} ${styles[file.status]}`}>{STATUS_LETTER[file.status]}</span>
-              {/* The name is what you scan for; the directory is context and
-                  gets truncated from the left, where the useless part is. */}
-              <span className={styles.fileName}>{file.path.split('/').pop()}</span>
-              <span className={styles.fileDir}>{file.path.split('/').slice(0, -1).join('/')}</span>
-              <span className={styles.fileCounts}>
-                <span className={styles.added}>+{file.added}</span> <span className={styles.removed}>−{file.removed}</span>
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    );
-  };
-
   return (
     <div className={styles.screen}>
       <AppTopBar />
@@ -152,10 +104,7 @@ export function Changes() {
       </div>
 
       <div className={styles.body}>
-        <div className={styles.list}>
-          {changes && section('uncommitted', 'what the agent is doing right now', changes.uncommitted, false)}
-          {changes && section('in this branch', `committed on top of ${changes.base}`, changes.committed, true)}
-        </div>
+        <div className={styles.list}>{changes && <ChangesList changes={changes} selected={selected} onSelect={setSelected} />}</div>
 
         <div className={styles.diff}>
           {!selected && <span className={styles.diffEmpty}>Pick a file.</span>}

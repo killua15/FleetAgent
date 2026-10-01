@@ -48,8 +48,11 @@ function themeFromTokens(): Record<string, string> {
  * component — unmounting only detaches the output stream (`detach_terminal`),
  * so navigating away and back replays the scrollback and reconnects to the
  * same still-running process rather than starting a new one. */
-export function TerminalPane({ terminalId, className }: { terminalId: string; className?: string }) {
+export function TerminalPane({ terminalId, className, onFocus }: { terminalId: string; className?: string; onFocus?: () => void }) {
   const [dropping, setDropping] = useState(false);
+  // In a ref so a new callback each render doesn't tear the terminal down.
+  const onFocusRef = useRef(onFocus);
+  onFocusRef.current = onFocus;
   const [saving, setSaving] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
   const { resolvedTheme } = useTheme();
@@ -77,6 +80,11 @@ export function TerminalPane({ terminalId, className }: { terminalId: string; cl
     term.loadAddon(fit);
     term.open(host);
     termRef.current = term;
+    // Clicking or typing into a pane makes it "the one you're on" — what the
+    // review sidebar follows.
+    const textarea = term.textarea;
+    const handleFocus = () => onFocusRef.current?.();
+    textarea?.addEventListener('focus', handleFocus);
 
     let disposed = false;
     // Guards against a fit() that runs after unmount (the ResizeObserver can
@@ -141,6 +149,7 @@ export function TerminalPane({ terminalId, className }: { terminalId: string; cl
 
     return () => {
       disposed = true;
+      textarea?.removeEventListener('focus', handleFocus);
       observer.disconnect();
       dataSub.dispose();
       // Stop the stream but leave the shell running — this is an unmount, not

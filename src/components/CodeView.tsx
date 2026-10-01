@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { EditorState, type Extension } from '@codemirror/state';
 import { EditorView, lineNumbers, highlightActiveLine } from '@codemirror/view';
-import { unifiedMergeView } from '@codemirror/merge';
+import { MergeView, unifiedMergeView } from '@codemirror/merge';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { javascript } from '@codemirror/lang-javascript';
 import { rust } from '@codemirror/lang-rust';
@@ -40,7 +40,9 @@ function languageFor(path: string): Extension[] {
   }
 }
 
-/** Read-only code viewer, with an optional inline diff against `original`.
+/** Read-only code viewer, with an optional diff against `original` — inline
+ * (`unified`, GitHub Desktop's way) or before | after columns (`split`, the
+ * IDE's way).
  *
  * CodeMirror rather than Monaco on purpose: this screen exists to *read* what an
  * agent changed, and Monaco's extra weight (~90 MB unpacked against ~1 MB here,
@@ -48,7 +50,17 @@ function languageFor(path: string): Extension[] {
  * decided not to compete on. CodeMirror is a real editor too, so the ceiling
  * stays where it was; only the payload shrank.
  */
-export function CodeView({ path, text, original }: { path: string; text: string; original?: string | null }) {
+export function CodeView({
+  path,
+  text,
+  original,
+  split = false,
+}: {
+  path: string;
+  text: string;
+  original?: string | null;
+  split?: boolean;
+}) {
   const host = useRef<HTMLDivElement>(null);
   // `resolvedTheme` and not `theme`: the latter can be 'system', which is a
   // preference, not a colour scheme.
@@ -67,13 +79,26 @@ export function CodeView({ path, text, original }: { path: string; text: string;
     if (resolvedTheme === 'dark') extensions.push(oneDark);
     // Only when there's something to compare against: an untracked file has no
     // committed version, and an empty diff view would imply it's unchanged.
-    if (original != null && original !== text) {
+    const hasDiff = original != null && original !== text;
+
+    // Both columns share the same read-only setup, so the two sides of a split
+    // look like one file at two moments rather than two different viewers.
+    if (hasDiff && split) {
+      const view = new MergeView({
+        a: { doc: original, extensions },
+        b: { doc: text, extensions },
+        parent: host.current,
+        collapseUnchanged: { margin: 3, minSize: 6 },
+      });
+      return () => view.destroy();
+    }
+    if (hasDiff) {
       extensions.push(unifiedMergeView({ original, mergeControls: false }));
     }
 
     const view = new EditorView({ state: EditorState.create({ doc: text, extensions }), parent: host.current });
     return () => view.destroy();
-  }, [path, text, original, resolvedTheme]);
+  }, [path, text, original, split, resolvedTheme]);
 
   return <div ref={host} className={styles.host} />;
 }

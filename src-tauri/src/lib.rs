@@ -403,6 +403,8 @@ pub fn run() {
             commands::git_panel::git_pull,
             commands::git_panel::git_push,
             commands::git_panel::open_path_in_terminal,
+            commands::git_panel::is_rider_installed,
+            commands::git_panel::open_in_rider,
             commands::git_panel::list_branches,
             commands::git_panel::list_commits,
             commands::git_panel::get_commit_files,

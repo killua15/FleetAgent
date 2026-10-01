@@ -22,3 +22,15 @@
   border-right: 1px solid var(--line);
   color: var(--dim);
 }
+
+/* Split diff: the MergeView wrapper owns the height and scrolls both columns
+   together, the way the single editor does above. */
+.host :global(.cm-mergeView) {
+  height: 100%;
+  overflow: auto;
+  font: 400 12px var(--font-mono);
+}
+
+.host :global(.cm-mergeView .cm-editor) {
+  height: auto;
+}

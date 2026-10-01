@@ -269,6 +269,40 @@ pub async fn open_path_in_terminal(path: String) -> Result<(), String> {
     crate::blocking::run_blocking(move || open_terminal_at(&path)).await?
 }
 
+/// Where JetBrains Rider lives on this Mac, if it's installed — so the review
+/// panel only offers "Open in Rider" when it can do it. Task worktrees live in
+/// `.hangar/worktrees/…`, outside whatever folder Rider has open, which is why
+/// Rider never showed their changes.
+fn rider_app() -> Option<std::path::PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let home = crate::app_data::home_dir().unwrap_or_default();
+    ["/Applications/Rider.app".to_string(), format!("{home}/Applications/Rider.app")]
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .find(|p| p.is_dir())
+}
+
+#[tauri::command]
+pub fn is_rider_installed() -> bool {
+    rider_app().is_some()
+}
+
+/// Opens a worktree (or a single file in it) in Rider.
+#[tauri::command]
+pub async fn open_in_rider(path: String) -> Result<(), String> {
+    crate::blocking::run_blocking(move || {
+        let app = rider_app().ok_or("Rider isn't installed in /Applications")?;
+        let status = Command::new("open").arg("-a").arg(&app).arg(&path).status().map_err(|e| format!("failed to open Rider: {e}"))?;
+        if !status.success() {
+            return Err(format!("Rider could not open {path}"));
+        }
+        Ok(())
+    })
+    .await?
+}
+
 #[cfg(target_os = "macos")]
 fn open_terminal_at(path: &str) -> Result<(), String> {
     let status = Command::new("open").args(["-a", "Terminal", path]).status().map_err(|e| format!("failed to open Terminal: {e}"))?;
@@ -629,32 +663,51 @@ fn committed_changes(cwd: &Path, base: &str) -> Vec<ChangedFile> {
         .collect()
 }
 
-fn resolve_base(cwd: &Path, requested: Option<String>) -> String {
-    if let Some(base) = requested.filter(|b| !b.trim().is_empty()) {
+/// What "this branch's changes" are measured against, in order of how much it
+/// knows: the base the user picked, the one the worktree was cut from, the
+/// upstream when it's a *different* branch, and the default branch.
+///
+/// The upstream used to come first, unconditionally — and a task branch pushed
+/// to its own `origin/<same name>` was then compared against itself, so the
+/// review showed only unpushed commits instead of the feature.
+fn resolve_base(cwd: &Path, requested: Option<String>, stored: Option<String>) -> String {
+    if let Some(base) = requested.or(stored).filter(|b| !b.trim().is_empty()) {
         return base;
     }
+    let current = current_branch(cwd);
     if let Ok(upstream) = git_capture(cwd, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]) {
-        if !upstream.is_empty() {
+        let same_branch = upstream.split_once('/').map(|(_, name)| name) == current.as_deref();
+        if !upstream.is_empty() && !same_branch {
             return upstream;
         }
     }
     let default = detect_default_branch(cwd);
     // A worktree sitting *on* the default branch has nothing to compare against
     // itself; its upstream is the honest base.
-    if current_branch(cwd).as_deref() == Some(default.as_str()) {
+    if current.as_deref() == Some(default.as_str()) {
         return format!("origin/{default}");
     }
     default
 }
 
+/// The base Hangar recorded when it cut the worktree at `cwd`, if it did.
+fn stored_base<R: Runtime>(app: &AppHandle<R>, cwd: &Path) -> Option<String> {
+    let db = app.try_state::<DbConnection>()?;
+    let conn = db.0.lock().ok()?;
+    let mut stmt = conn.prepare("SELECT worktree_path, worktree_base FROM sessions WHERE worktree_base IS NOT NULL").ok()?;
+    let rows: Vec<(String, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.filter_map(Result::ok).collect();
+    let cwd = cwd.to_string_lossy();
+    rows.into_iter().find(|(path, _)| crate::commands::sessions::same_path(path, &cwd)).map(|(_, base)| base)
+}
+
 #[tauri::command]
-pub async fn get_worktree_changes(path: String, base: Option<String>) -> Result<WorktreeChanges, String> {
+pub async fn get_worktree_changes<R: Runtime>(app: AppHandle<R>, path: String, base: Option<String>) -> Result<WorktreeChanges, String> {
     crate::blocking::run_blocking(move || {
         let cwd = Path::new(&path);
         if !is_git_repo(cwd) && git_capture(cwd, &["rev-parse", "--git-dir"]).is_err() {
             return Err(format!("{path} isn't a git worktree"));
         }
-        let base = resolve_base(cwd, base);
+        let base = resolve_base(cwd, base, stored_base(&app, cwd));
         Ok(WorktreeChanges { uncommitted: uncommitted_changes(cwd), committed: committed_changes(cwd, &base), base })
     })
     .await?
@@ -666,13 +719,17 @@ pub async fn get_worktree_changes(path: String, base: Option<String>) -> Result<
 /// against the base, or the working copy against the last commit. The same
 /// file can legitimately appear in both with different content.
 #[tauri::command]
-pub async fn get_worktree_file_diff(path: String, file_path: String, base: Option<String>, committed: bool) -> Result<CommitFileDiff, String> {
+pub async fn get_worktree_file_diff<R: Runtime>(app: AppHandle<R>, path: String, file_path: String, base: Option<String>, committed: bool) -> Result<CommitFileDiff, String> {
     crate::blocking::run_blocking(move || {
         let cwd = Path::new(&path);
-        let base = resolve_base(cwd, base);
+        let base = resolve_base(cwd, base, stored_base(&app, cwd));
         if committed {
+            // Against where the branch started, not the base's tip: the file
+            // list is `base...HEAD`, and a diff against the tip would show
+            // whatever landed on the base since as this branch undoing it.
+            let from = git_capture(cwd, &["merge-base", &base, "HEAD"]).unwrap_or(base);
             return CommitFileDiff {
-                old_text: git_capture(cwd, &["show", &format!("{base}:{file_path}")]).unwrap_or_default(),
+                old_text: git_capture(cwd, &["show", &format!("{from}:{file_path}")]).unwrap_or_default(),
                 new_text: git_capture(cwd, &["show", &format!("HEAD:{file_path}")]).unwrap_or_default(),
             };
         }
@@ -763,6 +820,7 @@ mod tests {
         std::fs::write(work_dir.join("scratch.txt"), "a\nb\nc\n").unwrap();
 
         let changes = tauri::async_runtime::block_on(get_worktree_changes(
+            tauri::test::mock_app().handle().clone(),
             work_dir.to_string_lossy().to_string(),
             Some("main".to_string()),
         ))
@@ -803,6 +861,7 @@ mod tests {
         git_capture(&work_dir, &["checkout", "feature"]).unwrap();
 
         let changes = tauri::async_runtime::block_on(get_worktree_changes(
+            tauri::test::mock_app().handle().clone(),
             work_dir.to_string_lossy().to_string(),
             Some("main".to_string()),
         ))
@@ -810,6 +869,60 @@ mod tests {
 
         let committed: Vec<&str> = changes.committed.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(committed, vec!["mine.txt"], "only this branch's own work: {committed:?}");
+
+        let _ = std::fs::remove_dir_all(&remote_dir);
+        let _ = std::fs::remove_dir_all(&work_dir);
+    }
+
+    /// A task branch pushed to its own `origin/<same name>` used to be compared
+    /// against that upstream — itself — so the review listed only unpushed
+    /// commits. Its own upstream is skipped; the base it was cut from wins.
+    #[test]
+    fn a_branch_is_not_compared_against_its_own_upstream() {
+        let (remote_dir, work_dir) = setup_repo_with_remote("own-upstream");
+        git_capture(&work_dir, &["checkout", "-b", "dev"]).unwrap();
+        git_capture(&work_dir, &["push", "-u", "origin", "dev"]).unwrap();
+        git_capture(&work_dir, &["checkout", "-b", "task-1"]).unwrap();
+        std::fs::write(work_dir.join("task.txt"), "done\n").unwrap();
+        git_capture(&work_dir, &["add", "-A"]).unwrap();
+        git_capture(&work_dir, &["commit", "-m", "task work"]).unwrap();
+        git_capture(&work_dir, &["push", "-u", "origin", "task-1"]).unwrap();
+
+        assert_ne!(resolve_base(&work_dir, None, None), "origin/task-1", "never itself");
+        assert_eq!(resolve_base(&work_dir, None, Some("dev".to_string())), "dev", "the stored base wins over guessing");
+        assert_eq!(resolve_base(&work_dir, Some("main".to_string()), Some("dev".to_string())), "main", "an explicit pick wins over both");
+
+        let committed: Vec<String> = committed_changes(&work_dir, "dev").into_iter().map(|f| f.path).collect();
+        assert_eq!(committed, vec!["task.txt".to_string()], "the feature, even though it's all pushed");
+
+        let _ = std::fs::remove_dir_all(&remote_dir);
+        let _ = std::fs::remove_dir_all(&work_dir);
+    }
+
+    /// A committed file's diff starts where the branch started. Against the
+    /// base's tip, a change that landed on the base afterwards would read as
+    /// this branch undoing it.
+    #[test]
+    fn a_committed_diff_starts_where_the_branch_started() {
+        let (remote_dir, work_dir) = setup_repo_with_remote("merge-base-diff");
+        git_capture(&work_dir, &["checkout", "-b", "feature"]).unwrap();
+        std::fs::write(work_dir.join("a.txt"), "one\nmine\n").unwrap();
+        git_capture(&work_dir, &["commit", "-am", "mine"]).unwrap();
+        git_capture(&work_dir, &["checkout", "main"]).unwrap();
+        std::fs::write(work_dir.join("a.txt"), "one\ntheirs on main\n").unwrap();
+        git_capture(&work_dir, &["commit", "-am", "theirs"]).unwrap();
+        git_capture(&work_dir, &["checkout", "feature"]).unwrap();
+
+        let diff = tauri::async_runtime::block_on(get_worktree_file_diff(
+            tauri::test::mock_app().handle().clone(),
+            work_dir.to_string_lossy().to_string(),
+            "a.txt".to_string(),
+            Some("main".to_string()),
+            true,
+        ))
+        .unwrap();
+        assert_eq!(diff.old_text.trim(), "one", "the old side is where the branch started");
+        assert!(!diff.old_text.contains("theirs"), "main's later change is not this branch's to undo");
 
         let _ = std::fs::remove_dir_all(&remote_dir);
         let _ = std::fs::remove_dir_all(&work_dir);
@@ -824,6 +937,7 @@ mod tests {
         std::fs::write(work_dir.join("README.md"), "hello\nedited but not committed\n").unwrap();
 
         let diff = tauri::async_runtime::block_on(get_worktree_file_diff(
+            tauri::test::mock_app().handle().clone(),
             work_dir.to_string_lossy().to_string(),
             "README.md".to_string(),
             Some("main".to_string()),

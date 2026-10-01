@@ -132,6 +132,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- 'copy'   = project had no git repo, so the folder was copied and
   --            `git init`-ed fresh instead (no shared history).
   worktree_kind      TEXT CHECK (worktree_kind IN ('linked','copy')),
+  -- What the worktree's branch was cut from — what "this feature's changes"
+  -- are measured against. NULL when it attached to an existing branch.
+  worktree_base      TEXT,
   -- CASCADE (not RESTRICT): deleting an account must delete its sessions
   -- too, rather than blocking the account delete outright.
   account_id         TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,

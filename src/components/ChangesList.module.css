@@ -1,0 +1,121 @@
+/* The file index of a review: two groups (uncommitted, in the branch), one row
+   per file. Shared by the Changes screen and the Terminals review sidebar. */
+.groups {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sectionHead {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 0 6px 5px;
+}
+
+.sectionTitle {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.sectionHint {
+  font: 400 9.5px var(--font-ui);
+  color: var(--dim);
+}
+
+.sectionEmpty {
+  padding: 3px 6px;
+  font: 400 10.5px var(--font-ui);
+  color: var(--dim);
+}
+
+.counts {
+  font: 400 10px var(--font-mono);
+}
+
+.file,
+.fileActive {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--txt);
+  text-align: left;
+  cursor: pointer;
+}
+
+.file:hover {
+  background: var(--panel);
+}
+
+.fileActive {
+  background: var(--accD);
+  color: var(--acc);
+}
+
+.status {
+  flex: none;
+  width: 11px;
+  font: 700 10px var(--font-mono);
+}
+
+.added,
+.status.added,
+.status.untracked {
+  color: var(--grn);
+}
+
+.removed,
+.status.deleted {
+  color: var(--red);
+}
+
+.status.modified,
+.status.touched {
+  color: var(--amber);
+}
+
+.fileName {
+  flex: none;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 11.5px var(--font-ui);
+}
+
+/* Truncated from the left: the tail of a path is what identifies it, the head
+   is boilerplate every row shares. */
+.fileDir {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  font: 400 9.5px var(--font-mono);
+  color: var(--dim);
+}
+
+.fileCounts {
+  flex: none;
+  font: 400 9.5px var(--font-mono);
+}
+

@@ -1,0 +1,99 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: blur(2px);
+  display: flex;
+}
+
+.panel {
+  margin: 3vh 3vw;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  box-shadow: 0 20px 60px rgb(0 0 0 / 0.35);
+  overflow: hidden;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 600 12px var(--font-mono);
+}
+
+.group,
+.hint {
+  flex: none;
+  font: 400 10px var(--font-mono);
+  color: var(--dim);
+}
+
+.counts {
+  flex: none;
+  font: 400 10.5px var(--font-mono);
+}
+
+.added {
+  color: var(--grn);
+}
+
+.removed {
+  color: var(--red);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.toggle {
+  display: flex;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.toggleOn,
+.toggleOff {
+  border: 0;
+  padding: 3px 9px;
+  font: 400 10.5px var(--font-ui);
+  cursor: pointer;
+}
+
+.toggleOn {
+  background: var(--accD);
+  color: var(--acc);
+}
+
+.toggleOff {
+  background: transparent;
+  color: var(--dim);
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.loading {
+  padding: 18px;
+  font: 400 11.5px var(--font-ui);
+  color: var(--dim);
+}

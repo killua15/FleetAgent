@@ -277,6 +277,12 @@ const MIGRATIONS: &[Migration] = &[
         run: open_terminal_auto_continue,
         transactional: true,
     },
+    Migration {
+        version: 33,
+        name: "session_worktree_base",
+        run: session_worktree_base,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -1001,6 +1007,17 @@ fn open_terminal_auto_continue(conn: &Connection) -> Result<(), String> {
     }
     conn.execute_batch("ALTER TABLE open_terminals ADD COLUMN auto_continue INTEGER NOT NULL DEFAULT 0;")
         .map_err(|e| format!("could not add open_terminals.auto_continue: {e}"))
+}
+
+/// The branch a worktree was cut from. Without it a task branch with its own
+/// upstream was compared against that upstream — itself — and the review panel
+/// showed only unpushed commits instead of the feature.
+fn session_worktree_base(conn: &Connection) -> Result<(), String> {
+    if has_column(conn, "sessions", "worktree_base")? {
+        return Ok(());
+    }
+    conn.execute_batch("ALTER TABLE sessions ADD COLUMN worktree_base TEXT;")
+        .map_err(|e| format!("could not add sessions.worktree_base: {e}"))
 }
 
 /// Lets the user take a folder off the terminal pickers' recents without

@@ -599,6 +599,7 @@ struct WorktreeSessionRow<'a> {
     worktree_path: &'a str,
     worktree_branch: Option<&'a str>,
     worktree_kind: &'a str,
+    worktree_base: Option<&'a str>,
     account_id: &'a str,
     model: &'a str,
     effort: &'a str,
@@ -608,8 +609,8 @@ struct WorktreeSessionRow<'a> {
 
 fn insert_worktree_session(conn: &Connection, row: &WorktreeSessionRow) -> Result<(), String> {
     conn.execute(
-        "INSERT INTO sessions (id, name, project_id, node_id, parent_session_id, worktree_path, worktree_branch, worktree_kind, account_id, model, effort, mode, status, pid, provider_session_id, started_at, ended_at)
-         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'waiting', NULL, NULL, ?12, NULL)",
+        "INSERT INTO sessions (id, name, project_id, node_id, parent_session_id, worktree_path, worktree_branch, worktree_kind, worktree_base, account_id, model, effort, mode, status, pid, provider_session_id, started_at, ended_at)
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'waiting', NULL, NULL, ?13, NULL)",
         params![
             row.id,
             row.name,
@@ -618,6 +619,7 @@ fn insert_worktree_session(conn: &Connection, row: &WorktreeSessionRow) -> Resul
             row.worktree_path,
             row.worktree_branch,
             row.worktree_kind,
+            row.worktree_base,
             row.account_id,
             row.model,
             row.effort,
@@ -661,6 +663,16 @@ pub(crate) fn create_worktree_session<R: tauri::Runtime>(app: &AppHandle<R>, db:
             "copy"
         };
         let worktree_branch: Option<String> = if is_git { Some(branch) } else { None };
+        // What the new branch was cut from: the base asked for, or whatever the
+        // project had checked out (that's what `worktree add -b` branches off).
+        // An existing branch was cut long before Hangar saw it — unknown.
+        let worktree_base: Option<String> = match (&input.branch, is_git) {
+            (WorktreeBranch::Namespaced { base, .. } | WorktreeBranch::Exact { base, .. }, true) => base
+                .clone()
+                .or_else(|| crate::commands::pull_requests::git_capture(Path::new(project_path), &["rev-parse", "--abbrev-ref", "HEAD"]).ok())
+                .filter(|b| !b.is_empty() && b != "HEAD"),
+            _ => None,
+        };
 
         copy_env_files(project_path, &worktree_dir);
         ensure_worktree_dir_ignored(project_path);
@@ -686,6 +698,7 @@ pub(crate) fn create_worktree_session<R: tauri::Runtime>(app: &AppHandle<R>, db:
                     worktree_path: &worktree_dir.to_string_lossy(),
                     worktree_branch: worktree_branch.as_deref(),
                     worktree_kind,
+                    worktree_base: worktree_base.as_deref(),
                     account_id: &input.account_id,
                     model: &input.model,
                     effort: &input.effort,
@@ -1132,6 +1145,7 @@ pub(crate) fn adopt_worktree_blocking<R: tauri::Runtime>(
                 worktree_path: &entry.path,
                 worktree_branch: entry.branch.as_deref(),
                 worktree_kind: "linked",
+                worktree_base: None,
                 account_id: &account_id,
                 model: &model,
                 effort: TERMINAL_WORKTREE_EFFORT,
@@ -2320,6 +2334,11 @@ mod subsession_tests {
 
         let path = std::path::PathBuf::from(worktree.worktree_path.clone().unwrap());
         assert!(path.join("only-on-release.txt").is_file(), "the worktree must carry the base branch's content, not the checked-out branch's");
+
+        // Recorded, so the review panel measures this feature against `release`.
+        let db = app.state::<DbConnection>();
+        let base: Option<String> = db.0.lock().unwrap().query_row("SELECT worktree_base FROM sessions WHERE id = ?1", params![worktree.id], |r| r.get(0)).unwrap();
+        assert_eq!(base.as_deref(), Some("release"));
 
         let _ = std::fs::remove_dir_all(&project_dir);
     }

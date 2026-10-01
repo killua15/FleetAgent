@@ -5,6 +5,7 @@ import { invoke } from '../lib/invoke';
 import { AppTopBar } from '../components/AppTopBar';
 import { AccountSwitcher } from '../components/AccountSwitcher';
 import { TerminalPane } from '../components/TerminalPane';
+import { ReviewSidebar } from '../components/ReviewSidebar';
 import { toastError } from '../components/ErrorOverlay';
 import { Button } from '../components/ui/button';
 import { IconTooltip } from '../components/ui/tooltip';
@@ -96,6 +97,24 @@ export function Terminals() {
   // The panel the sidebar last sent you to, highlighted briefly so a click on a
   // row of twelve lands somewhere visible instead of scrolling silently.
   const [focusedId, setFocusedId] = useState<string | null>(null);
+  // The review sidebar's open/closed is a per-viewer convenience: storage may
+  // be unavailable, and closed is the safe default.
+  const [reviewOpen, setReviewOpen] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('hangar.terminals.reviewOpen') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const toggleReview = () =>
+    setReviewOpen((open) => {
+      try {
+        localStorage.setItem('hangar.terminals.reviewOpen', open ? '0' : '1');
+      } catch {
+        // Not remembered; still toggled.
+      }
+      return !open;
+    });
   // Qué terminal está mirando el teléfono. Un agente dirigido desde otro sitio
   // no puede parecer igual que uno que nadie está tocando.
   const [phone, setPhone] = useState<{ terminalId: string | null; device: string | null }>({ terminalId: null, device: null });
@@ -481,6 +500,17 @@ export function Terminals() {
         }
         primaryAction={
           <div style={{ display: 'flex', gap: 8 }}>
+            {terminals.length > 0 && (
+              <Button
+                size="sm"
+                variant={reviewOpen ? 'secondary' : 'outline'}
+                aria-pressed={reviewOpen}
+                onClick={toggleReview}
+                title="Review the focused terminal's changes: its files, and each file's diff"
+              >
+                ⇄ Changes
+              </Button>
+            )}
             <Button size="sm" variant="outline" onClick={openFanPicker} disabled={opening}>
               ⑃ Fan out
             </Button>
@@ -756,12 +786,17 @@ export function Terminals() {
                   )}
                   {/* Keyed by id so React never recycles one pane's xterm
                       instance for a different terminal. */}
-                  <TerminalPane terminalId={t.id} className={styles.term} />
+                  <TerminalPane terminalId={t.id} className={styles.term} onFocus={() => setFocusedId(t.id)} />
                 </div>
               ))}
             </div>
           )}
         </div>
+        {/* One shared review panel that follows the focused terminal — not a
+            list inside every card, which was tried and was too cramped. */}
+        {reviewOpen && terminals.length > 0 && (
+          <ReviewSidebar terminal={terminals.find((t) => t.id === focusedId) ?? panels[0] ?? terminals[0] ?? null} />
+        )}
       </div>
     </div>
   );
