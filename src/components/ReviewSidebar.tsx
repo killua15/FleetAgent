@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '../lib/invoke';
-import { reviewItems, type ReviewItem } from '../lib/review';
+import { orderedReviewItems, readListLayout, writeListLayout, type ListLayout, type ReviewItem } from '../lib/review';
 import type { WorktreeChanges } from '../types/gitPanel';
 import type { BranchInfo } from '../types/gitHistory';
 import type { TerminalActivity, TerminalInfo } from '../types/terminal';
@@ -30,6 +30,11 @@ export function ReviewSidebar({ terminal }: { terminal: TerminalInfo | null }) {
   const [branches, setBranches] = useState<string[]>([]);
   const [selected, setSelected] = useState<ReviewItem | null>(null);
   const [rider, setRider] = useState(false);
+  const [layout, setLayout] = useState<ListLayout>(readListLayout);
+  const pickLayout = (next: ListLayout) => {
+    setLayout(next);
+    writeListLayout(next);
+  };
 
   useEffect(() => {
     invoke<boolean>('is_rider_installed').then(setRider).catch(() => setRider(false));
@@ -97,6 +102,14 @@ export function ReviewSidebar({ terminal }: { terminal: TerminalInfo | null }) {
           {terminal.displayName ?? terminal.title}
         </span>
         <span className={styles.spacer} />
+        <div className={styles.layoutToggle}>
+          <button className={layout === 'tree' ? styles.layoutOn : styles.layoutOff} onClick={() => pickLayout('tree')} title="By folder">
+            Tree
+          </button>
+          <button className={layout === 'list' ? styles.layoutOn : styles.layoutOff} onClick={() => pickLayout('list')} title="Flat list">
+            List
+          </button>
+        </div>
         <Button size="sm" variant="ghost" disabled={loading} onClick={load} title="Read the changes again">
           {loading ? '…' : '↻'}
         </Button>
@@ -128,7 +141,7 @@ export function ReviewSidebar({ terminal }: { terminal: TerminalInfo | null }) {
       <div className={styles.body}>
         {error && <span className={styles.empty}>This terminal isn't in a git repository.</span>}
         {changes && count === 0 && <span className={styles.empty}>No changes against {changes.base}.</span>}
-        {changes && count > 0 && <ChangesList changes={changes} selected={selected} onSelect={setSelected} />}
+        {changes && count > 0 && <ChangesList key={path ?? ''} changes={changes} selected={selected} onSelect={setSelected} layout={layout} />}
       </div>
 
       {changes && selected && path && (
@@ -136,7 +149,7 @@ export function ReviewSidebar({ terminal }: { terminal: TerminalInfo | null }) {
           path={path}
           base={base}
           item={selected}
-          items={reviewItems(changes)}
+          items={orderedReviewItems(changes, layout)}
           rider={rider}
           onSelect={setSelected}
           onClose={() => setSelected(null)}

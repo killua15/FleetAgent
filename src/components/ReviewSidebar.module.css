@@ -61,3 +61,29 @@
   font: 400 11.5px var(--font-ui);
   color: var(--dim);
 }
+
+.layoutToggle {
+  display: flex;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.layoutOn,
+.layoutOff {
+  border: 0;
+  padding: 2px 7px;
+  font: 400 10px var(--font-ui);
+  cursor: pointer;
+}
+
+.layoutOn {
+  background: var(--accD);
+  color: var(--acc);
+}
+
+.layoutOff {
+  background: transparent;
+  color: var(--dim);
+}

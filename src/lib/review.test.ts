@@ -57,3 +57,52 @@ describe('diff layout preference', () => {
     expect(readDiffLayout()).toBe('unified');
   });
 });
+
+import { changesTree, folderPaths, orderedReviewItems, orderLikeTree } from './review';
+
+/** The tree is how a review answers "which part of the project did this
+ * touch" — nesting, compaction and the per-folder sums are the whole point. */
+describe('changesTree', () => {
+  const files = [
+    file('src/Bridge/Application/Maneuvers/Start.cs', 10, 2),
+    file('src/Bridge/Application/Maneuvers/Stop.cs', 4, 1),
+    file('src/Bridge/Domain/Maneuver.cs', 20, 5),
+    file('README.md', 1, 0),
+  ];
+
+  it('nests by folder, folders before files, and compacts single-folder chains', () => {
+    const tree = changesTree(files);
+    expect(tree.map((n) => n.name)).toEqual(['src/Bridge', 'README.md']);
+    const bridge = tree[0];
+    expect(bridge.children.map((n) => n.name)).toEqual(['Application/Maneuvers', 'Domain', ]);
+    expect(bridge.children[0].children.map((n) => n.name)).toEqual(['Start.cs', 'Stop.cs']);
+  });
+
+  it('sums the lines and counts the files under each folder', () => {
+    const bridge = changesTree(files)[0];
+    expect([bridge.added, bridge.removed, bridge.files]).toEqual([34, 8, 3]);
+    expect(bridge.children[0].added).toBe(14);
+  });
+
+  it('keeps two groups apart through the prefix', () => {
+    const u = changesTree([file('a/x.ts')], 'u:');
+    const c = changesTree([file('a/x.ts')], 'c:');
+    expect(u[0].path).not.toBe(c[0].path);
+    expect(folderPaths(u)).toEqual(['u:a/']);
+  });
+
+  it('walks files in the order the tree draws them', () => {
+    expect(orderLikeTree(files).map((f) => f.path)).toEqual([
+      'src/Bridge/Application/Maneuvers/Start.cs',
+      'src/Bridge/Application/Maneuvers/Stop.cs',
+      'src/Bridge/Domain/Maneuver.cs',
+      'README.md',
+    ]);
+  });
+
+  it('orders the review like the tree in tree mode and like git in list mode', () => {
+    const c: WorktreeChanges = { base: 'dev', uncommitted: [file('z.ts'), file('a/b.ts')], committed: [] };
+    expect(orderedReviewItems(c, 'tree').map((i) => i.file.path)).toEqual(['a/b.ts', 'z.ts']);
+    expect(orderedReviewItems(c, 'list').map((i) => i.file.path)).toEqual(['z.ts', 'a/b.ts']);
+  });
+});

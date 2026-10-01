@@ -1,6 +1,7 @@
+import type { ReactNode } from 'react';
 import { fileIcon } from '../lib/fileIcon';
 import { FILE_STATUS_COLOR, FILE_STATUS_LABEL } from '../lib/fileStatus';
-import type { FileTreeNode } from '../types/session';
+import type { FileStatus } from '../types/session';
 import styles from './FileTree.module.css';
 
 /** The file tree, shared by the agent panel and the Files screen.
@@ -9,19 +10,32 @@ import styles from './FileTree.module.css';
  * learned something the other didn't (a status colour, a collapsed-state rule),
  * and the tree is the part of both screens people actually navigate by.
  */
-export function FileTreeRows({
+/** Anything tree-shaped enough to draw: `FileTreeNode`, or the review's
+ * `ChangeNode`, which adds line counts. */
+interface TreeNode {
+  path: string;
+  name: string;
+  isDir: boolean;
+  status: FileStatus | null;
+  children: TreeNode[];
+}
+
+export function FileTreeRows<N extends TreeNode>({
   nodes,
   selectedPath,
   collapsedPaths,
   onToggleCollapsed,
   onSelectFile,
+  renderMeta,
   depth = 0,
 }: {
-  nodes: FileTreeNode[];
+  nodes: N[];
   selectedPath: string | null;
   collapsedPaths: Set<string>;
   onToggleCollapsed: (path: string) => void;
   onSelectFile: (path: string) => void;
+  /** Extra at the end of a row — the review's `+12 −3`. */
+  renderMeta?: (node: N) => ReactNode;
   depth?: number;
 }) {
   return (
@@ -52,14 +66,16 @@ export function FileTreeRows({
                 {node.name}
               </span>
               {!node.isDir && node.status && <span className={styles.statusDot} style={{ background: FILE_STATUS_COLOR[node.status] }} />}
+              {renderMeta?.(node)}
             </button>
             {node.isDir && !isCollapsed && node.children.length > 0 && (
               <FileTreeRows
-                nodes={node.children}
+                nodes={node.children as N[]}
                 selectedPath={selectedPath}
                 collapsedPaths={collapsedPaths}
                 onToggleCollapsed={onToggleCollapsed}
                 onSelectFile={onSelectFile}
+                renderMeta={renderMeta}
                 depth={depth + 1}
               />
             )}

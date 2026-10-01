@@ -119,3 +119,30 @@
   font: 400 9.5px var(--font-mono);
 }
 
+
+/* Tree view: the counts sit at the end of each row, a folder's being the sum
+   of everything under it. */
+.treeMeta {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.treeCount {
+  font: 400 9.5px var(--font-mono);
+  color: var(--dim);
+}
+
+.headAction {
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  font: 400 10px var(--font-mono);
+  padding: 0 3px;
+  cursor: pointer;
+}
+
+.headAction:hover {
+  color: var(--acc);
+}
