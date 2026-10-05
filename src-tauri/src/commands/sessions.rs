@@ -528,12 +528,20 @@ pub async fn create_worktree_for_project<R: tauri::Runtime>(
 ///
 /// Shares everything below with the other two callers; only the branch decision
 /// differs, which is the whole reason `WorktreeBranch` exists.
+/// A worktree a task can work in, and whether it was already there.
+pub(crate) struct OpenedWorktree {
+    pub session: Session,
+    /// The branch already had a worktree, so nothing was cut: reopening a task
+    /// goes back to where its work is.
+    pub reused: bool,
+}
+
 pub(crate) async fn create_worktree_on_branch<R: tauri::Runtime>(
     app: AppHandle<R>,
     project_id: String,
     branch: WorktreeBranch,
     account_id: String,
-) -> Result<Session, String> {
+) -> Result<OpenedWorktree, String> {
     let name = branch.resolved_name();
     crate::blocking::run_blocking(move || {
         let db = app.state::<DbConnection>();
@@ -564,6 +572,15 @@ pub(crate) async fn create_worktree_on_branch<R: tauri::Runtime>(
             other => other,
         };
 
+        // And when that branch already has a worktree, that worktree *is* the
+        // task: git won't check one branch out twice, and a second folder would
+        // be the wrong place to look for work that's sitting in the first.
+        if let WorktreeBranch::Existing(existing) = &branch {
+            if let Some(session) = reopen_existing_worktree(&app, &db, &project_id, &project_path, existing, &account_id)? {
+                return Ok(OpenedWorktree { session, reused: true });
+            }
+        }
+
         let session_id = create_worktree_session(
             &app,
             &db,
@@ -583,10 +600,52 @@ pub(crate) async fn create_worktree_on_branch<R: tauri::Runtime>(
         )?;
 
         let conn = db.0.lock().map_err(|e| e.to_string())?;
-        conn.query_row("SELECT * FROM sessions WHERE id = ?1", params![session_id], row_to_session)
-            .map_err(|e| e.to_string())
+        let session = conn.query_row("SELECT * FROM sessions WHERE id = ?1", params![session_id], row_to_session).map_err(|e| e.to_string())?;
+        Ok(OpenedWorktree { session, reused: false })
     })
     .await?
+}
+
+/// The session for the worktree `branch` is already checked out in, if it is
+/// checked out in one: the session that owns it, or a new one adopting it when
+/// nothing does. `None` means the branch is free and a worktree can be cut.
+///
+/// The project's own checkout is the one place this can't go — that folder is
+/// the user's, not a task's — so it's refused in words rather than left to
+/// git's "already used by worktree at".
+fn reopen_existing_worktree<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    db: &DbConnection,
+    project_id: &str,
+    project_path: &str,
+    branch: &str,
+    account_id: &str,
+) -> Result<Option<Session>, String> {
+    // A folder deleted by hand must not count as "checked out somewhere".
+    if let Err(e) = run_git(Path::new(project_path), &["worktree", "prune"]) {
+        log::warn!("reopen_existing_worktree: git worktree prune failed: {e}");
+    }
+    let entries = list_worktree_entries(Path::new(project_path))?;
+    let Some((index, entry)) = entries.iter().enumerate().find(|(_, e)| !e.prunable && e.branch.as_deref() == Some(branch)) else {
+        return Ok(None);
+    };
+    if index == 0 {
+        return Err(format!(
+            "`{branch}` is checked out in the project itself ({project_path}). Switch that folder to another branch, or open a terminal on the project instead."
+        ));
+    }
+    let owner = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        session_owning_worktree(&conn, project_id, &entry.path)?
+    };
+    let session = match owner {
+        Some(id) => {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            conn.query_row("SELECT * FROM sessions WHERE id = ?1", params![id], row_to_session).map_err(|e| e.to_string())?
+        }
+        None => adopt_worktree_blocking(app, db, project_id, &entry.path, Some(account_id))?,
+    };
+    Ok(Some(session))
 }
 
 /// A session row that owns a worktree — what both cutting a new worktree and
@@ -1663,10 +1722,10 @@ pub fn read_file(db: State<DbConnection>, target: crate::terminals::TerminalTarg
 /// provider's CLI, not with anything Hangar controls.
 #[tauri::command]
 pub async fn list_resumable_conversations(app: AppHandle, session_id: String) -> Result<Vec<ResumableConversation>, String> {
-    crate::blocking::run_blocking(move || list_resumable_conversations_blocking(app, session_id)).await?
+    crate::blocking::run_blocking(move || list_resumable_conversations_blocking(&app, &session_id)).await?
 }
 
-fn list_resumable_conversations_blocking(app: AppHandle, session_id: String) -> Result<Vec<ResumableConversation>, String> {
+pub(crate) fn list_resumable_conversations_blocking<R: tauri::Runtime>(app: &AppHandle<R>, session_id: &str) -> Result<Vec<ResumableConversation>, String> {
     let db = app.state::<DbConnection>();
     let (config_dir_path, project_path, current_provider_session_id): (String, String, Option<String>) = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
@@ -2127,7 +2186,8 @@ mod subsession_tests {
             WorktreeBranch::Existing("T2".to_string()),
             account_id,
         ))
-        .expect("checking out an existing task branch must succeed");
+        .expect("checking out an existing task branch must succeed")
+        .session;
 
         assert_eq!(session.worktree_branch.as_deref(), Some("T2"), "no `hangar/` prefix — the branch is the task's");
 
@@ -2164,7 +2224,7 @@ mod subsession_tests {
             ))
         };
 
-        let first = open_task().expect("the first open creates the branch");
+        let first = open_task().expect("the first open creates the branch").session;
         let worktree = PathBuf::from(first.worktree_path.clone().unwrap());
         std::fs::write(worktree.join("work.txt"), "done").unwrap();
         run_git(&worktree, &["add", "-A"]).unwrap();
@@ -2172,9 +2232,58 @@ mod subsession_tests {
         std::fs::remove_dir_all(&worktree).unwrap();
 
         let reopened = open_task().expect("reopening must check the existing branch out, not fail on -b");
-        let again = PathBuf::from(reopened.worktree_path.unwrap());
+        assert!(!reopened.reused, "the folder was gone, so this is a new worktree on the old branch");
+        let again = PathBuf::from(reopened.session.worktree_path.unwrap());
         assert_eq!(again, worktree, "the dead registration is pruned, so the task gets its own path back");
         assert!(again.join("work.txt").exists(), "the work on the branch must come back with it");
+
+        let _ = std::fs::remove_dir_all(&project_dir);
+    }
+
+    /// The other half of reopening: the worktree is still there (only its
+    /// terminal was closed). Git won't check one branch out twice, so cutting a
+    /// second worktree failed with "already used by worktree at" — reopening
+    /// must hand back the one the task already has.
+    #[test]
+    fn reopening_a_task_whose_worktree_is_still_there_goes_back_to_it() {
+        let project_dir = make_temp_dir("task-reopen-alive");
+        run_git(&project_dir, &["init"]).unwrap();
+        std::fs::write(project_dir.join("README.md"), "hi").unwrap();
+        run_git(&project_dir, &["add", "-A"]).unwrap();
+        run_git(&project_dir, &["commit", "-m", "init"]).unwrap();
+        let (app, account_id, project_id) = setup_test_app_with_account_and_project(project_dir.to_str().unwrap());
+        let open_task = |name: &str| {
+            tauri::async_runtime::block_on(create_worktree_on_branch(
+                app.handle().clone(),
+                project_id.clone(),
+                WorktreeBranch::Exact { name: name.to_string(), base: None },
+                account_id.clone(),
+            ))
+        };
+
+        let first = open_task("T10").expect("the first open cuts the worktree");
+        assert!(!first.reused);
+        let again = open_task("T10").expect("reopening with the worktree alive must not fail");
+        assert!(again.reused);
+        assert_eq!(again.session.id, first.session.id, "the same session, not a second one");
+        let worktrees = list_worktree_entries(&project_dir).unwrap();
+        assert_eq!(worktrees.iter().filter(|e| e.branch.as_deref() == Some("T10")).count(), 1, "no second worktree");
+
+        // A worktree nobody in Hangar owns (made by hand, or by another tool)
+        // is adopted rather than refused.
+        let orphan = project_dir.join(".hangar/worktrees/by-hand");
+        run_git(&project_dir, &["worktree", "add", &orphan.to_string_lossy(), "-b", "T11"]).unwrap();
+        let adopted = open_task("T11").expect("an orphan worktree is adopted");
+        assert!(adopted.reused);
+        assert!(same_path(adopted.session.worktree_path.as_deref().unwrap(), &orphan.to_string_lossy()));
+
+        // The project's own checkout is the user's, not a task's.
+        let current = String::from_utf8(
+            providers::git_command().args(["rev-parse", "--abbrev-ref", "HEAD"]).current_dir(&project_dir).output().unwrap().stdout,
+        )
+        .unwrap();
+        let err = open_task(current.trim()).err().expect("the project's own branch can't become a task worktree");
+        assert!(err.contains("checked out in the project itself"), "said in words, not git's: {err}");
 
         let _ = std::fs::remove_dir_all(&project_dir);
     }

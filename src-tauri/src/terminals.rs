@@ -2521,14 +2521,52 @@ pub async fn open_task_worktrees<R: Runtime>(
             crate::commands::sessions::WorktreeBranch::Existing(task.branch.clone())
         };
 
-        let session = crate::commands::sessions::create_worktree_on_branch(app.clone(), project_id.clone(), branch, task.account_id.clone()).await;
-        let session = match session {
-            Ok(session) => session,
+        let worktree = crate::commands::sessions::create_worktree_on_branch(app.clone(), project_id.clone(), branch, task.account_id.clone()).await;
+        let (session, reused) = match worktree {
+            Ok(worktree) => (worktree.session, worktree.reused),
             Err(e) => {
                 failures.push(format!("{}: {e}", task.branch));
                 continue;
             }
         };
+        let target = TerminalTarget { kind: TargetKind::Session, id: session.id.clone() };
+
+        // Reopening a task whose worktree was already there goes back to it —
+        // to its terminal if that's still open, to its conversation if not.
+        if reused {
+            if let Some(info) = terminal_for_session(&app, &session.id) {
+                opened.push(info);
+                continue;
+            }
+            // Only under the same account: the transcript lives in that
+            // account's config dir, and another account can't resume it.
+            let conversation = (session.account_id == task.account_id)
+                .then(|| crate::commands::sessions::list_resumable_conversations_blocking(&app, &session.id).ok())
+                .flatten()
+                .and_then(|list| list.into_iter().next());
+            if let Some(conversation) = conversation {
+                // No prompt: the brief was that conversation's first message
+                // already, and sending it again would restart the task.
+                match open_terminal_blocking(
+                    app.clone(),
+                    target.clone(),
+                    Some(task.account_id.clone()),
+                    Some(InitCommand::Resume),
+                    Some(conversation.provider_session_id),
+                    None,
+                    cols,
+                    rows,
+                ) {
+                    Ok(info) => {
+                        opened.push(info);
+                        continue;
+                    }
+                    // Falls through to a fresh start: the work is in the files
+                    // either way, and a terminal that opens beats one that doesn't.
+                    Err(e) => log::warn!("open_task_worktrees: could not resume {}: {e}", task.branch),
+                }
+            }
+        }
 
         // An explicit prompt wins: a row the user typed over is a row they
         // meant. Otherwise the brief goes to disk and the prompt points at it.
@@ -2537,14 +2575,11 @@ pub async fn open_task_worktrees<R: Runtime>(
             (None, Some(brief), Some(worktree)) => Some(crate::task_sources::write_task_brief(std::path::Path::new(worktree), brief)),
             _ => None,
         };
-
-        let target = TerminalTarget { kind: TargetKind::Session, id: session.id };
         match open_terminal_blocking(app.clone(), target, Some(task.account_id), Some(InitCommand::Start), None, prompt, cols, rows) {
             Ok(info) => opened.push(info),
             Err(e) => failures.push(format!("{}: {e}", task.branch)),
         }
     }
-
     if opened.is_empty() {
         return Err(format!("no task could be opened — {}", failures.join("; ")));
     }
