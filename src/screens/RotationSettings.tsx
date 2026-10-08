@@ -6,6 +6,7 @@ import { Spinner } from '../components/Spinner';
 import { Checkbox } from '../components/ui/checkbox';
 import { Input } from '../components/ui/input';
 import type { Project } from '../types/session';
+import { endpointHost, type Account } from '../types/account';
 import { ROTATION_POLICY_OPTIONS, type ProjectAccountRotation, type RotationPolicy } from '../types/settings';
 import styles from './RotationSettings.module.css';
 
@@ -20,6 +21,9 @@ export function RotationSettings() {
   const [rotation, setRotation] = useState<ProjectAccountRotation[]>([]);
   const [policy, setPolicy] = useState<RotationPolicy>('manual');
   const [loading, setLoading] = useState(false);
+  /** Custom-endpoint accounts — the only kind that can be a fallback. */
+  const [endpoints, setEndpoints] = useState<Account[]>([]);
+  const [fallbackId, setFallbackId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
 
@@ -32,6 +36,7 @@ export function RotationSettings() {
 
   useEffect(() => {
     loadProjects();
+    invoke<Account[]>('list_accounts').then((list) => setEndpoints(list.filter((a) => a.provider === 'custom' && a.baseUrl)));
   }, []);
 
   const startRename = (p: Project) => {
@@ -60,6 +65,7 @@ export function RotationSettings() {
     Promise.all([
       invoke<ProjectAccountRotation[]>('list_project_account_rotation', { projectId: selectedId }).then(setRotation),
       invoke<RotationPolicy>('get_rotation_policy', { projectId: selectedId, provider: POLICY_PROVIDER }).then(setPolicy),
+      invoke<string | null>('get_project_fallback_account', { projectId: selectedId }).then(setFallbackId),
     ]).finally(() => setLoading(false));
   }, [selectedId]);
 
@@ -71,6 +77,17 @@ export function RotationSettings() {
       await invoke('set_rotation_policy', { projectId: selectedId, provider: POLICY_PROVIDER, policy: next });
     } catch {
       setPolicy(previous);
+    }
+  };
+
+  const changeFallback = async (next: string | null) => {
+    if (!selectedId) return;
+    const previous = fallbackId;
+    setFallbackId(next);
+    try {
+      await invoke('set_project_fallback_account', { projectId: selectedId, accountId: next });
+    } catch {
+      setFallbackId(previous);
     }
   };
 
@@ -181,6 +198,38 @@ export function RotationSettings() {
                     </label>
                   ))}
                 </div>
+              </div>
+
+              <div className={styles.policyBox}>
+                <span className={styles.policyLabel}>WHEN EVERY ACCOUNT IS OUT</span>
+                {endpoints.length === 0 ? (
+                  <span className={styles.policyOptionHint}>
+                    No fallback available. Add a “Custom endpoint” account (OpenRouter, DeepSeek, a local gateway…) and it
+                    can be offered here once this project’s Claude accounts run out.
+                  </span>
+                ) : (
+                  <div className={styles.policyOptions}>
+                    <label className={fallbackId === null ? styles.policyOptionActive : styles.policyOption}>
+                      <input type="radio" name="fallback-account" checked={fallbackId === null} onChange={() => changeFallback(null)} />
+                      <span className={styles.policyOptionText}>
+                        <span className={styles.policyOptionLabel}>No fallback</span>
+                        <span className={styles.policyOptionHint}>The terminal waits for an account to recover.</span>
+                      </span>
+                    </label>
+                    {endpoints.map((a) => (
+                      <label key={a.id} className={fallbackId === a.id ? styles.policyOptionActive : styles.policyOption}>
+                        <input type="radio" name="fallback-account" checked={fallbackId === a.id} onChange={() => changeFallback(a.id)} />
+                        <span className={styles.policyOptionText}>
+                          <span className={styles.policyOptionLabel}>{a.name}</span>
+                          <span className={styles.policyOptionHint}>
+                            Offered on the out-of-quota banner, never switched to on its own. This project’s code goes to{' '}
+                            {endpointHost(a.baseUrl ?? '')}.
+                          </span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <p className={styles.checklistHint}>Check the accounts this project is allowed to rotate across.</p>

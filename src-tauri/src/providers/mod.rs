@@ -71,7 +71,7 @@ pub fn permission_args(provider: &str, mode: Mode) -> &'static [&'static str] {
     // comment above) — bucketed with claude for now since it's the more
     // common modern convention. Re-verify against `grok --help` and move it
     // to its own branch below if it doesn't match.
-    let claude_like = matches!(provider, "claude" | "kimi" | "grok");
+    let claude_like = matches!(provider, "claude" | "kimi" | "grok" | "custom");
     match (claude_like, mode) {
         (true, Mode::Plan) => &["--permission-mode", "plan"],
         (true, Mode::AskEdits) => &["--permission-mode", "manual"],
@@ -112,7 +112,7 @@ pub fn instruction_args(provider: &str, path: &str, inline: &str) -> Vec<String>
     match provider {
         // Kimi and Grok run through Claude Code's own binary/conventions, the
         // same bucketing `permission_args` uses above.
-        "claude" | "kimi" | "grok" => vec!["--append-system-prompt-file".to_string(), path.to_string()],
+        "claude" | "kimi" | "grok" | "custom" => vec!["--append-system-prompt-file".to_string(), path.to_string()],
         // Codex has no flag for this, but it does have a config key, and
         // `-c` overrides anything `~/.codex/config.toml` would have said.
         //
@@ -159,7 +159,7 @@ pub fn instruction_args(provider: &str, path: &str, inline: &str) -> Vec<String>
 /// it does today.
 pub fn skills_args(provider: &str, dir: &str) -> Vec<String> {
     match provider {
-        "claude" | "kimi" | "grok" => vec!["--add-dir".to_string(), dir.to_string()],
+        "claude" | "kimi" | "grok" | "custom" => vec!["--add-dir".to_string(), dir.to_string()],
         _ => Vec::new(),
     }
 }
@@ -182,7 +182,7 @@ pub fn skills_args(provider: &str, dir: &str) -> Vec<String> {
 /// nothing": that terminal opens exactly as it does today.
 pub fn mcp_config_args(provider: &str, config_path: &str) -> Vec<String> {
     match provider {
-        "claude" | "kimi" | "grok" => vec!["--mcp-config".to_string(), config_path.to_string()],
+        "claude" | "kimi" | "grok" | "custom" => vec!["--mcp-config".to_string(), config_path.to_string()],
         _ => Vec::new(),
     }
 }
@@ -531,6 +531,11 @@ pub enum AuthStatusProbe {
     Text { args: &'static [&'static str], logged_marker: &'static str, logged_out_marker: &'static str },
     /// No way to ask — a key-billed provider is "logged in" when it has a key.
     None,
+    /// Nothing to ask and nothing missing: the account *is* its key plus the
+    /// endpoint stored on its own row, so two of them are told apart by data
+    /// Hangar holds rather than by a login it would have to probe. That is the
+    /// difference from `None`, which marks a provider Hangar can't scope yet.
+    KeyPresent,
 }
 
 /// How a CLI lets a conversation be named and resumed — the difference that
@@ -754,6 +759,20 @@ pub fn spec(provider: &str) -> Option<ProviderSpec> {
             session: SessionControl::MintableId { start_flag: "--session-id", resume_flag: "--resume" },
             login_expects_code: false,
         }),
+        // Claude Code pointed at an endpoint the user names — the Kimi entry
+        // above with the URL taken from the account row instead of a constant
+        // (`terminals::AccountEndpoint`). OpenRouter, DeepSeek, Z.ai or a local
+        // gateway are all this one provider with a different row.
+        "custom" => Some(ProviderSpec {
+            binary: claude::BINARY,
+            config_dir_env: "CLAUDE_CONFIG_DIR",
+            login_args: None,
+            extra_env: &[],
+            key_env: "ANTHROPIC_AUTH_TOKEN",
+            auth_status: AuthStatusProbe::KeyPresent,
+            session: SessionControl::MintableId { start_flag: "--session-id", resume_flag: "--resume" },
+            login_expects_code: false,
+        }),
         _ => None,
     }
 }
@@ -836,6 +855,9 @@ mod tests {
         assert!(can_scope_to_account("codex"));
 
         assert!(!can_scope_to_account("kimi"));
+        // A custom endpoint is key-only like Kimi, but its URL and key live on
+        // the account row, which is what tells two of them apart.
+        assert!(can_scope_to_account("custom"));
         assert!(!can_scope_to_account("grok"));
         assert!(!can_scope_to_account("gemini"));
 

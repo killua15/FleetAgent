@@ -12,7 +12,7 @@ import { IconTooltip } from '../components/ui/tooltip';
 import { BaseBranchPicker, useBaseBranch } from '../components/BaseBranchPicker';
 import { useNavigation } from '../nav/NavigationProvider';
 import { autoGridColumns, shouldWarnAboutPanels } from '../lib/gridLayout';
-import { formatHoursLeft, providerMeta, type Account, type AccountAuth, type AccountNeedsLogin, type FanOutProjection } from '../types/account';
+import { endpointHost, formatHoursLeft, providerMeta, type Account, type AccountAuth, type AccountNeedsLogin, type FanOutProjection } from '../types/account';
 import type { Project, Session } from '../types/session';
 import { TERMINAL_STATE_META, type AutoContinueStatus, type FanOutBranch, type InitCommand, type SuggestedAccount, type TerminalActivity, type TerminalInfo, type TerminalTarget } from '../types/terminal';
 import { formatResumeAt } from '../lib/autoContinue';
@@ -742,6 +742,17 @@ export function Terminals() {
                         onManagePool={() => navigate('rotation-settings')}
                       />
                     )}
+                    {/* A terminal on a custom endpoint says where its code is
+                        going, on the card, for as long as it runs there. */}
+                    {(() => {
+                      const baseUrl = accounts.find((a) => a.id === t.accountId)?.baseUrl;
+                      if (!baseUrl) return null;
+                      return (
+                        <span className={styles.endpointBadge} title={`This terminal sends its prompts and code to ${baseUrl}, not to Anthropic`}>
+                          ⇄ {endpointHost(baseUrl)}
+                        </span>
+                      );
+                    })()}
                     {/* Only a claude session has a usage limit to wait out. */}
                     {t.accountId && t.sessionUuid && (
                       <AutoContinueToggle terminal={t} status={autoContinue[t.id]} onToggle={() => toggleAutoContinue(t)} />
@@ -834,7 +845,11 @@ function AutoContinueToggle({ terminal, status, onToggle }: { terminal: Terminal
  * allowed account to offer, and reopens the terminal there on click. For a
  * claude→claude switch the conversation is carried over (Hangar copies the
  * transcript into the new account and resumes it), so it keeps going rather
- * than starting fresh. */
+ * than starting fresh.
+ *
+ * When no account of the same provider is left, the offer is the project's
+ * fallback endpoint instead — and then the banner names the host before the
+ * click, because that switch changes who receives the project's code. */
 function OutOfQuotaBanner({ terminal, busy, onReopen }: { terminal: TerminalInfo; busy: boolean; onReopen: (accountId: string) => void }) {
   const [suggestion, setSuggestion] = useState<SuggestedAccount | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -858,6 +873,9 @@ function OutOfQuotaBanner({ terminal, busy, onReopen }: { terminal: TerminalInfo
       <span className={styles.quotaDot} />
       <span className={styles.quotaText}>
         {terminal.accountName ?? 'This account'} is out of quota.
+        {suggestion?.fallbackHost
+          ? ` No other account is left — the fallback sends this project's code to ${suggestion.fallbackHost}.`
+          : ''}
         {suggestion
           ? canKeepConversation
             ? ' Reopening keeps the conversation.'
@@ -869,7 +887,7 @@ function OutOfQuotaBanner({ terminal, busy, onReopen }: { terminal: TerminalInfo
       <span className={styles.spacer} />
       {suggestion && (
         <Button size="sm" disabled={busy} onClick={() => onReopen(suggestion.accountId)}>
-          {busy ? '…' : `Reopen in ${suggestion.accountName}`}
+          {busy ? '…' : suggestion.fallbackHost ? `Reopen in fallback ${suggestion.accountName}` : `Reopen in ${suggestion.accountName}`}
         </Button>
       )}
     </div>

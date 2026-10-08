@@ -113,6 +113,7 @@
 .tagCurrent,
 .tagSuggested,
 .tagBenched,
+.tagFallback,
 .tagLogin {
   flex: none;
   font: 500 9.5px var(--font-mono);
@@ -128,6 +129,10 @@
 }
 
 .tagBenched {
+  color: var(--amber);
+}
+
+.tagFallback {
   color: var(--amber);
 }
 

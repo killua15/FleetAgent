@@ -661,6 +661,18 @@
   white-space: nowrap;
 }
 
+/* A terminal running against a custom endpoint. Amber, the colour the app
+   already uses for "worth knowing before you carry on". */
+.endpointBadge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: var(--amberD);
+  color: var(--amber);
+  font: 500 10.5px var(--font-mono);
+  white-space: nowrap;
+}
+
 /* Agent state, as a dot in each panel header. Colour alone carries the state;
    the pulse is reserved for "working" so a still screen means nothing is
    running — the opposite would make a busy grid impossible to read. */

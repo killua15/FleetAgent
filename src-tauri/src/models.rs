@@ -15,6 +15,11 @@ pub struct Account {
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Where a `custom` account points Claude Code. `None` for every other
+    /// provider, whose endpoint is the CLI's own.
+    pub base_url: Option<String>,
+    /// The model a `custom` account asks its endpoint for, when set.
+    pub default_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -91,6 +96,11 @@ pub struct NewAccount {
     /// token in the keychain is keyed by this literal path.
     pub config_dir_path: Option<String>,
     pub monthly_cap: Option<f64>,
+    /// Required for a `custom` account and ignored for any other provider.
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -61,6 +61,9 @@ export interface AutoContinueStatus {
 export interface SuggestedAccount {
   accountId: string;
   accountName: string;
+  /** Set when this is the project's fallback endpoint rather than another
+   * account of the same provider: the host the project's code will go to. */
+  fallbackHost: string | null;
 }
 
 /** One row of the account switcher on a panel's header chip: the accounts this
@@ -77,6 +80,8 @@ export interface RotatableAccount {
   current: boolean;
   /** What the project's rotation policy would pick. */
   suggested: boolean;
+  /** For the project's fallback endpoint: the host it lives on. */
+  fallbackHost: string | null;
 }
 
 /** One branch of a fan-out: the worktree's name and the account that works in

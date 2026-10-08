@@ -534,7 +534,11 @@ pub(crate) fn shell_command_args(command: &str) -> Vec<String> {
 /// this reason — "never let an inherited ANTHROPIC_API_KEY mask the real login
 /// state" — and the hazard is the same for a shell the user will run `claude`
 /// in by hand.
-const IDENTITY_ENV_VARS: &[&str] = &["CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY"];
+///
+/// `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` belong here for the same
+/// reason, and matter more: inherited, they would send a subscription account's
+/// terminal — and the project's code — to somebody else's endpoint.
+const IDENTITY_ENV_VARS: &[&str] = &["CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"];
 
 /// Full parent environment plus a sane `TERM`, and — for an account-scoped
 /// terminal — with the inherited identity variables removed and the account's
@@ -580,11 +584,40 @@ pub(crate) struct AccountForTerminal {
     pub billing: String,
     pub config_dir_path: String,
     pub name: String,
+    /// Where a `custom` account points Claude Code; `None` for every provider
+    /// whose endpoint is fixed by its spec.
+    pub endpoint: Option<AccountEndpoint>,
+}
+
+/// The per-account half of what `ProviderSpec::extra_env` is for Kimi: the
+/// endpoint lives on the account row because every custom account has its own.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AccountEndpoint {
+    pub base_url: String,
+    pub model: Option<String>,
+}
+
+impl AccountEndpoint {
+    /// From the two nullable `accounts` columns. No address means no endpoint,
+    /// whatever the model column says.
+    pub(crate) fn from_columns(base_url: Option<String>, model: Option<String>) -> Option<Self> {
+        let base_url = base_url.filter(|u| !u.trim().is_empty())?;
+        Some(Self { base_url, model: model.filter(|m| !m.trim().is_empty()) })
+    }
+
+    /// The variables that point Claude Code at this endpoint.
+    fn env(&self) -> Vec<(&'static str, &str)> {
+        let mut env = vec![("ANTHROPIC_BASE_URL", self.base_url.as_str())];
+        if let Some(model) = &self.model {
+            env.push(("ANTHROPIC_MODEL", model.as_str()));
+        }
+        env
+    }
 }
 
 pub(crate) fn load_account(conn: &rusqlite::Connection, account_id: &str) -> Result<AccountForTerminal, String> {
     conn.query_row(
-        "SELECT provider, billing, config_dir_path, name FROM accounts WHERE id = ?1",
+        "SELECT provider, billing, config_dir_path, name, base_url, default_model FROM accounts WHERE id = ?1",
         rusqlite::params![account_id],
         |row| {
             Ok(AccountForTerminal {
@@ -592,6 +625,7 @@ pub(crate) fn load_account(conn: &rusqlite::Connection, account_id: &str) -> Res
                 billing: row.get(1)?,
                 config_dir_path: row.get(2)?,
                 name: row.get(3)?,
+                endpoint: AccountEndpoint::from_columns(row.get(4)?, row.get(5)?),
             })
         },
     )
@@ -624,6 +658,9 @@ fn account_key_env(account: &AccountForTerminal, account_id: &str) -> Result<Vec
     let var = crate::providers::spec(&account.provider).map(|s| s.key_env).unwrap_or("ANTHROPIC_API_KEY");
     let mut env: Vec<(String, String)> = key.into_iter().map(|k| (var.to_string(), k)).collect();
     for (k, v) in crate::providers::spec(&account.provider).map(|s| s.extra_env).unwrap_or(&[]) {
+        env.push((k.to_string(), v.to_string()));
+    }
+    for (k, v) in account.endpoint.iter().flat_map(AccountEndpoint::env) {
         env.push((k.to_string(), v.to_string()));
     }
     Ok(env)
@@ -777,7 +814,15 @@ pub(crate) fn account_command_line_full(
     // Fixed environment the provider always needs — for Kimi, pointing Claude
     // Code at Moonshot's Anthropic-compatible endpoint. Rendered into the
     // command line so what the picker previews is literally what runs.
-    let extra: String = spec.extra_env.iter().map(|(k, v)| format!("{k}={} ", shell_quote(v))).collect();
+    // A custom account's endpoint goes the same way and for the same reason:
+    // the address is where the project's code is about to be sent.
+    let extra: String = spec
+        .extra_env
+        .iter()
+        .copied()
+        .chain(account.endpoint.iter().flat_map(AccountEndpoint::env))
+        .map(|(k, v)| format!("{k}={} ", shell_quote(v)))
+        .collect();
     // Y el entorno que piden las skills enlazadas: callar la llamada a casa de
     // archify, y decirle dónde dejar los diagramas. Va junto al del proveedor
     // porque es lo mismo —entorno fijo que la línea enseña— y se salta en un
@@ -1819,7 +1864,7 @@ fn plan_conversation_handoff<R: Runtime>(app: &AppHandle<R>, terminal_id: &str, 
         (load_account(&conn, &from_account_id).ok()?, load_account(&conn, to_account_id).ok()?)
     };
     // Cross-provider isn't a file copy — that's the rendered-handoff path.
-    if from.provider != "claude" || to.provider != "claude" {
+    if !carries_conversation(&from.provider, &to.provider) {
         return None;
     }
 
@@ -1832,6 +1877,24 @@ fn plan_conversation_handoff<R: Runtime>(app: &AppHandle<R>, terminal_id: &str, 
             None
         }
     }
+}
+
+/// Whether a terminal moving between these two providers can take its
+/// transcript along as a file copy.
+///
+/// Claude→Claude is the verified case (`handoff`). A `custom` account is the
+/// same binary reading the same transcript format, so moving *onto* one — or
+/// between two — is the same copy.
+///
+/// ASSUMPTION, not verified against a real endpoint: a transcript written by
+/// Claude resumes on a third-party endpoint, on the grounds that those ignore
+/// the signatures on thinking blocks. The reverse is deliberately refused:
+/// Anthropic validates those signatures, and a transcript holding blocks another
+/// model produced is the one that could make every later turn fail. Coming back
+/// from a fallback therefore starts fresh on the same worktree. Tighten or
+/// loosen both once this has been run against a real key.
+fn carries_conversation(from_provider: &str, to_provider: &str) -> bool {
+    matches!((from_provider, to_provider), ("claude", "claude") | ("claude", "custom") | ("custom", "custom"))
 }
 
 /// `reopen_terminal_with_account`'s body, with the init command and session id
@@ -2929,6 +2992,7 @@ mod tests {
             billing: billing.to_string(),
             config_dir_path: config_dir.to_string(),
             name: "Test".to_string(),
+            endpoint: None,
         }
     }
 
@@ -3096,6 +3160,7 @@ mod tests {
             billing: "sub".to_string(),
             config_dir_path: "/tmp/codex-home".to_string(),
             name: "Codex".to_string(),
+            endpoint: None,
         };
         let line = account_command_line(&codex, InitCommand::Resume, Some("019fa0ee-92fa-7da0"), None).unwrap();
         // Unquoted because a uuid needs no quoting — `shell_quote` only adds
@@ -3116,6 +3181,7 @@ mod tests {
             billing: "sub".to_string(),
             config_dir_path: "/tmp/cx".to_string(),
             name: "Codex".to_string(),
+            endpoint: None,
         };
         let line = account_command_line(&codex, InitCommand::Resume, None, None).unwrap();
         assert!(!line.contains("resume"), "got: {line}");
@@ -3221,6 +3287,7 @@ mod tests {
             billing: "sub".to_string(),
             config_dir_path: "/tmp/cx".to_string(),
             name: "Codex".to_string(),
+            endpoint: None,
         };
         let result = account_command_line(&codex, InitCommand::Start, None, None);
 
@@ -3249,6 +3316,7 @@ mod tests {
             billing: "sub".to_string(),
             config_dir_path: "/tmp/cx".to_string(),
             name: "Codex".to_string(),
+            endpoint: None,
         };
         if !crate::providers::is_provider_available("codex") {
             return;
@@ -3283,6 +3351,7 @@ mod tests {
             billing: "sub".to_string(),
             config_dir_path: "/tmp/cl".to_string(),
             name: "Claude".to_string(),
+            endpoint: None,
         };
         if !crate::providers::is_provider_available("claude") {
             return;
@@ -3320,6 +3389,7 @@ mod tests {
             billing: "sub".to_string(),
             config_dir_path: "/tmp/cx".to_string(),
             name: "Codex".to_string(),
+            endpoint: None,
         };
         if !crate::providers::is_provider_available("codex") {
             return;
@@ -3381,6 +3451,7 @@ mod tests {
             billing: "sub".to_string(),
             config_dir_path: "/tmp/cl".to_string(),
             name: "Claude".to_string(),
+            endpoint: None,
         };
         let env = vec![
             ("ARCHIFY_UPDATE_CHECK_DISABLED".to_string(), "1".to_string()),
@@ -3413,6 +3484,7 @@ mod tests {
             billing: "sub".to_string(),
             config_dir_path: "/tmp/cl".to_string(),
             name: "Claude".to_string(),
+            endpoint: None,
         };
         if crate::providers::is_provider_available("claude") {
             let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[], &[], None).unwrap();
@@ -3432,6 +3504,7 @@ mod tests {
             billing: "sub".to_string(),
             config_dir_path: "/tmp/cx".to_string(),
             name: "Codex".to_string(),
+            endpoint: None,
         };
         if crate::providers::is_provider_available("codex") {
             let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, Some(dir), None, &[], &[], None).unwrap();
@@ -3451,6 +3524,7 @@ mod tests {
             billing: "sub".to_string(),
             config_dir_path: "/tmp/cl".to_string(),
             name: "Claude".to_string(),
+            endpoint: None,
         };
         if crate::providers::is_provider_available("claude") {
             // El caso normal: sin grafo construido no se añade nada, y la
@@ -3476,6 +3550,7 @@ mod tests {
             billing: "sub".to_string(),
             config_dir_path: "/tmp/cx".to_string(),
             name: "Codex".to_string(),
+            endpoint: None,
         };
         if crate::providers::is_provider_available("codex") {
             let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, None, Some(config), &[], &[], None).unwrap();
@@ -3494,6 +3569,7 @@ mod tests {
             billing: "key".to_string(),
             config_dir_path: "/tmp/kimi".to_string(),
             name: "Kimi".to_string(),
+            endpoint: None,
         };
         let result = account_command_line(&kimi, InitCommand::Start, None, None);
         if crate::providers::is_provider_available("kimi") {
@@ -3503,6 +3579,77 @@ mod tests {
         } else {
             assert!(result.is_err());
         }
+    }
+
+    /// A custom account is the Kimi case with the address read off the account
+    /// instead of a constant. It has to be on the command line — that string is
+    /// what the picker shows, and the address is where the code is about to go —
+    /// and the key must not be.
+    #[test]
+    fn a_custom_account_runs_claude_against_its_own_endpoint() {
+        let custom = AccountForTerminal {
+            provider: "custom".to_string(),
+            billing: "key".to_string(),
+            config_dir_path: "/tmp/ds".to_string(),
+            name: "DeepSeek".to_string(),
+            endpoint: Some(AccountEndpoint { base_url: "https://api.deepseek.com/anthropic".to_string(), model: Some("deepseek-chat".to_string()) }),
+        };
+        let result = account_command_line(&custom, InitCommand::Start, None, None);
+        if crate::providers::is_provider_available("custom") {
+            let line = result.expect("custom runs through claude, which is installed here");
+            assert!(line.contains("ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic "), "got: {line}");
+            assert!(line.contains("ANTHROPIC_MODEL=deepseek-chat "), "got: {line}");
+            assert!(line.contains(" claude"), "the binary is claude: {line}");
+            assert!(!line.contains("ANTHROPIC_AUTH_TOKEN"), "the key travels as environment, never on the command line: {line}");
+        } else {
+            assert!(result.is_err());
+        }
+    }
+
+    /// No model column means no `ANTHROPIC_MODEL` — the endpoint is then asked
+    /// for whatever Claude Code would ask Anthropic for, which is what a gateway
+    /// that maps Claude's own names expects.
+    #[test]
+    fn an_endpoint_without_a_model_sets_only_the_address() {
+        let endpoint = AccountEndpoint::from_columns(Some("http://localhost:3001".to_string()), Some("  ".to_string())).unwrap();
+        assert_eq!(endpoint.env(), vec![("ANTHROPIC_BASE_URL", "http://localhost:3001")]);
+        assert_eq!(AccountEndpoint::from_columns(None, Some("m".to_string())), None, "a model with no address is not an endpoint");
+        assert_eq!(AccountEndpoint::from_columns(Some(String::new()), None), None);
+    }
+
+    /// The hazard `IDENTITY_ENV_VARS` exists for, in its worst form: an endpoint
+    /// exported in the shell that launched Hangar would silently send a
+    /// subscription account's terminal somewhere else.
+    #[test]
+    fn an_inherited_endpoint_never_reaches_an_account_terminal() {
+        let base = vec![
+            ("ANTHROPIC_BASE_URL".to_string(), "https://inherited.example".to_string()),
+            ("ANTHROPIC_AUTH_TOKEN".to_string(), "inherited-token".to_string()),
+            ("PATH".to_string(), "/usr/bin".to_string()),
+        ];
+        let scoped = merge_env(base.clone(), &[], true);
+        assert_eq!(value_of(&scoped, "ANTHROPIC_BASE_URL"), None);
+        assert_eq!(value_of(&scoped, "ANTHROPIC_AUTH_TOKEN"), None);
+        assert_eq!(value_of(&scoped, "PATH"), Some("/usr/bin"));
+
+        let own = vec![("ANTHROPIC_BASE_URL".to_string(), "https://api.deepseek.com/anthropic".to_string())];
+        let custom = merge_env(base.clone(), &own, true);
+        assert_eq!(value_of(&custom, "ANTHROPIC_BASE_URL"), Some("https://api.deepseek.com/anthropic"), "the account's own endpoint replaces the inherited one");
+
+        let plain = merge_env(base, &[], false);
+        assert_eq!(value_of(&plain, "ANTHROPIC_BASE_URL"), Some("https://inherited.example"), "a terminal with no account is the user's own shell");
+    }
+
+    /// Which account switches keep the conversation. Onto a fallback, yes; back
+    /// from one, no — see `carries_conversation` for why that is asymmetric.
+    #[test]
+    fn the_conversation_follows_onto_a_fallback_but_not_back() {
+        assert!(carries_conversation("claude", "claude"));
+        assert!(carries_conversation("claude", "custom"));
+        assert!(carries_conversation("custom", "custom"));
+        assert!(!carries_conversation("custom", "claude"));
+        assert!(!carries_conversation("claude", "codex"));
+        assert!(!carries_conversation("codex", "custom"));
     }
 
     /// An API-key provider has no interactive login, and offering one would
@@ -3521,6 +3668,7 @@ mod tests {
             billing: "key".to_string(),
             config_dir_path: "/tmp/kimi".to_string(),
             name: "Kimi".to_string(),
+            endpoint: None,
         };
         let err = account_command_line(&kimi, InitCommand::Login, None, None).unwrap_err();
         assert!(err.contains("API key"), "the message has to explain why there's no login: {err}");

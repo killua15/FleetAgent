@@ -26,7 +26,53 @@ pub(crate) fn row_to_account(row: &rusqlite::Row) -> rusqlite::Result<Account> {
         status: row.get("status")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
+        base_url: row.get("base_url")?,
+        default_model: row.get("default_model")?,
     })
+}
+
+/// The endpoint a `custom` account will be pointed at, cleaned up, or why it
+/// can't be used.
+///
+/// Plain `http` is only accepted for this machine: that is a local gateway,
+/// and anywhere else it would send the key and the project's code in the clear.
+/// A trailing slash is dropped because Claude Code appends `/v1/messages`
+/// itself and some gateways answer 404 to the doubled one.
+pub(crate) fn normalize_endpoint_url(raw: &str) -> Result<String, String> {
+    let url = raw.trim().trim_end_matches('/');
+    let (scheme, rest) = url.split_once("://").ok_or_else(|| "the endpoint needs to start with https:// (or http:// for one on this machine)".to_string())?;
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    let hostname = match host.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(""),
+        None => host.split(':').next().unwrap_or(""),
+    };
+    if hostname.is_empty() || url.chars().any(char::is_whitespace) {
+        return Err(format!("{raw} isn't a usable endpoint address"));
+    }
+    match scheme {
+        "https" => Ok(url.to_string()),
+        "http" if matches!(hostname, "localhost" | "127.0.0.1" | "::1") => Ok(url.to_string()),
+        "http" => Err("an http:// endpoint is only allowed on this machine — use https:// for a remote one".to_string()),
+        other => Err(format!("{other}:// isn't supported for an endpoint — use https://")),
+    }
+}
+
+/// The endpoint columns for a new account: validated for `custom`, and always
+/// empty for every other provider so a stray value can't redirect a real login.
+fn endpoint_for_new_account(account: &NewAccount) -> Result<(Option<String>, Option<String>), String> {
+    if account.provider != "custom" {
+        return Ok((None, None));
+    }
+    if account.billing != "key" {
+        return Err("a custom endpoint account is always billed by key".to_string());
+    }
+    let raw = account.base_url.as_deref().filter(|u| !u.trim().is_empty()).ok_or_else(|| "a custom endpoint account needs the endpoint address".to_string())?;
+    let model = account.default_model.as_deref().map(str::trim).filter(|m| !m.is_empty()).map(str::to_string);
+    if model.as_deref().is_some_and(|m| m.chars().any(char::is_whitespace)) {
+        return Err("a model name can't contain spaces".to_string());
+    }
+    Ok((Some(normalize_endpoint_url(raw)?), model))
 }
 
 #[tauri::command]
@@ -86,7 +132,7 @@ pub(crate) fn can_adopt_existing_login(provider: &str) -> bool {
 /// greyed out in the terminal picker, which is a worse place to learn it.
 #[tauri::command]
 pub fn list_available_providers() -> Vec<ProviderAvailability> {
-    ["claude", "codex", "opencode", "gemini", "kimi", "grok"]
+    ["claude", "codex", "opencode", "gemini", "kimi", "grok", "custom"]
         .into_iter()
         .map(|p| ProviderAvailability {
             provider: p.to_string(),
@@ -237,6 +283,9 @@ pub fn create_account(
     account: NewAccount,
 ) -> Result<Account, String> {
     let id = Uuid::new_v4().to_string();
+    // Before the key is stored or a directory made: a refused address must
+    // leave nothing behind.
+    let (base_url, default_model) = endpoint_for_new_account(&account)?;
 
     if let Some(secret) = &account.secret {
         credential_vault::store(&id, secret)?;
@@ -287,8 +336,8 @@ pub fn create_account(
     let now = Utc::now().to_rfc3339();
 
     conn.execute(
-        "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, monthly_cap, status, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?1, ?8, 'healthy', ?9, ?9)",
+        "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, monthly_cap, status, created_at, updated_at, base_url, default_model)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?1, ?8, 'healthy', ?9, ?9, ?10, ?11)",
         params![
             id,
             account.provider,
@@ -299,6 +348,8 @@ pub fn create_account(
             config_dir_path,
             account.monthly_cap,
             now,
+            base_url,
+            default_model,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -530,13 +581,16 @@ pub struct AccountAuth {
 pub async fn list_account_auth(app: AppHandle) -> Result<Vec<AccountAuth>, String> {
     crate::blocking::run_blocking(move || {
         let db = app.state::<DbConnection>();
-        let rows: Vec<(String, String, String, String)> = {
+        let rows: Vec<(String, String, String, String, Option<crate::terminals::AccountEndpoint>)> = {
             let conn = db.0.lock().map_err(|e| e.to_string())?;
             let mut stmt = conn
-                .prepare("SELECT id, provider, billing, config_dir_path FROM accounts ORDER BY created_at ASC")
+                .prepare("SELECT id, provider, billing, config_dir_path, base_url, default_model FROM accounts ORDER BY created_at ASC")
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+                .query_map([], |row| {
+                    let endpoint = crate::terminals::AccountEndpoint::from_columns(row.get(4)?, row.get(5)?);
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, endpoint))
+                })
                 .map_err(|e| e.to_string())?;
             rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
         };
@@ -546,7 +600,7 @@ pub async fn list_account_auth(app: AppHandle) -> Result<Vec<AccountAuth>, Strin
         // rather than the sum of them.
         let handles: Vec<_> = rows
             .into_iter()
-            .map(|(id, provider, billing, config_dir_path)| {
+            .map(|(id, provider, billing, config_dir_path, endpoint)| {
                 std::thread::spawn(move || {
                     // Supported means "there's a way to ask this CLI whether
                     // it's logged in" — which is now true of Codex too, and was
@@ -558,6 +612,7 @@ pub async fn list_account_auth(app: AppHandle) -> Result<Vec<AccountAuth>, Strin
                         billing: billing.clone(),
                         config_dir_path: config_dir_path.clone(),
                         name: String::new(),
+                        endpoint,
                     };
                     // Same short-circuits as `check_account_auth`: an API key
                     // is its own proof of auth, and an unsupported provider
@@ -615,7 +670,7 @@ fn probeable_accounts(conn: &rusqlite::Connection) -> Result<Vec<(String, String
     Ok(rows
         .into_iter()
         .filter(|(_, _, provider, config_dir)| {
-            let probeable = crate::providers::spec(provider).is_some_and(|s| !matches!(s.auth_status, crate::providers::AuthStatusProbe::None));
+            let probeable = crate::providers::spec(provider).is_some_and(|s| !matches!(s.auth_status, crate::providers::AuthStatusProbe::None | crate::providers::AuthStatusProbe::KeyPresent));
             probeable && std::path::Path::new(config_dir).is_dir()
         })
         .collect())
@@ -812,6 +867,48 @@ pub async fn delete_account(app: AppHandle, id: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The address is what decides where a project's code is sent, so the
+    /// refusals matter as much as the acceptances: a remote endpoint over plain
+    /// http would carry the key and the code in the clear.
+    #[test]
+    fn an_endpoint_must_be_https_unless_it_is_this_machine() {
+        assert_eq!(normalize_endpoint_url(" https://openrouter.ai/api/ ").unwrap(), "https://openrouter.ai/api");
+        assert_eq!(normalize_endpoint_url("http://localhost:3001").unwrap(), "http://localhost:3001");
+        assert_eq!(normalize_endpoint_url("http://127.0.0.1:4000/").unwrap(), "http://127.0.0.1:4000");
+        assert_eq!(normalize_endpoint_url("http://[::1]:4000").unwrap(), "http://[::1]:4000");
+        for refused in ["http://api.example.com", "http://localhost.evil.com", "http://user@evil.com", "ftp://example.com", "openrouter.ai/api", "https://", "https://exa mple.com"] {
+            assert!(normalize_endpoint_url(refused).is_err(), "{refused} must be refused");
+        }
+    }
+
+    /// Only a custom account carries an endpoint. Anything else that arrives
+    /// with one has it dropped, so a stray value can't redirect a real login.
+    #[test]
+    fn only_a_custom_account_keeps_an_endpoint() {
+        let new = |provider: &str, billing: &str, base_url: Option<&str>, model: Option<&str>| NewAccount {
+            provider: provider.to_string(),
+            billing: billing.to_string(),
+            name: "A".to_string(),
+            scope: "personal".to_string(),
+            plan_label: String::new(),
+            secret: None,
+            login_id: None,
+            config_dir_path: None,
+            monthly_cap: None,
+            base_url: base_url.map(str::to_string),
+            default_model: model.map(str::to_string),
+        };
+        assert_eq!(endpoint_for_new_account(&new("claude", "sub", Some("https://evil.example"), Some("m"))).unwrap(), (None, None));
+        assert_eq!(
+            endpoint_for_new_account(&new("custom", "key", Some("https://api.deepseek.com/anthropic/"), Some(" deepseek-chat "))).unwrap(),
+            (Some("https://api.deepseek.com/anthropic".to_string()), Some("deepseek-chat".to_string()))
+        );
+        assert_eq!(endpoint_for_new_account(&new("custom", "key", Some("https://openrouter.ai/api"), Some("  "))).unwrap().1, None);
+        assert!(endpoint_for_new_account(&new("custom", "key", None, None)).is_err(), "no address, no account");
+        assert!(endpoint_for_new_account(&new("custom", "sub", Some("https://openrouter.ai/api"), None)).is_err());
+        assert!(endpoint_for_new_account(&new("custom", "key", Some("https://openrouter.ai/api"), Some("two words"))).is_err());
+    }
 
     /// Adoption is offered for the Claude family and nobody else, and the
     /// interesting half is the *negative*: offering it to a provider whose

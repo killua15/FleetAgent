@@ -283,6 +283,19 @@ const MIGRATIONS: &[Migration] = &[
         run: session_worktree_base,
         transactional: true,
     },
+    Migration {
+        version: 34,
+        name: "allow_custom_provider",
+        // Rebuilds two tables, like `allow_opencode_provider`.
+        run: allow_custom_provider,
+        transactional: false,
+    },
+    Migration {
+        version: 35,
+        name: "project_fallback_account",
+        run: project_fallback_account,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -1018,6 +1031,87 @@ fn session_worktree_base(conn: &Connection) -> Result<(), String> {
     }
     conn.execute_batch("ALTER TABLE sessions ADD COLUMN worktree_base TEXT;")
         .map_err(|e| format!("could not add sessions.worktree_base: {e}"))
+}
+
+/// Adds `custom` to the providers an account may have, plus the two columns
+/// that say where such an account points.
+///
+/// The same rebuild as `allow_opencode_provider`, for the same reason — SQLite
+/// cannot alter a `CHECK` — and over the same two tables. The new columns ride
+/// along in the rebuilt `accounts`; the `has_column` pass afterwards covers a
+/// database whose constraint was already wide but whose columns are missing.
+fn allow_custom_provider(conn: &Connection) -> Result<(), String> {
+    let already: bool = conn
+        .query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='accounts'", [], |row| row.get::<_, String>(0))
+        .map(|sql| sql.contains("'custom'"))
+        .unwrap_or(false);
+    if !already {
+        let _ = conn.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;");
+        let result = conn.execute_batch(
+            "BEGIN TRANSACTION;
+             ALTER TABLE accounts RENAME TO accounts_old_provider_migration;
+             CREATE TABLE accounts (
+               id               TEXT PRIMARY KEY,
+               provider         TEXT NOT NULL CHECK (provider IN ('claude','codex','opencode','gemini','kimi','grok','custom')),
+               billing          TEXT NOT NULL CHECK (billing IN ('sub','key')),
+               name             TEXT NOT NULL,
+               scope            TEXT NOT NULL CHECK (scope IN ('work','personal')),
+               plan_label       TEXT NOT NULL DEFAULT '',
+               config_dir_path  TEXT NOT NULL,
+               credential_ref   TEXT NOT NULL,
+               monthly_cap      REAL,
+               status           TEXT NOT NULL DEFAULT 'healthy' CHECK (status IN ('healthy','cooling_down','exhausted')),
+               created_at       TEXT NOT NULL,
+               updated_at       TEXT NOT NULL,
+               exhausted_at     TEXT,
+               team_account_id  TEXT,
+               provider_email   TEXT NOT NULL DEFAULT '',
+               base_url         TEXT,
+               default_model    TEXT
+             );
+             INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, monthly_cap, status, created_at, updated_at, exhausted_at, team_account_id, provider_email)
+               SELECT id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, monthly_cap, status, created_at, updated_at, exhausted_at, team_account_id, provider_email
+               FROM accounts_old_provider_migration;
+             DROP TABLE accounts_old_provider_migration;
+
+             ALTER TABLE rotation_policies RENAME TO rotation_policies_old_provider_migration;
+             CREATE TABLE rotation_policies (
+               project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+               provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','opencode','gemini','kimi','grok','custom')),
+               policy     TEXT NOT NULL DEFAULT 'manual' CHECK (policy IN ('auto','round_robin','manual')),
+               PRIMARY KEY (project_id, provider)
+             );
+             INSERT INTO rotation_policies SELECT project_id, provider, policy FROM rotation_policies_old_provider_migration;
+             DROP TABLE rotation_policies_old_provider_migration;
+             COMMIT;",
+        );
+        let outcome = match result {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                Err(format!("could not widen the provider constraint: {e}"))
+            }
+        };
+        let _ = conn.execute_batch("PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;");
+        outcome?;
+    }
+    for column in ["base_url", "default_model"] {
+        if !has_column(conn, "accounts", column)? {
+            conn.execute_batch(&format!("ALTER TABLE accounts ADD COLUMN {column} TEXT;"))
+                .map_err(|e| format!("could not add accounts.{column}: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// The account a project's terminals fall back to when every allowed account
+/// of their own provider is out of quota. NULL means none.
+fn project_fallback_account(conn: &Connection) -> Result<(), String> {
+    if has_column(conn, "projects", "fallback_account_id")? {
+        return Ok(());
+    }
+    conn.execute_batch("ALTER TABLE projects ADD COLUMN fallback_account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL;")
+        .map_err(|e| format!("could not add projects.fallback_account_id: {e}"))
 }
 
 /// Lets the user take a folder off the terminal pickers' recents without
@@ -2192,6 +2286,108 @@ mod tests {
         // And it is idempotent, because migrations get re-run on every start
         // until their version is recorded.
         allow_opencode_provider(&conn).expect("running it twice must be harmless");
+    }
+
+    /// A custom-endpoint account is rejected by every database created before
+    /// the provider existed, and the rebuild that fixes that has to carry the
+    /// rows across and leave the two endpoint columns behind it.
+    #[test]
+    fn custom_becomes_a_valid_provider_with_its_endpoint_columns() {
+        let conn = fresh_db();
+        conn.execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             PRAGMA legacy_alter_table=ON;
+             DROP TABLE accounts;
+             CREATE TABLE accounts (
+               id               TEXT PRIMARY KEY,
+               provider         TEXT NOT NULL CHECK (provider IN ('claude','codex','opencode','gemini','kimi','grok')),
+               billing          TEXT NOT NULL CHECK (billing IN ('sub','key')),
+               name             TEXT NOT NULL,
+               scope            TEXT NOT NULL CHECK (scope IN ('work','personal')),
+               plan_label       TEXT NOT NULL DEFAULT '',
+               config_dir_path  TEXT NOT NULL,
+               credential_ref   TEXT NOT NULL,
+               monthly_cap      REAL,
+               status           TEXT NOT NULL DEFAULT 'healthy' CHECK (status IN ('healthy','cooling_down','exhausted')),
+               created_at       TEXT NOT NULL,
+               updated_at       TEXT NOT NULL,
+               exhausted_at     TEXT,
+               team_account_id  TEXT,
+               provider_email   TEXT NOT NULL DEFAULT ''
+             );
+             DROP TABLE rotation_policies;
+             CREATE TABLE rotation_policies (
+               project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+               provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','opencode','gemini','kimi','grok')),
+               policy     TEXT NOT NULL DEFAULT 'manual' CHECK (policy IN ('auto','round_robin','manual')),
+               PRIMARY KEY (project_id, provider)
+             );
+             PRAGMA legacy_alter_table=OFF;
+             PRAGMA foreign_keys=ON;",
+        )
+        .unwrap();
+        conn.execute("INSERT INTO projects (id, name, path, created_at) VALUES ('p1','P','/tmp','now')", []).unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, monthly_cap, status, created_at, updated_at, provider_email)
+             VALUES ('c1','claude','sub','Work','work','Max','~/.work','c1',42.5,'healthy','then','then','me@example.com')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO rotation_policies (project_id, provider, policy) VALUES ('p1','claude','round_robin')", []).unwrap();
+        assert!(
+            conn.execute(
+                "INSERT INTO accounts (id, provider, billing, name, scope, config_dir_path, credential_ref, status, created_at, updated_at)
+                 VALUES ('x0','custom','key','DS','personal','~/.ds','x0','healthy','now','now')",
+                [],
+            )
+            .is_err(),
+            "the old shape must reject custom, or this test proves nothing"
+        );
+
+        allow_custom_provider(&conn).expect("the migration must run on a pre-custom database");
+
+        conn.execute(
+            "INSERT INTO accounts (id, provider, billing, name, scope, config_dir_path, credential_ref, status, created_at, updated_at, base_url, default_model)
+             VALUES ('x1','custom','key','DS','personal','~/.ds','x1','healthy','now','now','https://api.deepseek.com/anthropic','deepseek-chat')",
+            [],
+        )
+        .expect("after the migration a custom account with its endpoint must be accepted");
+        conn.execute("INSERT INTO rotation_policies (project_id, provider, policy) VALUES ('p1','custom','auto')", [])
+            .expect("rotation_policies must have been widened too");
+
+        let (cap, email, base_url): (f64, String, Option<String>) = conn
+            .query_row("SELECT monthly_cap, provider_email, base_url FROM accounts WHERE id = 'c1'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .expect("the pre-existing account must survive the rebuild");
+        assert_eq!((cap, email.as_str(), base_url), (42.5, "me@example.com", None));
+        let policy: String = conn
+            .query_row("SELECT policy FROM rotation_policies WHERE project_id='p1' AND provider='claude'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(policy, "round_robin");
+
+        allow_custom_provider(&conn).expect("running it twice must be harmless");
+    }
+
+    /// The fallback is a nullable pointer, and it must let go when the account
+    /// it names is deleted rather than block the delete or dangle.
+    #[test]
+    fn a_projects_fallback_account_is_optional_and_clears_with_the_account() {
+        let conn = fresh_db();
+        run_migrations(&conn).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        conn.execute("INSERT INTO projects (id, name, path, created_at) VALUES ('p1','P','/tmp','now')", []).unwrap();
+        let none: Option<String> = conn.query_row("SELECT fallback_account_id FROM projects WHERE id='p1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(none, None, "no fallback unless someone picks one");
+
+        conn.execute(
+            "INSERT INTO accounts (id, provider, billing, name, scope, config_dir_path, credential_ref, status, created_at, updated_at, base_url)
+             VALUES ('x1','custom','key','DS','personal','~/.ds','x1','healthy','now','now','https://api.deepseek.com/anthropic')",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE projects SET fallback_account_id='x1' WHERE id='p1'", []).unwrap();
+        conn.execute("DELETE FROM accounts WHERE id='x1'", []).unwrap();
+        let after: Option<String> = conn.query_row("SELECT fallback_account_id FROM projects WHERE id='p1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(after, None);
     }
 
     /// Reported as "I minimise every panel, reopen Hangar, and they are all

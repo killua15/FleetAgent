@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useNavigation } from '../nav/NavigationProvider';
 import { extractUrl, stripAnsi } from '../lib/ansi';
-import { KEY_ONLY_PROVIDERS, LOGIN_EXPECTS_CODE, PROVIDER_META, type Billing, type DiscoveredLogin, type NewAccount, type Provider, type Scope } from '../types/account';
+import { ENDPOINT_PRESETS, endpointHost, KEY_ONLY_PROVIDERS, LOGIN_EXPECTS_CODE, PROVIDER_META, type Billing, type DiscoveredLogin, type NewAccount, type Provider, type Scope } from '../types/account';
 import type { ApiKeyCheck, AuthStatus, LoginOutputEvent, LoginSession, ProviderAvailability } from '../types/login';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -75,6 +75,15 @@ export function AddAccount() {
   const [apiKey, setApiKey] = useState('');
   const [keyCheck, setKeyCheck] = useState<ApiKeyCheck | null>(null);
   const [checkingKey, setCheckingKey] = useState(false);
+
+  // --- custom endpoint state ---
+  const [baseUrl, setBaseUrl] = useState('');
+  const [defaultModel, setDefaultModel] = useState('');
+  const isCustom = provider === 'custom';
+  /** Same rule Rust enforces on save (`normalize_endpoint_url`), checked here
+   * so the wizard doesn't let someone reach the last step with an address that
+   * will be refused there. Plain http only for this machine. */
+  const endpointOk = /^(https:\/\/[^\s/]+|http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?)(\/\S*)?$/.test(baseUrl.trim());
 
   const prov = PROVIDER_META[provider];
 
@@ -263,7 +272,7 @@ export function AddAccount() {
       : step === 2
         ? true
         : step === 3
-          ? (billing === 'sub' ? loggedIn || importedConfigDir !== null : keyUsable || keyOptional)
+          ? (billing === 'sub' ? loggedIn || importedConfigDir !== null : (keyUsable || keyOptional) && (!isCustom || endpointOk))
           : !nameTaken(name);
 
   const handleNext = async () => {
@@ -286,6 +295,8 @@ export function AddAccount() {
       configDirPath: importedConfigDir ?? undefined,
       loginId: billing === 'sub' && importedConfigDir === null ? loginSession?.loginId : undefined,
       monthlyCap: monthlyCap ? Number(monthlyCap.replace(/[^0-9.]/g, '')) : undefined,
+      baseUrl: isCustom ? baseUrl.trim() : undefined,
+      defaultModel: isCustom && defaultModel.trim() ? defaultModel.trim() : undefined,
     };
     try {
       await invoke('create_account', { account });
@@ -411,6 +422,8 @@ export function AddAccount() {
                         segundo. */}
                     {provider === 'kimi'
                       ? 'Kimi authenticates with a Moonshot API key — there is no subscription login. It runs through Claude Code against Moonshot’s Anthropic-compatible endpoint, so everything else works the same.'
+                      : provider === 'custom'
+                        ? 'An endpoint that speaks Anthropic’s API — OpenRouter, DeepSeek, Z.ai, a local gateway. It runs through Claude Code with its own key, so sessions, worktrees and resume work the same. Hangar does not track its quota or spend.'
                       : provider === 'opencode'
                         ? 'opencode reads a provider’s key straight from the environment, so there is no login to run here. And the key is optional: without one it still works, on the free models it ships with.'
                         : 'Pay per token. Hangar tracks accumulated spend and enforces your cap.'}
@@ -553,6 +566,54 @@ export function AddAccount() {
                   <Button variant="outline" className={styles.simulateBtn} disabled={submittingCode || !pasteCode.trim()} onClick={handleSubmitCode}>
                     {submittingCode ? <Spinner label="submitting…" /> : 'Submit code'}
                   </Button>
+                </div>
+              )}
+            </>
+          )}
+
+          {step === 3 && billing === 'key' && isCustom && (
+            <>
+              <span className={styles.hint}>Where should Claude Code send its requests?</span>
+              <div className={styles.field}>
+                <Label className={styles.label}>ENDPOINT</Label>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {ENDPOINT_PRESETS.map((preset) => (
+                    <Button
+                      key={preset.label}
+                      variant={baseUrl.trim() === preset.baseUrl ? 'secondary' : 'outline'}
+                      size="sm"
+                      onClick={() => setBaseUrl(preset.baseUrl)}
+                    >
+                      {preset.label}
+                    </Button>
+                  ))}
+                </div>
+                <Input
+                  className={styles.input}
+                  value={baseUrl}
+                  onChange={(e) => setBaseUrl(e.target.value)}
+                  placeholder="https://…"
+                />
+                {baseUrl.trim() !== '' && !endpointOk && (
+                  <span style={{ color: 'var(--red)', font: '500 11px var(--font-mono)' }}>
+                    Use an https:// address — http:// only works for an endpoint on this machine.
+                  </span>
+                )}
+              </div>
+              <div className={styles.field}>
+                <Label className={styles.label}>MODEL (OPTIONAL)</Label>
+                <Input
+                  className={styles.input}
+                  value={defaultModel}
+                  onChange={(e) => setDefaultModel(e.target.value)}
+                  placeholder="leave empty to use the endpoint's default"
+                />
+              </div>
+              {endpointOk && (
+                <div className={styles.note}>
+                  Every terminal on this account sends its prompts and the code it reads to{' '}
+                  <span className={styles.noteAccent}>{endpointHost(baseUrl.trim())}</span>, under that provider’s
+                  terms — not Anthropic’s.
                 </div>
               )}
             </>

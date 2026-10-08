@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PROVIDER_META, providerMeta, UNKNOWN_PROVIDER_META, type Provider } from './account';
+import { endpointHost, PROVIDER_META, providerMeta, UNKNOWN_PROVIDER_META, type Provider } from './account';
 
 /** These lookups are the one place a string straight out of SQLite is used to
  * index a map the build wrote at compile time. That gap is not theoretical: an
@@ -38,5 +38,25 @@ describe('providerMeta', () => {
     // constraint rejects it, but nothing here should depend on that.
     expect(() => providerMeta('')).not.toThrow();
     expect(providerMeta('').letter).toBe('?');
+  });
+});
+
+/** The host is what every "your code goes here" label is built from, so it has
+ * to be the real destination and never a credential that rode along in the
+ * address. */
+describe('endpointHost', () => {
+  it('shows the host and port of an endpoint', () => {
+    expect(endpointHost('https://openrouter.ai/api')).toBe('openrouter.ai');
+    expect(endpointHost('http://localhost:3001')).toBe('localhost:3001');
+    expect(endpointHost('https://api.z.ai/api/anthropic?x=1')).toBe('api.z.ai');
+  });
+
+  it('drops credentials embedded in the address', () => {
+    expect(endpointHost('https://user:secret@api.deepseek.com/anthropic')).toBe('api.deepseek.com');
+  });
+
+  it('falls back to the whole string rather than showing nothing', () => {
+    expect(endpointHost('not-a-url')).toBe('not-a-url');
+    expect(endpointHost('')).toBe('');
   });
 });

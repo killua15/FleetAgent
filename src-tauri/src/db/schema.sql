@@ -2,7 +2,7 @@
 
 CREATE TABLE IF NOT EXISTS accounts (
   id               TEXT PRIMARY KEY,
-  provider         TEXT NOT NULL CHECK (provider IN ('claude','codex','opencode','gemini','kimi','grok')),
+  provider         TEXT NOT NULL CHECK (provider IN ('claude','codex','opencode','gemini','kimi','grok','custom')),
   billing          TEXT NOT NULL CHECK (billing IN ('sub','key')),
   name             TEXT NOT NULL,
   scope            TEXT NOT NULL CHECK (scope IN ('work','personal')),
@@ -31,7 +31,13 @@ CREATE TABLE IF NOT EXISTS accounts (
   -- can join "the same subscription" across Macs. Filled by the login check,
   -- which already asks for it and used to throw it away. Empty for providers
   -- whose CLI does not report one (Codex among them).
-  provider_email   TEXT NOT NULL DEFAULT ''
+  provider_email   TEXT NOT NULL DEFAULT '',
+  -- Only for `provider = 'custom'`: the Anthropic-compatible endpoint Claude
+  -- Code is pointed at (`ANTHROPIC_BASE_URL`), and the model to ask it for
+  -- (`ANTHROPIC_MODEL`) when the endpoint does not serve Claude's own names.
+  -- Not secrets — the key stays in the keychain like every other account's.
+  base_url         TEXT,
+  default_model    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -46,7 +52,12 @@ CREATE TABLE IF NOT EXISTS projects (
   -- hides the row: sessions, worktrees and history stay, and choosing the
   -- folder again brings it back.
   hidden_in_pickers      INTEGER NOT NULL DEFAULT 0,
-  created_at             TEXT NOT NULL
+  created_at             TEXT NOT NULL,
+  -- The account a terminal is offered once every allowed account of its own
+  -- provider is out of quota. NULL — the default — means no fallback, and the
+  -- out-of-quota banner behaves as it always did. Opt-in per project because
+  -- it sends the project's code to whatever endpoint that account names.
+  fallback_account_id    TEXT REFERENCES accounts(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS project_allowed_accounts (
@@ -58,7 +69,7 @@ CREATE TABLE IF NOT EXISTS project_allowed_accounts (
 
 CREATE TABLE IF NOT EXISTS rotation_policies (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','opencode','gemini','kimi','grok')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','opencode','gemini','kimi','grok','custom')),
   policy     TEXT NOT NULL DEFAULT 'manual' CHECK (policy IN ('auto','round_robin','manual')),
   PRIMARY KEY (project_id, provider)
 );

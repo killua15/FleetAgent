@@ -374,6 +374,8 @@ pub fn run() {
             commands::onboarding::onboarding_progress,
             rotation::get_rotation_policy,
             rotation::set_rotation_policy,
+            rotation::get_project_fallback_account,
+            rotation::set_project_fallback_account,
             commands::settings::list_memory_groups,
             commands::settings::create_memory_group,
             commands::settings::delete_memory_group,

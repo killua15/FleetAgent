@@ -64,6 +64,7 @@ export function AccountSwitcher({
   };
 
   const others = accounts?.filter((a) => !a.current) ?? [];
+  const onFallback = accounts?.some((a) => a.current && a.fallbackHost) ?? false;
 
   return (
     <PopoverPrimitive.Root open={open} onOpenChange={onOpenChange}>
@@ -96,7 +97,13 @@ export function AccountSwitcher({
                 key={a.accountId}
                 className={a.current ? styles.rowCurrent : styles.row}
                 disabled={a.current || benched || switching}
-                title={benched ? 'This account is out of quota — it comes back on its own after its window resets' : undefined}
+                title={
+                  benched
+                    ? 'This account is out of quota — it comes back on its own after its window resets'
+                    : a.fallbackHost && !a.current
+                      ? `The project's fallback — this terminal's prompts and code would go to ${a.fallbackHost}`
+                      : undefined
+                }
                 onClick={() => {
                   setOpen(false);
                   onSwitch(a.accountId);
@@ -118,6 +125,7 @@ export function AccountSwitcher({
                     </span>
                   );
                 })()}
+                {a.fallbackHost && <span className={styles.tagFallback}>fallback · {a.fallbackHost}</span>}
                 {a.current && <span className={styles.tagCurrent}>current</span>}
                 {!a.current && a.suggested && <span className={styles.tagSuggested}>suggested</span>}
                 {benched && <span className={styles.tagBenched}>out of quota</span>}
@@ -138,9 +146,13 @@ export function AccountSwitcher({
 
           {accounts && others.length > 0 && (
             <span className={styles.footer}>
-              {terminal.sessionUuid
-                ? 'Switching carries this conversation over — the agent picks up where it left off.'
-                : 'This terminal has no conversation to carry, so switching starts a fresh one.'}
+              {/* Off a fallback the conversation stays behind — see
+                  `carries_conversation` in terminals.rs for why. */}
+              {onFallback
+                ? 'Leaving the fallback starts a fresh conversation on the same worktree — its files and commits stay.'
+                : terminal.sessionUuid
+                  ? 'Switching carries this conversation over — the agent picks up where it left off.'
+                  : 'This terminal has no conversation to carry, so switching starts a fresh one.'}
             </span>
           )}
 

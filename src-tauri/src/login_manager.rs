@@ -357,7 +357,7 @@ pub fn auth_status_with(provider: &str, config_dir: &str, trust_marker: TrustMar
         crate::providers::AuthStatusProbe::Json(args) | crate::providers::AuthStatusProbe::Text { args, .. } => args.to_vec(),
         // Nothing to ask: a key-billed provider is authenticated when it has a
         // key, and the wizard validates that separately.
-        crate::providers::AuthStatusProbe::None => {
+        crate::providers::AuthStatusProbe::None | crate::providers::AuthStatusProbe::KeyPresent => {
             return Ok(AuthStatus { logged_in: false, auth_method: "key".to_string(), email: None, subscription_type: None })
         }
     };
@@ -405,7 +405,7 @@ pub fn auth_status_with(provider: &str, config_dir: &str, trust_marker: TrustMar
                 probe_sentence(&stdout, &stderr).chars().take(200).collect::<String>()
             )),
         },
-        crate::providers::AuthStatusProbe::None => unreachable!("handled above"),
+        crate::providers::AuthStatusProbe::None | crate::providers::AuthStatusProbe::KeyPresent => unreachable!("handled above"),
     }
 }
 

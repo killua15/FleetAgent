@@ -1,4 +1,4 @@
-export type Provider = 'claude' | 'codex' | 'opencode' | 'gemini' | 'kimi' | 'grok';
+export type Provider = 'claude' | 'codex' | 'opencode' | 'gemini' | 'kimi' | 'grok' | 'custom';
 export type Billing = 'sub' | 'key';
 export type Scope = 'work' | 'personal';
 export type AccountStatus = 'healthy' | 'cooling_down' | 'exhausted';
@@ -16,6 +16,11 @@ export interface Account {
   status: AccountStatus;
   createdAt: string;
   updatedAt: string;
+  /** Where a `custom` account points Claude Code. `null` for every other
+   * provider, whose endpoint is the CLI's own. */
+  baseUrl: string | null;
+  /** The model a `custom` account asks its endpoint for, when set. */
+  defaultModel: string | null;
 }
 
 /** Login state for one account, from the batch `list_account_auth` command.
@@ -59,6 +64,9 @@ export interface NewAccount {
    * `~/.claude-work`), adopted in place instead of running a fresh login. */
   configDirPath?: string;
   monthlyCap?: number;
+  /** Required for a `custom` account; ignored for any other provider. */
+  baseUrl?: string;
+  defaultModel?: string;
 }
 
 /** A Claude Code config directory already logged in on this machine that no
@@ -137,7 +145,41 @@ export const PROVIDER_META: Record<Provider, ProviderMeta> = {
     tintVar: 'var(--tealD)',
     loginCmd: '',
   },
+  // The Kimi arrangement with the address chosen by the user: Claude Code
+  // pointed at any Anthropic-compatible endpoint. What a project falls back to
+  // when its Claude accounts run out.
+  custom: {
+    name: 'Custom endpoint',
+    cli: 'claude code → your endpoint',
+    letter: '⇄',
+    colorVar: 'var(--amber)',
+    tintVar: 'var(--amberD)',
+    loginCmd: '',
+  },
 };
+
+/** Starting points for a custom account's address. Only the address is filled
+ * in — it stays editable, and nothing here is contacted until a terminal runs.
+ *
+ * ASSUMPTION: the DeepSeek and Z.ai addresses are the ones their docs give for
+ * Claude Code and have not been run from here; OpenRouter's is from its own
+ * Claude Code guide, and Moonshot's is the one the Kimi provider already uses. */
+export const ENDPOINT_PRESETS: { label: string; baseUrl: string }[] = [
+  { label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api' },
+  { label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/anthropic' },
+  { label: 'Z.ai (GLM)', baseUrl: 'https://api.z.ai/api/anthropic' },
+  { label: 'Moonshot (Kimi)', baseUrl: 'https://api.moonshot.ai/anthropic' },
+  { label: 'Local gateway', baseUrl: 'http://localhost:3001' },
+];
+
+/** The host of an endpoint address — what the UI shows wherever it has to say
+ * where a project's code is going. The whole string when there is no host to
+ * find, so nothing is hidden. Mirrors `rotation::endpoint_host`. */
+export function endpointHost(baseUrl: string): string {
+  const rest = baseUrl.includes('://') ? baseUrl.slice(baseUrl.indexOf('://') + 3) : baseUrl;
+  const host = rest.split(/[/?#]/)[0].split('@').pop() ?? '';
+  return host || baseUrl;
+}
 
 /** How a provider this build has never heard of gets drawn. The same tokens
  * `TreeOutline` already used by hand for a node whose account it can't find,
@@ -173,7 +215,7 @@ export function providerMeta(provider: string): ProviderMeta {
 /** Providers that authenticate with an API key rather than an interactive
  * login. The wizard has to skip the login step for these, and offering one
  * would open a terminal running a command that doesn't exist. */
-export const KEY_ONLY_PROVIDERS: Provider[] = ['kimi', 'opencode'];
+export const KEY_ONLY_PROVIDERS: Provider[] = ['kimi', 'opencode', 'custom'];
 
 /** Providers whose interactive login ends by asking for a code pasted back.
  *

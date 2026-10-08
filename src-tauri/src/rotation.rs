@@ -323,6 +323,72 @@ pub fn get_rotation_policy(db: tauri::State<DbConnection>, project_id: String, p
 pub struct SuggestedAccount {
     pub account_id: String,
     pub account_name: String,
+    /// Set when this is the project's fallback rather than another account of
+    /// the same provider: the host the project's code will be sent to, so the
+    /// banner can say so before the click instead of after.
+    pub fallback_host: Option<String>,
+}
+
+/// The provider a project's fallback stands in for. Only Claude: a fallback is
+/// Claude Code pointed at another endpoint, so it can take over a Claude
+/// terminal — its worktree, its flags, its transcript — and nothing else's.
+const FALLBACK_HOME_PROVIDER: &str = "claude";
+
+/// The host part of an endpoint address, for showing where code will go.
+/// The whole address when it has no recognisable host, so nothing is hidden.
+pub(crate) fn endpoint_host(base_url: &str) -> String {
+    let rest = base_url.split_once("://").map_or(base_url, |(_, rest)| rest);
+    let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    if host.is_empty() { base_url.to_string() } else { host.to_string() }
+}
+
+/// A project's fallback account, resolved.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Fallback {
+    pub account_id: String,
+    pub account_name: String,
+    pub host: String,
+    pub status: String,
+}
+
+/// The account `project_id` falls back to, whatever state it is in — `None`
+/// when the project never picked one, or picked one that has since lost its
+/// endpoint.
+pub(crate) fn project_fallback(conn: &Connection, project_id: &str) -> Result<Option<Fallback>, String> {
+    let row = conn.query_row(
+        "SELECT a.id, a.name, a.base_url, a.status
+         FROM projects p JOIN accounts a ON a.id = p.fallback_account_id
+         WHERE p.id = ?1 AND a.provider = 'custom' AND a.base_url IS NOT NULL",
+        params![project_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)),
+    );
+    match row {
+        Ok((account_id, account_name, base_url, status)) => Ok(Some(Fallback { account_id, account_name, host: endpoint_host(&base_url), status })),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(format!("fallback account lookup failed: {e}")),
+    }
+}
+
+/// What a terminal on `exhausted_account_id` should be offered: another allowed
+/// account of the same provider when there is one, and the project's fallback
+/// only when there is not.
+///
+/// That order is the whole contract. A fallback sends the project's code to a
+/// different company and usually a weaker model, so it is never preferred over
+/// an account that would have kept everything as it was.
+fn suggest_for_terminal(conn: &Connection, project_id: &str, exhausted_account_id: &str) -> Result<Option<SuggestedAccount>, String> {
+    let candidates = load_candidates(conn, project_id, FALLBACK_HOME_PROVIDER, exhausted_account_id)?;
+    let policy = match read_policy(conn, project_id, FALLBACK_HOME_PROVIDER) {
+        Policy::Manual => Policy::Auto,
+        other => other,
+    };
+    if let Some(c) = pick(policy, &candidates) {
+        return Ok(Some(SuggestedAccount { account_id: c.account_id.clone(), account_name: c.account_name.clone(), fallback_host: None }));
+    }
+    Ok(project_fallback(conn, project_id)?
+        .filter(|f| f.status == "healthy" && f.account_id != exhausted_account_id)
+        .map(|f| SuggestedAccount { account_id: f.account_id, account_name: f.account_name, fallback_host: Some(f.host) }))
 }
 
 /// The project a terminal target belongs to: a project target is one directly;
@@ -344,8 +410,8 @@ pub(crate) fn project_of_terminal(conn: &Connection, kind: &str, source_id: &str
 /// to least-loaded here rather than declining: in the terminal model the user
 /// already makes the call by clicking the button, so "manual" only means "no
 /// *automatic* switch", not "never suggest one". `None` when the project has
-/// no other allowed healthy Claude account — the banner then warns without a
-/// button.
+/// no other allowed healthy Claude account and no fallback — the banner then
+/// warns without a button.
 #[tauri::command]
 pub fn suggest_terminal_account(
     db: tauri::State<DbConnection>,
@@ -355,13 +421,7 @@ pub fn suggest_terminal_account(
 ) -> Result<Option<SuggestedAccount>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let project_id = project_of_terminal(&conn, &kind, &source_id)?;
-    let candidates = load_candidates(&conn, &project_id, "claude", &exhausted_account_id)?;
-
-    let policy = match read_policy(&conn, &project_id, "claude") {
-        Policy::Manual => Policy::Auto,
-        other => other,
-    };
-    Ok(pick(policy, &candidates).map(|c| SuggestedAccount { account_id: c.account_id.clone(), account_name: c.account_name.clone() }))
+    suggest_for_terminal(&conn, &project_id, &exhausted_account_id)
 }
 
 /// One row of the account switcher on a terminal panel's header chip.
@@ -380,6 +440,9 @@ pub struct RotatableAccount {
     /// The one this project's rotation policy would pick. Shows the policy
     /// where the decision actually gets made, not only in Settings.
     pub suggested: bool,
+    /// For the project's fallback account: the host its endpoint lives on.
+    /// `None` on every ordinary row.
+    pub fallback_host: Option<String>,
 }
 
 /// Every account the switcher offers for a terminal currently on
@@ -405,21 +468,28 @@ fn rotatable_accounts(conn: &Connection, project_id: &str, provider: &str, curre
     let candidates = load_candidates(conn, project_id, provider, current_account_id)?;
     let suggested = pick(policy, &candidates).map(|c| c.account_id.clone());
 
+    // The fallback rides along as the last row, and only for the provider it
+    // can stand in for. It is never `suggested` from here: that mark means "the
+    // policy would pick this", and the policy only ranks same-provider accounts.
+    let fallback = if provider == FALLBACK_HOME_PROVIDER { project_fallback(conn, project_id)? } else { None };
+    let fallback_id = fallback.as_ref().map(|f| f.account_id.clone());
+
     let mut stmt = conn
         .prepare(
             "SELECT a.id, a.name, a.scope, a.status
              FROM accounts a
              LEFT JOIN project_allowed_accounts paa ON paa.account_id = a.id AND paa.project_id = ?1
-             WHERE a.provider = ?2 AND (COALESCE(paa.allowed, 0) = 1 OR a.id = ?3)
-             ORDER BY (a.id = ?3) DESC, a.scope, a.name",
+             WHERE (a.provider = ?2 AND COALESCE(paa.allowed, 0) = 1) OR a.id = ?3 OR a.id = ?4
+             ORDER BY (a.id = ?3) DESC, (a.id IS ?4) ASC, a.scope, a.name",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![project_id, provider, current_account_id], |row| {
+        .query_map(params![project_id, provider, current_account_id, fallback_id], |row| {
             let account_id: String = row.get(0)?;
             Ok(RotatableAccount {
                 current: account_id == current_account_id,
                 suggested: suggested.as_deref() == Some(account_id.as_str()),
+                fallback_host: fallback.as_ref().filter(|f| f.account_id == account_id).map(|f| f.host.clone()),
                 account_id,
                 account_name: row.get(1)?,
                 scope: row.get(2)?,
@@ -447,10 +517,21 @@ pub fn list_terminal_rotation_accounts(
     recover_cooled_down_accounts(&conn)?;
 
     let project_id = project_of_terminal(&conn, &kind, &source_id)?;
-    let provider: String = conn
-        .query_row("SELECT provider FROM accounts WHERE id = ?1", params![current_account_id], |r| r.get(0))
-        .map_err(|e| format!("terminal's account lookup failed: {e}"))?;
+    let provider = switcher_provider(&conn, &project_id, &current_account_id)?;
     rotatable_accounts(&conn, &project_id, &provider, &current_account_id)
+}
+
+/// Which provider's pool the switcher shows for a terminal on this account.
+///
+/// Its own — except on the project's fallback, where the pool that matters is
+/// the one it is standing in for. Listing only other custom accounts there
+/// would leave a terminal on its fallback with no row to go back by.
+fn switcher_provider(conn: &Connection, project_id: &str, current_account_id: &str) -> Result<String, String> {
+    if project_fallback(conn, project_id)?.is_some_and(|f| f.account_id == current_account_id) {
+        return Ok(FALLBACK_HOME_PROVIDER.to_string());
+    }
+    conn.query_row("SELECT provider FROM accounts WHERE id = ?1", params![current_account_id], |r| r.get(0))
+        .map_err(|e| format!("terminal's account lookup failed: {e}"))
 }
 
 /// The accounts a project is allowed to rotate to that are *not* currently
@@ -502,7 +583,12 @@ pub(crate) fn terminal_rotation_reason(conn: &Connection, from_account_id: &str)
 /// that it was already handed one.
 pub(crate) fn record_terminal_rotation(conn: &Connection, kind: &str, source_id: &str, from_account_id: &str, to_account_id: &str) -> Result<(), String> {
     let project_id = project_of_terminal(conn, kind, source_id)?;
-    let reason = terminal_rotation_reason(conn, from_account_id);
+    let mut reason = terminal_rotation_reason(conn, from_account_id);
+    // Said in the ledger because it is the one switch that changes who sees
+    // the code, not just which quota is spent.
+    if project_fallback(conn, &project_id)?.is_some_and(|f| f.account_id == to_account_id) {
+        reason.push_str(" → fallback endpoint");
+    }
     conn.execute(
         "INSERT INTO rotation_events (id, project_id, from_account_id, to_account_id, reason, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -525,6 +611,41 @@ pub fn set_rotation_policy(db: tauri::State<DbConnection>, project_id: String, p
         params![project_id, provider, policy.as_str()],
     )
     .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// The project's fallback account id, for Settings → Rotation.
+#[tauri::command]
+pub fn get_project_fallback_account(db: tauri::State<DbConnection>, project_id: String) -> Result<Option<String>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    Ok(project_fallback(&conn, &project_id)?.map(|f| f.account_id))
+}
+
+/// Sets or clears (`None`) the project's fallback account.
+#[tauri::command]
+pub fn set_project_fallback_account(db: tauri::State<DbConnection>, project_id: String, account_id: Option<String>) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    store_project_fallback(&conn, &project_id, account_id.as_deref())
+}
+
+/// Only a custom-endpoint account can be a fallback. Another Claude account
+/// already has a place — the rotation pool — and an account driven through a
+/// different CLI can't take over a Claude terminal at all.
+fn store_project_fallback(conn: &Connection, project_id: &str, account_id: Option<&str>) -> Result<(), String> {
+    if let Some(account_id) = account_id {
+        let usable: bool = conn
+            .query_row("SELECT provider = 'custom' AND base_url IS NOT NULL FROM accounts WHERE id = ?1", params![account_id], |r| r.get(0))
+            .map_err(|e| format!("fallback account lookup failed: {e}"))?;
+        if !usable {
+            return Err("only a custom endpoint account can be a project's fallback".to_string());
+        }
+    }
+    let changed = conn
+        .execute("UPDATE projects SET fallback_account_id = ?2 WHERE id = ?1", params![project_id, account_id])
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err(format!("no project with id {project_id}"));
+    }
     Ok(())
 }
 
@@ -882,6 +1003,111 @@ mod tests {
     fn a_project_that_allows_nothing_has_no_benched_candidates() {
         let conn = seed(Some("auto"), &[], None);
         assert!(allowed_benched_accounts(&conn, "proj1", "claude", "acc1").unwrap().is_empty());
+    }
+
+    // -- the project's fallback account ------------------------------------
+
+    /// Adds a healthy custom-endpoint account and makes it proj1's fallback.
+    fn with_fallback(conn: &Connection) {
+        conn.execute(
+            "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, status, created_at, updated_at, base_url)
+             VALUES ('fb1','custom','key','DeepSeek','personal','','','fb1','healthy','now','now','https://api.deepseek.com/anthropic')",
+            [],
+        )
+        .unwrap();
+        store_project_fallback(conn, "proj1", Some("fb1")).unwrap();
+    }
+
+    /// The contract in one test: the fallback is what's offered when nothing of
+    /// the same provider is left, and the offer names where the code will go.
+    #[test]
+    fn the_fallback_is_offered_only_once_no_same_provider_account_is_left() {
+        let conn = seed(Some("auto"), &[], None);
+        assert_eq!(suggest_for_terminal(&conn, "proj1", "acc1").unwrap(), None, "no fallback configured: the banner is today's");
+
+        with_fallback(&conn);
+        let offered = suggest_for_terminal(&conn, "proj1", "acc1").unwrap().expect("with nothing else left the fallback is offered");
+        assert_eq!((offered.account_id.as_str(), offered.fallback_host.as_deref()), ("fb1", Some("api.deepseek.com")));
+    }
+
+    #[test]
+    fn a_healthy_account_of_the_same_provider_always_wins_over_the_fallback() {
+        let conn = seed(Some("auto"), &["acc2"], None);
+        with_fallback(&conn);
+        let offered = suggest_for_terminal(&conn, "proj1", "acc1").unwrap().unwrap();
+        assert_eq!((offered.account_id.as_str(), offered.fallback_host), ("acc2", None));
+    }
+
+    /// A fallback that can't run is not an offer, and neither is the account
+    /// the terminal is already on.
+    #[test]
+    fn an_unusable_fallback_is_not_offered() {
+        let conn = seed(Some("auto"), &[], None);
+        with_fallback(&conn);
+        assert_eq!(suggest_for_terminal(&conn, "proj1", "fb1").unwrap(), None, "already on it");
+        conn.execute("UPDATE accounts SET status = 'exhausted' WHERE id = 'fb1'", []).unwrap();
+        assert_eq!(suggest_for_terminal(&conn, "proj1", "acc1").unwrap(), None);
+    }
+
+    #[test]
+    fn only_a_custom_endpoint_account_can_be_a_fallback() {
+        let conn = seed(Some("auto"), &[], None);
+        assert!(store_project_fallback(&conn, "proj1", Some("acc2")).is_err(), "another Claude account belongs in the rotation pool");
+        assert!(store_project_fallback(&conn, "proj1", Some("other1")).is_err());
+        assert!(store_project_fallback(&conn, "proj1", Some("nonesuch")).is_err());
+        assert!(store_project_fallback(&conn, "nonesuch", None).is_err());
+        with_fallback(&conn);
+        assert_eq!(project_fallback(&conn, "proj1").unwrap().map(|f| f.account_id), Some("fb1".to_string()));
+        store_project_fallback(&conn, "proj1", None).unwrap();
+        assert_eq!(project_fallback(&conn, "proj1").unwrap(), None);
+    }
+
+    /// The switcher shows the fallback last, with its host, and never as the
+    /// policy's pick. From the fallback itself it shows the Claude pool, which
+    /// is the only way back.
+    #[test]
+    fn the_switcher_lists_the_fallback_last_and_the_way_back_from_it() {
+        let conn = seed(Some("auto"), &["acc2", "acc3"], None);
+        with_fallback(&conn);
+
+        let rows = rotatable_accounts(&conn, "proj1", "claude", "acc1").unwrap();
+        assert_eq!(rows.iter().map(|r| r.account_id.as_str()).collect::<Vec<_>>(), vec!["acc1", "acc2", "acc3", "fb1"]);
+        let fallback = rows.last().unwrap();
+        assert_eq!(fallback.fallback_host.as_deref(), Some("api.deepseek.com"));
+        assert!(!fallback.suggested);
+        assert!(rows[..3].iter().all(|r| r.fallback_host.is_none()));
+
+        assert_eq!(switcher_provider(&conn, "proj1", "fb1").unwrap(), "claude");
+        let back = rotatable_accounts(&conn, "proj1", "claude", "fb1").unwrap();
+        assert_eq!(back.iter().map(|r| r.account_id.as_str()).collect::<Vec<_>>(), vec!["fb1", "acc2", "acc3"]);
+        assert!(back[0].current && back[0].fallback_host.is_some());
+        assert!(back.iter().any(|r| r.suggested), "a healthy Claude account is marked as the way back");
+    }
+
+    /// A Codex terminal is not offered a fallback that could not take it over.
+    #[test]
+    fn the_fallback_only_appears_for_the_provider_it_stands_in_for() {
+        let conn = seed(Some("auto"), &["other1"], None);
+        with_fallback(&conn);
+        let rows = rotatable_accounts(&conn, "proj1", "codex", "other1").unwrap();
+        assert_eq!(rows.iter().map(|r| r.account_id.as_str()).collect::<Vec<_>>(), vec!["other1"]);
+    }
+
+    #[test]
+    fn a_switch_onto_the_fallback_says_so_in_the_ledger() {
+        let conn = seed(Some("auto"), &[], None);
+        with_fallback(&conn);
+        record_terminal_rotation(&conn, "project", "proj1", "acc1", "fb1").unwrap();
+        let reason: String = conn.query_row("SELECT reason FROM rotation_events WHERE to_account_id = 'fb1'", [], |r| r.get(0)).unwrap();
+        assert!(reason.starts_with("exhausted") && reason.ends_with("→ fallback endpoint"), "got: {reason}");
+    }
+
+    #[test]
+    fn the_host_is_what_is_shown_for_an_endpoint() {
+        assert_eq!(endpoint_host("https://openrouter.ai/api"), "openrouter.ai");
+        assert_eq!(endpoint_host("http://localhost:3001"), "localhost:3001");
+        assert_eq!(endpoint_host("https://user@api.z.ai/api/anthropic"), "api.z.ai");
+        assert_eq!(endpoint_host("not-a-url"), "not-a-url");
     }
 
     // -- the header chip's account switcher ---------------------------------
