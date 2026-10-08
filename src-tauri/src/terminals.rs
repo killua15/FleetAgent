@@ -2487,6 +2487,12 @@ pub struct TaskWorktree {
     /// shell argument — so it's written into the worktree and the prompt
     /// becomes a one-line pointer at it. See `task_sources::write_task_brief`.
     pub task: Option<crate::task_sources::Task>,
+    /// The user's own instructions for a board task, typed when picking it up.
+    /// Added to the brief rather than replacing it, which is what tells them
+    /// apart from `prompt`. Defaulted so a client that predates the field —
+    /// the mobile bridge — keeps working.
+    #[serde(default)]
+    pub notes: Option<String>,
 }
 
 /// Opens one worktree and one agent per task, in parallel.
@@ -2530,6 +2536,7 @@ pub async fn open_task_worktrees<R: Runtime>(
             }
         };
         let target = TerminalTarget { kind: TargetKind::Session, id: session.id.clone() };
+        let notes = task.notes.as_deref().map(str::trim).filter(|n| !n.is_empty());
 
         // Reopening a task whose worktree was already there goes back to it —
         // to its terminal if that's still open, to its conversation if not.
@@ -2545,15 +2552,20 @@ pub async fn open_task_worktrees<R: Runtime>(
                 .flatten()
                 .and_then(|list| list.into_iter().next());
             if let Some(conversation) = conversation {
-                // No prompt: the brief was that conversation's first message
-                // already, and sending it again would restart the task.
+                // No prompt unless there are new notes: the brief was that
+                // conversation's first message already, and sending it again
+                // would restart the task.
+                let notes_prompt = match (notes, task.task.as_ref(), session.worktree_path.as_deref()) {
+                    (Some(notes), Some(brief), Some(worktree)) => Some(crate::task_sources::add_notes_to_brief(std::path::Path::new(worktree), brief, notes)),
+                    _ => None,
+                };
                 match open_terminal_blocking(
                     app.clone(),
                     target.clone(),
                     Some(task.account_id.clone()),
                     Some(InitCommand::Resume),
                     Some(conversation.provider_session_id),
-                    None,
+                    notes_prompt,
                     cols,
                     rows,
                 ) {
@@ -2572,7 +2584,7 @@ pub async fn open_task_worktrees<R: Runtime>(
         // meant. Otherwise the brief goes to disk and the prompt points at it.
         let prompt = match (task.prompt.filter(|p| !p.trim().is_empty()), task.task.as_ref(), session.worktree_path.as_deref()) {
             (Some(typed), _, _) => Some(typed),
-            (None, Some(brief), Some(worktree)) => Some(crate::task_sources::write_task_brief(std::path::Path::new(worktree), brief)),
+            (None, Some(brief), Some(worktree)) => Some(crate::task_sources::write_task_brief(std::path::Path::new(worktree), brief, notes)),
             _ => None,
         };
         match open_terminal_blocking(app.clone(), target, Some(task.account_id), Some(InitCommand::Start), None, prompt, cols, rows) {

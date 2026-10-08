@@ -165,26 +165,72 @@ fn sanitize_ref(raw: &str) -> String {
 /// directory because agents ask for permission before reading outside their
 /// working directory, and a permission prompt at the start of every task is
 /// exactly the kind of friction this feature exists to remove.
-pub fn write_task_brief(worktree: &Path, task: &Task) -> String {
-    let dir = worktree.join(".hangar");
-    let file = dir.join(format!("task-{}.md", sanitize_ref(&task.key)));
-    let body = format!(
-        "# {}\n\n{}\n\n---\nSource: {} ({})\n{}\n",
-        task.title,
-        task.description.trim(),
-        task.source_kind,
-        task.key,
-        task.url,
-    );
+///
+/// `notes` is what the user typed next to the project and account when picking
+/// the task up — "plan only", "don't touch the migrations". Free text on
+/// purpose: the agent is the interpreter, and anything Hangar parsed would be a
+/// smaller language than the one it already understands. They go **above** the
+/// ticket's body and are said to win over it, because a ticket is what someone
+/// asked for last week and the notes are what you want right now.
+pub fn write_task_brief(worktree: &Path, task: &Task, notes: Option<&str>) -> String {
+    let notes = notes.map(str::trim).filter(|n| !n.is_empty());
+    let key = sanitize_ref(&task.key);
 
-    if std::fs::create_dir_all(&dir).is_ok() && std::fs::write(&file, body).is_ok() {
-        exclude_hangar_dir_locally(worktree);
-        return format!("Read .hangar/task-{}.md — it's the task I'm picking up. Start by telling me your plan.", sanitize_ref(&task.key));
+    if write_brief_file(worktree, task, notes) {
+        return match notes {
+            Some(_) => format!(
+                "Read .hangar/task-{key}.md — it's the task I'm picking up, and my notes at the top say how I want it done. Follow them; where they don't say otherwise, start by telling me your plan."
+            ),
+            None => format!("Read .hangar/task-{key}.md — it's the task I'm picking up. Start by telling me your plan."),
+        };
     }
 
     // Couldn't write it: fall back to a one-line prompt built from the title.
     // A worse prompt beats a terminal that doesn't open.
-    format!("Work on this task: {} ({})", task.title.replace('\n', " "), task.url)
+    let fallback = format!("Work on this task: {} ({})", task.title.replace('\n', " "), task.url);
+    match notes {
+        Some(notes) => format!("{fallback} Notes: {}", one_line(notes)),
+        None => fallback,
+    }
+}
+
+/// Puts new notes into a brief whose conversation already exists, and returns
+/// the one-line prompt that says so.
+///
+/// A different sentence from [`write_task_brief`]'s on purpose: that one opens
+/// a task, and sending it to a conversation that is halfway through would
+/// restart the work. This one only says there is something new to read.
+pub fn add_notes_to_brief(worktree: &Path, task: &Task, notes: &str) -> String {
+    let notes = notes.trim();
+    if write_brief_file(worktree, task, Some(notes)) {
+        return format!("I added notes at the top of .hangar/task-{}.md — read them and carry on.", sanitize_ref(&task.key));
+    }
+    format!("New notes from me for this task: {}", one_line(notes))
+}
+
+/// Writes `.hangar/task-<key>.md`. False when the worktree can't be written to.
+fn write_brief_file(worktree: &Path, task: &Task, notes: Option<&str>) -> bool {
+    let dir = worktree.join(".hangar");
+    let file = dir.join(format!("task-{}.md", sanitize_ref(&task.key)));
+    let description = task.description.trim();
+    let content = match notes {
+        Some(notes) => format!(
+            "## Notes from me\n\nMy own instructions for this task. Where they disagree with the description below, they win.\n\n{notes}\n\n## Task\n\n{description}"
+        ),
+        None => description.to_string(),
+    };
+    let body = format!("# {}\n\n{}\n\n---\nSource: {} ({})\n{}\n", task.title, content, task.source_kind, task.key, task.url);
+
+    if std::fs::create_dir_all(&dir).is_ok() && std::fs::write(&file, body).is_ok() {
+        exclude_hangar_dir_locally(worktree);
+        return true;
+    }
+    false
+}
+
+/// Text that has to ride in the prompt itself, with its newlines flattened.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Ignores `.hangar/` through `info/exclude` rather than `.gitignore`.
@@ -636,13 +682,75 @@ mod tests {
         let mut task = task("DEV-42", "Seed the signal catalog");
         task.description = "First line.\n\n- a bullet\n- another\n\n```rust\nfn main() {}\n```".to_string();
 
-        let prompt = write_task_brief(&dir, &task);
+        let prompt = write_task_brief(&dir, &task, None);
         assert!(!prompt.contains('\n'), "the prompt must stay a single line: {prompt:?}");
 
         let written = std::fs::read_to_string(dir.join(".hangar").join("task-DEV-42.md")).unwrap();
         assert!(written.contains("- a bullet"), "the body belongs in the file, whole");
         assert!(written.contains("https://example.test/1"), "the brief keeps a link back to the task");
         assert!(prompt.contains("task-DEV-42.md"), "and the prompt has to point at it: {prompt}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Notes are typed in a textarea, so they have newlines too — and they are
+    /// the part the user wrote a minute ago, so they go above a ticket someone
+    /// else wrote last week.
+    #[test]
+    fn notes_go_above_the_ticket_and_never_into_the_prompt() {
+        let dir = std::env::temp_dir().join(format!("hangar-test-notes-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut task = task("DEV-43", "Seed the signal catalog");
+        task.description = "The ticket's own body.".to_string();
+
+        let prompt = write_task_brief(&dir, &task, Some("Plan only.\nDon't touch the migrations."));
+        assert!(!prompt.contains('\n'), "the prompt must stay a single line: {prompt:?}");
+        assert!(prompt.contains("notes"), "the agent has to be told the notes are there: {prompt}");
+        assert!(!prompt.contains("migrations"), "the notes themselves belong in the file: {prompt}");
+
+        let written = std::fs::read_to_string(dir.join(".hangar").join("task-DEV-43.md")).unwrap();
+        let notes_at = written.find("Don't touch the migrations.").expect("the notes are in the brief");
+        let body_at = written.find("The ticket's own body.").expect("and so is the ticket");
+        assert!(notes_at < body_at, "notes come first: {written}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The field is optional and usually empty; an empty one must not leave a
+    /// "Notes from me" heading with nothing under it, or change the prompt.
+    #[test]
+    fn blank_notes_change_nothing() {
+        let dir = std::env::temp_dir().join(format!("hangar-test-blank-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let task = task("DEV-44", "Bump deps");
+        let file = dir.join(".hangar").join("task-DEV-44.md");
+
+        let without = write_task_brief(&dir, &task, None);
+        let plain = std::fs::read_to_string(&file).unwrap();
+        let blank = write_task_brief(&dir, &task, Some("  \n "));
+
+        assert_eq!(without, blank);
+        assert_eq!(plain, std::fs::read_to_string(&file).unwrap());
+        assert_eq!(plain, "# Bump deps\n\nbody\n\n---\nSource: clickup (DEV-44)\nhttps://example.test/1\n");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Reopening a task with new notes resumes its conversation, and the
+    /// opening sentence there would restart work that is already under way.
+    #[test]
+    fn notes_for_a_resumed_task_do_not_ask_for_a_plan_again() {
+        let dir = std::env::temp_dir().join(format!("hangar-test-resume-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let task = task("DEV-45", "Bump deps");
+
+        let prompt = add_notes_to_brief(&dir, &task, "Also open a PR\nwhen it's green.");
+        assert!(!prompt.contains('\n'), "still one line: {prompt:?}");
+        assert!(prompt.contains("task-DEV-45.md"), "points at the brief: {prompt}");
+        assert!(!prompt.contains("plan"), "must not restart the task: {prompt}");
+
+        let written = std::fs::read_to_string(dir.join(".hangar").join("task-DEV-45.md")).unwrap();
+        assert!(written.contains("when it's green."), "the notes are in the brief: {written}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -658,9 +766,13 @@ mod tests {
         // hard to arrange portably; a file where the directory should be is not.
         let file = std::env::temp_dir().join(format!("hangar-test-file-{}", Uuid::new_v4()));
         std::fs::write(&file, "not a directory").unwrap();
-        let prompt = write_task_brief(&file, &task);
+        let prompt = write_task_brief(&file, &task, None);
         assert!(!prompt.contains('\n'), "still one line: {prompt:?}");
         assert!(prompt.contains("Bump deps"), "and still says what the task is: {prompt}");
+        // With nowhere to write them, the notes ride in the prompt — flattened.
+        let prompt = write_task_brief(&file, &task, Some("plan only\nno migrations"));
+        assert!(!prompt.contains('\n'), "still one line with notes: {prompt:?}");
+        assert!(prompt.contains("plan only no migrations"), "the notes survive: {prompt}");
         let _ = std::fs::remove_file(&file);
         let _ = std::fs::remove_dir_all(&missing);
     }

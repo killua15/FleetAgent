@@ -107,6 +107,10 @@ export interface TaskWorktree {
    * writes it into the worktree as `.hangar/task-<key>.md` and points the agent
    * at the file. */
   task: BoardTask | null;
+  /** Your own instructions for a board task — "plan only", "don't touch the
+   * migrations". Free text the agent reads; they go above the ticket's body in
+   * the brief and win over it. */
+  notes: string | null;
 }
 
 /** What a project's git already thinks about a branch you want to work on. */

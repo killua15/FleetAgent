@@ -39,6 +39,10 @@ export function TaskBoard() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [picked, setPicked] = useState<Record<string, BoardTask>>({});
   const [accountId, setAccountId] = useState('');
+  // What you'd otherwise type into every terminal once it's up: "plan only",
+  // "don't touch the migrations". Free text, and one for the whole selection —
+  // like the project and the account it sits next to.
+  const [notes, setNotes] = useState('');
   const [opening, setOpening] = useState(false);
 
   useEffect(() => {
@@ -127,6 +131,7 @@ export function TaskBoard() {
           accountId,
           prompt: null,
           task,
+          notes: notes.trim() || null,
         })),
         cols: 80,
         rows: 24,
@@ -253,30 +258,46 @@ export function TaskBoard() {
 
       {chosen.length > 0 && (
         <div className={styles.bar}>
-          <span className={styles.barCount}>
-            {chosen.length} task{chosen.length === 1 ? '' : 's'} — {chosen.length === 1 ? 'one worktree' : `${chosen.length} worktrees, one branch each`}
-          </span>
-          <span className={styles.spacer} />
-          <span className={styles.fieldLabel}>worktrees in</span>
-          <select className={styles.select} value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-            <option value="">project…</option>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          <select className={styles.select} value={accountId} onChange={(e) => setAccountId(e.target.value)}>
-            <option value="">account…</option>
-            {accounts.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name} · {providerMeta(a.provider).name}
-              </option>
-            ))}
-          </select>
-          <Button size="sm" disabled={!accountId || !projectId || opening} onClick={send}>
-            {opening ? 'opening…' : 'Send to terminals'}
-          </Button>
+          <label className={styles.notesField}>
+            <span className={styles.fieldLabel}>
+              notes for the agent{chosen.length > 1 ? ` — applies to all ${chosen.length} tasks` : ''}
+            </span>
+            {/* Goes into each task's brief above the ticket, so it can be as
+                long and as many lines as it needs. */}
+            <textarea
+              className={styles.notes}
+              rows={2}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="optional — e.g. plan only, don't touch the migrations, open a PR when it's green"
+            />
+          </label>
+          <div className={styles.barRow}>
+            <span className={styles.barCount}>
+              {chosen.length} task{chosen.length === 1 ? '' : 's'} — {chosen.length === 1 ? 'one worktree' : `${chosen.length} worktrees, one branch each`}
+            </span>
+            <span className={styles.spacer} />
+            <span className={styles.fieldLabel}>worktrees in</span>
+            <select className={styles.select} value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+              <option value="">project…</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <select className={styles.select} value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+              <option value="">account…</option>
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name} · {providerMeta(a.provider).name}
+                </option>
+              ))}
+            </select>
+            <Button size="sm" disabled={!accountId || !projectId || opening} onClick={send}>
+              {opening ? 'opening…' : 'Send to terminals'}
+            </Button>
+          </div>
         </div>
       )}
     </div>

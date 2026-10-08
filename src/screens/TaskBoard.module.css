@@ -204,11 +204,49 @@
    on is furniture. */
 .bar {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  gap: 10px;
   padding: 10px 18px;
   border-top: 1px solid var(--line);
   background: var(--overlay);
+}
+
+.barRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.notesField {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+/* Grows with what's typed and then scrolls: notes are usually a line, and a
+   bar that takes half the screen hides the tasks they're about. */
+.notes {
+  width: 100%;
+  min-height: 44px;
+  max-height: 120px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg2);
+  color: var(--txt);
+  font: 400 11.5px/1.45 var(--font-ui);
+  resize: none;
+  overflow-y: auto;
+  field-sizing: content;
+}
+
+.notes:focus {
+  outline: none;
+  border-color: var(--acc);
+}
+
+.notes::placeholder {
+  color: var(--dim);
 }
 
 .barCount {
