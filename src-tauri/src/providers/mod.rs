@@ -40,29 +40,19 @@ pub fn permission_args(provider: &str, mode: Mode) -> &'static [&'static str] {
     // the Codex branch and hand it `--ask-for-approval`, a flag it does not
     // have — the terminal would simply fail to start.
     //
-    // Verified against opencode 1.18.20: the only approval flag is `--auto`
-    // ("auto-approve permissions that are not explicitly denied (dangerous!)").
-    // There is no read-only or accept-edits equivalent; finer control lives in
-    // an agent's tool list, reached with `--agent`. So the honest mapping is
-    // yolo → `--auto`, and everything else → nothing, which is opencode's own
-    // ask-before-acting default.
+    // Verified against opencode 2.0.20: the TUI's only approval flag is `--auto`
+    // ("auto-approve permissions that are not explicitly denied"). There is no
+    // read-only or accept-edits flag, so yolo → `--auto` and everything else →
+    // nothing, which is opencode's own ask-before-acting default.
     //
-    // `Plan` maps to opencode's own built-in `plan` agent, which is what makes
-    // the mode real instead of a label. Verified by running it: `deny edit *` is
-    // a hard rule (with an exception for its own `.opencode/plans/*.md`), and
-    // two separate attempts to write through `bash` — one direct, one disguised
-    // as a disk-permission check — were both refused, the second one offering a
-    // non-destructive alternative instead.
-    //
-    // Worth stating exactly how far that goes: `edit` is denied by rule, while
-    // `bash` is held by the agent's own instructions. That is the same shape as
-    // Claude Code's `--permission-mode plan`, so trusting it here is consistent
-    // rather than a new leap.
+    // `Plan` used to be `--agent plan` here. 2.x took `--agent` off the TUI (it
+    // survives on `opencode run` and `opencode mini`), and a terminal typed with
+    // it now dies on "Unrecognized flag: --agent" before it starts. The plan
+    // agent is reached through configuration instead — see `permission_env`.
     if provider == "opencode" {
         return match mode {
             Mode::Yolo => &["--auto"],
-            Mode::Plan => &["--agent", "plan"],
-            Mode::AskEdits | Mode::AutoEdit => &[],
+            Mode::Plan | Mode::AskEdits | Mode::AutoEdit => &[],
         };
     }
 
@@ -85,6 +75,28 @@ pub fn permission_args(provider: &str, mode: Mode) -> &'static [&'static str] {
         (false, Mode::AskEdits) => &["--ask-for-approval", "untrusted"],
         (false, Mode::AutoEdit) => &["--ask-for-approval", "on-request", "--sandbox", "workspace-write"],
         (false, Mode::Yolo) => &["--ask-for-approval", "never", "--sandbox", "danger-full-access"],
+    }
+}
+
+/// The config file content that starts opencode in its built-in `plan` agent.
+pub const OPENCODE_PLAN_CONFIG: &str = r#"{ "default_agent": "plan" }"#;
+
+/// Environment a permission mode needs when the CLI has no flag for it.
+///
+/// Only opencode's plan mode today: `OPENCODE_CONFIG=<file>` pointing at a
+/// config whose `default_agent` is `plan` (`plan_config`, a file the caller
+/// wrote with `OPENCODE_PLAN_CONFIG`). Verified by running 2.0.20: with it the
+/// session opens as `plan`, without it as `build`, and the user's own global
+/// config still loads — it's merged, not replaced. The inline variants
+/// (`OPENCODE_CONFIG_CONTENT`, `OPENCODE_CLI_CONFIG_CONTENT`) and a project
+/// `opencode.json` were tried too and do not move the agent.
+///
+/// That `plan` is real read-only and not a label is the same guarantee as
+/// before: `edit` is denied by rule, `bash` held by the agent's instructions.
+pub fn permission_env(provider: &str, mode: Mode, plan_config: Option<&std::path::Path>) -> Vec<(String, String)> {
+    match (provider, mode, plan_config) {
+        ("opencode", Mode::Plan, Some(file)) => vec![("OPENCODE_CONFIG".to_string(), file.to_string_lossy().into_owned())],
+        _ => Vec::new(),
     }
 }
 
@@ -936,14 +948,20 @@ mod tests {
     #[test]
     fn opencode_only_has_one_approval_flag() {
         assert_eq!(permission_args("opencode", Mode::Yolo), &["--auto"]);
-        // Read-only is an *agent*, not an approval flag — opencode ships one.
-        assert_eq!(permission_args("opencode", Mode::Plan), &["--agent", "plan"]);
-        for mode in [Mode::AskEdits, Mode::AutoEdit] {
+        // Read-only is an *agent*, not an approval flag, and 2.x has no flag to
+        // pick one on the TUI: `--agent` there is "Unrecognized flag" and the
+        // terminal never starts. It goes through `OPENCODE_CONFIG` instead.
+        let file = std::path::Path::new("/data/opencode/plan.json");
+        assert_eq!(permission_env("opencode", Mode::Plan, Some(file)), vec![("OPENCODE_CONFIG".to_string(), "/data/opencode/plan.json".to_string())]);
+        assert!(permission_env("opencode", Mode::Yolo, Some(file)).is_empty());
+        assert!(permission_env("claude", Mode::Plan, Some(file)).is_empty(), "claude has a real flag for it");
+        for mode in [Mode::Plan, Mode::AskEdits, Mode::AutoEdit] {
             assert!(permission_args("opencode", mode).is_empty(), "{mode:?} must add no flag: opencode has none for it");
         }
         for mode in [Mode::Plan, Mode::AskEdits, Mode::AutoEdit, Mode::Yolo] {
             let args = permission_args("opencode", mode);
             assert!(!args.contains(&"--ask-for-approval"), "Codex's flag reached opencode: {args:?}");
+            assert!(!args.contains(&"--agent"), "`--agent` is not a TUI flag in opencode 2.x: {args:?}");
             assert!(!args.contains(&"--permission-mode"), "Claude's flag reached opencode: {args:?}");
         }
     }

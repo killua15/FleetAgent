@@ -783,6 +783,10 @@ pub(crate) struct TerminalContext {
     /// whether Claude Code waits out a usage limit here, and the status line
     /// that reports the reset time. `None` outside a claude account terminal.
     pub settings_file: Option<std::path::PathBuf>,
+    /// Environment the permission mode needs when the CLI has no flag for it
+    /// (`providers::permission_env`): opencode's plan agent, picked through a
+    /// config file. Rendered like `skill_env`, and skipped for a login.
+    pub mode_env: Vec<(String, String)>,
 }
 
 /// Igual, más el fichero de preferencias del usuario (idioma de la conversación
@@ -993,7 +997,7 @@ pub(crate) fn terminal_script_full(
             context.skills_dir.as_deref(),
             context.graph_mcp.as_deref(),
             &context.sibling_dirs,
-            &context.skill_env,
+            &[context.skill_env.as_slice(), context.mode_env.as_slice()].concat(),
             context.settings_file.as_deref(),
         )?
     ))
@@ -1190,7 +1194,7 @@ fn open_terminal_with<R: Runtime>(
             }
             _ => Vec::new(),
         };
-        (cwd, title, account, TerminalContext { instructions, skills_dir, graph_mcp, sibling_dirs, skill_env, settings_file: None })
+        (cwd, title, account, TerminalContext { instructions, skills_dir, graph_mcp, sibling_dirs, skill_env, settings_file: None, mode_env: Vec::new() })
     };
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(format!("{cwd} no longer exists on disk — the worktree may have been removed"));
@@ -1238,6 +1242,18 @@ fn open_terminal_with<R: Runtime>(
             // puede cambiar después sin teclearle al CLI a ciegas, así que el
             // ajuste dice explícitamente que afecta a las que se abran.
             let mode = app.try_state::<DbConnection>().map(|db| crate::bridge::session::default_mode(&db));
+            // opencode 2.x has no flag for its plan agent; it's picked through
+            // a config file Hangar keeps next to its other per-app files.
+            if let (Some(crate::providers::Mode::Plan), "opencode", Some(root)) = (mode, account.provider.as_str(), status_root.as_ref()) {
+                let file = root.join("opencode").join("plan.json");
+                let written = std::fs::create_dir_all(root.join("opencode")).and_then(|()| std::fs::write(&file, crate::providers::OPENCODE_PLAN_CONFIG));
+                match written {
+                    Ok(()) => context.mode_env = crate::providers::permission_env("opencode", crate::providers::Mode::Plan, Some(&file)),
+                    // Opens in opencode's default agent, which asks before
+                    // acting — a terminal that starts beats one that doesn't.
+                    Err(e) => log::warn!("open_terminal: could not write opencode's plan config — {e}"),
+                }
+            }
             Some(format!(
                 "{}\n",
                 terminal_script_full(&cwd, account, init, session_uuid.as_deref(), init_prompt.as_deref(), mode, &context)?
@@ -4390,6 +4406,27 @@ mod tests {
         let conn = db.0.lock().unwrap();
         let mut stmt = conn.prepare("SELECT id FROM open_terminals ORDER BY created_at").unwrap();
         stmt.query_map([], |r| r.get(0)).unwrap().filter_map(Result::ok).collect()
+    }
+
+    /// opencode 2.x dropped `--agent` from its TUI: a terminal typed with it
+    /// died on "Unrecognized flag: --agent". Plan mode now rides on
+    /// `OPENCODE_CONFIG`, and never on a login. Skipped where opencode isn't
+    /// installed, like the other command-line tests.
+    #[test]
+    fn an_opencode_terminal_in_plan_mode_starts_without_the_agent_flag() {
+        let opencode = AccountForTerminal { provider: "opencode".to_string(), ..account("sub", "/Users/killua/.opencode-test") };
+        let context = TerminalContext {
+            mode_env: crate::providers::permission_env("opencode", crate::providers::Mode::Plan, Some(std::path::Path::new("/data/opencode/plan.json"))),
+            ..TerminalContext::default()
+        };
+        let plan = Some(crate::providers::Mode::Plan);
+        let Ok(start) = terminal_script_full("/repo", &opencode, InitCommand::Start, None, None, plan, &context) else { return };
+        assert!(!start.contains("--agent"), "not a TUI flag in opencode 2.x: {start}");
+        assert!(start.contains("OPENCODE_CONFIG=/data/opencode/plan.json "), "plan mode goes through the config file: {start}");
+        assert!(start.trim_end().ends_with("opencode"), "and adds no flag of its own: {start}");
+
+        let ask = terminal_script_full("/repo", &opencode, InitCommand::Start, None, None, Some(crate::providers::Mode::AskEdits), &TerminalContext::default()).unwrap();
+        assert!(!ask.contains("OPENCODE_CONFIG"), "only plan mode needs it: {ask}");
     }
 
     /// `--settings` is Claude Code's flag and a login starts no session to wait

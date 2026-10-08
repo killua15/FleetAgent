@@ -110,16 +110,38 @@ Tener sonda es lo que hace que el asistente ofrezca el proveedor en vez de desha
 
 ## Los cuatro modos de permiso
 
-El único flag de aprobación es `--auto` («auto-approve permissions that are not explicitly denied
-(dangerous!)»). El control fino no vive en flags: vive en **agentes**, que se eligen con `--agent` y
-llevan reglas `{permission, action, pattern}` con acciones `allow`, `ask` y `deny`.
+> **Reverificado contra opencode 2.0.20 (2026-10-08).** La 2.x quitó `--agent` de la TUI: solo queda
+> en `opencode run` y `opencode mini`. Una terminal tecleada con `opencode --agent plan` muere con
+> `Unrecognized flag: --agent` antes de arrancar. El modo `plan` va ahora por configuración.
+
+El único flag de aprobación es `--auto` («auto-approve permissions that are not explicitly denied»). El
+control fino no vive en flags: vive en **agentes**, que llevan reglas `{permission, action, pattern}`
+con acciones `allow`, `ask` y `deny`.
 
 | Modo de Hangar | opencode |
 |---|---|
 | `yolo` | `--auto` |
-| `plan` | `--agent plan` |
+| `plan` | `OPENCODE_CONFIG=<app_data>/opencode/plan.json`, un fichero con `{ "default_agent": "plan" }` |
 | `auto_edit` | sin flag — pregunta (menos permisivo de lo que promete el modo) |
 | `ask_edits` | sin flag — pregunta ✔ correcto |
+
+### Cómo se elige el agente `plan` en la 2.x
+
+Probado con `opencode run "hi"` y mirando la cabecera (`> build · …` o `> plan · …`):
+
+| Forma | Resultado |
+|---|---|
+| `OPENCODE_CONFIG=<fichero con default_agent: plan>` | **`plan`** ✔ — y la configuración global del usuario se sigue cargando (se fusiona, no se sustituye) |
+| `OPENCODE_CONFIG_CONTENT='{"default_agent":"plan"}'` | `build` — no mueve el agente |
+| `OPENCODE_CLI_CONFIG_CONTENT=…` | `build` |
+| `opencode.json` en el proyecto con `default_agent` | `build` |
+| `opencode run --agent plan` | `plan` (solo en `run`/`mini`) |
+
+Por eso Hangar escribe ese fichero en sus datos de app y lo pasa por entorno
+(`providers::permission_env`). No toca la configuración del usuario ni el repo del proyecto.
+
+La comprobación se hizo con `run`; la TUI interactiva no se puede manejar desde un test, y comparte la
+misma carga de configuración.
 
 ### El agente `plan` viene de fábrica, y aguanta
 
