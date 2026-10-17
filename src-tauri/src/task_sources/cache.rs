@@ -49,7 +49,7 @@ impl TaskCache {
         Self::default()
     }
 
-    fn snapshot(&self) -> Vec<CachedSource> {
+    pub(crate) fn snapshot(&self) -> Vec<CachedSource> {
         let mut list: Vec<CachedSource> = self.sources.lock().map(|m| m.values().cloned().collect()).unwrap_or_default();
         list.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
         list

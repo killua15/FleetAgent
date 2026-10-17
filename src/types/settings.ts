@@ -10,6 +10,7 @@ export interface AppSettings {
   notifyPrComments: boolean;
   notifyUpdateAvailable: boolean;
   notifyTaskChanges: boolean;
+  keepInMenuBar: boolean;
   /** Opt-in gate for the tree-canvas feature (hierarchical agent teams) —
    * off by default, hides the "Hierarchy trees" icon in `AppTopBar` until
    * turned on. */

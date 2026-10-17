@@ -42,6 +42,7 @@ pub(crate) fn read_app_settings(conn: &rusqlite::Connection) -> Result<AppSettin
         notify_pr_comments: false,
         notify_update_available: false,
         notify_task_changes: false,
+        keep_in_menu_bar: true,
         agent_trees_enabled: false,
         include_own_pr_comments: false,
         // The value this shipped with, so an install that has never touched the
@@ -60,6 +61,7 @@ pub(crate) fn read_app_settings(conn: &rusqlite::Connection) -> Result<AppSettin
             "notify_pr_comments" => settings.notify_pr_comments = value == "1",
             "notify_update_available" => settings.notify_update_available = value == "1",
             "notify_task_changes" => settings.notify_task_changes = value == "1",
+            "keep_in_menu_bar" => settings.keep_in_menu_bar = value == "1",
             "agent_trees_enabled" => settings.agent_trees_enabled = value == "1",
             "include_own_pr_comments" => settings.include_own_pr_comments = value == "1",
             // A row that cannot be parsed leaves the default standing rather
@@ -104,6 +106,7 @@ pub fn set_app_settings(db: State<DbConnection>, input: AppSettings) -> Result<A
     write_setting(&conn, "notify_pr_comments", bool_str(input.notify_pr_comments))?;
     write_setting(&conn, "notify_update_available", bool_str(input.notify_update_available))?;
     write_setting(&conn, "notify_task_changes", bool_str(input.notify_task_changes))?;
+    write_setting(&conn, "keep_in_menu_bar", bool_str(input.keep_in_menu_bar))?;
     write_setting(&conn, "agent_trees_enabled", bool_str(input.agent_trees_enabled))?;
     write_setting(&conn, "include_own_pr_comments", bool_str(input.include_own_pr_comments))?;
     write_setting(&conn, "panel_warn_threshold", &input.panel_warn_threshold.max(0).to_string())?;

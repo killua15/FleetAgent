@@ -24,7 +24,7 @@ tauri-build = { version = "2", features = [] }
 # cannot be published on the Mac App Store. Hangar ships as a DMG / GitHub
 # release, so that trade is already made — but it's the reason this can't be
 # turned on casually.
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 # Updates that don't need Apple. The updater signs with its own keypair, so an
@@ -61,6 +61,13 @@ rand = "0.8"
 # `blocking::run_blocking`.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 vt100 = "0.16.2"
+
+# Opening Hangar again while it lives in the tray focuses the running one
+# instead of starting a second copy against the same database. Not on macOS:
+# LaunchServices already does that for an .app, and the plugin would also stop
+# a `tauri dev` build from running next to the installed Hangar.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+tauri-plugin-single-instance = "2"
 
 # keyring 3 puts every platform backend behind a feature, and with none of them
 # enabled it silently falls back to an **in-memory** store: writes succeed, reads

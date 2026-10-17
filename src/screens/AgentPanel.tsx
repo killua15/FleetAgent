@@ -202,6 +202,7 @@ export function AgentPanelBody({
     notifyPrComments: false,
     notifyUpdateAvailable: false,
     notifyTaskChanges: false,
+    keepInMenuBar: true,
     agentTreesEnabled: false,
     includeOwnPrComments: false,
     panelWarnThreshold: 4,

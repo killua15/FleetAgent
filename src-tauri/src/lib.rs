@@ -25,6 +25,7 @@ mod rotation;
 mod run_queue;
 mod task_sources;
 mod terminals;
+mod tray;
 mod turn_runner;
 mod updater;
 mod usage_meter;
@@ -82,7 +83,12 @@ fn heartbeat(name: &'static str, body: impl Fn() + Send + 'static) {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // First, as the plugin asks: a second launch hands over to this one and
+    // exits before anything else starts. See Cargo.toml for why not on macOS.
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| tray::show_main(app)));
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -140,6 +146,14 @@ pub fn run() {
             app.manage(TerminalRegistry::new());
             app.manage(RestoreGuard::new());
             app.manage(task_sources::cache::TaskCache::new());
+            // After everything it reads (terminals, notifications, task cache)
+            // is managed.
+            tray::init(&app.handle());
+            let tray_handle = app.handle().clone();
+            heartbeat("tray", move || {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                tray::refresh(&tray_handle);
+            });
 
             // Before the poller thread below: the user's declarations about which
             // host is which forge have to be in place for the *first* pass, or it
@@ -521,6 +535,17 @@ pub fn run() {
             auth::last_auth_check,
             auth::auth_grace_is_live,
         ])
+        // With the menu-bar icon, closing the window hides Hangar instead of
+        // quitting: the agents and the polls keep running, and the icon (or the
+        // Dock) brings it back. Quit is in the icon's menu and ⌘Q.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" && tray::hides_on_close(window.app_handle()) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
@@ -531,6 +556,11 @@ pub fn run() {
             // drains its registries, so the second call is a no-op.
             if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
                 shutdown_children(app_handle);
+            }
+            // Clicking the Dock icon while the window is hidden in the menu bar.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { has_visible_windows: false, .. } = event {
+                tray::show_main(app_handle);
             }
         });
 }

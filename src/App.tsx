@@ -18,7 +18,9 @@ import { UpdateBanner } from './components/UpdateBanner';
 import { ReloginBanner } from './components/ReloginBanner';
 import { NotificationBell } from './components/NotificationBell';
 import { NotificationsPanel } from './components/NotificationsPanel';
-import { useHasTopBar } from './lib/notifications';
+import { setNotificationsOpen, useHasTopBar } from './lib/notifications';
+import { listen } from '@tauri-apps/api/event';
+import type { ScreenName } from './nav/NavigationProvider';
 import { useBridge } from './bridge/useBridge';
 
 // Inline rather than a module: rules that exist only to let the banners sit
@@ -160,6 +162,22 @@ function FloatingBell() {
   return hasTopBar ? null : <NotificationBell />;
 }
 
+/** The menu-bar icon's menu says where to go; the window owns the routes. */
+function TrayBridge() {
+  const { navigate } = useNavigation();
+  useEffect(() => {
+    const offNavigate = listen<{ screen: ScreenName; params: Record<string, unknown> }>('tray-navigate', (event) => {
+      navigate(event.payload.screen, event.payload.params);
+    });
+    const offBell = listen('tray-open-notifications', () => setNotificationsOpen(true));
+    return () => {
+      offNavigate.then((f) => f());
+      offBell.then((f) => f());
+    };
+  }, [navigate]);
+  return null;
+}
+
 export default function App() {
   return (
     <AppErrorOverlay>
@@ -199,6 +217,7 @@ export default function App() {
                         are true everywhere, and a click can navigate anywhere. */}
                     <NotificationsPanel />
                     <FloatingBell />
+                    <TrayBridge />
                   </NavigationProvider>
                 </SignInGate>
               </div>

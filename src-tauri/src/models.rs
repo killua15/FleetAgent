@@ -204,6 +204,10 @@ pub enum FileStatus {
     Touched,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// App-wide preferences from the `app_settings` key/value table, collapsed
 /// into one struct — the reviewer feature ("Review now") plus which events
 /// fire a real macOS notification, all opt-in (default `false`) so enabling
@@ -227,6 +231,11 @@ pub struct AppSettings {
     /// predates it can still save settings.
     #[serde(default)]
     pub notify_task_changes: bool,
+    /// Closing the window hides Hangar to the menu bar / tray instead of
+    /// quitting, so the agents and the background polls keep running. On by
+    /// default; Quit is in the tray menu and ⌘Q.
+    #[serde(default = "default_true")]
+    pub keep_in_menu_bar: bool,
     /// Opt-in gate for the tree-canvas feature (hierarchical agent teams) —
     /// off by default so the "Hierarchy trees" entry point in `AppTopBar`
     /// doesn't even show until a user deliberately turns it on.

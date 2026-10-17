@@ -75,6 +75,7 @@ export function GeneralSettings() {
     notifyPrComments: false,
     notifyUpdateAvailable: false,
     notifyTaskChanges: false,
+    keepInMenuBar: true,
     agentTreesEnabled: false,
     includeOwnPrComments: false,
     panelWarnThreshold: 4,
@@ -206,6 +207,21 @@ export function GeneralSettings() {
                 command palette stay solid at every setting — anything you have to read shouldn't have your wallpaper behind it.
               </span>
             )}
+          </section>
+          </Pane>
+
+          <Pane id="appearance" active={pane}>
+          <section className={styles.section}>
+            <span className={styles.sectionLabel}>MENU BAR</span>
+            <div className={styles.notifList}>
+              <NotificationRow
+                label="Keep Hangar in the menu bar when the window is closed"
+                description="Closing the window hides it instead of quitting, so your agents and the PR and task checks keep running. Quit from the menu-bar icon or with ⌘Q."
+                checked={appSettings.keepInMenuBar}
+                saving={savingNotif === 'keepInMenuBar'}
+                onChange={(v) => toggleNotification('keepInMenuBar', v)}
+              />
+            </div>
           </section>
           </Pane>
 

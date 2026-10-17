@@ -2185,6 +2185,22 @@ pub fn list_terminal_states<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Termina
         .collect())
 }
 
+/// Every open terminal as the menu-bar menu lists it: id, name, state, sorted
+/// by name so the order does not shuffle between refreshes.
+pub(crate) fn tray_rows<R: Runtime>(app: &AppHandle<R>) -> Vec<(String, String, TerminalState)> {
+    let Some(registry) = app.try_state::<TerminalRegistry>() else { return Vec::new() };
+    let Ok(map) = registry.0.lock() else { return Vec::new() };
+    let mut rows: Vec<(String, String, TerminalState)> = map
+        .values()
+        .map(|h| {
+            let state = h.activity.lock().map(|a| a.state).unwrap_or(TerminalState::Idle);
+            (h.info.id.clone(), h.info.display_name.clone().unwrap_or_else(|| h.info.title.clone()), state)
+        })
+        .collect();
+    rows.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()).then(a.0.cmp(&b.0)));
+    rows
+}
+
 /// Ages `Working` into `Waiting` once a terminal has been quiet long enough,
 /// and tells the user when it happens.
 ///
