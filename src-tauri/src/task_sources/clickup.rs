@@ -293,6 +293,7 @@ pub(crate) fn parse_tasks_with_assignees(body: &serde_json::Value, source_id: &s
                     .to_string(),
                 url: task.get("url").and_then(|u| u.as_str()).unwrap_or("").to_string(),
                 status: task.get("status").and_then(|s| s.get("status")).and_then(|s| s.as_str()).map(str::to_string),
+                status_kind: task.get("status").and_then(|s| s.get("type")).and_then(|s| s.as_str()).map(str::to_string),
                 branch_hint: None,
                 source_id: source_id.to_string(),
                 source_kind: "clickup".to_string(),

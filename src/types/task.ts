@@ -12,6 +12,9 @@ export interface BoardTask {
   description: string;
   url: string;
   status: string | null;
+  /** ClickUp's `open` / `custom` / `done` / `closed` — what orders the status
+   * chips, since the statuses themselves are invented per space. */
+  statusKind?: string | null;
   branchHint: string | null;
   sourceId: string;
   sourceKind: string;
@@ -30,6 +33,18 @@ export interface BoardTask {
 export interface TaskFetch {
   tasks: BoardTask[];
   errors: string[];
+}
+
+/** One board as the Tasks panel last read it (`list_cached_tasks`). A failed
+ * read keeps the previous tasks and says why in `error`. */
+export interface CachedSource {
+  sourceId: string;
+  label: string;
+  kind: string;
+  tasks: BoardTask[];
+  error: string | null;
+  /** When `tasks` were read; null until the first read succeeds. */
+  fetchedAt: string | null;
 }
 
 /** Something a project can be pointed at inside a source — a ClickUp list.

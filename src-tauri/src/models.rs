@@ -222,6 +222,11 @@ pub struct AppSettings {
     /// already tracked — one toggle, both are "a PR needs your attention".
     pub notify_pr_comments: bool,
     pub notify_update_available: bool,
+    /// A task assigned to you appeared or changed status on a board — what the
+    /// Tasks panel's background read finds. `default` so a frontend that
+    /// predates it can still save settings.
+    #[serde(default)]
+    pub notify_task_changes: bool,
     /// Opt-in gate for the tree-canvas feature (hierarchical agent teams) —
     /// off by default so the "Hierarchy trees" entry point in `AppTopBar`
     /// doesn't even show until a user deliberately turns it on.

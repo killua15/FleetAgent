@@ -139,6 +139,7 @@ pub fn run() {
             app.manage(PendingApprovals::new());
             app.manage(TerminalRegistry::new());
             app.manage(RestoreGuard::new());
+            app.manage(task_sources::cache::TaskCache::new());
 
             // Before the poller thread below: the user's declarations about which
             // host is which forge have to be in place for the *first* pass, or it
@@ -179,6 +180,23 @@ pub fn run() {
                 // two passes writing the same instance's rows at once.
                 for pass in passes {
                     let _ = pass.join();
+                }
+            });
+
+            // Background task-board read — what keeps the Tasks panel next to
+            // the terminals current, and what notices a task landing on you or
+            // changing column while you're heads-down. Every five minutes like
+            // the PR poll: about a dozen calls an hour per board, far inside
+            // GitHub's and ClickUp's limits. The first read is the baseline and
+            // announces nothing, so it runs soon after launch — the panel would
+            // otherwise sit empty for five minutes.
+            let task_handle = app.handle().clone();
+            let first_task_pass = std::sync::atomic::AtomicBool::new(true);
+            heartbeat("task-poll", move || {
+                let wait = if first_task_pass.swap(false, std::sync::atomic::Ordering::Relaxed) { 15 } else { 300 };
+                std::thread::sleep(std::time::Duration::from_secs(wait));
+                if let Err(e) = task_sources::cache::refresh(&task_handle, None) {
+                    log::warn!("task poll failed: {e}");
                 }
             });
 
@@ -430,6 +448,7 @@ pub fn run() {
             terminals::resize_terminal,
             terminals::close_terminal,
             terminals::list_terminals,
+            terminals::terminal_branches,
             terminals::restore_terminals,
             terminals::resolve_terminal_target,
             terminals::reopen_terminal_with_account,
@@ -454,6 +473,8 @@ pub fn run() {
             task_sources::list_source_scopes,
             task_sources::list_project_tasks,
             task_sources::list_source_tasks,
+            task_sources::cache::list_cached_tasks,
+            task_sources::cache::refresh_tasks,
             terminals::list_terminal_states,
             terminals::list_auto_continue,
             terminals::set_terminal_auto_continue,

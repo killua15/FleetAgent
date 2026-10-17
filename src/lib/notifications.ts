@@ -39,7 +39,7 @@ export function targetRoute(n: AppNotification): { screen: ScreenName; params?: 
     case 'update':
       return { screen: 'general-settings' };
     case 'task':
-      return { screen: 'task-board' };
+      return { screen: 'terminals', params: { showTasks: true } };
     default:
       return null;
   }

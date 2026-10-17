@@ -201,6 +201,7 @@ export function AgentPanelBody({
     notifySpendCap: false,
     notifyPrComments: false,
     notifyUpdateAvailable: false,
+    notifyTaskChanges: false,
     agentTreesEnabled: false,
     includeOwnPrComments: false,
     panelWarnThreshold: 4,

@@ -1676,6 +1676,30 @@ pub fn list_terminals<R: Runtime>(app: AppHandle<R>) -> Result<Vec<TerminalInfo>
     Ok(map.values().map(|h| h.info.clone()).collect())
 }
 
+/// The branch each open terminal's folder is on, by terminal id — what lets
+/// the Tasks panel say "this task already has a terminal" (a task's worktree is
+/// on its suggested branch). Asked of git rather than remembered: the agent can
+/// switch branches, and a stale answer would send you to the wrong panel.
+/// Terminals outside a repo, or on a detached HEAD, are left out.
+#[tauri::command]
+pub async fn terminal_branches<R: Runtime>(app: AppHandle<R>) -> Result<HashMap<String, String>, String> {
+    let dirs: Vec<(String, String)> = {
+        let registry = app.state::<TerminalRegistry>();
+        let map = registry.0.lock().map_err(|e| e.to_string())?;
+        map.values().map(|h| (h.info.id.clone(), h.info.cwd.clone())).collect()
+    };
+    crate::blocking::run_blocking(move || {
+        dirs.into_iter()
+            .filter_map(|(id, cwd)| {
+                let out = crate::providers::git_command().args(["-C", &cwd, "branch", "--show-current"]).output().ok()?;
+                let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                (out.status.success() && !branch.is_empty()).then_some((id, branch))
+            })
+            .collect()
+    })
+    .await
+}
+
 struct PersistedTerminal {
     target_kind: String,
     source_id: String,

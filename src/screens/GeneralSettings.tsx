@@ -74,6 +74,7 @@ export function GeneralSettings() {
     notifySpendCap: false,
     notifyPrComments: false,
     notifyUpdateAvailable: false,
+    notifyTaskChanges: false,
     agentTreesEnabled: false,
     includeOwnPrComments: false,
     panelWarnThreshold: 4,
@@ -361,6 +362,13 @@ export function GeneralSettings() {
                 checked={appSettings.notifyUpdateAvailable}
                 saving={savingNotif === 'notifyUpdateAvailable'}
                 onChange={(v) => toggleNotification('notifyUpdateAvailable', v)}
+              />
+              <NotificationRow
+                label="Tasks"
+                description="A task is assigned to you or changes status on one of your boards — read every 5 minutes while Hangar is open."
+                checked={appSettings.notifyTaskChanges}
+                saving={savingNotif === 'notifyTaskChanges'}
+                onChange={(v) => toggleNotification('notifyTaskChanges', v)}
               />
             </div>
           </section>

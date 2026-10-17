@@ -6,6 +6,7 @@ import { AppTopBar } from '../components/AppTopBar';
 import { AccountSwitcher } from '../components/AccountSwitcher';
 import { TerminalPane } from '../components/TerminalPane';
 import { ReviewSidebar } from '../components/ReviewSidebar';
+import { TasksSidebar } from '../components/TasksSidebar';
 import { toastError } from '../components/ErrorOverlay';
 import { Button } from '../components/ui/button';
 import { IconTooltip } from '../components/ui/tooltip';
@@ -23,6 +24,8 @@ import styles from './Terminals.module.css';
  * valiendo mientras los ajustes no han llegado — así el aviso no parpadea en el
  * primer render. `0` en los ajustes significa nunca. */
 const DEFAULT_WARN_THRESHOLD = 4;
+
+type SidePanel = 'changes' | 'tasks' | null;
 
 /** The "no account" row. A plain shell is still worth one click — it's what
  * the terminals were before they knew about accounts — but it sits below the
@@ -97,24 +100,34 @@ export function Terminals() {
   // The panel the sidebar last sent you to, highlighted briefly so a click on a
   // row of twelve lands somewhere visible instead of scrolling silently.
   const [focusedId, setFocusedId] = useState<string | null>(null);
-  // The review sidebar's open/closed is a per-viewer convenience: storage may
-  // be unavailable, and closed is the safe default.
-  const [reviewOpen, setReviewOpen] = useState<boolean>(() => {
+  // Which right-hand panel is open — the review of the focused terminal's
+  // changes, or your task boards; they share the space. A per-viewer
+  // convenience: storage may be unavailable, and closed is the safe default.
+  const [sidePanel, setSidePanel] = useState<SidePanel>(() => {
     try {
-      return localStorage.getItem('hangar.terminals.reviewOpen') === '1';
+      const saved = localStorage.getItem('hangar.terminals.sidePanel');
+      if (saved === 'changes' || saved === 'tasks') return saved;
+      // What this was before Tasks shared the space.
+      return localStorage.getItem('hangar.terminals.reviewOpen') === '1' ? 'changes' : null;
     } catch {
-      return false;
+      return null;
     }
   });
-  const toggleReview = () =>
-    setReviewOpen((open) => {
-      try {
-        localStorage.setItem('hangar.terminals.reviewOpen', open ? '0' : '1');
-      } catch {
-        // Not remembered; still toggled.
-      }
-      return !open;
-    });
+  const showSidePanel = (panel: SidePanel) => {
+    setSidePanel(panel);
+    try {
+      localStorage.setItem('hangar.terminals.sidePanel', panel ?? '');
+    } catch {
+      // Not remembered; still shown.
+    }
+  };
+  const toggleSidePanel = (panel: 'changes' | 'tasks') => showSidePanel(sidePanel === panel ? null : panel);
+  // A task notification lands here asking for the Tasks panel.
+  const showTasks = Boolean(current.params?.showTasks);
+  useEffect(() => {
+    if (showTasks) showSidePanel('tasks');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showTasks, current]);
   // Qué terminal está mirando el teléfono. Un agente dirigido desde otro sitio
   // no puede parecer igual que uno que nadie está tocando.
   const [phone, setPhone] = useState<{ terminalId: string | null; device: string | null }>({ terminalId: null, device: null });
@@ -503,14 +516,23 @@ export function Terminals() {
             {terminals.length > 0 && (
               <Button
                 size="sm"
-                variant={reviewOpen ? 'secondary' : 'outline'}
-                aria-pressed={reviewOpen}
-                onClick={toggleReview}
+                variant={sidePanel === 'changes' ? 'secondary' : 'outline'}
+                aria-pressed={sidePanel === 'changes'}
+                onClick={() => toggleSidePanel('changes')}
                 title="Review the focused terminal's changes: its files, and each file's diff"
               >
                 ⇄ Changes
               </Button>
             )}
+            <Button
+              size="sm"
+              variant={sidePanel === 'tasks' ? 'secondary' : 'outline'}
+              aria-pressed={sidePanel === 'tasks'}
+              onClick={() => toggleSidePanel('tasks')}
+              title="Your boards: what's assigned to you, by status, and which tasks already have a terminal"
+            >
+              ☑ Tasks
+            </Button>
             <Button size="sm" variant="outline" onClick={openFanPicker} disabled={opening}>
               ⑃ Fan out
             </Button>
@@ -805,8 +827,21 @@ export function Terminals() {
         </div>
         {/* One shared review panel that follows the focused terminal — not a
             list inside every card, which was tried and was too cramped. */}
-        {reviewOpen && terminals.length > 0 && (
+        {sidePanel === 'changes' && terminals.length > 0 && (
           <ReviewSidebar terminal={terminals.find((t) => t.id === focusedId) ?? panels[0] ?? terminals[0] ?? null} />
+        )}
+        {sidePanel === 'tasks' && (
+          <TasksSidebar
+            terminals={terminals}
+            projects={projects}
+            accounts={accounts}
+            focused={terminals.find((t) => t.id === focusedId) ?? null}
+            onFocusTerminal={focusTerminal}
+            onOpened={(opened) => {
+              setTerminals((prev) => [...prev, ...opened.filter((o) => !prev.some((t) => t.id === o.id))]);
+              if (opened[0]) requestAnimationFrame(() => focusTerminal(opened[0].id));
+            }}
+          />
         )}
       </div>
     </div>

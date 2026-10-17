@@ -9,6 +9,7 @@
 //! custom fields and relations stay out on purpose: the moment one tool's
 //! concept enters the model, every other adapter has to fake it.
 
+pub mod cache;
 pub mod clickup;
 pub mod github;
 
@@ -35,6 +36,12 @@ pub struct Task {
     pub description: String,
     pub url: String,
     pub status: Option<String>,
+    /// What *kind* of status `status` is, when the tool says: ClickUp's
+    /// `open` / `custom` / `done` / `closed`. The status itself is invented per
+    /// space ("verificar"), so this is the only thing that can put the panel's
+    /// status chips in a sensible order. GitHub issues are always `open`.
+    #[serde(default)]
+    pub status_kind: Option<String>,
     /// The branch the source itself suggests, when it has an opinion. ClickUp
     /// does; GitHub doesn't.
     pub branch_hint: Option<String>,
@@ -277,7 +284,7 @@ pub fn list_task_sources(db: tauri::State<DbConnection>) -> Result<Vec<TaskSourc
     all_sources(&db)
 }
 
-fn all_sources(db: &DbConnection) -> Result<Vec<TaskSourceView>, String> {
+pub(crate) fn all_sources(db: &DbConnection) -> Result<Vec<TaskSourceView>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("SELECT id, kind, label, credential_ref, config_json FROM task_sources ORDER BY created_at")
@@ -485,32 +492,40 @@ pub async fn list_source_tasks<R: tauri::Runtime>(app: tauri::AppHandle<R>, sour
     crate::blocking::run_blocking(move || {
         use tauri::Manager;
         let db = app.state::<DbConnection>();
-        let (kind, label): (String, String) = {
-            let conn = db.0.lock().map_err(|e| e.to_string())?;
-            conn.query_row("SELECT kind, label FROM task_sources WHERE id = ?1", params![source_id], |row| Ok((row.get(0)?, row.get(1)?)))
-                .map_err(|e| format!("source lookup failed: {e}"))?
-        };
-
-        // No link, so no narrowing: the whole account, at its default scope.
-        // Any project's own scope is applied later, when one is chosen.
-        let link = TaskSourceLink { source_id: source_id.clone(), kind: kind.clone(), label: label.clone(), scope_id: None, branch_template: None };
-
-        let fetched = match kind.as_str() {
-            "github" => github::fetch_everywhere(&source_id),
-            "clickup" => {
-                let token = credential_for(&db, &source_id)?;
-                let config = config_for(&db, &source_id)?;
-                clickup::fetch(&link, &token, &config)
-            }
-            other => Err(format!("unknown task source: {other}")),
-        };
-
-        match fetched {
-            Ok(found) => Ok(TaskFetch { tasks: with_branches(found, &link), errors: Vec::new() }),
-            Err(e) => Err(format!("{label}: {e}")),
-        }
+        let tasks = fetch_source(&db, &source_id)?;
+        Ok(TaskFetch { tasks, errors: Vec::new() })
     })
     .await?
+}
+
+/// One source's tasks at its default scope, branches filled in — what the
+/// Tasks screen shows and what the background poll caches. Blocking: it shells
+/// out to `gh` or calls ClickUp.
+pub(crate) fn fetch_source(db: &DbConnection, source_id: &str) -> Result<Vec<Task>, String> {
+    let (kind, label): (String, String) = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT kind, label FROM task_sources WHERE id = ?1", params![source_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| format!("source lookup failed: {e}"))?
+    };
+
+    // No link, so no narrowing: the whole account, at its default scope.
+    // Any project's own scope is applied later, when one is chosen.
+    let link = TaskSourceLink { source_id: source_id.to_string(), kind: kind.clone(), label: label.clone(), scope_id: None, branch_template: None };
+
+    let fetched = match kind.as_str() {
+        "github" => github::fetch_everywhere(source_id),
+        "clickup" => {
+            let token = credential_for(db, source_id)?;
+            let config = config_for(db, source_id)?;
+            clickup::fetch(&link, &token, &config)
+        }
+        other => Err(format!("unknown task source: {other}")),
+    };
+
+    match fetched {
+        Ok(found) => Ok(with_branches(found, &link)),
+        Err(e) => Err(format!("{label}: {e}")),
+    }
 }
 
 /// Fills in each task's branch from the link's template. Here rather than in
@@ -631,6 +646,7 @@ mod tests {
             source_id: "src1".to_string(),
             source_kind: "clickup".to_string(),
             container: None,
+            status_kind: None,
             suggested_branch: String::new(),
         }
     }
