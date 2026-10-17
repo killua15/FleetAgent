@@ -640,7 +640,7 @@ pub(crate) fn load_account(conn: &rusqlite::Connection, account_id: &str) -> Res
 /// real key to disk in plaintext and leave it in the pane's scrollback. As
 /// ambient environment it still reaches the CLI, and the displayed command
 /// stays exactly the command that runs.
-fn account_key_env(account: &AccountForTerminal, account_id: &str) -> Result<Vec<(String, String)>, String> {
+pub(crate) fn account_key_env(account: &AccountForTerminal, account_id: &str) -> Result<Vec<(String, String)>, String> {
     if account.billing != "key" {
         return Ok(Vec::new());
     }

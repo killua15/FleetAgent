@@ -18,12 +18,19 @@ export function AccountPickerButton({
   title,
   busy,
   disabled,
+  busyLabel = 'Opening…',
+  unavailable,
   onPick,
 }: {
   label: string;
   title?: string;
   busy?: boolean;
   disabled?: boolean;
+  busyLabel?: string;
+  /** Why an account can't do this job, or null when it can. Shown greyed out
+   * with the reason, rather than left out — an account that silently isn't
+   * there reads as a bug. */
+  unavailable?: (account: Account) => string | null;
   onPick: (accountId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -43,7 +50,7 @@ export function AccountPickerButton({
     <PopoverPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <PopoverPrimitive.Trigger asChild>
         <button className={styles.trigger} disabled={busy || disabled} title={title}>
-          {busy ? 'Opening…' : label}
+          {busy ? busyLabel : label}
           <span className={styles.caret}>▾</span>
         </button>
       </PopoverPrimitive.Trigger>
@@ -59,12 +66,13 @@ export function AccountPickerButton({
           {accounts?.map((a) => {
             const meta = providerMeta(a.provider);
             const benched = a.status !== 'healthy';
+            const cannot = unavailable?.(a) ?? null;
             return (
               <button
                 key={a.id}
                 className={styles.row}
-                disabled={benched}
-                title={benched ? 'This account is out of quota — it comes back on its own after its window resets' : undefined}
+                disabled={benched || cannot !== null}
+                title={cannot ?? (benched ? 'This account is out of quota — it comes back on its own after its window resets' : undefined)}
                 onClick={() => {
                   setOpen(false);
                   onPick(a.id);
@@ -75,7 +83,11 @@ export function AccountPickerButton({
                 </span>
                 <span className={styles.rowName}>{a.name}</span>
                 <span className={styles.spacer} />
-                {benched && <span className={styles.tagBenched}>out of quota</span>}
+                {cannot !== null ? (
+                  <span className={styles.tagBenched}>not supported</span>
+                ) : (
+                  benched && <span className={styles.tagBenched}>out of quota</span>
+                )}
               </button>
             );
           })}

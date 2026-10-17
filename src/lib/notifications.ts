@@ -23,6 +23,30 @@ export function kindCounts(list: AppNotification[]): { kind: NotificationKind; t
   }).filter((c) => c.total > 0);
 }
 
+/** The AI's four piles, in the order they're shown. */
+export const AI_CATEGORIES = [
+  { id: 'action_required', label: 'Needs you', icon: '⚡' },
+  { id: 'review', label: 'Review', icon: '👁' },
+  { id: 'fyi', label: 'FYI', icon: 'ℹ' },
+  { id: 'noise', label: 'Noise', icon: '·' },
+] as const;
+
+export type AiCategory = (typeof AI_CATEGORIES)[number]['id'];
+
+/** The list as the AI sorted it: one group per category that has anything,
+ * most urgent first inside each, then whatever it hasn't sorted yet. */
+export function groupByCategory(list: AppNotification[]): { id: AiCategory | 'unsorted'; items: AppNotification[] }[] {
+  const byPriority = (a: AppNotification, b: AppNotification) =>
+    (a.aiPriority ?? 9) - (b.aiPriority ?? 9) || b.createdAt.localeCompare(a.createdAt);
+  const groups: { id: AiCategory | 'unsorted'; items: AppNotification[] }[] = AI_CATEGORIES.map((c) => ({
+    id: c.id,
+    items: list.filter((n) => n.aiCategory === c.id).sort(byPriority),
+  }));
+  const known = new Set<string>(AI_CATEGORIES.map((c) => c.id));
+  groups.push({ id: 'unsorted', items: list.filter((n) => !n.aiCategory || !known.has(n.aiCategory)) });
+  return groups.filter((g) => g.items.length > 0);
+}
+
 /** Where clicking a notification goes: a screen and its params, or nowhere. */
 export function targetRoute(n: AppNotification): { screen: ScreenName; params?: Record<string, unknown> } | null {
   const t = n.target;

@@ -1,3 +1,4 @@
+mod ai_oneshot;
 mod app_data;
 mod auto_continue;
 mod auth;
@@ -15,6 +16,7 @@ mod handoff;
 mod login_manager;
 mod memory_pressure;
 mod models;
+mod notification_classify;
 mod notifications;
 mod permission_bridge;
 mod process_manager;
@@ -510,6 +512,7 @@ pub fn run() {
             notifications::unread_notification_count,
             notifications::mark_notifications_read,
             notifications::clear_notifications,
+            notification_classify::classify_notifications,
             bridge::session::bridge_status,
             bridge::session::set_machine_name,
             bridge::session::get_default_terminal_mode,

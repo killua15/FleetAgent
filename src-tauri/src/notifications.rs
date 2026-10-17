@@ -111,7 +111,7 @@ pub(crate) fn unread_count(conn: &Connection) -> i64 {
 
 /// The unread count on the Dock icon. A badge stays visible with Do Not
 /// Disturb on — the whole reason this list exists.
-fn refresh_badge<R: Runtime>(app: &AppHandle<R>, unread: i64) {
+pub(crate) fn refresh_badge<R: Runtime>(app: &AppHandle<R>, unread: i64) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_badge_count(if unread > 0 { Some(unread) } else { None });
     }
@@ -162,6 +162,15 @@ fn row_to_notification(row: &rusqlite::Row) -> rusqlite::Result<AppNotification>
         ai_priority: row.get("ai_priority")?,
         ai_reason: row.get("ai_reason")?,
     })
+}
+
+/// Unread notifications the AI hasn't sorted yet, newest first.
+pub(crate) fn unread_unclassified(conn: &Connection) -> Result<Vec<AppNotification>, String> {
+    let mut stmt = conn
+        .prepare("SELECT * FROM notifications WHERE read_at IS NULL AND ai_category IS NULL ORDER BY created_at DESC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], row_to_notification).map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
 /// The list, newest first.

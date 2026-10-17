@@ -1,12 +1,36 @@
 import { useEffect, useMemo, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '../lib/invoke';
-import { KIND_META, ago, kindCounts, setNotificationsOpen, targetRoute, useNotificationsOpen } from '../lib/notifications';
+import { AI_CATEGORIES, KIND_META, ago, groupByCategory, kindCounts, setNotificationsOpen, targetRoute, useNotificationsOpen } from '../lib/notifications';
 import { useNavigation } from '../nav/NavigationProvider';
+import type { Account, Provider } from '../types/account';
 import type { AppNotification, NotificationKind } from '../types/notification';
+import { AccountPickerButton } from './AccountPickerButton';
 import { toastError } from './ErrorOverlay';
 import { Button } from './ui/button';
 import styles from './NotificationsPanel.module.css';
+
+/** The providers whose accounts run Claude Code, which is what classifying
+ * runs on — Kimi and custom endpoints are Claude Code pointed elsewhere. */
+const CLASSIFY_PROVIDERS: Provider[] = ['claude', 'kimi', 'custom'];
+
+type View = 'type' | 'ai';
+
+/** Per-viewer conveniences — storage may be unavailable. */
+function stored(key: string): string | null {
+  try {
+    return localStorage.getItem(`hangar.notifications.${key}`);
+  } catch {
+    return null;
+  }
+}
+function store(key: string, value: string) {
+  try {
+    localStorage.setItem(`hangar.notifications.${key}`, value);
+  } catch {
+    // Not remembered; still applied.
+  }
+}
 
 /**
  * Everything Hangar notified about, inside Hangar — for when the OS
@@ -21,6 +45,11 @@ export function NotificationsPanel() {
   const [list, setList] = useState<AppNotification[]>([]);
   const [kind, setKind] = useState<NotificationKind | 'all'>('all');
   const [unreadOnly, setUnreadOnly] = useState(false);
+  const [view, setView] = useState<View>(() => (stored('view') === 'ai' ? 'ai' : 'type'));
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [classifyAccount, setClassifyAccount] = useState<string | null>(() => stored('classifyAccount'));
+  const [classifying, setClassifying] = useState(false);
+  const [classifyNote, setClassifyNote] = useState<{ error: boolean; text: string } | null>(null);
 
   const load = () =>
     invoke<AppNotification[]>('list_notifications')
@@ -30,6 +59,7 @@ export function NotificationsPanel() {
   useEffect(() => {
     if (!open) return;
     load();
+    invoke<Account[]>('list_accounts').then(setAccounts).catch(() => setAccounts([]));
     const added = listen('notification-added', load);
     const changed = listen('notifications-changed', load);
     const onKey = (e: KeyboardEvent) => {
@@ -46,6 +76,9 @@ export function NotificationsPanel() {
   const counts = useMemo(() => kindCounts(list), [list]);
   const shown = list.filter((n) => (kind === 'all' || n.kind === kind) && (!unreadOnly || !n.readAt));
   const unreadShown = shown.filter((n) => !n.readAt).map((n) => n.id);
+  const groups = view === 'ai' ? groupByCategory(shown) : [];
+  const unsorted = list.filter((n) => !n.readAt && !n.aiCategory).length;
+  const rememberedAccount = accounts.find((a) => a.id === classifyAccount && CLASSIFY_PROVIDERS.includes(a.provider)) ?? null;
 
   if (!open) return null;
 
@@ -59,6 +92,51 @@ export function NotificationsPanel() {
       setNotificationsOpen(false);
     }
   };
+
+  const pickView = (next: View) => {
+    setView(next);
+    store('view', next);
+  };
+
+  const classify = async (accountId: string) => {
+    setClassifyAccount(accountId);
+    store('classifyAccount', accountId);
+    setClassifying(true);
+    setClassifyNote(null);
+    try {
+      const outcome = await invoke<{ classified: number; remaining: number }>('classify_notifications', { accountId, ids: null });
+      setClassifyNote({
+        error: false,
+        text:
+          outcome.classified === 0
+            ? 'Nothing new to sort.'
+            : `Sorted ${outcome.classified}${outcome.remaining > 0 ? ` — ${outcome.remaining} more on the next press` : ''}.`,
+      });
+      pickView('ai');
+      load();
+    } catch (e) {
+      // In the panel, next to the button that failed, not a toast that's
+      // gone before you've read which account it was.
+      setClassifyNote({ error: true, text: String(e) });
+    } finally {
+      setClassifying(false);
+    }
+  };
+
+  const row = (n: AppNotification) => (
+    <button key={n.id} className={n.readAt ? styles.item : styles.itemUnread} onClick={() => go(n)} title={targetRoute(n) ? 'Go there' : undefined}>
+      <span className={styles.itemIcon}>{KIND_META[n.kind]?.icon ?? '•'}</span>
+      <span className={styles.itemText}>
+        <span className={styles.itemTitle}>
+          {view === 'ai' && n.aiPriority === 1 && <span className={styles.urgent}>!</span>}
+          {n.title}
+        </span>
+        <span className={styles.itemBody}>{n.body}</span>
+        {view === 'ai' && n.aiReason && <span className={styles.itemReason}>✨ {n.aiReason}</span>}
+      </span>
+      <span className={styles.itemAgo}>{ago(n.createdAt)}</span>
+    </button>
+  );
 
   const clear = () =>
     invoke('clear_notifications', { kind: kind === 'all' ? null : kind })
@@ -102,20 +180,74 @@ export function NotificationsPanel() {
           </Button>
         </div>
 
+        <div className={styles.actions}>
+          <div className={styles.viewToggle}>
+            <button className={view === 'type' ? styles.viewOn : styles.viewOff} onClick={() => pickView('type')} title="Newest first">
+              Latest
+            </button>
+            <button className={view === 'ai' ? styles.viewOn : styles.viewOff} onClick={() => pickView('ai')} title="Grouped by what the AI made of them">
+              By urgency
+            </button>
+          </div>
+          <span className={styles.spacer} />
+          {rememberedAccount ? (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={classifying || unsorted === 0}
+                onClick={() => classify(rememberedAccount.id)}
+                title={`Sort the ${unsorted} unread ones with ${rememberedAccount.name}`}
+              >
+                {classifying ? 'sorting…' : `✨ Classify${unsorted > 0 ? ` (${unsorted})` : ''}`}
+              </Button>
+              <AccountPickerButton
+                label={rememberedAccount.name}
+                title="Classify with another account"
+                disabled={classifying}
+                unavailable={(a) => (CLASSIFY_PROVIDERS.includes(a.provider) ? null : 'Classifying runs on Claude Code — this account runs another CLI')}
+                onPick={classify}
+              />
+            </>
+          ) : (
+            <AccountPickerButton
+              label={`✨ Classify${unsorted > 0 ? ` (${unsorted})` : ''}`}
+              title="Let an AI sort the unread ones into needs you / review / FYI / noise"
+              busy={classifying}
+              busyLabel="sorting…"
+              disabled={unsorted === 0}
+              unavailable={(a) => (CLASSIFY_PROVIDERS.includes(a.provider) ? null : 'Classifying runs on Claude Code — this account runs another CLI')}
+              onPick={classify}
+            />
+          )}
+        </div>
+        {classifyNote && <span className={classifyNote.error ? styles.noteError : styles.note}>{classifyNote.text}</span>}
+
         <div className={styles.list}>
           {shown.length === 0 && (
             <span className={styles.empty}>{list.length === 0 ? 'Nothing yet. Notifications land here even with Do Not Disturb on.' : 'Nothing here.'}</span>
           )}
-          {shown.map((n) => (
-            <button key={n.id} className={n.readAt ? styles.item : styles.itemUnread} onClick={() => go(n)} title={targetRoute(n) ? 'Go there' : undefined}>
-              <span className={styles.itemIcon}>{KIND_META[n.kind]?.icon ?? '•'}</span>
-              <span className={styles.itemText}>
-                <span className={styles.itemTitle}>{n.title}</span>
-                <span className={styles.itemBody}>{n.body}</span>
-              </span>
-              <span className={styles.itemAgo}>{ago(n.createdAt)}</span>
-            </button>
-          ))}
+          {view === 'type' && shown.map(row)}
+          {view === 'ai' &&
+            groups.map((group) => {
+              const meta = AI_CATEGORIES.find((c) => c.id === group.id);
+              const unreadInGroup = group.items.filter((n) => !n.readAt).map((n) => n.id);
+              return (
+                <div key={group.id} className={styles.group}>
+                  <div className={styles.groupHead}>
+                    <span>{meta ? `${meta.icon} ${meta.label}` : 'Not sorted yet'}</span>
+                    <span className={styles.count}>{group.items.length}</span>
+                    <span className={styles.spacer} />
+                    {group.id === 'noise' && unreadInGroup.length > 0 && (
+                      <button className={styles.groupAction} onClick={() => markRead(unreadInGroup)}>
+                        mark all read
+                      </button>
+                    )}
+                  </div>
+                  {group.items.map(row)}
+                </div>
+              );
+            })}
         </div>
       </aside>
     </>

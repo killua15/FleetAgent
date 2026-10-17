@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AppNotification } from '../types/notification';
-import { ago, kindCounts, targetRoute } from './notifications';
+import { ago, groupByCategory, kindCounts, targetRoute } from './notifications';
 
 const n = (over: Partial<AppNotification>): AppNotification => ({
   id: 'x',
@@ -40,5 +40,17 @@ describe('notification panel helpers', () => {
     expect(ago('2026-10-17T11:55:00Z', now)).toBe('5m');
     expect(ago('2026-10-17T09:00:00Z', now)).toBe('3h');
     expect(ago('2026-10-15T12:00:00Z', now)).toBe('2d');
+  });
+});
+
+describe('groupByCategory', () => {
+  const n = (id: string, aiCategory: string | null, aiPriority: number | null, createdAt = '2026-10-17T10:00:00Z') =>
+    ({ id, kind: 'pr', title: id, body: '', target: null, createdAt, readAt: null, aiCategory, aiPriority, aiReason: null }) as AppNotification;
+
+  it('orders the piles, puts the most urgent first, and keeps the unsorted last', () => {
+    const groups = groupByCategory([n('a', 'noise', 3), n('b', 'action_required', 2), n('c', null, null), n('d', 'action_required', 1), n('e', 'bogus', 1)]);
+    expect(groups.map((g) => g.id)).toEqual(['action_required', 'noise', 'unsorted']);
+    expect(groups[0].items.map((i) => i.id)).toEqual(['d', 'b']);
+    expect(groups[2].items.map((i) => i.id)).toEqual(['c', 'e']);
   });
 });
