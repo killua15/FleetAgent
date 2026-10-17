@@ -128,6 +128,8 @@ pub fn run() {
                 }
             };
             app.manage(DbConnection(Mutex::new(conn)));
+            // What was unread when Hangar last closed is still unread now.
+            notifications::restore_badge(&app.handle());
             app.manage(ProcessRegistry::new());
             app.manage(LoginRegistry::new());
             app.manage(TurnRegistry::new());
@@ -469,6 +471,10 @@ pub fn run() {
             terminals::refresh_all_quotas,
             notifications::send_test_notification,
             notifications::notify_update_available,
+            notifications::list_notifications,
+            notifications::unread_notification_count,
+            notifications::mark_notifications_read,
+            notifications::clear_notifications,
             bridge::session::bridge_status,
             bridge::session::set_machine_name,
             bridge::session::get_default_terminal_mode,

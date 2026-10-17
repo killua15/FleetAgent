@@ -1,0 +1,162 @@
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: color-mix(in srgb, var(--bg) 30%, transparent);
+}
+
+.panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 61;
+  width: min(380px, 92vw);
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--line);
+  background: var(--bg);
+  box-shadow: -12px 0 40px rgb(0 0 0 / 0.25);
+}
+
+.head,
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.head {
+  border-bottom: 1px solid var(--line);
+}
+
+.title {
+  font: 600 13px var(--font-ui);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.unreadToggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font: 400 11px var(--font-ui);
+  color: var(--dim);
+}
+
+.kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px 0;
+}
+
+.kindOn,
+.kindOff {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font: 400 11px var(--font-ui);
+  cursor: pointer;
+}
+
+.kindOn {
+  background: var(--accD);
+  color: var(--acc);
+  border-color: transparent;
+}
+
+.kindOff {
+  background: transparent;
+  color: var(--mut);
+}
+
+.count,
+.countUnread {
+  font: 600 9.5px var(--font-mono);
+  color: var(--dim);
+}
+
+.countUnread {
+  color: var(--amber);
+}
+
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 6px 12px;
+}
+
+.empty {
+  display: block;
+  padding: 18px 10px;
+  font: 400 11.5px var(--font-ui);
+  color: var(--dim);
+}
+
+.item,
+.itemUnread {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+  color: var(--txt);
+  cursor: pointer;
+}
+
+.item:hover,
+.itemUnread:hover {
+  background: var(--panel);
+}
+
+.item {
+  opacity: 0.62;
+}
+
+.itemUnread {
+  box-shadow: inset 2px 0 0 var(--amber);
+}
+
+.itemIcon {
+  flex: none;
+  width: 16px;
+  font: 400 12px var(--font-ui);
+  text-align: center;
+  color: var(--mut);
+}
+
+.itemText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.itemTitle {
+  font: 600 11.5px var(--font-ui);
+}
+
+.itemBody {
+  font: 400 11px var(--font-ui);
+  color: var(--mut);
+  overflow-wrap: anywhere;
+}
+
+.itemAgo {
+  flex: none;
+  font: 400 10px var(--font-mono);
+  color: var(--dim);
+}

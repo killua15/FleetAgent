@@ -1296,7 +1296,7 @@ fn record_open_prs_for_project<R: Runtime>(
     let still_open: Vec<i64> = snapshot.prs.iter().map(|pr| pr.number).collect();
     // Sent only once `conn` is released: `notify_if_enabled` locks the DB itself,
     // and calling it with the guard still held was a thread waiting on itself.
-    let mut notifications: Vec<(&'static str, String)> = Vec::new();
+    let mut notifications: Vec<(&'static str, String, String)> = Vec::new();
 
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     prune_closed_foreign_prs(&conn, repo, &still_open)?;
@@ -1355,13 +1355,14 @@ fn record_open_prs_for_project<R: Runtime>(
             notifications.push((
                 title,
                 format!("{} {}{}: {}", repo.path(), repo.forge.number_sigil(), pr.number, pr.title.as_deref().unwrap_or("(untitled)")),
+                format!("{}#{}", repo.path(), pr.number),
             ));
         }
     }
     drop(conn);
 
-    for (title, body) in notifications {
-        crate::notifications::notify_if_enabled(app, |s| s.notify_pr_comments, title, &body);
+    for (title, body, pr_ref) in notifications {
+        crate::notifications::record(app, crate::notifications::kind::PR, |s| s.notify_pr_comments, title, &body, crate::notifications::Target::new("pr", pr_ref));
     }
     Ok(())
 }
@@ -1556,11 +1557,13 @@ pub fn poll_open_prs_for_host<R: Runtime>(app: &AppHandle<R>, host: Option<&str>
             match check_pr_comments_with(&db, pr, facts) {
                 Ok(comments) if !comments.is_empty() => {
                     let _ = app.emit("pr-comments-found", serde_json::json!({ "sessionId": session_id, "comments": comments }));
-                    crate::notifications::notify_if_enabled(
+                    crate::notifications::record(
                         app,
+                        crate::notifications::kind::PR,
                         |s| s.notify_pr_comments,
                         "New review comments",
                         &format!("{} new comment(s) on a {} Hangar opened on {}", comments.len(), repo.forge.change_noun(), repo.forge.display_name()),
+                        crate::notifications::Target::new("pr", format!("{}#{}", repo.path(), number)),
                     );
                 }
                 Ok(_) => {}

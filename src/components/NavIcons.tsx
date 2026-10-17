@@ -163,3 +163,14 @@ export function MenuIcon() {
     </svg>
   );
 }
+
+/** The notification bell — what you check when Do Not Disturb kept the OS
+ * notifications away. */
+export function BellIcon() {
+  return (
+    <svg {...base} aria-hidden="true">
+      <path d="M4.2 11.2 L4.2 7.2 A3.8 3.8 0 0 1 11.8 7.2 L11.8 11.2 L12.8 12.2 L3.2 12.2 Z" />
+      <path d="M6.6 13.6 A1.5 1.5 0 0 0 9.4 13.6" />
+    </svg>
+  );
+}

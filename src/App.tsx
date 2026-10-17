@@ -16,6 +16,9 @@ import { TaskSettings } from './screens/TaskSettings';
 import { TaskBoard } from './screens/TaskBoard';
 import { UpdateBanner } from './components/UpdateBanner';
 import { ReloginBanner } from './components/ReloginBanner';
+import { NotificationBell } from './components/NotificationBell';
+import { NotificationsPanel } from './components/NotificationsPanel';
+import { useHasTopBar } from './lib/notifications';
 import { useBridge } from './bridge/useBridge';
 
 // Inline rather than a module: rules that exist only to let the banners sit
@@ -150,6 +153,13 @@ function Screens() {
   }
 }
 
+/** The bell for screens that don't render the top bar (PRs, Settings, Git…),
+ * so the notification list is one click away from anywhere. */
+function FloatingBell() {
+  const hasTopBar = useHasTopBar();
+  return hasTopBar ? null : <NotificationBell />;
+}
+
 export default function App() {
   return (
     <AppErrorOverlay>
@@ -185,6 +195,10 @@ export default function App() {
                       <ReloginBanner />
                       <Screens />
                     </div>
+                    {/* Global, over whatever screen is showing: notifications
+                        are true everywhere, and a click can navigate anywhere. */}
+                    <NotificationsPanel />
+                    <FloatingBell />
                   </NavigationProvider>
                 </SignInGate>
               </div>

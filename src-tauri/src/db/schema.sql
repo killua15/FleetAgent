@@ -618,3 +618,21 @@ CREATE TABLE IF NOT EXISTS account_login_checks (
   logged_in  INTEGER NOT NULL,
   error      TEXT
 );
+
+-- What Hangar notified about, kept so it can be read in the app when the OS
+-- swallowed it (Do Not Disturb, notifications off). A ring: the newest 500.
+-- `target_json` is where clicking the row takes you. The `ai_*` columns are
+-- filled by the AI classification, when the user runs it.
+CREATE TABLE IF NOT EXISTS notifications (
+  id          TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  body        TEXT NOT NULL,
+  target_json TEXT,
+  created_at  TEXT NOT NULL,
+  read_at     TEXT,
+  ai_category TEXT,
+  ai_priority INTEGER,
+  ai_reason   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at);

@@ -116,11 +116,13 @@ pub fn await_decision<R: Runtime>(app: &AppHandle<R>, session_id: &str, req: &Co
             tool_input: req.tool_input.clone(),
         },
     );
-    crate::notifications::notify_if_enabled(
+    crate::notifications::record(
         app,
+        crate::notifications::kind::APPROVAL,
         |s| s.notify_needs_approval,
         "Hangar needs your approval",
         &format!("{} wants to run {} — click to review", session_id, req.tool_name),
+        crate::notifications::Target::new("session", session_id),
     );
 
     let allow = rx.recv_timeout(APPROVAL_TIMEOUT).unwrap_or(false);

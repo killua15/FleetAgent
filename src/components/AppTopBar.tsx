@@ -6,8 +6,10 @@ import { useNavigation, type ScreenName } from '../nav/NavigationProvider';
 import type { ProjectPrInbox } from '../types/pullRequest';
 import { IconTooltip } from './ui/tooltip';
 import { Spinner } from './Spinner';
-import { AccountsIcon, BranchIcon, CompassIcon, FilesIcon, HomeIcon, MenuIcon, PullRequestIcon, QueueIcon, SettingsIcon, TasksIcon, TerminalIcon, UsageIcon } from './NavIcons';
+import { AccountsIcon, BellIcon, BranchIcon, CompassIcon, FilesIcon, HomeIcon, MenuIcon, PullRequestIcon, QueueIcon, SettingsIcon, TasksIcon, TerminalIcon, UsageIcon } from './NavIcons';
 import { UsageModal } from './UsageModal';
+import { NotificationBell, useUnreadNotifications } from './NotificationBell';
+import { registerTopBar, toggleNotifications } from '../lib/notifications';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu';
 import styles from './AppTopBar.module.css';
 
@@ -56,6 +58,10 @@ function useDelayedBusy(count: number, delayMs: number): boolean {
 }
 
 export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; primaryAction?: ReactNode }) {
+  // While a bar is on screen the bell lives in it; screens without one get a
+  // floating bell instead (see `App.tsx`).
+  useEffect(() => registerTopBar(), []);
+  const unreadNotifications = useUnreadNotifications();
   const { navigate, current } = useNavigation();
   const [pendingPrComments, setPendingPrComments] = useState(0);
   const [usageOpen, setUsageOpen] = useState(false);
@@ -145,6 +151,9 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
 
         <span className={styles.navRule} />
 
+        {/* What Hangar notified about, readable even when Do Not Disturb kept
+         * the OS notifications away. */}
+        <NotificationBell className={styles.navBtn} activeClassName={styles.navBtnActive} />
         {/* Icon-only: a person and a gear are the two symbols nobody needs
          * taught, and they're the two you press least. */}
         <IconTooltip label="Accounts — add one or point it at a login">
@@ -169,7 +178,9 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
         <DropdownMenuTrigger asChild>
           <button className={styles.navMenuTrigger} aria-label="Menu">
             <MenuIcon />
-            {pendingPrComments > 0 && <span className={styles.navBadge}>{pendingPrComments > 99 ? '99+' : pendingPrComments}</span>}
+            {pendingPrComments + unreadNotifications > 0 && (
+              <span className={styles.navBadge}>{pendingPrComments + unreadNotifications > 99 ? '99+' : pendingPrComments + unreadNotifications}</span>
+            )}
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent>
@@ -201,6 +212,9 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => setUsageOpen(true)}>
             <UsageIcon /> Usage
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={toggleNotifications}>
+            <BellIcon /> Notifications{unreadNotifications > 0 && ` (${unreadNotifications})`}
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => navigate('account-list')}>
             <AccountsIcon /> Accounts

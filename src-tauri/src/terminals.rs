@@ -2212,11 +2212,13 @@ pub fn tick_terminal_states<R: Runtime>(app: &AppHandle<R>) {
         // A queued run finishes when its agent stops talking — the only
         // completion signal available from outside the CLI.
         crate::run_queue::note_terminal_waiting(app, &id);
-        crate::notifications::notify_if_enabled(
+        crate::notifications::record(
             app,
+            crate::notifications::kind::AGENT,
             |s| s.notify_session_waiting,
             "Agent is waiting",
             &agent_title.unwrap_or_else(|| format!("{panel_title} finished its turn")),
+            crate::notifications::Target::new("terminal", id.clone()),
         );
     }
 }

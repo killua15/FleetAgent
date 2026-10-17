@@ -296,6 +296,12 @@ const MIGRATIONS: &[Migration] = &[
         run: project_fallback_account,
         transactional: true,
     },
+    Migration {
+        version: 36,
+        name: "notifications",
+        run: notifications_table,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -1113,6 +1119,26 @@ fn project_fallback_account(conn: &Connection) -> Result<(), String> {
     conn.execute_batch("ALTER TABLE projects ADD COLUMN fallback_account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL;")
         .map_err(|e| format!("could not add projects.fallback_account_id: {e}"))
 }
+
+/// Hangar's own record of what it notified about, so a notification the OS
+/// swallowed (Do Not Disturb, notifications off) can still be read in the app.
+fn notifications_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(NOTIFICATIONS_DDL).map_err(|e| format!("could not create notifications: {e}"))
+}
+
+pub(crate) const NOTIFICATIONS_DDL: &str = "CREATE TABLE IF NOT EXISTS notifications (
+  id          TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  body        TEXT NOT NULL,
+  target_json TEXT,
+  created_at  TEXT NOT NULL,
+  read_at     TEXT,
+  ai_category TEXT,
+  ai_priority INTEGER,
+  ai_reason   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at);";
 
 /// Lets the user take a folder off the terminal pickers' recents without
 /// `delete_project`, which would also take its sessions and worktrees.
