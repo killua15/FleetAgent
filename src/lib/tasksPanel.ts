@@ -1,3 +1,4 @@
+import type { TaskWorktree } from '../types/gitPanel';
 import type { BoardTask } from '../types/task';
 
 /** Where each kind of status sits in the chip row: work still to start, work
@@ -19,19 +20,66 @@ export function orderedStatuses(tasks: BoardTask[]): { status: string; count: nu
     .map(([status, { count }]) => ({ status, count }));
 }
 
-/** The terminal already working on `task`, judged by the branch its folder is
- * on: the task's own branch, the one its board suggests, or — for a key that
- * can't be mistaken for anything else, like `DEV-42` — a branch that names it.
- * A bare issue number (`128`) is never matched loosely: too many branches
- * contain digits. */
-export function terminalForTask(task: BoardTask, branches: Record<string, string>): string | null {
-  const exact = [task.suggestedBranch, task.branchHint].filter(Boolean).map((b) => b!.toLowerCase());
-  const loose = /^\d+$/.test(task.key) ? null : task.key.toLowerCase();
+/** How well a branch or folder name names `task`: 2 is its own branch, 1 a
+ * name that mentions its key, 0 nothing.
+ *
+ * Distinctive keys (`DEV-42`, `CU-86akmv`) match a segment equal to them or
+ * starting with `key-`. A bare issue number only matches in the shapes people
+ * actually give it — `128`, `128-fix`, `issue-128-…`, `gh-128`, `#128` — never
+ * as digits inside something else (`release-128`, `v1.12`). `numbers: false`
+ * turns the number rule off, for names that could come from any repo. */
+export function matchRank(task: BoardTask, name: string, { numbers = true } = {}): number {
+  const lower = name.toLowerCase();
+  if ([task.suggestedBranch, task.branchHint].some((b) => b && b.toLowerCase() === lower)) return 2;
+  const key = task.key.toLowerCase();
+  if (/^\d+$/.test(key)) {
+    if (!numbers) return 0;
+    if (lower.includes(`#${key}`)) return 1;
+    const shape = new RegExp(`^(issues?-|gh-)?${key}(-|$)`);
+    return lower.split('/').some((segment) => shape.test(segment)) ? 1 : 0;
+  }
+  return lower.split(/[/_\s]/).some((part) => part === key || part.startsWith(`${key}-`)) ? 1 : 0;
+}
+
+/** The worktree already cut for `task`, by its branch or its folder name. A
+ * GitHub issue only looks in worktrees of its own repo: `#12` is a different
+ * issue in every one. */
+export function worktreeForTask(task: BoardTask, worktrees: TaskWorktree[]): TaskWorktree | null {
+  const repo = task.sourceKind === 'github' ? task.container?.toLowerCase() : null;
+  let best: TaskWorktree | null = null;
+  let bestRank = 0;
+  for (const wt of worktrees) {
+    if (repo && wt.repo?.toLowerCase() !== repo) continue;
+    const rank = Math.max(wt.branch ? matchRank(task, wt.branch) : 0, matchRank(task, wt.folder));
+    if (rank > bestRank) {
+      best = wt;
+      bestRank = rank;
+      if (rank === 2) break;
+    }
+  }
+  return best;
+}
+
+const samePath = (a: string, b: string) => a.replace(/\/+$/, '') === b.replace(/\/+$/, '');
+
+/** The terminal already working on `task`: the one sitting in its worktree,
+ * else one whose current branch names it. By branch, a bare issue number never
+ * counts — a terminal can be in any repo, and too many branches carry digits. */
+export function terminalForTask(
+  task: BoardTask,
+  branches: Record<string, string>,
+  terminals: { id: string; cwd: string }[] = [],
+  worktree: TaskWorktree | null = null,
+): string | null {
+  if (worktree) {
+    const inside = terminals.find((t) => samePath(t.cwd, worktree.path));
+    if (inside) return inside.id;
+  }
   let fallback: string | null = null;
   for (const [terminalId, branch] of Object.entries(branches)) {
-    const name = branch.toLowerCase();
-    if (exact.includes(name)) return terminalId;
-    if (loose && !fallback && name.split(/[/_\s]/).some((part) => part === loose || part.startsWith(`${loose}-`))) fallback = terminalId;
+    const rank = matchRank(task, branch, { numbers: false });
+    if (rank === 2) return terminalId;
+    if (rank === 1 && !fallback) fallback = terminalId;
   }
   return fallback;
 }

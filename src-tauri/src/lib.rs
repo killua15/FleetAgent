@@ -445,6 +445,7 @@ pub fn run() {
             commands::pull_requests::check_open_prs_now,
             commands::pull_requests::list_pr_host_checks,
             commands::git_panel::get_git_overview,
+            commands::git_panel::list_task_worktrees,
             commands::git_panel::git_fetch,
             commands::git_panel::git_pull,
             commands::git_panel::git_push,

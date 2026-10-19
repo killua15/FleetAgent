@@ -253,3 +253,16 @@
   font: 400 11.5px var(--font-ui);
   color: var(--dim);
 }
+
+.worktree {
+  flex: none;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accD);
+  color: var(--acc);
+  font: 400 10px var(--font-ui);
+}

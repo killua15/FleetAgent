@@ -9,6 +9,8 @@ import type { Project } from '../types/session';
 import { TASK_SOURCE_META, type BoardTask, type TaskFetch, type TaskSource } from '../types/task';
 import type { TerminalInfo } from '../types/terminal';
 import { bySource as tasksBySource, containerOptions, filterTasks, statusOptions } from '../lib/taskFilters';
+import { worktreeForTask } from '../lib/tasksPanel';
+import type { TaskWorktree } from '../types/gitPanel';
 import styles from './TaskBoard.module.css';
 
 /**
@@ -44,6 +46,9 @@ export function TaskBoard() {
   // like the project and the account it sits next to.
   const [notes, setNotes] = useState('');
   const [opening, setOpening] = useState(false);
+  // Which tasks already have a worktree somewhere — sending one of those goes
+  // back into it rather than cutting a second.
+  const [worktrees, setWorktrees] = useState<TaskWorktree[]>([]);
 
   useEffect(() => {
     Promise.all([
@@ -54,6 +59,7 @@ export function TaskBoard() {
         if (found.length === 1) setProjectId(found[0].id);
       }),
       invoke<Account[]>('list_accounts').then(setAccounts),
+      invoke<TaskWorktree[]>('list_task_worktrees').then(setWorktrees).catch(() => setWorktrees([])),
       invoke<TaskSource[]>('list_task_sources').then((found) => {
         setSources(found);
         // One board is the common case; making you choose it from a list of one
@@ -244,7 +250,16 @@ export function TaskBoard() {
               <span className={styles.taskTitle}>{task.title}</span>
               {task.container && <span className={styles.container}>{task.container}</span>}
               {task.status && <span className={styles.status}>{task.status}</span>}
-              <span className={styles.branch}>⑃ {task.suggestedBranch}</span>
+              {(() => {
+                const worktree = worktreeForTask(task, worktrees);
+                return worktree ? (
+                  <span className={styles.worktree} title={`${worktree.path}${worktree.branch ? ` — on ${worktree.branch}` : ''}`}>
+                    ⑃ worktree · {worktree.projectName}
+                  </span>
+                ) : (
+                  <span className={styles.branch}>⑃ {task.suggestedBranch}</span>
+                );
+              })()}
               {/* Opens in the browser rather than in Hangar: reading the full
                   ticket means comments and attachments, which is the board's
                   job, not ours. */}

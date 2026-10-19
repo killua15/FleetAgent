@@ -156,6 +156,101 @@ fn collect_worktrees(
     out
 }
 
+/// A worktree as the Tasks panel needs it: where it is, what branch, and
+/// which project and repo it belongs to — nothing that costs a `git status`.
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskWorktree {
+    pub project_id: String,
+    pub project_name: String,
+    /// `owner/name` of the project's `origin`, when it has one — what keeps
+    /// issue #12 of one repo from matching a worktree of another.
+    pub repo: Option<String>,
+    pub path: String,
+    pub branch: Option<String>,
+    /// The folder's own name (`cu-86akmv`), which often names the task when
+    /// the branch was renamed.
+    pub folder: String,
+    pub session_id: Option<String>,
+}
+
+/// One project's live worktrees, cheaply: the ones sessions own plus the ones
+/// only git knows about, each with the branch git says it's on. Skips the main
+/// checkout and any folder that's gone — a missing worktree is something to
+/// prune in the Git panel, not something a task can be resumed in.
+fn light_worktrees(project_root: &Path, sessions: &[(String, String, Option<String>)]) -> Vec<(String, Option<String>, Option<String>)> {
+    use crate::commands::sessions::{list_worktree_entries, same_path};
+    let entries = list_worktree_entries(project_root).unwrap_or_default();
+    let mut out: Vec<(String, Option<String>, Option<String>)> = Vec::new();
+    for (session_id, path, branch) in sessions {
+        if !Path::new(path).is_dir() {
+            continue;
+        }
+        // Git's answer beats the one stored when the session was made: the
+        // agent may have switched branch since.
+        let live = entries.iter().find(|e| same_path(&e.path, path)).and_then(|e| e.branch.clone());
+        out.push((path.clone(), live.or_else(|| branch.clone()), Some(session_id.clone())));
+    }
+    for entry in entries.into_iter().skip(1) {
+        if entry.prunable || !Path::new(&entry.path).is_dir() || out.iter().any(|(p, ..)| same_path(p, &entry.path)) {
+            continue;
+        }
+        out.push((entry.path, entry.branch, None));
+    }
+    out
+}
+
+/// Every live worktree of every project, for telling which tasks already have
+/// one. One `git worktree list` per project and nothing more.
+#[tauri::command]
+pub async fn list_task_worktrees<R: Runtime>(app: AppHandle<R>) -> Result<Vec<TaskWorktree>, String> {
+    crate::blocking::run_blocking(move || {
+        let db = app.state::<DbConnection>();
+        type Row = (String, String, String, Vec<(String, String, Option<String>)>);
+        let projects: Vec<Row> = {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare("SELECT id, name, path FROM projects ORDER BY created_at ASC").map_err(|e| e.to_string())?;
+            let list: Vec<(String, String, String)> = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<_, _>>()
+                .map_err(|e| e.to_string())?;
+            let mut rows = Vec::with_capacity(list.len());
+            for (id, name, path) in list {
+                let mut wt = conn
+                    .prepare("SELECT id, worktree_path, worktree_branch FROM sessions WHERE project_id = ?1 AND worktree_path IS NOT NULL ORDER BY started_at DESC")
+                    .map_err(|e| e.to_string())?;
+                let sessions = wt
+                    .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                    .map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?;
+                rows.push((id, name, path, sessions));
+            }
+            rows
+        };
+
+        let mut out = Vec::new();
+        for (project_id, project_name, path, sessions) in projects {
+            let root = Path::new(&path);
+            if !is_git_repo(root) {
+                continue;
+            }
+            let worktrees = light_worktrees(root, &sessions);
+            if worktrees.is_empty() {
+                continue;
+            }
+            let repo = crate::forges::detect_repo(root).ok().map(|r| format!("{}/{}", r.namespace, r.name));
+            for (wt_path, branch, session_id) in worktrees {
+                let folder = Path::new(&wt_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                out.push(TaskWorktree { project_id: project_id.clone(), project_name: project_name.clone(), repo: repo.clone(), path: wt_path, branch, folder, session_id });
+            }
+        }
+        Ok(out)
+    })
+    .await?
+}
+
 #[tauri::command]
 pub async fn get_git_overview<R: Runtime>(app: AppHandle<R>) -> Result<Vec<ProjectGitOverview>, String> {
     crate::blocking::run_blocking(move || {
@@ -798,6 +893,39 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&repo);
         let _ = std::fs::remove_dir_all(outside.parent().unwrap());
+    }
+
+    /// The Tasks panel's cheap list: the session's worktree with git's live
+    /// branch, an orphan, and neither the main checkout nor a missing folder.
+    #[test]
+    fn light_worktrees_lists_only_live_ones() {
+        let repo = make_temp_dir("light");
+        git_capture(&repo, &["init"]).unwrap();
+        std::fs::write(repo.join("README.md"), "hi").unwrap();
+        git_capture(&repo, &["add", "-A"]).unwrap();
+        git_capture(&repo, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "init"]).unwrap();
+
+        let owned = repo.join(".hangar/worktrees/cu-86akmv");
+        std::fs::create_dir_all(owned.parent().unwrap()).unwrap();
+        git_capture(&repo, &["worktree", "add", &owned.to_string_lossy(), "-b", "CU-86akmv_signal-catalog"]).unwrap();
+        let orphan = repo.join(".hangar/worktrees/issue-12");
+        git_capture(&repo, &["worktree", "add", &orphan.to_string_lossy(), "-b", "issue-12-fix"]).unwrap();
+
+        let owned_path = owned.to_string_lossy().into_owned();
+        let sessions = vec![
+            ("s1".to_string(), owned_path.clone(), Some("stale-name".to_string())),
+            ("gone".to_string(), repo.join(".hangar/worktrees/gone").to_string_lossy().into_owned(), None),
+        ];
+        let list = light_worktrees(&repo, &sessions);
+
+        assert_eq!(list.len(), 2, "{list:?}");
+        assert_eq!(list[0].0, owned_path);
+        assert_eq!(list[0].1.as_deref(), Some("CU-86akmv_signal-catalog"), "git's live branch, not the stored one");
+        assert_eq!(list[0].2.as_deref(), Some("s1"));
+        assert_eq!(list[1].1.as_deref(), Some("issue-12-fix"));
+        assert_eq!(list[1].2, None);
+
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     /// The two lists have to stay apart. A file edited *now* and a file this

@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '../lib/invoke';
 import { ago } from '../lib/notifications';
-import { orderedStatuses, terminalForTask } from '../lib/tasksPanel';
+import { orderedStatuses, terminalForTask, worktreeForTask } from '../lib/tasksPanel';
+import type { TaskWorktree } from '../types/gitPanel';
 import { useNavigation } from '../nav/NavigationProvider';
 import { providerMeta, type Account } from '../types/account';
 import type { Project } from '../types/session';
@@ -60,6 +61,7 @@ export function TasksSidebar({
   const [sourceId, setSourceId] = useState(() => remembered('source'));
   const [status, setStatus] = useState(ALL);
   const [branches, setBranches] = useState<Record<string, string>>({});
+  const [worktrees, setWorktrees] = useState<TaskWorktree[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [projectId, setProjectId] = useState(() => remembered('project'));
@@ -104,8 +106,14 @@ export function TasksSidebar({
   // the set of terminals changes and every couple of minutes, not on every
   // agent stop: with twenty panels that was a burst of processes per turn.
   const terminalKey = terminals.map((t) => t.id).join(',');
+  // And every worktree of every project (one `git` per project), so a task
+  // whose worktree has no terminal right now still shows it has one.
+  const loadWorktrees = () => invoke<TaskWorktree[]>('list_task_worktrees').then(setWorktrees).catch(() => setWorktrees([]));
   useEffect(() => {
-    const load = () => invoke<Record<string, string>>('terminal_branches').then(setBranches).catch(() => setBranches({}));
+    const load = () => {
+      invoke<Record<string, string>>('terminal_branches').then(setBranches).catch(() => setBranches({}));
+      loadWorktrees();
+    };
     load();
     const timer = window.setInterval(load, 120_000);
     return () => window.clearInterval(timer);
@@ -130,6 +138,8 @@ export function TasksSidebar({
   const tasks = current?.tasks ?? [];
   const statuses = orderedStatuses(tasks);
   const shown = status === ALL ? tasks : tasks.filter((t) => t.status === status);
+  const worktreeOf = new Map(tasks.map((t) => [t.externalId, worktreeForTask(t, worktrees)]));
+  const withWorktree = tasks.filter((t) => worktreeOf.get(t.externalId)).length;
 
   const pickSource = (id: string) => {
     setSourceId(id);
@@ -137,20 +147,26 @@ export function TasksSidebar({
     remember('source', id);
   };
 
-  const open = async (task: BoardTask) => {
-    if (!projectId || !accountId) {
-      toastError('Choose the project and the account below first.');
+  /** A new worktree for `task` — or, when it already has one, a terminal back
+   * in it: same project, same branch, and the backend picks its conversation
+   * back up. */
+  const open = async (task: BoardTask, existing: TaskWorktree | null) => {
+    const inProject = existing?.projectId ?? projectId;
+    if (!inProject || !accountId) {
+      toastError(existing ? 'Choose the account below first.' : 'Choose the project and the account below first.');
       return;
     }
     setOpeningId(task.externalId);
     try {
+      const branch = existing?.branch ?? task.suggestedBranch;
       const opened = await invoke<TerminalInfo[]>('open_task_worktrees', {
-        projectId,
-        tasks: [{ branch: task.suggestedBranch, create: true, baseBranch: null, accountId, prompt: null, task, notes: null }],
+        projectId: inProject,
+        tasks: [{ branch, create: !existing?.branch, baseBranch: null, accountId, prompt: null, task, notes: null }],
         cols: 80,
         rows: 24,
       });
       onOpened(opened);
+      loadWorktrees();
     } catch (e) {
       toastError(String(e));
     } finally {
@@ -176,6 +192,7 @@ export function TasksSidebar({
       <div className={styles.head}>
         <span className={styles.title}>Tasks</span>
         {current?.fetchedAt && <span className={styles.dim}>updated {ago(current.fetchedAt)}</span>}
+        {withWorktree > 0 && <span className={styles.dim}>· ⑃ {withWorktree} with a worktree</span>}
         <span className={styles.spacer} />
         <button className={styles.link} onClick={() => navigate('task-board')} title="The full board: pick several tasks and send them at once">
           board ↗
@@ -220,7 +237,8 @@ export function TasksSidebar({
         {current && current.fetchedAt && tasks.length === 0 && <span className={styles.empty}>Nothing assigned to you in {current.label}.</span>}
 
         {shown.map((task) => {
-          const terminalId = terminalForTask(task, branches);
+          const worktree = worktreeOf.get(task.externalId) ?? null;
+          const terminalId = terminalForTask(task, branches, terminals, worktree);
           const terminal = terminalId ? terminals.find((t) => t.id === terminalId) : null;
           return (
             <div key={`${task.sourceId}:${task.externalId}`} className={styles.row}>
@@ -238,6 +256,11 @@ export function TasksSidebar({
               <div className={styles.rowBottom}>
                 {task.container && <span className={styles.dim}>{task.container}</span>}
                 <span className={styles.spacer} />
+                {worktree && !terminal && (
+                  <span className={styles.worktree} title={`${worktree.path}${worktree.branch ? ` — on ${worktree.branch}` : ''}`}>
+                    ⑃ worktree · {worktree.projectName}
+                  </span>
+                )}
                 {terminal ? (
                   <button className={styles.inTerminal} onClick={() => onFocusTerminal(terminal.id)} title={`Go to ${terminal.displayName ?? terminal.title}`}>
                     ⑃ in terminal
@@ -246,10 +269,14 @@ export function TasksSidebar({
                   <button
                     className={styles.openBtn}
                     disabled={openingId !== null}
-                    onClick={() => open(task)}
-                    title={`New worktree on ${task.suggestedBranch}, with a terminal on it`}
+                    onClick={() => open(task, worktree)}
+                    title={
+                      worktree
+                        ? `A terminal back in its worktree (${worktree.branch ?? worktree.folder}), picking its conversation up`
+                        : `New worktree on ${task.suggestedBranch}, with a terminal on it`
+                    }
                   >
-                    {openingId === task.externalId ? 'opening…' : '▶ open'}
+                    {openingId === task.externalId ? 'opening…' : worktree ? '▶ resume' : '▶ open'}
                   </button>
                 )}
               </div>

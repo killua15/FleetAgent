@@ -73,3 +73,17 @@ export interface WorktreeChanges {
   uncommitted: ChangedFile[];
   committed: ChangedFile[];
 }
+
+/** A live worktree as the Tasks panel needs it — matches `TaskWorktree` in
+ * `git_panel.rs`. No git status: it's only for telling which tasks have one. */
+export interface TaskWorktree {
+  projectId: string;
+  projectName: string;
+  /** `owner/name` of the project's origin. */
+  repo: string | null;
+  path: string;
+  branch: string | null;
+  /** The folder's own name, e.g. `cu-86akmv`. */
+  folder: string;
+  sessionId: string | null;
+}
