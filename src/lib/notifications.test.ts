@@ -31,7 +31,7 @@ describe('notification panel helpers', () => {
     expect(targetRoute(n({ target: { kind: 'terminal', id: 't1' } }))).toEqual({ screen: 'terminals', params: { focusTerminalId: 't1' } });
     expect(targetRoute(n({ target: { kind: 'session', id: 's1' } }))).toEqual({ screen: 'agent-panel', params: { sessionId: 's1' } });
     expect(targetRoute(n({ target: { kind: 'pr', id: 'a/b#1' } }))?.screen).toBe('pr-reviews');
-    expect(targetRoute(n({ kind: 'update', target: null }))).toBeNull();
+    expect(targetRoute(n({ kind: 'task', target: null }))).toBeNull();
   });
 
   it('says how long ago in the units you scan', () => {

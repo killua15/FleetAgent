@@ -2222,7 +2222,7 @@ pub fn tick_terminal_states<R: Runtime>(app: &AppHandle<R>) {
             let Ok(mut act) = handle.activity.lock() else { continue };
             if act.state == TerminalState::Working && act.last_output.elapsed() >= QUIET_BEFORE_WAITING {
                 act.state = TerminalState::Waiting;
-                newly_waiting.push((id.clone(), handle.info.title.clone(), act.title.clone(), handle.info.clone()));
+                newly_waiting.push((id.clone(), act.title.clone(), handle.info.clone()));
                 if handle.auto.lock().map(|a| a.pending_relaunch).unwrap_or(false) {
                     to_relaunch.push(id.clone());
                 }
@@ -2241,7 +2241,7 @@ pub fn tick_terminal_states<R: Runtime>(app: &AppHandle<R>) {
         });
     }
 
-    for (id, panel_title, agent_title, info) in newly_waiting {
+    for (id, agent_title, info) in newly_waiting {
         // The turn is over, so the transcript is complete — the one moment
         // worth reading it. Polling for this would mean re-reading every open
         // terminal's file on a timer to catch a change that happens a few times
@@ -2252,14 +2252,56 @@ pub fn tick_terminal_states<R: Runtime>(app: &AppHandle<R>) {
         // A queued run finishes when its agent stops talking — the only
         // completion signal available from outside the CLI.
         crate::run_queue::note_terminal_waiting(app, &id);
-        crate::notifications::record(
-            app,
-            crate::notifications::kind::AGENT,
-            |s| s.notify_session_waiting,
-            "Agent is waiting",
-            &agent_title.unwrap_or_else(|| format!("{panel_title} finished its turn")),
-            crate::notifications::Target::new("terminal", id.clone()),
-        );
+        // No notification here: one per finished turn, across twenty panels,
+        // buried everything else. `agent_digest` sums them up every half hour.
+    }
+}
+
+/// How often agents waiting on you are summed up in one notification.
+pub(crate) const AGENT_DIGEST_EVERY: Duration = Duration::from_secs(30 * 60);
+
+/// The panels to mention in a digest: running an agent (they have an account —
+/// a bare shell that printed something isn't "waiting for you"), waiting now,
+/// and gone quiet within the last `window`. That last part is what makes each
+/// wait appear in exactly one digest: one still waiting an hour later was
+/// already announced.
+pub(crate) fn pick_recently_waiting(rows: &[(String, String, TerminalState, bool, Duration)], window: Duration) -> Vec<(String, String)> {
+    rows.iter()
+        .filter(|(_, _, state, has_account, quiet)| *state == TerminalState::Waiting && *has_account && *quiet <= window)
+        .map(|(id, name, ..)| (id.clone(), name.clone()))
+        .collect()
+}
+
+/// The digest's one notification, or nothing when no agent is waiting.
+pub(crate) fn digest_line(waiting: &[(String, String)]) -> Option<(String, String, Option<crate::notifications::Target>)> {
+    match waiting {
+        [] => None,
+        [(id, name)] => Some(("Agent waiting".to_string(), format!("{name} finished its turn and is waiting for you"), crate::notifications::Target::new("terminal", id.clone()))),
+        many => {
+            let names: Vec<&str> = many.iter().map(|(_, n)| n.as_str()).take(8).collect();
+            let more = if many.len() > names.len() { format!(" and {} more", many.len() - names.len()) } else { String::new() };
+            Some((format!("{} agents waiting", many.len()), format!("{}{more}", names.join(", ")), crate::notifications::Target::screen("terminal")))
+        }
+    }
+}
+
+/// Records the half-hourly summary of agents waiting on you, if any are.
+pub(crate) fn agent_digest<R: Runtime>(app: &AppHandle<R>) {
+    let rows: Vec<(String, String, TerminalState, bool, Duration)> = {
+        let Some(registry) = app.try_state::<TerminalRegistry>() else { return };
+        let Ok(map) = registry.0.lock() else { return };
+        map.values()
+            .filter_map(|h| {
+                let act = h.activity.lock().ok()?;
+                let name = h.info.display_name.clone().unwrap_or_else(|| h.info.title.clone());
+                Some((h.info.id.clone(), name, act.state, h.info.account_id.is_some(), act.last_output.elapsed()))
+            })
+            .collect()
+    };
+    let mut waiting = pick_recently_waiting(&rows, AGENT_DIGEST_EVERY);
+    waiting.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    if let Some((title, body, target)) = digest_line(&waiting) {
+        crate::notifications::record(app, crate::notifications::kind::AGENT, |s| s.notify_session_waiting, &title, &body, target);
     }
 }
 
@@ -2908,6 +2950,39 @@ fn spawn_account_check<R: Runtime>(app: &AppHandle<R>, account_id: String) {
             let _ = app.emit("terminal-accounts-updated", ());
         }
     });
+}
+
+#[cfg(test)]
+mod digest_tests {
+    use super::*;
+
+    #[test]
+    fn only_agents_that_went_quiet_recently_are_mentioned() {
+        let min = |m: u64| Duration::from_secs(m * 60);
+        let rows = vec![
+            ("a".to_string(), "simulation-server".to_string(), TerminalState::Waiting, true, min(5)),
+            ("b".to_string(), "plain shell".to_string(), TerminalState::Waiting, false, min(5)),
+            ("c".to_string(), "old wait".to_string(), TerminalState::Waiting, true, min(95)),
+            ("d".to_string(), "busy".to_string(), TerminalState::Working, true, min(0)),
+        ];
+        assert_eq!(pick_recently_waiting(&rows, AGENT_DIGEST_EVERY), vec![("a".to_string(), "simulation-server".to_string())]);
+    }
+
+    #[test]
+    fn the_digest_line_names_one_or_counts_many() {
+        assert!(digest_line(&[]).is_none());
+
+        let (title, body, target) = digest_line(&[("a".into(), "tms-server".into())]).unwrap();
+        assert_eq!(title, "Agent waiting");
+        assert!(body.starts_with("tms-server"));
+        assert_eq!(target.unwrap().id.as_deref(), Some("a"));
+
+        let many: Vec<(String, String)> = (0..10).map(|i| (i.to_string(), format!("p{i}"))).collect();
+        let (title, body, target) = digest_line(&many).unwrap();
+        assert_eq!(title, "10 agents waiting");
+        assert!(body.ends_with("and 2 more"));
+        assert_eq!(target.unwrap().id, None);
+    }
 }
 
 #[cfg(test)]

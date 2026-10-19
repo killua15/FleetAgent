@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '../lib/invoke';
 import { ago } from '../lib/notifications';
@@ -100,24 +100,16 @@ export function TasksSidebar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Which branch each terminal is on — re-asked when the set of terminals
-  // changes and whenever an agent stops (it may have switched branch).
-  const loadBranches = useRef(() => {});
-  loadBranches.current = () => {
-    invoke<Record<string, string>>('terminal_branches').then(setBranches).catch(() => setBranches({}));
-  };
+  // Which branch each terminal is on — one `git` per terminal, so asked when
+  // the set of terminals changes and every couple of minutes, not on every
+  // agent stop: with twenty panels that was a burst of processes per turn.
   const terminalKey = terminals.map((t) => t.id).join(',');
   useEffect(() => {
-    loadBranches.current();
+    const load = () => invoke<Record<string, string>>('terminal_branches').then(setBranches).catch(() => setBranches({}));
+    load();
+    const timer = window.setInterval(load, 120_000);
+    return () => window.clearInterval(timer);
   }, [terminalKey]);
-  useEffect(() => {
-    const unlisten = listen<{ state: string }>('terminal-state', (event) => {
-      if (event.payload.state === 'idle' || event.payload.state === 'waiting') loadBranches.current();
-    });
-    return () => {
-      unlisten.then((f) => f());
-    };
-  }, []);
 
   // Defaults for where "open in a terminal" lands: what you picked last, else
   // the focused terminal's project and account, else the only one there is.

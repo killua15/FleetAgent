@@ -93,14 +93,9 @@ pub(crate) fn mark_session_status<R: Runtime>(app: &AppHandle<R>, session_id: &s
     // directly via SQL — so there's no spurious case to filter here.
     if status == "waiting" {
         let name = session_name.unwrap_or_else(|| "A session".to_string());
-        crate::notifications::record(
-            app,
-            crate::notifications::kind::AGENT,
-            |s| s.notify_session_waiting,
-            "Session finished",
-            &format!("{name} is waiting for you"),
-            crate::notifications::Target::new("session", session_id),
-        );
+        // OS only: the in-app list is for PRs, tasks and approvals, plus the
+        // half-hourly agent summary — one row per finished turn buried them.
+        crate::notifications::notify_if_enabled(app, |s| s.notify_session_waiting, "Session finished", &format!("{name} is waiting for you"));
     }
 }
 
@@ -136,13 +131,12 @@ pub(crate) fn emit_account_exhausted<R: Runtime>(app: &AppHandle<R>, account_id:
         .try_state::<DbConnection>()
         .and_then(|db| db.0.lock().ok().and_then(|conn| conn.query_row("SELECT name FROM accounts WHERE id = ?1", params![account_id], |row| row.get::<_, String>(0)).ok()))
         .unwrap_or_else(|| "An account".to_string());
-    crate::notifications::record(
+    // OS only — the terminal's own out-of-quota banner is the in-app signal.
+    crate::notifications::notify_if_enabled(
         app,
-        crate::notifications::kind::ACCOUNT,
         |s| s.notify_account_exhausted,
         "Account rate-limited",
         &format!("{account_name} hit a rate limit and can't run turns until it clears"),
-        crate::notifications::Target::new("account", account_id),
     );
 }
 

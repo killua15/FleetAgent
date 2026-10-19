@@ -1,9 +1,10 @@
-/** Matches `notifications::kind` in Rust. */
-export type NotificationKind = 'approval' | 'agent' | 'pr' | 'account' | 'update' | 'task';
+/** Matches `notifications::kind` in Rust: what's worth a row. Quota, spend cap
+ * and updates have their own banners and only reach the OS. */
+export type NotificationKind = 'approval' | 'pr' | 'task' | 'agent';
 
 /** Where clicking a notification takes you. Matches `notifications::Target`. */
 export interface NotificationTarget {
-  kind: 'terminal' | 'session' | 'pr' | 'account' | 'update' | 'task';
+  kind: 'terminal' | 'session' | 'pr' | 'task';
   id: string | null;
 }
 

@@ -961,8 +961,8 @@ fn check_spend_cap<R: Runtime>(app: &AppHandle<R>, session_id: &str) {
 
     drop(conn);
 
-    // Once per account per app run — into Hangar's own list always, and as an
-    // OS notification when that's turned on (`record` checks the flag).
+    // Once per account per app run, as an OS notification when that's turned
+    // on. Not in the in-app list: that's for PRs, tasks and approvals.
     if let Some(notified) = app.try_state::<SpendCapNotified>() {
         let Ok(mut set) = notified.0.lock() else { return };
         if !set.insert(account_id.clone()) {
@@ -970,13 +970,11 @@ fn check_spend_cap<R: Runtime>(app: &AppHandle<R>, session_id: &str) {
         }
     }
 
-    crate::notifications::record(
+    crate::notifications::notify_if_enabled(
         app,
-        crate::notifications::kind::ACCOUNT,
         |s| s.notify_spend_cap,
         "Spend cap exceeded",
         &format!("{account_name} passed its estimated weekly budget (${trailing_cost:.2} spent)"),
-        crate::notifications::Target::new("account", account_id),
     );
 }
 

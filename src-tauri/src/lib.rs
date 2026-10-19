@@ -153,8 +153,16 @@ pub fn run() {
             tray::init(&app.handle());
             let tray_handle = app.handle().clone();
             heartbeat("tray", move || {
-                std::thread::sleep(std::time::Duration::from_secs(3));
-                tray::refresh(&tray_handle);
+                std::thread::sleep(tray::TICK);
+                tray::refresh_title(&tray_handle);
+            });
+            // Agents waiting on you, summed up every half hour — instead of a
+            // notification per finished turn, which with twenty panels was a
+            // stream nobody could read.
+            let digest_handle = app.handle().clone();
+            heartbeat("agent-digest", move || {
+                std::thread::sleep(terminals::AGENT_DIGEST_EVERY);
+                terminals::agent_digest(&digest_handle);
             });
 
             // Before the poller thread below: the user's declarations about which

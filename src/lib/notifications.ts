@@ -5,11 +5,10 @@ import type { AppNotification, NotificationKind } from '../types/notification';
 /** The groups of the notification panel, in the order they're shown. */
 export const KIND_META: Record<NotificationKind, { label: string; icon: string }> = {
   approval: { label: 'Approvals', icon: '✋' },
-  agent: { label: 'Agents', icon: '◐' },
   pr: { label: 'PRs', icon: '⑂' },
   task: { label: 'Tasks', icon: '☑' },
-  account: { label: 'Accounts', icon: '⚠' },
-  update: { label: 'Updates', icon: '↑' },
+  // The half-hourly summary of agents waiting, not one per turn.
+  agent: { label: 'Agents', icon: '◐' },
 };
 
 export const KIND_ORDER = Object.keys(KIND_META) as NotificationKind[];
@@ -53,15 +52,12 @@ export function targetRoute(n: AppNotification): { screen: ScreenName; params?: 
   if (!t) return n.kind === 'pr' ? { screen: 'pr-reviews' } : null;
   switch (t.kind) {
     case 'terminal':
-      return { screen: 'terminals', params: { focusTerminalId: t.id } };
+      // No id: a summary of several panels — the terminals screen itself.
+      return { screen: 'terminals', params: t.id ? { focusTerminalId: t.id } : undefined };
     case 'session':
       return { screen: 'agent-panel', params: { sessionId: t.id } };
     case 'pr':
       return { screen: 'pr-reviews' };
-    case 'account':
-      return { screen: 'account-list' };
-    case 'update':
-      return { screen: 'general-settings' };
     case 'task':
       return { screen: 'terminals', params: { showTasks: true } };
     default:

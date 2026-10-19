@@ -60,13 +60,20 @@ export function NotificationsPanel() {
     if (!open) return;
     load();
     invoke<Account[]>('list_accounts').then(setAccounts).catch(() => setAccounts([]));
-    const added = listen('notification-added', load);
-    const changed = listen('notifications-changed', load);
+    // A poll that finds several PRs fires a burst of events; one read covers it.
+    let pending: number | undefined;
+    const reload = () => {
+      window.clearTimeout(pending);
+      pending = window.setTimeout(load, 400);
+    };
+    const added = listen('notification-added', reload);
+    const changed = listen('notifications-changed', reload);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setNotificationsOpen(false);
     };
     window.addEventListener('keydown', onKey);
     return () => {
+      window.clearTimeout(pending);
       added.then((f) => f());
       changed.then((f) => f());
       window.removeEventListener('keydown', onKey);

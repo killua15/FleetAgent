@@ -345,8 +345,8 @@ export function GeneralSettings() {
                 onChange={(v) => toggleNotification('notifyNeedsApproval', v)}
               />
               <NotificationRow
-                label="Session finished"
-                description="A session ran a turn and is back to waiting for you."
+                label="Agents waiting"
+                description="Every 30 minutes, one summary of the agents that finished a turn and are waiting for you — not one per turn."
                 checked={appSettings.notifySessionWaiting}
                 saving={savingNotif === 'notifySessionWaiting'}
                 onChange={(v) => toggleNotification('notifySessionWaiting', v)}

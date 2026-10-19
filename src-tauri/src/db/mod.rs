@@ -302,6 +302,12 @@ const MIGRATIONS: &[Migration] = &[
         run: notifications_table,
         transactional: true,
     },
+    Migration {
+        version: 37,
+        name: "notifications_core_kinds_only",
+        run: notifications_core_kinds_only,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -1126,6 +1132,16 @@ fn notifications_table(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(NOTIFICATIONS_DDL).map_err(|e| format!("could not create notifications: {e}"))
 }
 
+/// 0.8.18 recorded every finished turn, quota hit and update as a row, and
+/// with twenty terminals the list was nothing but "Agent is waiting". Those
+/// kinds no longer go in the list; this drops what they left behind so the
+/// badge starts honest.
+fn notifications_core_kinds_only(conn: &Connection) -> Result<(), String> {
+    conn.execute("DELETE FROM notifications WHERE kind IN ('agent', 'account', 'update')", [])
+        .map(|_| ())
+        .map_err(|e| format!("could not prune notifications: {e}"))
+}
+
 pub(crate) const NOTIFICATIONS_DDL: &str = "CREATE TABLE IF NOT EXISTS notifications (
   id          TEXT PRIMARY KEY,
   kind        TEXT NOT NULL,
@@ -1663,6 +1679,23 @@ mod tests {
         // The whole point of the version stamp: a second run does nothing.
         run_migrations(&conn).unwrap();
         assert_eq!(schema_version(&conn), latest);
+    }
+
+    #[test]
+    fn pruning_keeps_only_the_kinds_the_list_still_shows() {
+        let conn = fresh_db();
+        run_migrations(&conn).unwrap();
+        for (id, kind) in [("1", "agent"), ("2", "account"), ("3", "update"), ("4", "pr"), ("5", "task"), ("6", "approval")] {
+            conn.execute(
+                "INSERT INTO notifications (id, kind, title, body, created_at) VALUES (?1, ?2, 't', 'b', '2026-10-19T00:00:00Z')",
+                rusqlite::params![id, kind],
+            )
+            .unwrap();
+        }
+        notifications_core_kinds_only(&conn).unwrap();
+        let mut stmt = conn.prepare("SELECT kind FROM notifications ORDER BY id").unwrap();
+        let kinds: Vec<String> = stmt.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(kinds, vec!["pr", "task", "approval"]);
     }
 
     /// The append-only rule in `MIGRATIONS`' doc comment is only enforceable

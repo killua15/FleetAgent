@@ -5,10 +5,13 @@
 //! and how many notifications you haven't read. And somewhere to live when the
 //! window is closed, so the agents and the background polls keep going.
 //!
-//! The menu is a snapshot, rebuilt by a slow tick only when what it shows has
-//! changed. Cheaper and simpler than wiring every event that could move a
-//! number, and a menu that's a few seconds behind is still right by the time
-//! you've moved the mouse to it.
+//! Two costs kept apart. The title next to the icon is a short string, updated
+//! by a slow tick when it changes. The menu is rebuilt only when the mouse
+//! reaches the icon — just before it can be opened — and only if what it shows
+//! changed: with twenty panels flipping between working and waiting, rebuilding
+//! it on a timer meant redoing a forty-item menu on the main thread every few
+//! seconds for a menu nobody had open. Linux sends no hover event, so there the
+//! tick rebuilds it too.
 
 use crate::db::DbConnection;
 use crate::notifications;
@@ -16,13 +19,16 @@ use crate::task_sources::cache::TaskCache;
 use crate::terminals::{self, TerminalState};
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 const TRAY_ID: &str = "hangar";
 /// More panels than this in a menu is a list nobody reads; the window is the
 /// place for them.
 const MAX_TERMINALS: usize = 12;
+
+/// How often the title next to the icon is brought up to date.
+pub(crate) const TICK: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Everything the menu shows. Compared between ticks, so a menu that hasn't
 /// changed isn't rebuilt under the user's cursor.
@@ -34,8 +40,12 @@ pub(crate) struct Snapshot {
     pub boards: Vec<(String, usize, Vec<(String, usize)>)>,
 }
 
+/// What the menu and the title last showed, so neither is redone for nothing.
 #[derive(Default)]
-pub struct TrayState(Mutex<Option<Snapshot>>);
+pub struct TrayState {
+    menu: Mutex<Option<Snapshot>>,
+    title: Mutex<Option<String>>,
+}
 
 /// The menu-bar title next to the icon (macOS only): unread notifications and
 /// panels waiting on you. Empty when there's nothing, so the icon sits quiet.
@@ -80,11 +90,14 @@ pub(crate) fn status_counts(tasks: &[crate::task_sources::Task]) -> Vec<(String,
     counts.into_iter().map(|(s, n, _)| (s, n)).collect()
 }
 
-fn snapshot<R: Runtime>(app: &AppHandle<R>) -> Snapshot {
-    let unread = app
-        .try_state::<DbConnection>()
+fn unread<R: Runtime>(app: &AppHandle<R>) -> i64 {
+    app.try_state::<DbConnection>()
         .and_then(|db| db.0.lock().ok().map(|conn| notifications::unread_count(&conn)))
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+fn snapshot<R: Runtime>(app: &AppHandle<R>) -> Snapshot {
+    let unread = unread(app);
     let boards = app
         .try_state::<TaskCache>()
         .map(|cache| {
@@ -191,12 +204,22 @@ pub(crate) fn init<R: Runtime>(app: &AppHandle<R>) {
             .menu(&menu)
             .show_menu_on_left_click(true)
             .on_menu_event(|app, event| on_menu(app, event.id().as_ref()))
+            // The mouse reached the icon: the menu may be about to open.
+            .on_tray_icon_event(|tray, event| {
+                if let TrayIconEvent::Enter { .. } = event {
+                    refresh_menu(tray.app_handle());
+                }
+            })
             .build(app)?;
         #[cfg(target_os = "macos")]
         if let Some(tray) = app.tray_by_id(TRAY_ID) {
             let _ = tray.set_title(Some(title(&snap)));
         }
-        if let Ok(mut last) = app.state::<TrayState>().0.lock() {
+        let state = app.state::<TrayState>();
+        if let Ok(mut last) = state.title.lock() {
+            *last = Some(title(&snap));
+        }
+        if let Ok(mut last) = state.menu.lock() {
             *last = Some(snap);
         }
         Ok(())
@@ -206,13 +229,13 @@ pub(crate) fn init<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// Rebuilds the menu and the title if anything they show has changed.
-pub(crate) fn refresh<R: Runtime>(app: &AppHandle<R>) {
+/// Rebuilds the menu if anything it shows has changed since it was last built.
+pub(crate) fn refresh_menu<R: Runtime>(app: &AppHandle<R>) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
     let snap = snapshot(app);
     {
         let state = app.state::<TrayState>();
-        let Ok(mut last) = state.0.lock() else { return };
+        let Ok(mut last) = state.menu.lock() else { return };
         if last.as_ref() == Some(&snap) {
             return;
         }
@@ -224,8 +247,30 @@ pub(crate) fn refresh<R: Runtime>(app: &AppHandle<R>) {
         }
         Err(e) => log::warn!("could not rebuild the menu-bar menu: {e}"),
     }
+}
+
+/// The slow tick: the title next to the icon, when it changed. On Linux, which
+/// never says the mouse reached the icon, the menu too.
+pub(crate) fn refresh_title<R: Runtime>(app: &AppHandle<R>) {
+    #[cfg(target_os = "linux")]
+    refresh_menu(app);
+
+    let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
+    // Only what the title shows — the boards (every task, with its body) are
+    // the menu's business, not something to copy every few seconds.
+    let next = title(&Snapshot { terminals: terminals::tray_rows(app), unread: unread(app), boards: Vec::new() });
+    {
+        let state = app.state::<TrayState>();
+        let Ok(mut last) = state.title.lock() else { return };
+        if last.as_deref() == Some(next.as_str()) {
+            return;
+        }
+        *last = Some(next.clone());
+    }
     #[cfg(target_os = "macos")]
-    let _ = tray.set_title(Some(title(&snap)));
+    let _ = tray.set_title(Some(next));
+    #[cfg(not(target_os = "macos"))]
+    let _ = (tray, next);
 }
 
 /// Whether closing the window should hide it rather than quit: only with the

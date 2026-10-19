@@ -13,13 +13,14 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_notification::NotificationExt;
 
-/// What a notification is about — the groups the in-app panel shows.
+/// What a notification is about — the groups the in-app panel shows. Only
+/// what's worth a row: PRs, tasks, approvals, and the half-hourly summary of
+/// agents waiting. Quota, spend cap and updates have their own banners and go
+/// to the OS only.
 pub(crate) mod kind {
     pub const APPROVAL: &str = "approval";
     pub const AGENT: &str = "agent";
     pub const PR: &str = "pr";
-    pub const ACCOUNT: &str = "account";
-    pub const UPDATE: &str = "update";
     pub const TASK: &str = "task";
 }
 
@@ -35,6 +36,11 @@ pub struct Target {
 impl Target {
     pub fn new(kind: &str, id: impl Into<String>) -> Option<Target> {
         Some(Target { kind: kind.to_string(), id: Some(id.into()) })
+    }
+
+    /// A screen rather than one thing on it — "go to the terminals".
+    pub fn screen(kind: &str) -> Option<Target> {
+        Some(Target { kind: kind.to_string(), id: None })
     }
 }
 
@@ -265,14 +271,8 @@ pub(crate) fn notify_if_enabled<R: Runtime>(app: &AppHandle<R>, is_enabled: impl
 /// the same version (it re-checks every 30 minutes).
 #[tauri::command]
 pub fn notify_update_available<R: Runtime>(app: AppHandle<R>, version: String) {
-    record(
-        &app,
-        kind::UPDATE,
-        |s| s.notify_update_available,
-        "Hangar update ready",
-        &format!("v{version} is installed — restart Hangar to run it"),
-        Target::new("update", version),
-    );
+    // OS only — the update banner is the in-app signal.
+    notify_if_enabled(&app, |s| s.notify_update_available, "Hangar update ready", &format!("v{version} is installed — restart Hangar to run it"));
 }
 
 /// Sends one on demand and reports what happened.
