@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AppNotification } from '../types/notification';
-import { ago, groupByCategory, kindCounts, targetRoute } from './notifications';
+import { ago, groupByCategory, kindCounts, sortedSummary, targetRoute } from './notifications';
 
 const n = (over: Partial<AppNotification>): AppNotification => ({
   id: 'x',
@@ -44,13 +44,41 @@ describe('notification panel helpers', () => {
 });
 
 describe('groupByCategory', () => {
-  const n = (id: string, aiCategory: string | null, aiPriority: number | null, createdAt = '2026-10-17T10:00:00Z') =>
-    ({ id, kind: 'pr', title: id, body: '', target: null, createdAt, readAt: null, aiCategory, aiPriority, aiReason: null }) as AppNotification;
+  const n = (id: string, aiCategory: string | null, aiPriority: number | null, createdAt = '2026-10-17T10:00:00Z', readAt: string | null = null) =>
+    ({ id, kind: 'pr', title: id, body: '', target: null, createdAt, readAt, aiCategory, aiPriority, aiReason: null }) as AppNotification;
 
-  it('orders the piles, puts the most urgent first, and keeps the unsorted last', () => {
-    const groups = groupByCategory([n('a', 'noise', 3), n('b', 'action_required', 2), n('c', null, null), n('d', 'action_required', 1), n('e', 'bogus', 1)]);
-    expect(groups.map((g) => g.id)).toEqual(['action_required', 'noise', 'unsorted']);
+  it('reads top to bottom: needs you, review, FYI, unsorted, noise, then the seen ones', () => {
+    const groups = groupByCategory([
+      n('a', 'noise', 3),
+      n('b', 'action_required', 2),
+      n('c', null, null),
+      n('d', 'action_required', 1),
+      n('e', 'bogus', 1),
+      n('f', 'fyi', 2),
+      n('g', 'review', 2),
+      n('h', 'action_required', 1, '2026-10-17T09:00:00Z', 'read'),
+      n('i', null, null, '2026-10-17T11:00:00Z', 'read'),
+    ]);
+    expect(groups.map((g) => g.id)).toEqual(['action_required', 'review', 'fyi', 'unsorted', 'noise', 'seen']);
     expect(groups[0].items.map((i) => i.id)).toEqual(['d', 'b']);
-    expect(groups[2].items.map((i) => i.id)).toEqual(['c', 'e']);
+    expect(groups[3].items.map((i) => i.id)).toEqual(['c', 'e']);
+    expect(groups[5].items.map((i) => i.id)).toEqual(['i', 'h']);
+  });
+
+  it('keeps read ones out of every pile, even an urgent one', () => {
+    const groups = groupByCategory([n('a', 'action_required', 1, undefined, 'read'), n('b', null, null, undefined, 'read')]);
+    expect(groups.map((g) => g.id)).toEqual(['seen']);
+  });
+
+  it('breaks a priority tie by the newest', () => {
+    const groups = groupByCategory([n('old', 'review', 2, '2026-10-17T08:00:00Z'), n('new', 'review', 2, '2026-10-17T12:00:00Z')]);
+    expect(groups[0].items.map((i) => i.id)).toEqual(['new', 'old']);
+  });
+});
+
+describe('sortedSummary', () => {
+  it('says where a press put things, in pile order', () => {
+    expect(sortedSummary(['noise', 'action_required', 'fyi', 'action_required'])).toBe('Sorted 4 — 2 need you, 1 FYI, 1 noise');
+    expect(sortedSummary([])).toBe('Sorted 0');
   });
 });

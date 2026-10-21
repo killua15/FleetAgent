@@ -1,7 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '../lib/invoke';
-import { AI_CATEGORIES, KIND_META, ago, groupByCategory, kindCounts, setNotificationsOpen, targetRoute, useNotificationsOpen } from '../lib/notifications';
+import {
+  AI_CATEGORIES,
+  KIND_META,
+  ago,
+  groupByCategory,
+  kindCounts,
+  setNotificationsOpen,
+  sortedSummary,
+  targetRoute,
+  useNotificationsOpen,
+  type CategoryGroupId,
+} from '../lib/notifications';
 import { useNavigation } from '../nav/NavigationProvider';
 import type { Account, Provider } from '../types/account';
 import type { AppNotification, NotificationKind } from '../types/notification';
@@ -15,6 +26,9 @@ import styles from './NotificationsPanel.module.css';
 const CLASSIFY_PROVIDERS: Provider[] = ['claude', 'kimi', 'custom'];
 
 type View = 'type' | 'ai';
+
+/** The piles that start folded: worth a count, not a screenful. */
+const FOLDABLE: CategoryGroupId[] = ['noise', 'seen'];
 
 /** Per-viewer conveniences — storage may be unavailable. */
 function stored(key: string): string | null {
@@ -50,6 +64,10 @@ export function NotificationsPanel() {
   const [classifyAccount, setClassifyAccount] = useState<string | null>(() => stored('classifyAccount'));
   const [classifying, setClassifying] = useState(false);
   const [classifyNote, setClassifyNote] = useState<{ error: boolean; text: string } | null>(null);
+  const [unfolded, setUnfolded] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(FOLDABLE.map((id) => [id, stored(`open.${id}`) === '1'])),
+  );
+  const listRef = useRef<HTMLDivElement>(null);
 
   const load = () =>
     invoke<AppNotification[]>('list_notifications')
@@ -83,6 +101,7 @@ export function NotificationsPanel() {
   const counts = useMemo(() => kindCounts(list), [list]);
   const shown = list.filter((n) => (kind === 'all' || n.kind === kind) && (!unreadOnly || !n.readAt));
   const unreadShown = shown.filter((n) => !n.readAt).map((n) => n.id);
+  const seenShown = shown.filter((n) => n.readAt).length;
   const groups = view === 'ai' ? groupByCategory(shown) : [];
   const unsorted = list.filter((n) => !n.readAt && !n.aiCategory).length;
   const rememberedAccount = accounts.find((a) => a.id === classifyAccount && CLASSIFY_PROVIDERS.includes(a.provider)) ?? null;
@@ -105,22 +124,34 @@ export function NotificationsPanel() {
     store('view', next);
   };
 
+  const toggleFold = (id: CategoryGroupId) => {
+    const next = !unfolded[id];
+    setUnfolded((u) => ({ ...u, [id]: next }));
+    store(`open.${id}`, next ? '1' : '0');
+  };
+
   const classify = async (accountId: string) => {
     setClassifyAccount(accountId);
     store('classifyAccount', accountId);
     setClassifying(true);
     setClassifyNote(null);
+    // What was waiting to be sorted, so the note can say where each one went.
+    const before = new Set(list.filter((n) => !n.readAt && !n.aiCategory).map((n) => n.id));
     try {
       const outcome = await invoke<{ classified: number; remaining: number }>('classify_notifications', { accountId, ids: null });
+      const fresh = await invoke<AppNotification[]>('list_notifications');
+      setList(fresh);
+      const landed = fresh.filter((n) => before.has(n.id) && n.aiCategory).map((n) => n.aiCategory);
       setClassifyNote({
         error: false,
         text:
           outcome.classified === 0
             ? 'Nothing new to sort.'
-            : `Sorted ${outcome.classified}${outcome.remaining > 0 ? ` — ${outcome.remaining} more on the next press` : ''}.`,
+            : `${sortedSummary(landed)}${outcome.remaining > 0 ? ` — ${outcome.remaining} more on the next press` : ''}.`,
       });
       pickView('ai');
-      load();
+      // Back to the top, where what needs you now is.
+      listRef.current?.scrollTo({ top: 0 });
     } catch (e) {
       // In the panel, next to the button that failed, not a toast that's
       // gone before you've read which account it was.
@@ -145,8 +176,8 @@ export function NotificationsPanel() {
     </button>
   );
 
-  const clear = () =>
-    invoke('clear_notifications', { kind: kind === 'all' ? null : kind })
+  const clear = (readOnly: boolean) =>
+    invoke('clear_notifications', { kind: kind === 'all' ? null : kind, readOnly })
       .then(load)
       .catch((e) => toastError(String(e)));
 
@@ -182,7 +213,10 @@ export function NotificationsPanel() {
           <Button size="sm" variant="outline" disabled={unreadShown.length === 0} onClick={() => markRead(kind === 'all' ? null : unreadShown)}>
             Mark read
           </Button>
-          <Button size="sm" variant="ghost" disabled={shown.length === 0} onClick={clear}>
+          <Button size="sm" variant="ghost" disabled={seenShown === 0} onClick={() => clear(true)} title="Delete the ones you've already seen; what's unread stays">
+            Clear seen{seenShown > 0 ? ` (${seenShown})` : ''}
+          </Button>
+          <Button size="sm" variant="ghost" disabled={shown.length === 0} onClick={() => clear(false)}>
             Clear {kind === 'all' ? 'all' : KIND_META[kind].label.toLowerCase()}
           </Button>
         </div>
@@ -230,7 +264,7 @@ export function NotificationsPanel() {
         </div>
         {classifyNote && <span className={classifyNote.error ? styles.noteError : styles.note}>{classifyNote.text}</span>}
 
-        <div className={styles.list}>
+        <div className={styles.list} ref={listRef}>
           {shown.length === 0 && (
             <span className={styles.empty}>{list.length === 0 ? 'Nothing yet. Notifications land here even with Do Not Disturb on.' : 'Nothing here.'}</span>
           )}
@@ -239,10 +273,19 @@ export function NotificationsPanel() {
             groups.map((group) => {
               const meta = AI_CATEGORIES.find((c) => c.id === group.id);
               const unreadInGroup = group.items.filter((n) => !n.readAt).map((n) => n.id);
+              const foldable = FOLDABLE.includes(group.id);
+              const folded = foldable && !unfolded[group.id];
+              const label = meta ? `${meta.icon} ${meta.label}` : group.id === 'seen' ? '✓ Seen' : 'Not sorted yet';
               return (
                 <div key={group.id} className={styles.group}>
                   <div className={styles.groupHead}>
-                    <span>{meta ? `${meta.icon} ${meta.label}` : 'Not sorted yet'}</span>
+                    {foldable ? (
+                      <button className={styles.groupFold} onClick={() => toggleFold(group.id)} title={folded ? 'Show them' : 'Fold them away'}>
+                        {folded ? '▸' : '▾'} {label}
+                      </button>
+                    ) : (
+                      <span>{label}</span>
+                    )}
                     <span className={styles.count}>{group.items.length}</span>
                     <span className={styles.spacer} />
                     {group.id === 'noise' && unreadInGroup.length > 0 && (
@@ -250,8 +293,13 @@ export function NotificationsPanel() {
                         mark all read
                       </button>
                     )}
+                    {group.id === 'seen' && (
+                      <button className={styles.groupAction} onClick={() => clear(true)} title="Delete the ones you've already seen">
+                        clear
+                      </button>
+                    )}
                   </div>
-                  {group.items.map(row)}
+                  {!folded && group.items.map(row)}
                 </div>
               );
             })}

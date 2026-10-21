@@ -212,6 +212,15 @@
   color: var(--mut);
 }
 
+.groupFold {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
 .groupAction {
   border: 0;
   background: none;

@@ -40,7 +40,8 @@
   border: 1px solid var(--overlay-line);
   background: var(--overlay);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
-  z-index: 40;
+  /* Above whatever opened it: the notifications panel (61) and the modals (90+). */
+  z-index: 100;
 }
 
 .label {

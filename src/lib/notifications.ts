@@ -32,18 +32,41 @@ export const AI_CATEGORIES = [
 
 export type AiCategory = (typeof AI_CATEGORIES)[number]['id'];
 
-/** The list as the AI sorted it: one group per category that has anything,
- * most urgent first inside each, then whatever it hasn't sorted yet. */
-export function groupByCategory(list: AppNotification[]): { id: AiCategory | 'unsorted'; items: AppNotification[] }[] {
-  const byPriority = (a: AppNotification, b: AppNotification) =>
-    (a.aiPriority ?? 9) - (b.aiPriority ?? 9) || b.createdAt.localeCompare(a.createdAt);
-  const groups: { id: AiCategory | 'unsorted'; items: AppNotification[] }[] = AI_CATEGORIES.map((c) => ({
-    id: c.id,
-    items: list.filter((n) => n.aiCategory === c.id).sort(byPriority),
-  }));
+export type CategoryGroupId = AiCategory | 'unsorted' | 'seen';
+
+/** The list as the AI sorted it, laid out for reading top to bottom: what needs
+ * you, what to review, FYI, whatever it hasn't sorted yet, then noise — and
+ * last, everything already seen, whatever its pile. Classifying only ever
+ * looks at unread ones, so without that last group every read notification
+ * would sit in "not sorted yet" as the biggest pile on screen.
+ *
+ * Inside a group: most urgent first, then newest. Groups with nothing in them
+ * are left out. */
+export function groupByCategory(list: AppNotification[]): { id: CategoryGroupId; items: AppNotification[] }[] {
+  const newest = (a: AppNotification, b: AppNotification) => b.createdAt.localeCompare(a.createdAt);
+  const byPriority = (a: AppNotification, b: AppNotification) => (a.aiPriority ?? 9) - (b.aiPriority ?? 9) || newest(a, b);
+  const pending = list.filter((n) => !n.readAt);
   const known = new Set<string>(AI_CATEGORIES.map((c) => c.id));
-  groups.push({ id: 'unsorted', items: list.filter((n) => !n.aiCategory || !known.has(n.aiCategory)) });
+  const pile = (id: AiCategory) => ({ id, items: pending.filter((n) => n.aiCategory === id).sort(byPriority) });
+  const groups: { id: CategoryGroupId; items: AppNotification[] }[] = [
+    pile('action_required'),
+    pile('review'),
+    pile('fyi'),
+    { id: 'unsorted', items: pending.filter((n) => !n.aiCategory || !known.has(n.aiCategory)).sort(newest) },
+    pile('noise'),
+    { id: 'seen', items: list.filter((n) => n.readAt).sort(newest) },
+  ];
   return groups.filter((g) => g.items.length > 0);
+}
+
+/** "Sorted 12 — 2 need you, 3 to review, 5 FYI, 2 noise": where a classify
+ * press put things, from the categories of the ones it just sorted. */
+export function sortedSummary(categories: (string | null)[]): string {
+  const words: Record<AiCategory, string> = { action_required: 'need you', review: 'to review', fyi: 'FYI', noise: 'noise' };
+  const parts = AI_CATEGORIES.map((c) => ({ n: categories.filter((x) => x === c.id).length, word: words[c.id] }))
+    .filter((p) => p.n > 0)
+    .map((p) => `${p.n} ${p.word}`);
+  return `Sorted ${categories.length}${parts.length ? ` — ${parts.join(', ')}` : ''}`;
 }
 
 /** Where clicking a notification goes: a screen and its params, or nowhere. */

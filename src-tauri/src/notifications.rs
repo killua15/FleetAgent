@@ -219,17 +219,24 @@ pub(crate) fn mark_read(conn: &Connection, ids: Option<&[String]>, now: &str) ->
     .map_err(|e| e.to_string())
 }
 
-/// Deletes the notifications of one kind, or all of them.
+/// Deletes the notifications of one kind, or all of them — or, with
+/// `read_only`, just the ones already seen, so what's still pending stays put.
+pub(crate) fn clear(conn: &Connection, kind: Option<&str>, read_only: bool) -> Result<(), String> {
+    let seen = if read_only { " AND read_at IS NOT NULL" } else { "" };
+    match kind {
+        Some(k) => conn.execute(&format!("DELETE FROM notifications WHERE kind = ?1{seen}"), params![k]),
+        None => conn.execute(&format!("DELETE FROM notifications WHERE 1 = 1{seen}"), []),
+    }
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
-pub fn clear_notifications<R: Runtime>(app: AppHandle<R>, kind: Option<String>) -> Result<(), String> {
+pub fn clear_notifications<R: Runtime>(app: AppHandle<R>, kind: Option<String>, read_only: Option<bool>) -> Result<(), String> {
     let unread = {
         let db = app.state::<DbConnection>();
         let conn = db.0.lock().map_err(|e| e.to_string())?;
-        match &kind {
-            Some(k) => conn.execute("DELETE FROM notifications WHERE kind = ?1", params![k]),
-            None => conn.execute("DELETE FROM notifications", []),
-        }
-        .map_err(|e| e.to_string())?;
+        clear(&conn, kind.as_deref(), read_only.unwrap_or(false))?;
         unread_count(&conn)
     };
     refresh_badge(&app, unread);
@@ -351,5 +358,26 @@ mod tests {
         assert_eq!(unread_count(&conn), 1);
         mark_read(&conn, None, &now.to_rfc3339()).unwrap();
         assert_eq!(unread_count(&conn), 0);
+    }
+
+    /// "Clear seen" must never take something still waiting on you with it.
+    #[test]
+    fn clearing_the_seen_ones_keeps_the_pending_ones() {
+        let conn = conn();
+        let now = chrono::Utc::now();
+        let seen_pr = persist(&conn, kind::PR, "a", "", Target::new("pr", "1").as_ref(), now).unwrap();
+        let seen_task = persist(&conn, kind::TASK, "b", "", Target::new("task", "1").as_ref(), now).unwrap();
+        persist(&conn, kind::PR, "c", "", Target::new("pr", "2").as_ref(), now).unwrap();
+        mark_read(&conn, Some(&[seen_pr, seen_task]), &now.to_rfc3339()).unwrap();
+
+        clear(&conn, Some(kind::PR), true).unwrap();
+        assert_eq!(count(&conn), 2, "only the seen PR went: the seen task is another kind, the pending PR isn't seen");
+
+        clear(&conn, None, true).unwrap();
+        assert_eq!(count(&conn), 1);
+        assert_eq!(unread_count(&conn), 1);
+
+        clear(&conn, None, false).unwrap();
+        assert_eq!(count(&conn), 0, "and plain clear still clears everything");
     }
 }
