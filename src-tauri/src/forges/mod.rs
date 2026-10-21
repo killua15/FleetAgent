@@ -194,6 +194,12 @@ pub fn set_declared_hosts(hosts: std::collections::BTreeMap<String, DeclaredKind
     gitlab::forget_authenticated_hosts();
 }
 
+/// Every host the user declared as `kind`.
+pub fn declared_hosts(kind: DeclaredKind) -> Vec<String> {
+    let Ok(guard) = DECLARED_HOSTS.lock() else { return Vec::new() };
+    guard.as_ref().map(|hosts| hosts.iter().filter(|(_, k)| **k == kind).map(|(h, _)| h.clone()).collect()).unwrap_or_default()
+}
+
 /// Whether the registry has been loaded at all. `false` means startup hasn't run
 /// yet, which is different from "loaded and empty" — and only the first is worth
 /// warning about.
@@ -486,7 +492,7 @@ pub fn detect_repo(cwd: &Path) -> Result<RepoRef, String> {
 pub fn available_and_authed(repo: &RepoRef) -> Result<(), String> {
     match repo.forge {
         Forge::Github => github::available_and_authed(),
-        Forge::Gitlab => gitlab::available_and_authed(),
+        Forge::Gitlab => gitlab::available_and_authed(&repo.host),
     }
 }
 
@@ -708,6 +714,13 @@ mod tests {
     fn a_git_only_declaration_stops_the_probing() {
         with_declarations(&[("52.188.59.199:3000", DeclaredKind::GitOnly)], || {
             assert_eq!(Forge::for_host("52.188.59.199:3000"), None);
+        });
+    }
+
+    #[test]
+    fn declared_hosts_lists_only_the_kind_asked_for() {
+        with_declarations(&[("git.acme.com", DeclaredKind::Gitlab), ("ghe.acme.com", DeclaredKind::Github), ("10.0.0.5:3000", DeclaredKind::GitOnly)], || {
+            assert_eq!(declared_hosts(DeclaredKind::Gitlab), vec!["git.acme.com".to_string()]);
         });
     }
 

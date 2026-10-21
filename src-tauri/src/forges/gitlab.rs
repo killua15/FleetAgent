@@ -46,8 +46,15 @@ fn glab_api_json(host: &str, endpoint: &str) -> Result<Value, String> {
     serde_json::from_slice(&output.stdout).map_err(|e| format!("glab api {endpoint} returned unparseable JSON: {e}"))
 }
 
-pub fn available_and_authed() -> Result<(), String> {
-    crate::capabilities::Capability::MergeRequests.check().map_err(|b| b.message())
+/// Asked of the instance the repo is on. The capability's own login check can
+/// only ask about some instance, and asking gitlab.com refused every merge
+/// request on a self-hosted GitLab for someone with no gitlab.com token.
+pub fn available_and_authed(host: &str) -> Result<(), String> {
+    crate::capabilities::Capability::MergeRequests.check_offline().map_err(|b| b.message())?;
+    if !is_authenticated(host) {
+        return Err(format!("`glab` isn't logged in to {host} — run `glab auth login --hostname {host}`"));
+    }
+    Ok(())
 }
 
 /// Whether `glab` is logged in to this instance at all.

@@ -344,7 +344,15 @@ impl Capability {
         let (logged_in, reason, hint) = match self.spec().needs_login {
             NeedsLogin::None => return Ok(()),
             NeedsLogin::Gh => (gh_is_authenticated(), "the GitHub CLI isn't logged in", "gh auth login"),
-            NeedsLogin::Glab => (crate::forges::gitlab::is_authenticated("gitlab.com"), "the GitLab CLI isn't logged in", "glab auth login"),
+            // Any instance will do: a self-hosted GitLab is a GitLab login
+            // even with no gitlab.com token at all.
+            NeedsLogin::Glab => (
+                std::iter::once("gitlab.com".to_string())
+                    .chain(crate::forges::declared_hosts(crate::forges::DeclaredKind::Gitlab))
+                    .any(|host| crate::forges::gitlab::is_authenticated(&host)),
+                "the GitLab CLI isn't logged in",
+                "glab auth login",
+            ),
         };
         if !logged_in {
             return Err(Blocked { capability: self, reason: reason.to_string(), hint: Some(hint.to_string()) });

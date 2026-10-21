@@ -1228,7 +1228,7 @@ fn list_pr_review_inbox_impl(db: &DbConnection, host: Option<&str>) -> Result<Ve
 #[tauri::command]
 pub async fn check_all_open_prs_now(app: AppHandle) -> Result<(), String> {
     crate::blocking::run_blocking(move || {
-        poll_all_open_prs(&app);
+        poll_open_prs(&app, None, true);
     })
     .await
 }
@@ -1238,7 +1238,7 @@ pub async fn check_all_open_prs_now(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn check_open_prs_now(app: AppHandle, host: String) -> Result<(), String> {
     crate::blocking::run_blocking(move || {
-        poll_open_prs_for_host(&app, Some(&host));
+        poll_open_prs(&app, Some(&host), true);
     })
     .await
 }
@@ -1487,6 +1487,12 @@ pub fn hosts_with_projects<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
 /// that answers. A project belongs to exactly one host, so the per-project
 /// merge debounce below is unaffected by the split.
 pub fn poll_open_prs_for_host<R: Runtime>(app: &AppHandle<R>, host: Option<&str>) {
+    poll_open_prs(app, host, false);
+}
+
+/// `force` is someone pressing ↻: they are asking now, so a repo benched by
+/// earlier failures gets asked again rather than skipped.
+fn poll_open_prs<R: Runtime>(app: &AppHandle<R>, host: Option<&str>, force: bool) {
     let Some(db) = app.try_state::<DbConnection>() else { return };
     let projects: Vec<(String, String)> = {
         let Ok(conn) = db.0.lock() else { return };
@@ -1510,7 +1516,17 @@ pub fn poll_open_prs_for_host<R: Runtime>(app: &AppHandle<R>, host: Option<&str>
             continue;
         }
         let path = repo.path();
+        if force {
+            clear_snapshot_failures(&path);
+        }
         if is_benched(&path) {
+            // Stamped anyway: without it the screen kept showing the error
+            // from the pass that benched it, as if it were current.
+            note_host_visit(
+                &mut visited,
+                &repo.host,
+                Some(format!("{path} stopped being checked after {BENCH_AFTER_FAILURES} failures in a row — press ↻ to retry")),
+            );
             continue;
         }
         let snapshot = match forges::fetch_repo_snapshot(&repo, DISCOVERY_PR_LIMIT) {
@@ -1602,7 +1618,35 @@ static SNAPSHOT_FAILURES: std::sync::Mutex<Option<std::collections::HashMap<Stri
 /// After this many identical failures, stop asking until the next launch.
 const BENCH_AFTER_FAILURES: u32 = 3;
 
+/// Whether a failure says the network didn't get there rather than that the
+/// forge answered no.
+///
+/// Only the second kind repeats forever. A VPN that dropped for five minutes
+/// failed every repo on the instance three times in a row and benched them all
+/// "until the next launch" — and since the window hides instead of quitting,
+/// the next launch was days away while the server had long been answering.
+fn is_transient(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    [
+        "i/o timeout",
+        "dial tcp",
+        "timed out",
+        "no such host",
+        "connection refused",
+        "connection reset",
+        "network is unreachable",
+        "tls handshake timeout",
+        "could not resolve host",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
 fn note_snapshot_failure(path: &str, error: &str) {
+    if is_transient(error) {
+        log::warn!("poll_open_prs: snapshot failed for {path}, will retry: {error}");
+        return;
+    }
     let Ok(mut guard) = SNAPSHOT_FAILURES.lock() else {
         log::error!("poll_open_prs: snapshot failed for {path}: {error}");
         return;
@@ -1884,6 +1928,22 @@ mod tests {
         // And a repo that starts answering again is forgiven without a restart.
         clear_snapshot_failures(&path);
         assert!(!is_benched(&path));
+    }
+
+    /// The outage that benched a whole GitLab instance for days: the server was
+    /// unreachable for five minutes, and that says nothing about the repos.
+    #[test]
+    fn a_network_failure_never_benches_a_repo() {
+        let real = r#"glab api projects/apps%2Fgmdss/merge_requests?state=opened failed: ERROR Get "https://git.technolabs.com.br/api/v4/projects/apps%2Fgmdss/merge_requests": dial tcp 3.12.233.101:443: i/o timeout."#;
+        assert!(is_transient(real));
+        assert!(is_transient("glab api user: timed out after 30s — check your network connection"));
+        assert!(!is_transient("gh: Could not resolve to a Repository with the name 'WPLANNING/wplanning-app-mobile'."));
+
+        let path = format!("bench-test/{}", Uuid::new_v4());
+        for _ in 0..BENCH_AFTER_FAILURES * 2 {
+            note_snapshot_failure(&path, real);
+        }
+        assert!(!is_benched(&path), "the next pass must ask again");
     }
 
     /// The inbox answers for one instance at a time, so a person with a GitHub
