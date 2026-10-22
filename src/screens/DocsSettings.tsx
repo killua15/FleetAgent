@@ -123,17 +123,16 @@ export function DocsSettings() {
           ))}
 
           {form === null || !meta ? (
-            <div className={shared.addRow}>
+            <div className={styles.providers}>
               {(Object.keys(KNOWLEDGE_SOURCE_META) as KnowledgeSourceKind[]).map((kind) => (
-                <Button key={kind} size="sm" variant="outline" onClick={() => startAdd(kind)}>
-                  + {KNOWLEDGE_SOURCE_META[kind].name}
-                </Button>
+                <ProviderCard key={kind} kind={kind} onConnect={() => startAdd(kind)} />
               ))}
             </div>
           ) : (
             <div className={shared.form}>
               <span className={shared.formTitle}>{meta.name}</span>
               <span className={shared.hint}>{meta.hint}</span>
+              <HowItIntegrates kind={form.kind} />
               <div className={shared.formRow}>
                 <input className={shared.input} placeholder="name it — e.g. Technomar docs" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} />
                 <input
@@ -183,5 +182,46 @@ export function DocsSettings() {
         </section>
       </div>
     </div>
+  );
+}
+
+/** One provider before it's connected: what it is, how it plugs in, and what
+ * agents get — so the decision is made before a key is pasted. */
+function ProviderCard({ kind, onConnect }: { kind: KnowledgeSourceKind; onConnect: () => void }) {
+  const meta = KNOWLEDGE_SOURCE_META[kind];
+  return (
+    <div className={styles.card}>
+      <div className={styles.cardHead}>
+        <span className={styles.cardName}>{meta.name}</span>
+        <span className={shared.spacer} />
+        <Button size="sm" variant="outline" onClick={onConnect}>
+          + Connect
+        </Button>
+      </div>
+      <span className={styles.cardSummary}>{meta.summary}</span>
+      <HowItIntegrates kind={kind} />
+    </div>
+  );
+}
+
+function HowItIntegrates({ kind }: { kind: KnowledgeSourceKind }) {
+  const meta = KNOWLEDGE_SOURCE_META[kind];
+  return (
+    <details className={styles.how}>
+      <summary className={styles.howHead}>How it integrates</summary>
+      <ol className={styles.steps}>
+        {meta.steps.map((step) => (
+          <li key={step}>{step}</li>
+        ))}
+      </ol>
+      <span className={styles.gets}>
+        <strong>Agents get:</strong> {meta.agentsGet}
+      </span>
+      {meta.limits && (
+        <span className={styles.limits}>
+          <strong>Not yet:</strong> {meta.limits}
+        </span>
+      )}
+    </details>
   );
 }
