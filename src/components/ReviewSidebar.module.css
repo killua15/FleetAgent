@@ -87,3 +87,12 @@
   background: transparent;
   color: var(--dim);
 }
+
+.link {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--acc);
+  font: inherit;
+  cursor: pointer;
+}

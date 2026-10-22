@@ -1,0 +1,79 @@
+.bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 10px 2px;
+}
+
+.toggle {
+  display: flex;
+  align-self: flex-start;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.toggleOn,
+.toggleOff {
+  border: 0;
+  padding: 2px 9px;
+  font: 400 10.5px var(--font-ui);
+  cursor: pointer;
+}
+
+.toggleOn {
+  background: var(--accD);
+  color: var(--acc);
+}
+
+.toggleOff {
+  background: transparent;
+  color: var(--mut);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.chip,
+.chipOn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 8px;
+  background: var(--bg);
+  color: var(--txt);
+  font: 400 10.5px var(--font-ui);
+  cursor: pointer;
+}
+
+.chipOn {
+  background: var(--txt);
+  border-color: var(--txt);
+  color: var(--bg);
+}
+
+.count {
+  opacity: 0.65;
+  font-family: var(--font-mono);
+}
+
+.letter {
+  font: 700 9.5px var(--font-mono);
+}
+
+.modified {
+  color: var(--amber);
+}
+
+.added {
+  color: var(--grn);
+}
+
+.deleted {
+  color: var(--red);
+}

@@ -180,3 +180,95 @@ export function orderedReviewItems(changes: WorktreeChanges | null, layout: List
     ...orderLikeTree(changes.committed).map((file) => ({ file, committed: true })),
   ];
 }
+
+/** Whether a diff shows only what changed (folded like `git diff`) or the
+ * whole file with the changes marked. */
+export type DiffScope = 'changes' | 'file';
+const DIFF_SCOPE_KEY = 'hangar.review.diffScope';
+
+/** Only the changes unless the user asked for the whole file — a review is
+ * read change by change, and a 900-line file with a 2-line edit buries it. */
+export function readDiffScope(): DiffScope {
+  try {
+    return localStorage.getItem(DIFF_SCOPE_KEY) === 'file' ? 'file' : 'changes';
+  } catch {
+    return 'changes';
+  }
+}
+
+export function writeDiffScope(scope: DiffScope) {
+  try {
+    localStorage.setItem(DIFF_SCOPE_KEY, scope);
+  } catch {
+    // A convenience; not remembering it is fine.
+  }
+}
+
+/** What the change list shows: both groups or only what `git status` would
+ * list, and every kind of change or one. */
+export interface ReviewFilter {
+  scope: 'all' | 'uncommitted';
+  status: 'all' | 'modified' | 'added' | 'deleted';
+}
+
+export const ALL_CHANGES: ReviewFilter = { scope: 'all', status: 'all' };
+const FILTER_KEY = 'hangar.review.filter';
+
+/** Which chip a file falls under. An untracked file is "new" to whoever reads
+ * the list, the same as a staged addition; a file only Hangar saw an agent
+ * touch has no git status and stays under "all". */
+function statusGroup(status: ChangedFile['status']): ReviewFilter['status'] | null {
+  switch (status) {
+    case 'modified':
+      return 'modified';
+    case 'added':
+    case 'untracked':
+      return 'added';
+    case 'deleted':
+      return 'deleted';
+    default:
+      return null;
+  }
+}
+
+/** The changes the list should draw. `uncommitted` empties the branch's list;
+ * a status keeps only that kind in both. */
+export function filterChanges(changes: WorktreeChanges, filter: ReviewFilter): WorktreeChanges {
+  const keep = (files: ChangedFile[]) => (filter.status === 'all' ? files : files.filter((f) => statusGroup(f.status) === filter.status));
+  return {
+    ...changes,
+    uncommitted: keep(changes.uncommitted),
+    committed: filter.scope === 'uncommitted' ? [] : keep(changes.committed),
+  };
+}
+
+/** How many files each chip would show, within the chosen scope. */
+export function statusCounts(changes: WorktreeChanges, scope: ReviewFilter['scope']): Record<ReviewFilter['status'], number> {
+  const files = scope === 'uncommitted' ? changes.uncommitted : [...changes.uncommitted, ...changes.committed];
+  const counts = { all: files.length, modified: 0, added: 0, deleted: 0 };
+  for (const file of files) {
+    const group = statusGroup(file.status);
+    if (group && group !== 'all') counts[group] += 1;
+  }
+  return counts;
+}
+
+export function readReviewFilter(): ReviewFilter {
+  try {
+    const saved = JSON.parse(localStorage.getItem(FILTER_KEY) ?? 'null') as Partial<ReviewFilter> | null;
+    return {
+      scope: saved?.scope === 'uncommitted' ? 'uncommitted' : 'all',
+      status: saved?.status === 'modified' || saved?.status === 'added' || saved?.status === 'deleted' ? saved.status : 'all',
+    };
+  } catch {
+    return ALL_CHANGES;
+  }
+}
+
+export function writeReviewFilter(filter: ReviewFilter) {
+  try {
+    localStorage.setItem(FILTER_KEY, JSON.stringify(filter));
+  } catch {
+    // A convenience; not remembering it is fine.
+  }
+}

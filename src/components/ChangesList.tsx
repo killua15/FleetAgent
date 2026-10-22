@@ -25,11 +25,15 @@ export function ChangesList({
   selected,
   onSelect,
   layout = 'tree',
+  showCommitted = true,
 }: {
   changes: WorktreeChanges;
   selected: ReviewItem | null;
   onSelect: (item: ReviewItem) => void;
   layout?: ListLayout;
+  /** False when only uncommitted work is wanted — the branch's group isn't
+   * drawn at all, rather than drawn empty. */
+  showCommitted?: boolean;
 }) {
   // Collapsed folders survive a refresh (this component stays mounted); a new
   // terminal remounts it and starts expanded.
@@ -145,7 +149,7 @@ export function ChangesList({
   return (
     <div className={styles.groups}>
       {group('uncommitted', 'what the agent is doing right now', changes.uncommitted, false)}
-      {group('in this branch', `on top of ${changes.base}`, changes.committed, true)}
+      {showCommitted && group('in this branch', `on top of ${changes.base}`, changes.committed, true)}
     </div>
   );
 }

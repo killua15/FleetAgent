@@ -80,3 +80,39 @@
   font: 400 11.5px var(--font-ui);
   color: var(--dim);
 }
+
+.diffHead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.scopeToggle {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.scopeOn,
+.scopeOff {
+  border: 0;
+  padding: 2px 9px;
+  font: 400 11px var(--font-ui);
+  cursor: pointer;
+}
+
+.scopeOn {
+  background: var(--accD);
+  color: var(--acc);
+}
+
+.scopeOff {
+  background: transparent;
+  color: var(--mut);
+}

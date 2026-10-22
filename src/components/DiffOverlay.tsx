@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '../lib/invoke';
-import { readDiffLayout, stepItem, writeDiffLayout, type DiffLayout, type ReviewItem } from '../lib/review';
+import { readDiffLayout, readDiffScope, stepItem, writeDiffLayout, writeDiffScope, type DiffLayout, type DiffScope, type ReviewItem } from '../lib/review';
 import { CodeView } from './CodeView';
 import { toastError } from './ErrorOverlay';
 import { Button } from './ui/button';
@@ -31,6 +31,7 @@ export function DiffOverlay({
 }) {
   const [diff, setDiff] = useState<{ oldText: string; newText: string } | null>(null);
   const [layout, setLayout] = useState<DiffLayout>(readDiffLayout);
+  const [scope, setScope] = useState<DiffScope>(readDiffScope);
 
   useEffect(() => {
     let cancelled = false;
@@ -78,6 +79,10 @@ export function DiffOverlay({
     setLayout(next);
     writeDiffLayout(next);
   };
+  const pickScope = (next: DiffScope) => {
+    setScope(next);
+    writeDiffScope(next);
+  };
   const position = items.findIndex((i) => i.file.path === item.file.path && i.committed === item.committed) + 1;
 
   return (
@@ -95,6 +100,14 @@ export function DiffOverlay({
           <span className={styles.hint}>
             {position}/{items.length} · ↑↓ files · Esc closes
           </span>
+          <div className={styles.toggle}>
+            <button className={scope === 'changes' ? styles.toggleOn : styles.toggleOff} onClick={() => pickScope('changes')} title="Only the changed lines, with three of context — like git diff">
+              Only changes
+            </button>
+            <button className={scope === 'file' ? styles.toggleOn : styles.toggleOff} onClick={() => pickScope('file')} title="The whole file, with the changes marked">
+              Whole file
+            </button>
+          </div>
           <div className={styles.toggle}>
             <button className={layout === 'unified' ? styles.toggleOn : styles.toggleOff} onClick={() => pick('unified')}>
               Unified
@@ -118,7 +131,7 @@ export function DiffOverlay({
             <span className={styles.loading}>This file was deleted, and git has no earlier copy to show.</span>
           )}
           {diff && (diff.newText || diff.oldText) && (
-            <CodeView path={item.file.path} text={diff.newText} original={diff.oldText} split={layout === 'split'} />
+            <CodeView path={item.file.path} text={diff.newText} original={diff.oldText} split={layout === 'split'} collapse={scope === 'changes'} />
           )}
         </div>
       </div>

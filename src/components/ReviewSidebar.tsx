@@ -1,10 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '../lib/invoke';
-import { orderedReviewItems, readListLayout, writeListLayout, type ListLayout, type ReviewItem } from '../lib/review';
+import {
+  ALL_CHANGES,
+  filterChanges,
+  orderedReviewItems,
+  readListLayout,
+  readReviewFilter,
+  sameItem,
+  writeListLayout,
+  writeReviewFilter,
+  type ListLayout,
+  type ReviewFilter,
+  type ReviewItem,
+} from '../lib/review';
 import type { WorktreeChanges } from '../types/gitPanel';
 import type { BranchInfo } from '../types/gitHistory';
 import type { TerminalActivity, TerminalInfo } from '../types/terminal';
+import { ChangesFilterBar } from './ChangesFilterBar';
 import { ChangesList } from './ChangesList';
 import { DiffOverlay } from './DiffOverlay';
 import { Button } from './ui/button';
@@ -34,6 +47,11 @@ export function ReviewSidebar({ terminal }: { terminal: TerminalInfo | null }) {
   const pickLayout = (next: ListLayout) => {
     setLayout(next);
     writeListLayout(next);
+  };
+  const [filter, setFilter] = useState<ReviewFilter>(readReviewFilter);
+  const pickFilter = (next: ReviewFilter) => {
+    setFilter(next);
+    writeReviewFilter(next);
   };
 
   useEffect(() => {
@@ -94,6 +112,11 @@ export function ReviewSidebar({ terminal }: { terminal: TerminalInfo | null }) {
 
   const shownBase = base ?? changes?.base ?? '';
   const count = changes ? changes.uncommitted.length + changes.committed.length : 0;
+  // What the list draws, and so what ↑/↓ in the diff walks: the filtered set.
+  const shown = changes ? filterChanges(changes, filter) : null;
+  const shownCount = shown ? shown.uncommitted.length + shown.committed.length : 0;
+  const items = orderedReviewItems(shown, layout);
+  const open = selected && items.some((i) => sameItem(i, selected)) ? selected : null;
 
   return (
     <aside className={styles.sidebar}>
@@ -141,15 +164,26 @@ export function ReviewSidebar({ terminal }: { terminal: TerminalInfo | null }) {
       <div className={styles.body}>
         {error && <span className={styles.empty}>This terminal isn't in a git repository.</span>}
         {changes && count === 0 && <span className={styles.empty}>No changes against {changes.base}.</span>}
-        {changes && count > 0 && <ChangesList key={path ?? ''} changes={changes} selected={selected} onSelect={setSelected} layout={layout} />}
+        {changes && count > 0 && <ChangesFilterBar changes={changes} filter={filter} onChange={pickFilter} />}
+        {shown && count > 0 && shownCount === 0 && (
+          <span className={styles.empty}>
+            Nothing matches this filter —{' '}
+            <button className={styles.link} onClick={() => pickFilter(ALL_CHANGES)}>
+              show all
+            </button>
+          </span>
+        )}
+        {shown && shownCount > 0 && (
+          <ChangesList key={path ?? ''} changes={shown} selected={open} onSelect={setSelected} layout={layout} showCommitted={filter.scope === 'all'} />
+        )}
       </div>
 
-      {changes && selected && path && (
+      {shown && open && path && (
         <DiffOverlay
           path={path}
           base={base}
-          item={selected}
-          items={orderedReviewItems(changes, layout)}
+          item={open}
+          items={items}
           rider={rider}
           onSelect={setSelected}
           onClose={() => setSelected(null)}

@@ -1,6 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ChangedFile, WorktreeChanges } from '../types/gitPanel';
-import { lineTotals, readDiffLayout, reviewItems, stepItem, writeDiffLayout } from './review';
+import {
+  filterChanges,
+  lineTotals,
+  readDiffLayout,
+  readDiffScope,
+  readReviewFilter,
+  reviewItems,
+  statusCounts,
+  stepItem,
+  writeDiffLayout,
+  writeReviewFilter,
+} from './review';
 
 const file = (path: string, added = 1, removed = 0): ChangedFile => ({ path, status: 'modified', added, removed, staged: false });
 const changes: WorktreeChanges = {
@@ -104,5 +115,65 @@ describe('changesTree', () => {
     const c: WorktreeChanges = { base: 'dev', uncommitted: [file('z.ts'), file('a/b.ts')], committed: [] };
     expect(orderedReviewItems(c, 'tree').map((i) => i.file.path)).toEqual(['a/b.ts', 'z.ts']);
     expect(orderedReviewItems(c, 'list').map((i) => i.file.path)).toEqual(['z.ts', 'a/b.ts']);
+  });
+});
+
+/** The list as `git status` and `git diff` would show it: only some kinds of
+ * change, or only what isn't committed yet. */
+describe('change filters', () => {
+  const as = (path: string, status: ChangedFile['status']): ChangedFile => ({ path, status, added: 1, removed: 0, staged: false });
+  const mixed: WorktreeChanges = {
+    base: 'dev',
+    uncommitted: [as('m.ts', 'modified'), as('new.ts', 'untracked'), as('gone.ts', 'deleted')],
+    committed: [as('m2.ts', 'modified'), as('added.ts', 'added')],
+  };
+  const paths = (c: WorktreeChanges) => [...c.uncommitted.map((f) => `U:${f.path}`), ...c.committed.map((f) => `C:${f.path}`)];
+
+  it('keeps everything by default', () => {
+    expect(paths(filterChanges(mixed, { scope: 'all', status: 'all' }))).toHaveLength(5);
+  });
+
+  it('drops the branch list when only uncommitted work is wanted', () => {
+    expect(paths(filterChanges(mixed, { scope: 'uncommitted', status: 'all' }))).toEqual(['U:m.ts', 'U:new.ts', 'U:gone.ts']);
+  });
+
+  it('keeps one kind of change in both lists, counting untracked as new', () => {
+    expect(paths(filterChanges(mixed, { scope: 'all', status: 'modified' }))).toEqual(['U:m.ts', 'C:m2.ts']);
+    expect(paths(filterChanges(mixed, { scope: 'all', status: 'added' }))).toEqual(['U:new.ts', 'C:added.ts']);
+    expect(paths(filterChanges(mixed, { scope: 'uncommitted', status: 'deleted' }))).toEqual(['U:gone.ts']);
+  });
+
+  it('counts each chip within the chosen scope', () => {
+    expect(statusCounts(mixed, 'all')).toEqual({ all: 5, modified: 2, added: 2, deleted: 1 });
+    expect(statusCounts(mixed, 'uncommitted')).toEqual({ all: 3, modified: 1, added: 1, deleted: 1 });
+  });
+});
+
+describe('remembered review preferences', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('defaults to only the changes, and everything in the list, with no storage at all', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => {
+        throw new Error('blocked');
+      },
+      setItem: () => {
+        throw new Error('blocked');
+      },
+    });
+    expect(readDiffScope()).toBe('changes');
+    expect(readReviewFilter()).toEqual({ scope: 'all', status: 'all' });
+    expect(() => writeReviewFilter({ scope: 'uncommitted', status: 'modified' })).not.toThrow();
+  });
+
+  it('remembers a filter, and ignores one it does not recognise', () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal('localStorage', { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v) });
+    writeReviewFilter({ scope: 'uncommitted', status: 'modified' });
+    expect(readReviewFilter()).toEqual({ scope: 'uncommitted', status: 'modified' });
+    localStorage.setItem('hangar.review.filter', JSON.stringify({ scope: 'weird', status: 'renamed' }));
+    expect(readReviewFilter()).toEqual({ scope: 'all', status: 'all' });
   });
 });

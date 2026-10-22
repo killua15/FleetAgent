@@ -42,7 +42,9 @@ function languageFor(path: string): Extension[] {
 
 /** Read-only code viewer, with an optional diff against `original` — inline
  * (`unified`, GitHub Desktop's way) or before | after columns (`split`, the
- * IDE's way).
+ * IDE's way). `collapse` folds what didn't change down to three lines of
+ * context either side, the way `git diff` shows a change; without it the whole
+ * file is there with the changes marked.
  *
  * CodeMirror rather than Monaco on purpose: this screen exists to *read* what an
  * agent changed, and Monaco's extra weight (~90 MB unpacked against ~1 MB here,
@@ -55,11 +57,13 @@ export function CodeView({
   text,
   original,
   split = false,
+  collapse = false,
 }: {
   path: string;
   text: string;
   original?: string | null;
   split?: boolean;
+  collapse?: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
   // `resolvedTheme` and not `theme`: the latter can be 'system', which is a
@@ -83,22 +87,25 @@ export function CodeView({
 
     // Both columns share the same read-only setup, so the two sides of a split
     // look like one file at two moments rather than two different viewers.
+    // Six or more unchanged lines fold into one "⋯ N lines" row, keeping three
+    // of context on each side — click it to open them.
+    const collapseUnchanged = collapse ? { margin: 3, minSize: 6 } : undefined;
     if (hasDiff && split) {
       const view = new MergeView({
         a: { doc: original, extensions },
         b: { doc: text, extensions },
         parent: host.current,
-        collapseUnchanged: { margin: 3, minSize: 6 },
+        collapseUnchanged,
       });
       return () => view.destroy();
     }
     if (hasDiff) {
-      extensions.push(unifiedMergeView({ original, mergeControls: false }));
+      extensions.push(unifiedMergeView({ original, mergeControls: false, collapseUnchanged }));
     }
 
     const view = new EditorView({ state: EditorState.create({ doc: text, extensions }), parent: host.current });
     return () => view.destroy();
-  }, [path, text, original, split, resolvedTheme]);
+  }, [path, text, original, split, collapse, resolvedTheme]);
 
   return <div ref={host} className={styles.host} />;
 }
