@@ -1,0 +1,28 @@
+.projects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 2px 0;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font: 400 11.5px var(--font-ui);
+  color: var(--txt);
+}
+
+.mcpUrl {
+  font: 400 10.5px var(--font-mono);
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.scope {
+  font: 400 10.5px var(--font-ui);
+  color: var(--mut);
+}

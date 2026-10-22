@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "../lib/invoke";
 import { toastError } from "../components/ErrorOverlay";
+import { useNavigation } from "../nav/NavigationProvider";
 import type { CapabilityStatus } from "../types/requirements";
 import styles from "./RequirementsPanel.module.css";
 
@@ -18,6 +19,7 @@ import styles from "./RequirementsPanel.module.css";
 export function RequirementsPanel() {
   const [caps, setCaps] = useState<CapabilityStatus[]>([]);
   const [checking, setChecking] = useState(false);
+  const { navigate } = useNavigation();
 
   const load = useCallback(
     () =>
@@ -153,6 +155,19 @@ export function RequirementsPanel() {
                       )}
                     </div>
                   ))}
+                {/* Lo que no se instala sino que se conecta (una wiki): no hay
+                    comando que enseñar, así que va un botón a la pantalla que
+                    lo hace. */}
+                {cap.setup && (
+                  <div className={styles.step}>
+                    <button
+                      className={styles.btn}
+                      onClick={() => cap.setup && navigate(cap.setup.screen)}
+                    >
+                      {cap.setup.label} →
+                    </button>
+                  </div>
+                )}
               </div>
             </details>
           </div>

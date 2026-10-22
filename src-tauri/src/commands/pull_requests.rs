@@ -1440,19 +1440,6 @@ fn tracked_open_prs_for_repo(conn: &rusqlite::Connection, repo: &RepoRef) -> Vec
     rows.filter_map(Result::ok).collect()
 }
 
-/// Background poller (see `lib.rs`'s `.setup()`) — **one GraphQL round trip per
-/// repo** that does discovery and the comment check together, then emits an
-/// event for any PR with new comments and fires the opt-in notification. Never
-/// sends anything to an agent by itself.
-///
-/// This is the shape the whole pass was rebuilt around. It used to cost two `gh`
-/// calls per repo plus one to three per tracked PR, each a process spawn:
-/// measured on this machine, 11-21 processes and 10-20 seconds for three
-/// projects. Now it's one 0.4-0.8s call per repo.
-pub fn poll_all_open_prs<R: Runtime>(app: &AppHandle<R>) {
-    poll_open_prs_for_host(app, None);
-}
-
 /// The distinct instances the registered projects point at.
 ///
 /// What the background poller fans out over. Read from the projects' own
@@ -1490,6 +1477,16 @@ pub fn poll_open_prs_for_host<R: Runtime>(app: &AppHandle<R>, host: Option<&str>
     poll_open_prs(app, host, false);
 }
 
+/// Background poller (see `lib.rs`'s `.setup()`) — **one GraphQL round trip per
+/// repo** that does discovery and the comment check together, then emits an
+/// event for any PR with new comments and fires the opt-in notification. Never
+/// sends anything to an agent by itself.
+///
+/// This is the shape the whole pass was rebuilt around. It used to cost two `gh`
+/// calls per repo plus one to three per tracked PR, each a process spawn:
+/// measured on this machine, 11-21 processes and 10-20 seconds for three
+/// projects. Now it's one 0.4-0.8s call per repo.
+///
 /// `force` is someone pressing ↻: they are asking now, so a repo benched by
 /// earlier failures gets asked again rather than skipped.
 fn poll_open_prs<R: Runtime>(app: &AppHandle<R>, host: Option<&str>, force: bool) {

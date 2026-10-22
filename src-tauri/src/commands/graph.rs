@@ -573,25 +573,19 @@ pub fn open_graph_html(app: AppHandle, project_id: String) -> Result<(), String>
         .map_err(|e| format!("could not open the graph: {e}"))
 }
 
-/// Writes the `--mcp-config` file for a scope and returns its path, or `None`
-/// when there is nothing worth serving.
+/// The graphify MCP server for a scope — its binary and the graph it serves —
+/// or `None` when there is nothing worth serving.
 ///
 /// Returning `None` is the important half. A graph that never built, or whose
 /// MCP server isn't installed, must not be registered: §5.5's rule is that an
 /// agent asking a graph it shouldn't trust is worse off than one that never
-/// asked. Callers pass no flag at all in that case.
-pub fn mcp_config_path<R: tauri::Runtime>(app: &AppHandle<R>, kind: ScopeKind, scope_id: &str) -> Option<PathBuf> {
+/// asked. `crate::agent_mcp` then leaves graphify out of the config.
+pub fn graphify_server<R: tauri::Runtime>(app: &AppHandle<R>, kind: ScopeKind, scope_id: &str) -> Option<(String, PathBuf)> {
     let mcp_binary = graph::detect_mcp()?;
     let app_data = crate::app_data::root(app).ok()?;
     let scope = graph::scope_dir(&app_data, kind, scope_id);
     let graph_json = graph::graph_json(&scope);
-    if !graph_json.is_file() {
-        return None;
-    }
-
-    let config = scope.join("mcp-config.json");
-    std::fs::write(&config, graph::mcp_config_json(&mcp_binary, &graph_json)).ok()?;
-    Some(config)
+    graph_json.is_file().then_some((mcp_binary, graph_json))
 }
 
 /// Where the app data lives, for the UI to show alongside "we never write in
@@ -1029,10 +1023,10 @@ pub fn effective_scope(conn: &Connection, project_id: &str) -> Option<(ScopeKind
     own.map(|_| (ScopeKind::Project, project_id.to_string()))
 }
 
-/// [`mcp_config_path`] for whichever scope this project should actually use.
-pub fn mcp_config_for_project<R: tauri::Runtime>(app: &AppHandle<R>, conn: &Connection, project_id: &str) -> Option<PathBuf> {
+/// [`graphify_server`] for whichever scope this project should actually use.
+pub fn graphify_for_project<R: tauri::Runtime>(app: &AppHandle<R>, conn: &Connection, project_id: &str) -> Option<(String, PathBuf)> {
     let (kind, scope_id) = effective_scope(conn, project_id)?;
-    mcp_config_path(app, kind, &scope_id)
+    graphify_server(app, kind, &scope_id)
 }
 
 /// Sibling projects a given project shares a group with.

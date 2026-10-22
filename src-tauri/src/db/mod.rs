@@ -308,6 +308,12 @@ const MIGRATIONS: &[Migration] = &[
         run: notifications_core_kinds_only,
         transactional: true,
     },
+    Migration {
+        version: 38,
+        name: "knowledge_sources",
+        run: knowledge_sources_tables,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -1141,6 +1147,30 @@ fn notifications_core_kinds_only(conn: &Connection) -> Result<(), String> {
         .map(|_| ())
         .map_err(|e| format!("could not prune notifications: {e}"))
 }
+
+/// Team wikis and other knowledge tools (`knowledge_sources`), shaped like
+/// `task_sources` but with no CHECK on `kind`: a new provider is a new adapter,
+/// not a table rebuild like `allow_kimi_provider`'s.
+fn knowledge_sources_tables(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(KNOWLEDGE_SOURCES_DDL).map_err(|e| format!("could not create the knowledge source tables: {e}"))
+}
+
+pub(crate) const KNOWLEDGE_SOURCES_DDL: &str = "CREATE TABLE IF NOT EXISTS knowledge_sources (
+  id             TEXT PRIMARY KEY,
+  kind           TEXT NOT NULL,
+  label          TEXT NOT NULL,
+  base_url       TEXT NOT NULL,
+  credential_ref TEXT,
+  config_json    TEXT NOT NULL DEFAULT '{}',
+  all_projects   INTEGER NOT NULL DEFAULT 1,
+  created_at     TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS knowledge_source_links (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_id  TEXT NOT NULL REFERENCES knowledge_sources(id) ON DELETE CASCADE,
+  scope_id   TEXT,
+  PRIMARY KEY (project_id, source_id)
+);";
 
 pub(crate) const NOTIFICATIONS_DDL: &str = "CREATE TABLE IF NOT EXISTS notifications (
   id          TEXT PRIMARY KEY,

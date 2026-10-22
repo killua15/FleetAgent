@@ -13,6 +13,7 @@ import { SplitView } from './screens/SplitView';
 import { GeneralSettings } from './screens/GeneralSettings';
 import { ForgeSettings } from './screens/ForgeSettings';
 import { TaskSettings } from './screens/TaskSettings';
+import { DocsSettings } from './screens/DocsSettings';
 import { TaskBoard } from './screens/TaskBoard';
 import { UpdateBanner } from './components/UpdateBanner';
 import { ReloginBanner } from './components/ReloginBanner';
@@ -118,6 +119,8 @@ function Screens() {
       return <SkillSettings />;
     case 'task-settings':
       return <TaskSettings />;
+    case 'docs-settings':
+      return <DocsSettings />;
     case 'task-board':
       return <TaskBoard />;
     case 'shared-memory':

@@ -475,10 +475,13 @@ fn trigger_review_blocking<R: Runtime>(app: AppHandle<R>, session_id: String) ->
     };
     // A review reads the diff and the repo it sits in, so it gets the same
     // graph the working session gets — or nothing, which is the common case.
-    let mcp_config = {
+    let agent_mcp = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
-        crate::commands::graph::mcp_config_for_project(&app, &conn, &project_id)
+        crate::agent_mcp::for_project(&app, &conn, &project_id)
     };
+    let mcp_config = agent_mcp.config;
+    let mut env = env;
+    env.extend(agent_mcp.env);
     // A reviewer with the project's skills is the whole point of having a
     // review skill; without this it ran with none and said nothing about it.
     let skills_dir = {

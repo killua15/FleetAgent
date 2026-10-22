@@ -16,6 +16,7 @@ const TABS: Array<{ screen: ScreenName; label: string }> = [
   { screen: 'graph-groups', label: 'graphs' },
   { screen: 'rotation-settings', label: 'rotation' },
   { screen: 'task-settings', label: 'tasks' },
+  { screen: 'docs-settings', label: 'docs' },
 ];
 
 interface SettingsTabsProps {

@@ -31,6 +31,9 @@ pub struct CapabilityStatus {
     /// The tools this capability rests on, so the user can see *why* it needs
     /// what it needs rather than being handed a bare command.
     pub tools: Vec<ToolStatus>,
+    /// Where to connect what's missing, for a row that rests on a service
+    /// rather than a tool — a button, not a command.
+    pub setup: Option<capabilities::Setup>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -78,6 +81,7 @@ pub fn list_requirements() -> Vec<CapabilityStatus> {
                 reason: blocked.as_ref().map(|b| b.reason.clone()),
                 install_hint: blocked.as_ref().and_then(|b| b.hint.clone()),
                 tools: cap.binaries().into_iter().map(tool_status).collect(),
+                setup: blocked.as_ref().and(cap.service()).map(|s| s.setup()),
             }
         })
         .collect()
@@ -138,7 +142,9 @@ mod tests {
 
         assert_eq!(rows.len(), Capability::ALL.len());
         for row in &rows {
-            assert!(!row.tools.is_empty(), "{} shows no tools — then nothing can block it", row.label);
+            // A row with no tools has to rest on a service instead, or nothing
+            // could ever block it.
+            assert!(!row.tools.is_empty() || row.id.service().is_some(), "{} shows no tools and no service — then nothing can block it", row.label);
             assert!(!row.enables.trim().is_empty(), "{} says nothing about why it matters", row.label);
         }
     }
@@ -153,6 +159,11 @@ mod tests {
                 assert!(row.tools.iter().all(|t| t.installed), "{} is available with a missing tool", row.label);
             } else {
                 assert!(row.reason.is_some(), "{} is blocked and won't say why", row.label);
+                // And a blocked service row says where to go, since there is no
+                // command to run.
+                if row.id.service().is_some() {
+                    assert!(row.setup.is_some(), "{} needs connecting and doesn't say where", row.label);
+                }
             }
         }
     }

@@ -199,6 +199,20 @@ pub fn mcp_config_args(provider: &str, config_path: &str) -> Vec<String> {
     }
 }
 
+/// Everything [`crate::agent_mcp`] has for this project, as this CLI's flags.
+///
+/// Claude-family CLIs take the one `--mcp-config` file (graph and wiki).
+/// Codex takes the remote servers as `-c mcp_servers.*` overrides — verified on
+/// 0.147.0 — and not the graph: graphify over Codex's stdio route hasn't been
+/// run yet, and an unverified `-c` is how Codex support started life failing.
+pub(crate) fn agent_mcp_args(provider: &str, mcp: &crate::agent_mcp::AgentMcp) -> Vec<String> {
+    match provider {
+        "claude" | "kimi" | "grok" | "custom" => mcp.config.as_ref().map(|c| mcp_config_args(provider, &c.to_string_lossy())).unwrap_or_default(),
+        "codex" => crate::agent_mcp::codex_args(&mcp.remote),
+        _ => Vec::new(),
+    }
+}
+
 /// Best-effort exhaustion/rate-limit detection, dispatched per provider so
 /// process_manager stays provider-agnostic. Exact strings should be
 /// re-verified against each CLI's real output as adapters are added.

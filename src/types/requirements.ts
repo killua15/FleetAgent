@@ -5,6 +5,8 @@
  * capability's own words: the same sentence the feature shows when it refuses.
  */
 
+import type { ScreenName } from '../nav/NavigationProvider';
+
 export type CapabilityId =
   | 'run-agents'
   | 'git-work'
@@ -13,9 +15,11 @@ export type CapabilityId =
   | 'skills-from-git-hub'
   | 'code-graph'
   | 'graph-to-agents'
+  | 'team-wiki'
   | 'codex-accounts'
   | 'gemini-accounts'
-  | 'grok-accounts';
+  | 'grok-accounts'
+  | 'opencode-accounts';
 
 export interface ToolStatus {
   name: string;
@@ -48,4 +52,7 @@ export interface CapabilityStatus {
   reason: string | null;
   installHint: string | null;
   tools: ToolStatus[];
+  /** Where to connect what's missing, for a row that rests on a service (a
+   * wiki) rather than a tool: a button, not a command. */
+  setup: { label: string; screen: ScreenName } | null;
 }

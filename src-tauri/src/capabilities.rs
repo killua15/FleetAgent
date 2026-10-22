@@ -48,6 +48,10 @@ pub enum Capability {
     CodeGraph,
     /// Serve that graph to agents over MCP.
     GraphToAgents,
+    /// Hand agents the team's wiki (`crate::knowledge_sources`) over MCP. The
+    /// first row that rests on a *service* rather than a binary: there is
+    /// nothing to install, only something to connect.
+    TeamWiki,
     /// Codex accounts, which need their own CLI.
     CodexAccounts,
     /// Gemini accounts, same.
@@ -145,6 +149,46 @@ pub struct CapabilitySpec {
     /// Which forge CLI also has to be logged in, if any. Installed-but-not-
     /// authenticated fails exactly as hard as absent, so the two live together.
     needs_login: NeedsLogin,
+    /// Something to connect rather than install, if any.
+    service: Option<Service>,
+}
+
+/// A service a capability needs connected — the requirement that isn't a
+/// binary. Answered from memory, never by a spawn or a network call, so the
+/// settings screen stays as cheap as `check_offline` promises.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Service {
+    /// At least one knowledge source (Outline, or any MCP server).
+    KnowledgeSource,
+}
+
+/// Where a service gets connected, for the button under a blocked row.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Setup {
+    pub label: &'static str,
+    /// The screen that does it (`ScreenName` on the frontend).
+    pub screen: &'static str,
+}
+
+impl Service {
+    fn connected(self) -> bool {
+        match self {
+            Service::KnowledgeSource => crate::knowledge_sources::any_connected(),
+        }
+    }
+
+    fn reason(self) -> &'static str {
+        match self {
+            Service::KnowledgeSource => "no team wiki is connected yet",
+        }
+    }
+
+    pub fn setup(self) -> Setup {
+        match self {
+            Service::KnowledgeSource => Setup { label: "Connect a wiki", screen: "docs-settings" },
+        }
+    }
 }
 
 /// Which CLI's login a capability depends on.
@@ -245,6 +289,7 @@ impl Capability {
         Capability::SkillsFromGitHub,
         Capability::CodeGraph,
         Capability::GraphToAgents,
+        Capability::TeamWiki,
         Capability::CodexAccounts,
         Capability::GeminiAccounts,
         Capability::GrokAccounts,
@@ -259,6 +304,7 @@ impl Capability {
                 essential: true,
                 binaries: &[CLAUDE],
                 needs_login: NeedsLogin::None,
+                service: None,
             },
             Capability::GitWork => CapabilitySpec {
                 label: "Work on repositories",
@@ -266,6 +312,7 @@ impl Capability {
                 essential: true,
                 binaries: &[GIT],
                 needs_login: NeedsLogin::None,
+                service: None,
             },
             Capability::PullRequests => CapabilitySpec {
                 label: "Pull requests",
@@ -273,6 +320,7 @@ impl Capability {
                 essential: false,
                 binaries: &[GIT, GH],
                 needs_login: NeedsLogin::Gh,
+                service: None,
             },
             Capability::MergeRequests => CapabilitySpec {
                 label: "Merge requests",
@@ -280,6 +328,7 @@ impl Capability {
                 essential: false,
                 binaries: &[GIT, GLAB],
                 needs_login: NeedsLogin::Glab,
+                service: None,
             },
             Capability::SkillsFromGitHub => CapabilitySpec {
                 label: "Skills from GitHub",
@@ -287,6 +336,7 @@ impl Capability {
                 essential: false,
                 binaries: &[GH],
                 needs_login: NeedsLogin::Gh,
+                service: None,
             },
             Capability::CodeGraph => CapabilitySpec {
                 label: "Code knowledge graph",
@@ -294,6 +344,7 @@ impl Capability {
                 essential: false,
                 binaries: &[UV, GRAPHIFY],
                 needs_login: NeedsLogin::None,
+                service: None,
             },
             Capability::CodexAccounts => CapabilitySpec {
                 label: "Codex accounts",
@@ -301,6 +352,7 @@ impl Capability {
                 essential: false,
                 binaries: &[CODEX],
                 needs_login: NeedsLogin::None,
+                service: None,
             },
             Capability::OpencodeAccounts => CapabilitySpec {
                 label: "opencode accounts",
@@ -308,6 +360,7 @@ impl Capability {
                 essential: false,
                 binaries: &[OPENCODE],
                 needs_login: NeedsLogin::None,
+                service: None,
             },
             Capability::GeminiAccounts => CapabilitySpec {
                 label: "Gemini accounts",
@@ -315,6 +368,7 @@ impl Capability {
                 essential: false,
                 binaries: &[GEMINI],
                 needs_login: NeedsLogin::None,
+                service: None,
             },
             Capability::GrokAccounts => CapabilitySpec {
                 label: "Grok accounts",
@@ -322,6 +376,7 @@ impl Capability {
                 essential: false,
                 binaries: &[GROK],
                 needs_login: NeedsLogin::None,
+                service: None,
             },
             Capability::GraphToAgents => CapabilitySpec {
                 label: "Graph served to agents",
@@ -329,6 +384,15 @@ impl Capability {
                 essential: false,
                 binaries: &[UV, GRAPHIFY_MCP],
                 needs_login: NeedsLogin::None,
+                service: None,
+            },
+            Capability::TeamWiki => CapabilitySpec {
+                label: "Team wiki for agents",
+                enables: "Agents search, cite and write your team's docs (Outline, or any wiki with an MCP server) while they work.",
+                essential: false,
+                binaries: &[],
+                needs_login: NeedsLogin::None,
+                service: Some(Service::KnowledgeSource),
             },
         }
     }
@@ -360,8 +424,14 @@ impl Capability {
         Ok(())
     }
 
-    /// The binaries only — no process spawned.
+    /// The binaries only — no process spawned — and any service, which is a
+    /// lookup in memory.
     pub fn check_offline(self) -> Result<(), Blocked> {
+        if let Some(service) = self.spec().service {
+            if !service.connected() {
+                return Err(Blocked { capability: self, reason: service.reason().to_string(), hint: None });
+            }
+        }
         for binary in self.spec().binaries {
             if locate(binary.name).is_some() {
                 continue;
@@ -395,6 +465,11 @@ impl Capability {
     /// rather than maintained beside it.
     pub fn binaries(self) -> Vec<&'static str> {
         self.spec().binaries.iter().map(|b| b.name).collect()
+    }
+
+    /// The service this rests on, if any.
+    pub(crate) fn service(self) -> Option<Service> {
+        self.spec().service
     }
 }
 
@@ -476,8 +551,31 @@ mod tests {
         for cap in Capability::ALL {
             let spec = cap.spec();
             assert!(!spec.enables.trim().is_empty(), "{:?} says nothing about why it matters", cap);
-            assert!(!spec.binaries.is_empty(), "{:?} declares no binaries — then it cannot be blocked", cap);
+            assert!(!spec.binaries.is_empty() || spec.service.is_some(), "{:?} declares no binaries and no service — then it cannot be blocked", cap);
         }
+    }
+
+    /// The team wiki row is blocked exactly while nothing is connected, and
+    /// then says where to connect one instead of naming a command.
+    #[test]
+    fn the_team_wiki_row_follows_whether_a_source_is_connected() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE projects (id TEXT PRIMARY KEY);").unwrap();
+        conn.execute_batch(crate::db::KNOWLEDGE_SOURCES_DDL).unwrap();
+        let _guard = crate::knowledge_sources::lock_connected_for_test();
+        crate::knowledge_sources::refresh_connected(&conn);
+
+        let blocked = Capability::TeamWiki.check_offline().unwrap_err();
+        assert_eq!(blocked.hint, None, "there's no command to run for this one");
+        assert_eq!(Service::KnowledgeSource.setup().screen, "docs-settings");
+
+        conn.execute(
+            "INSERT INTO knowledge_sources (id, kind, label, base_url, created_at) VALUES ('a', 'outline', 'Docs', 'https://docs.acme.com', 'now')",
+            [],
+        )
+        .unwrap();
+        crate::knowledge_sources::refresh_connected(&conn);
+        assert!(Capability::TeamWiki.check_offline().is_ok());
     }
 
     /// Opening a PR needs the repo as much as the API: `gh pr create` runs

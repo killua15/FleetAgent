@@ -120,7 +120,7 @@ fn generate_blocking<R: tauri::Runtime>(
     env.extend(crate::commands::skills::silencing_env(&linked));
     env.extend(crate::commands::skills::diagrams_env(&linked, &app_data, &project_id));
 
-    let (instructions, mcp_config) = {
+    let (instructions, agent_mcp) = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let instructions = crate::commands::preferences::instruction_file(&app_data, &conn, Some(&project_id))
             .unwrap_or_else(|e| {
@@ -128,8 +128,11 @@ fn generate_blocking<R: tauri::Runtime>(
                 None
             })
             .map(|resolved| resolved.file);
-        (instructions, crate::commands::graph::mcp_config_for_project(&app, &conn, &project_id))
+        (instructions, crate::agent_mcp::for_project(&app, &conn, &project_id))
     };
+    // The wiki's tokens, which the MCP config names but never holds.
+    env.extend(agent_mcp.env);
+    let mcp_config = agent_mcp.config;
 
     let updating = spec_file_name.is_some();
     let prompt = match spec_file_name.as_deref() {

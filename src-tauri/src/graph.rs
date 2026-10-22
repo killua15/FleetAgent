@@ -297,23 +297,23 @@ pub fn build_args(repo: &Path, out: &Path, policy: IndexPolicy, backend: Option<
     args
 }
 
-/// The `--mcp-config` payload that points Claude at a built graph.
+/// The `--mcp-config` payload that points Claude at a built graph, alone.
 ///
 /// Additive by construction: Hangar passes `--mcp-config` and **never**
 /// `--strict-mcp-config`, which would suppress the user's own MCP servers for
-/// the privilege of adding ours (TRD §5.2).
+/// the privilege of adding ours (TRD §5.2). `crate::agent_mcp` builds the file
+/// agents actually get, with the team wiki beside this one.
+#[cfg(test)]
 pub fn mcp_config_json(mcp_binary: &str, graph: &Path) -> String {
-    let server = serde_json::json!({
-        "mcpServers": {
-            "graphify": {
-                "command": mcp_binary,
-                "args": [graph.to_string_lossy()],
-            }
-        }
-    });
+    let server = serde_json::json!({ "mcpServers": { "graphify": graphify_entry(mcp_binary, graph) } });
     // Pretty-printed because this file is a debugging aid as much as a config:
     // when an agent can't see the graph, this is the first thing to read.
     serde_json::to_string_pretty(&server).unwrap_or_else(|_| String::new())
+}
+
+/// graphify's own entry in `mcpServers`.
+pub fn graphify_entry(mcp_binary: &str, graph: &Path) -> serde_json::Value {
+    serde_json::json!({ "command": mcp_binary, "args": [graph.to_string_lossy()] })
 }
 
 /// Whether `graphify` is installed. Reuses the resolver that already handles

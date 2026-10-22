@@ -1,3 +1,4 @@
+mod agent_mcp;
 mod ai_oneshot;
 mod app_data;
 mod auto_continue;
@@ -13,6 +14,7 @@ mod forges;
 mod git_identity;
 mod graph;
 mod handoff;
+mod knowledge_sources;
 mod login_manager;
 mod memory_pressure;
 mod models;
@@ -172,6 +174,10 @@ pub fn run() {
             // declarations existed.
             if let Err(e) = commands::forge_status::load_declared_hosts(&app.state::<DbConnection>()) {
                 log::error!("could not load declared forge instances, falling back to host heuristics: {e}");
+            }
+            // So "what Hangar needs" knows a wiki is connected without a DB read.
+            if let Ok(conn) = app.state::<DbConnection>().0.lock() {
+                knowledge_sources::refresh_connected(&conn);
             }
 
             // Background PR-comment poller — Hangar has no public endpoint
@@ -500,6 +506,9 @@ pub fn run() {
             task_sources::list_source_tasks,
             task_sources::cache::list_cached_tasks,
             task_sources::cache::refresh_tasks,
+            knowledge_sources::list_knowledge_sources,
+            knowledge_sources::save_knowledge_source,
+            knowledge_sources::delete_knowledge_source,
             terminals::list_terminal_states,
             terminals::list_auto_continue,
             terminals::set_terminal_auto_continue,

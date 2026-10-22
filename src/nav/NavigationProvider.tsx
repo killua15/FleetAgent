@@ -17,6 +17,7 @@ export type ScreenName =
   | 'project-settings'
   | 'skill-settings'
   | 'task-settings'
+  | 'docs-settings'
   | 'task-board'
   | 'shared-memory'
   | 'graph-groups'

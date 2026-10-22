@@ -764,11 +764,11 @@ pub(crate) struct TerminalContext {
     /// A directory containing `.claude/skills/`, or `None` when this project
     /// has nothing selected.
     pub skills_dir: Option<std::path::PathBuf>,
-    /// The `--mcp-config` file pointing at this project's code graph, or `None`
-    /// when there is no graph built (the common case) or graphify isn't
-    /// installed. `None` means no flag at all — never a flag pointing at a
-    /// graph that doesn't exist.
-    pub graph_mcp: Option<std::path::PathBuf>,
+    /// The MCP servers this project's agents get — its code graph and its team
+    /// wiki — or nothing at all, the common case: no flag, never a flag pointing
+    /// at a graph that doesn't exist. Their tokens are in `env`, which goes to
+    /// the PTY's environment and never onto the command line.
+    pub agent_mcp: crate::agent_mcp::AgentMcp,
     /// Checkouts of the projects this one shares a graph group with, so an
     /// agent can open the code the graph tells it about. Empty for a project
     /// in no group, which is the common case.
@@ -804,7 +804,7 @@ pub(crate) fn account_command_line_full(
     mode: Option<crate::providers::Mode>,
     instructions: Option<&crate::commands::preferences::ResolvedInstructions>,
     skills_dir: Option<&std::path::Path>,
-    graph_mcp: Option<&std::path::Path>,
+    agent_mcp: Option<&crate::agent_mcp::AgentMcp>,
     sibling_dirs: &[std::path::PathBuf],
     skill_env: &[(String, String)],
     settings_file: Option<&std::path::Path>,
@@ -890,12 +890,12 @@ pub(crate) fn account_command_line_full(
             .collect(),
     };
 
-    // Y lo mismo con el grafo: un login no consulta código, y sin grafo
-    // construido `graph_mcp` llega en `None` y aquí no se añade nada. Ese es el
-    // caso normal — la mayoría de proyectos no tendrán grafo.
-    let graph: String = match (init, graph_mcp) {
+    // Y lo mismo con el grafo y la wiki: un login no consulta código, y sin
+    // ninguno de los dos `agent_mcp` llega vacío y aquí no se añade nada. Ese
+    // es el caso normal. Los tokens no salen aquí: van en el entorno del PTY.
+    let graph: String = match (init, agent_mcp) {
         (InitCommand::Login, _) => String::new(),
-        (_, Some(config)) => crate::providers::mcp_config_args(&account.provider, &config.to_string_lossy())
+        (_, Some(mcp)) => crate::providers::agent_mcp_args(&account.provider, mcp)
             .iter()
             .map(|arg| format!(" {}", shell_path(arg)))
             .collect(),
@@ -995,7 +995,7 @@ pub(crate) fn terminal_script_full(
             mode,
             context.instructions.as_ref(),
             context.skills_dir.as_deref(),
-            context.graph_mcp.as_deref(),
+            Some(&context.agent_mcp),
             &context.sibling_dirs,
             &[context.skill_env.as_slice(), context.mode_env.as_slice()].concat(),
             context.settings_file.as_deref(),
@@ -1178,7 +1178,7 @@ fn open_terminal_with<R: Runtime>(
         // y la terminal abre exactamente como hoy. Y tiene que ser `None` en
         // ese caso — registrar un MCP que apunta a un grafo inexistente le da
         // al agente una herramienta que falla al usarla (§5.5).
-        let graph_mcp = crate::commands::graph::mcp_config_for_project(&app, &conn, &project_id);
+        let agent_mcp = crate::agent_mcp::for_project(&app, &conn, &project_id);
         let sibling_dirs = crate::commands::graph::sibling_dirs(&conn, &project_id);
         // Lo que piden las skills que de verdad quedaron enlazadas. Se decide
         // aquí, que es donde se conocen el id del proyecto y el directorio de
@@ -1194,7 +1194,7 @@ fn open_terminal_with<R: Runtime>(
             }
             _ => Vec::new(),
         };
-        (cwd, title, account, TerminalContext { instructions, skills_dir, graph_mcp, sibling_dirs, skill_env, settings_file: None, mode_env: Vec::new() })
+        (cwd, title, account, TerminalContext { instructions, skills_dir, agent_mcp, sibling_dirs, skill_env, settings_file: None, mode_env: Vec::new() })
     };
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(format!("{cwd} no longer exists on disk — the worktree may have been removed"));
@@ -1285,6 +1285,11 @@ fn open_terminal_with<R: Runtime>(
         if let Some(project_id) = project_id {
             account_vars.extend(crate::git_identity::git_env_for_project(&app, &project_id));
         }
+    }
+    // The team wiki's tokens, named by the MCP config but never written into
+    // it or onto the command line (`crate::agent_mcp`).
+    if account.is_some() {
+        account_vars.extend(context.agent_mcp.env.iter().cloned());
     }
     // Where the status line wrapper files this account's reset times.
     if let Some(id) = &account_id {
@@ -3650,7 +3655,7 @@ mod tests {
     /// usuario a cambio de añadir el nuestro. Aditivo o nada.
     #[test]
     fn el_grafo_entra_por_bandera_y_es_aditivo() {
-        let config = std::path::Path::new("/tmp/hangar/graphs/project-p1/mcp-config.json");
+        let mcp = crate::agent_mcp::AgentMcp { config: Some("/tmp/hangar/graphs/project-p1/mcp-config.json".into()), ..Default::default() };
 
         let claude = AccountForTerminal {
             provider: "claude".to_string(),
@@ -3665,7 +3670,7 @@ mod tests {
             let without = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, None, &[], &[], None).unwrap();
             assert!(!without.contains("--mcp-config"), "sin grafo no se pasa bandera: {without}");
 
-            let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, Some(config), &[], &[], None).unwrap();
+            let with = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, Some(&mcp), &[], &[], None).unwrap();
             assert!(with.contains("--mcp-config"), "got: {with}");
             assert!(with.contains("mcp-config.json"), "got: {with}");
             assert!(
@@ -3674,7 +3679,7 @@ mod tests {
             );
 
             // Un login no consulta código.
-            let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, None, Some(config), &[], &[], None).unwrap();
+            let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, None, Some(&mcp), &[], &[], None).unwrap();
             assert!(!login.contains("--mcp-config"), "un login no lleva grafo: {login}");
         }
 
@@ -3686,8 +3691,48 @@ mod tests {
             endpoint: None,
         };
         if crate::providers::is_provider_available("codex") {
-            let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, None, Some(config), &[], &[], None).unwrap();
+            let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, None, Some(&mcp), &[], &[], None).unwrap();
             assert!(!line.contains("--mcp-config"), "codex no usa esa bandera: {line}");
+        }
+    }
+
+    /// La wiki llega a Claude por el fichero y a Codex por `-c`, y en ninguno
+    /// de los dos el token va en la línea: la línea acaba en `~/.zsh_history`.
+    #[test]
+    fn la_wiki_llega_a_claude_y_a_codex_sin_el_token_en_la_linea() {
+        let (remote, env) = crate::agent_mcp::remote_servers(&[crate::knowledge_sources::AgentServer {
+            name: "technomar-docs".into(),
+            url: "https://docs.technomar.com.br/mcp".into(),
+            token: Some("ol_api_secret".into()),
+        }]);
+        let mcp = crate::agent_mcp::AgentMcp { config: Some("/tmp/hangar/agent-mcp/p1.json".into()), remote, env };
+
+        let claude = AccountForTerminal {
+            provider: "claude".to_string(),
+            billing: "sub".to_string(),
+            config_dir_path: "/tmp/cl".to_string(),
+            name: "Claude".to_string(),
+            endpoint: None,
+        };
+        if crate::providers::is_provider_available("claude") {
+            let line = account_command_line_full(&claude, InitCommand::Start, None, None, None, None, None, Some(&mcp), &[], &[], None).unwrap();
+            assert!(line.contains("--mcp-config") && line.contains("p1.json"), "got: {line}");
+            assert!(!line.contains("ol_api_secret"), "el token no va en la línea: {line}");
+        }
+
+        let codex = AccountForTerminal {
+            provider: "codex".to_string(),
+            billing: "sub".to_string(),
+            config_dir_path: "/tmp/cx".to_string(),
+            name: "Codex".to_string(),
+            endpoint: None,
+        };
+        if crate::providers::is_provider_available("codex") {
+            let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, None, Some(&mcp), &[], &[], None).unwrap();
+            assert!(line.contains("mcp_servers.technomar-docs.url="), "got: {line}");
+            assert!(line.contains("bearer_token_env_var="), "got: {line}");
+            assert!(!line.contains("ol_api_secret"), "el token no va en la línea: {line}");
+            assert!(!line.contains("--mcp-config"), "got: {line}");
         }
     }
 
