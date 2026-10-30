@@ -85,8 +85,54 @@ pub fn get(conn: &Connection, id: &str) -> Result<Order, String> {
 }
 
 /// What ▶ takes next: the first order still to do whose dependencies are in.
+/// While order 0 (setting the project up) isn't merged, it's the only one.
 pub fn next(conn: &Connection, project_id: &str) -> Result<Option<Order>, String> {
-    Ok(list(conn, project_id)?.into_iter().find(|o| o.status == "todo" && o.blocked_by.is_empty()))
+    let all = list(conn, project_id)?;
+    if let Some(boot) = all.iter().find(|o| o.origin == "bootstrap" && !is_done(&o.status)) {
+        return Ok((boot.status == "todo").then(|| boot.clone()));
+    }
+    Ok(all.into_iter().find(|o| o.status == "todo" && o.blocked_by.is_empty()))
+}
+
+/// Order 0: «Preparar el proyecto», first in the queue, for a project whose
+/// repo is still empty. Added once.
+pub fn add_bootstrap(conn: &Connection, project_id: &str, prefix: &str) -> Result<bool, String> {
+    if list(conn, project_id)?.iter().any(|o| o.origin == "bootstrap") {
+        return Ok(false);
+    }
+    let id = insert(
+        conn,
+        project_id,
+        &NewOrder {
+            key: format!("{prefix}-0"),
+            title: "Preparar el proyecto".into(),
+            description: "El repo está vacío: crear el stack del brain y dejar que se pueda ejecutar cada comando con el que la puerta de tests comprueba el proyecto. Sin funcionalidades del producto.".into(),
+            criteria: vec![
+                "Existe el stack que dice el brain (Tecnologías), con sus dependencias instaladas y el lockfile commiteado.".into(),
+                "Cada comando de la puerta (testers y check: del brain) se puede ejecutar: existen sus scripts y herramientas.".into(),
+            ],
+            origin: "bootstrap".into(),
+            ..Default::default()
+        },
+    )?;
+    conn.execute("UPDATE factory_orders SET position = (SELECT COALESCE(MIN(position), 0) - 1 FROM factory_orders WHERE project_id = ?1) WHERE id = ?2", params![project_id, id])
+        .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Orders that failed before their line even started (no run at all) go back
+/// to the queue: what stopped them was the project, not the order.
+pub fn reset_never_started(conn: &Connection, project_id: &str) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT key FROM factory_orders o WHERE project_id = ?1 AND status = 'failed' AND NOT EXISTS (SELECT 1 FROM factory_runs r WHERE r.order_id = o.id)")
+        .map_err(|e| e.to_string())?;
+    let keys: Vec<String> = stmt.query_map(params![project_id], |r| r.get(0)).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+    conn.execute(
+        "UPDATE factory_orders SET status = 'todo' WHERE project_id = ?1 AND status = 'failed' AND NOT EXISTS (SELECT 1 FROM factory_runs r WHERE r.order_id = factory_orders.id)",
+        params![project_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(keys)
 }
 
 /// Puts the orders in the given order; the ones not listed keep theirs, after.
@@ -254,6 +300,23 @@ mod tests {
         let ids: Vec<String> = list(&c, "p1").unwrap().into_iter().map(|o| o.id).collect();
         reorder(&c, "p1", &[ids[0].clone(), v3.clone(), ids[1].clone()]).unwrap();
         assert_eq!(next(&c, "p1").unwrap().unwrap().key, "VET-3", "▶ respects the order you dragged");
+    }
+
+    #[test]
+    fn order_zero_goes_first_and_alone() {
+        let c = conn();
+        let v1 = add(&c, "p1", "VET-1", &[]);
+        assert!(add_bootstrap(&c, "p1", "VET").unwrap());
+        assert!(!add_bootstrap(&c, "p1", "VET").unwrap(), "once");
+        let boot = next(&c, "p1").unwrap().unwrap();
+        assert_eq!((boot.key.as_str(), boot.position < list(&c, "p1").unwrap()[1].position), ("VET-0", true));
+        set_status(&c, &boot.id, "running").unwrap();
+        assert!(next(&c, "p1").unwrap().is_none(), "nothing else while it runs");
+        set_status(&c, &boot.id, "merged").unwrap();
+        assert_eq!(next(&c, "p1").unwrap().unwrap().id, v1);
+        set_status(&c, &v1, "failed").unwrap();
+        assert_eq!(reset_never_started(&c, "p1").unwrap(), vec!["VET-1"]);
+        assert_eq!(get(&c, &v1).unwrap().status, "todo");
     }
 
     #[test]

@@ -269,6 +269,8 @@ impl Runner for CliRunner {
 
         let mut cmd = Command::new(&launch.binary);
         cmd.args(&args).current_dir(&call.cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        // The user's PATH, so the agent's own Bash finds pnpm, node, pytest.
+        cmd.env("PATH", super::env::user_path());
         for (k, v) in &launch.env {
             cmd.env(k, v);
         }

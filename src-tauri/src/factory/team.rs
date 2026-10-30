@@ -257,6 +257,83 @@ pub fn check(conn: &Connection, team: &[Agent]) -> Result<TeamCheck, String> {
     Ok(out)
 }
 
+// ---------------------------------------------------------------- from the brain
+
+/// A tester whose command the brain says differently.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Suggestion {
+    pub agent_id: String,
+    pub name: String,
+    pub current: Option<String>,
+    pub current_active: bool,
+    /// `None` with `active: false`: the brain has no such tests, switch it off.
+    pub suggested: Option<String>,
+    pub active: bool,
+}
+
+const RUNNERS: [&str; 14] = ["pnpm", "npm", "yarn", "bun", "npx", "vitest", "jest", "pytest", "cargo", "go", "uv", "poetry", "python", "python3"];
+
+/// How the brain's Calidad section says the project is tested: unit,
+/// integration and E2E commands, as far as its `check:` tell.
+pub fn brain_test_commands(brain: &super::brain::Sealed) -> (Option<String>, Option<String>, Option<String>) {
+    let is_runner = |c: &str| super::env::first_program(c).is_some_and(|p| RUNNERS.contains(&p.as_str()));
+    let cmds: Vec<&str> = brain.rules.iter().filter(|r| r.section == "cal").filter_map(|r| r.check.as_deref()).filter(|c| is_runner(c)).collect();
+    let shortest = |pick: &dyn Fn(&str) -> bool| cmds.iter().copied().filter(|c| pick(c)).min_by_key(|c| c.len()).map(str::to_string);
+    let is_e2e = |c: &str| c.contains("e2e") || c.contains("playwright");
+    let runs_tests = regex::Regex::new(r"\b(test|vitest|jest|pytest)\b").expect("static regex");
+    let e2e = shortest(&|c| is_e2e(c));
+    let integration = shortest(&|c| c.contains("integration"));
+    let unit = shortest(&|c| !is_e2e(c) && !c.contains("integration") && runs_tests.is_match(c));
+    (unit, integration, e2e)
+}
+
+/// The testers the brain would set differently.
+pub fn suggestions(team: &[Agent], brain: &super::brain::Sealed) -> Vec<Suggestion> {
+    let (unit, integration, e2e) = brain_test_commands(brain);
+    if unit.is_none() && integration.is_none() && e2e.is_none() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for a in team.iter().filter(|a| a.role == "tester") {
+        let (suggested, active) = match a.short.as_str() {
+            "unitario" => match &unit {
+                Some(c) => (Some(c.clone()), true),
+                None => continue,
+            },
+            "integración" => match &integration {
+                Some(c) => (Some(c.clone()), true),
+                None => (None, false),
+            },
+            "e2e" => match &e2e {
+                Some(c) => (Some(c.clone()), true),
+                None => continue,
+            },
+            _ => continue,
+        };
+        let same = if active { a.active && a.command.as_deref() == suggested.as_deref() } else { !a.active };
+        if !same {
+            out.push(Suggestion { agent_id: a.id.clone(), name: a.name.clone(), current: a.command.clone(), current_active: a.active, suggested, active });
+        }
+    }
+    out
+}
+
+pub fn apply_suggestions(conn: &Connection, project_id: &str, brain: &super::brain::Sealed) -> Result<usize, String> {
+    let mut team = load(conn, project_id)?;
+    let changes = suggestions(&team, brain);
+    for s in &changes {
+        if let Some(a) = team.iter_mut().find(|a| a.id == s.agent_id) {
+            a.active = s.active;
+            if let Some(c) = &s.suggested {
+                a.command = Some(c.clone());
+            }
+        }
+    }
+    save(conn, project_id, &team)?;
+    Ok(changes.len())
+}
+
 // ---------------------------------------------------------------- commands
 
 #[derive(Debug, Serialize)]
@@ -278,6 +355,24 @@ pub fn factory_team_get(db: State<DbConnection>, project_id: String) -> Result<T
 pub fn factory_team_save(db: State<DbConnection>, project_id: String, agents: Vec<Agent>) -> Result<TeamView, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     save(&conn, &project_id, &agents)?;
+    let agents = load(&conn, &project_id)?;
+    let check = check(&conn, &agents)?;
+    Ok(TeamView { agents, check })
+}
+
+#[tauri::command]
+pub fn factory_team_suggestions(db: State<DbConnection>, project_id: String) -> Result<Vec<Suggestion>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let Some(brain) = super::brain::load(&conn, &project_id, None)? else { return Ok(Vec::new()) };
+    Ok(suggestions(&load(&conn, &project_id)?, &brain))
+}
+
+/// «Aplicar los del brain».
+#[tauri::command]
+pub fn factory_team_apply_suggestions(db: State<DbConnection>, project_id: String) -> Result<TeamView, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let brain = super::brain::load(&conn, &project_id, None)?.ok_or("todavía no hay un brain sellado")?;
+    apply_suggestions(&conn, &project_id, &brain)?;
     let agents = load(&conn, &project_id)?;
     let check = check(&conn, &agents)?;
     Ok(TeamView { agents, check })
@@ -318,6 +413,28 @@ pub(crate) mod tests {
         let check = check(&c, &team).unwrap();
         assert!(check.problems.is_empty() && check.warnings.is_empty(), "{check:?}");
         assert_eq!(load(&c, "p1").unwrap(), team, "seeded once, then read back");
+    }
+
+    #[test]
+    fn the_brain_says_how_the_project_is_tested() {
+        let c = conn_with_accounts(&[("work", "claude"), ("cx", "codex")]);
+        let md = "## Producto\n- PRD-01 · DEBE · x\n## Arquitectura\n- ARQ-01 · DEBE · x\n## Tecnologías\n- TEC-01 · DEBE · x\n## Código\n- COD-01 · DEBE · x\n\
+## Calidad\n- CAL-01 · DEBE · Cobertura.  check: `pnpm test` (`vitest run --coverage`)\n\
+- CAL-02 · DEBE · e2e.  check: `pnpm e2e --list | grep -q firefox && pnpm e2e`\n- CAL-04 · DEBE · axe.  check: `pnpm e2e`\n\
+- CAL-05 · DEBE · lh.  check: `pnpm lhci autorun`\n- CAL-07 · DEBE · fix.  check: `git show --name-only HEAD | grep -qE '\\.(test|spec)\\.tsx?$'`\n\
+## Git y entrega\n- GIT-01 · DEBE · x\n## Riesgo\n- RSG-01 · DEBE · x\n";
+        let root = std::env::temp_dir().join(format!("hangar-team-{}", uuid::Uuid::new_v4().simple()));
+        let brain = super::super::brain::seal(&c, &root, "p1", "POK", md, "import").unwrap();
+        assert_eq!(brain_test_commands(&brain), (Some("pnpm test".into()), None, Some("pnpm e2e".into())));
+        let team = load(&c, "p1").unwrap();
+        let s = suggestions(&team, &brain);
+        let by = |n: &str| s.iter().find(|x| x.name == n).cloned();
+        assert_eq!(by("Tester unitario").unwrap().suggested.as_deref(), Some("pnpm test"));
+        assert!(!by("Tester de integración").unwrap().active, "no integration tests in the brain: off");
+        assert_eq!((by("Tester E2E").unwrap().suggested.as_deref(), by("Tester E2E").unwrap().active), (Some("pnpm e2e"), true));
+        assert_eq!(apply_suggestions(&c, "p1", &brain).unwrap(), 3);
+        assert!(suggestions(&load(&c, "p1").unwrap(), &brain).is_empty(), "applied: nothing left to suggest");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

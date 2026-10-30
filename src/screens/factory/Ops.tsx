@@ -181,6 +181,7 @@ export function Ops({ project, onReconfigure, onChanged }: { project: FactoryPro
               onStartAnyway={startAnyway}
               failed={orders.filter((o) => o.status === 'failed' || o.status === 'stopped')}
               onRetry={retry}
+              onPlay={() => control('factory_play', '▶ Proyecto preparado: toma la siguiente orden')}
             /> : null)}
         {tab === 'queue' && (
           <>

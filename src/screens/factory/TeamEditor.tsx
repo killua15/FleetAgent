@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '../../lib/invoke';
 import { toastError } from '../../components/ErrorOverlay';
 import type { Account } from '../../types/account';
-import { brainLabel, EXTRA_TESTERS, GROUP_HINT, type FactoryAgent, type TeamView } from '../../types/factory';
+import { brainLabel, EXTRA_TESTERS, GROUP_HINT, type FactoryAgent, type TeamView, type TesterSuggestion } from '../../types/factory';
 import styles from '../Factory.module.css';
 
 /**
@@ -14,6 +14,7 @@ export function TeamEditor({ projectId, onChange }: { projectId: string; onChang
   const [view, setView] = useState<TeamView | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [models, setModels] = useState<Record<string, string[]>>({});
+  const [suggested, setSuggested] = useState<TesterSuggestion[]>([]);
   // In a ref so a new callback each render doesn't reload the team.
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
@@ -27,7 +28,19 @@ export function TeamEditor({ projectId, onChange }: { projectId: string; onChang
       .catch((e) => toastError(String(e)));
     invoke<Account[]>('list_accounts').then(setAccounts).catch(() => setAccounts([]));
     invoke<Record<string, string[]>>('factory_models').then(setModels).catch(() => setModels({}));
+    invoke<TesterSuggestion[]>('factory_team_suggestions', { projectId }).then(setSuggested).catch(() => setSuggested([]));
   }, [projectId]);
+
+  const applySuggested = async () => {
+    try {
+      const saved = await invoke<TeamView>('factory_team_apply_suggestions', { projectId });
+      setView(saved);
+      onChangeRef.current?.(saved);
+      setSuggested([]);
+    } catch (e) {
+      toastError(String(e));
+    }
+  };
 
   const save = async (agents: FactoryAgent[]) => {
     setView((v) => (v ? { ...v, agents } : v));
@@ -79,6 +92,19 @@ export function TeamEditor({ projectId, onChange }: { projectId: string; onChang
 
   return (
     <div className={styles.team}>
+      {suggested.length > 0 && (
+        <div className={styles.bannerAcc}>
+          <span>📖</span>
+          <span>
+            <b>El brain dice cómo se prueba este proyecto:</b>{' '}
+            {suggested.map((s) => (s.active && s.suggested ? `${s.name} → ${s.suggested}` : `${s.name} → apagado`)).join(' · ')}
+          </span>
+          <span className={styles.spacer} />
+          <button className={`${styles.btnPrimary} ${styles.sm}`} onClick={applySuggested}>
+            Aplicar
+          </button>
+        </div>
+      )}
       {(view.check.problems.length > 0 || view.check.warnings.length > 0) && (
         <div className={styles.col} style={{ gap: 4 }}>
           {view.check.problems.map((p) => (

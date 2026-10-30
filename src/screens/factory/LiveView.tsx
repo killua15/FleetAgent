@@ -47,7 +47,7 @@ export interface LoopStatus {
   state: 'stopped' | 'running' | 'paused';
   working: boolean;
   note: string | null;
-  wait: 'quota' | 'merges' | 'blocked' | null;
+  wait: 'quota' | 'merges' | 'blocked' | 'verify' | null;
 }
 
 /** Before any order has run: what the loop is doing instead, in the open. */
@@ -56,11 +56,13 @@ function NotStarted({
   failed,
   onStartAnyway,
   onRetry,
+  onPlay,
 }: {
   loop: LoopStatus | null;
   failed: FactoryOrder[];
   onStartAnyway: () => void;
   onRetry: (orderId: string) => void;
+  onPlay: () => void;
 }) {
   if (loop?.wait === 'blocked') {
     return (
@@ -110,6 +112,10 @@ function NotStarted({
         <span>
           <b>{loop.note}</b>
         </span>
+        <span className={styles.spacer} />
+        <button className={`${styles.btnPrimary} ${styles.sm}`} onClick={onPlay}>
+          ▶ Preparar y seguir
+        </button>
       </div>
     );
   }
@@ -124,6 +130,7 @@ export function LiveView({
   onStartAnyway,
   failed,
   onRetry,
+  onPlay,
 }: {
   live: LiveData;
   loop: LoopStatus | null;
@@ -133,6 +140,8 @@ export function LiveView({
   /** Failed or stopped orders, to retry from the «blocked» banner. */
   failed: FactoryOrder[];
   onRetry: (orderId: string) => void;
+  /** ▶ — which prepares the project first. */
+  onPlay: () => void;
 }) {
   const run = live.run;
   const [picked, setPicked] = useState<Big | null>(null);
@@ -145,7 +154,7 @@ export function LiveView({
   }, []);
 
   if (!run || !live.order) {
-    return <NotStarted loop={loop} failed={failed} onStartAnyway={onStartAnyway} onRetry={onRetry} />;
+    return <NotStarted loop={loop} failed={failed} onStartAnyway={onStartAnyway} onRetry={onRetry} onPlay={onPlay} />;
   }
 
   const name = (id: string | null | undefined) => accounts.find((a) => a.id === id)?.name ?? '—';

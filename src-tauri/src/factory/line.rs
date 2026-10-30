@@ -304,6 +304,10 @@ pub fn start(ctx: &Ctx, project_id: &str, order_id: &str) -> Result<Run, String>
         }
     }
 
+    // A fresh worktree has no node_modules or virtualenv: install them now, so
+    // the tests and checks can run. Not fatal — the builder can try again.
+    let installed = super::env::install_deps(&worktree);
+
     let run = Run {
         id: uuid::Uuid::new_v4().to_string(),
         project_id: project_id.into(),
@@ -335,6 +339,11 @@ pub fn start(ctx: &Ctx, project_id: &str, order_id: &str) -> Result<Run, String>
     orders::freeze_brain(&conn, order_id, brain_version)?;
     orders::set_status(&conn, order_id, "running")?;
     activity(&conn, &run.id, None, "ing", "cmd", &format!("git worktree add … {} desde {base}", run.branch), None)?;
+    match installed {
+        Some(Ok(what)) => activity(&conn, &run.id, None, "ing", "cmd", &format!("{what} en el worktree"), None)?,
+        Some(Err(why)) => activity(&conn, &run.id, None, "ing", "warn", &why, None)?,
+        None => {}
+    }
     Ok(run)
 }
 
@@ -580,27 +589,73 @@ fn record_decisions(conn: &Connection, run: &Run, step_id: &str, st: &str, order
 
 // ---------------------------------------------------------------- the gate
 
-/// The test gate: every active tester's command and every `check:` of the
-/// frozen brain, run in the worktree with no AI. It has no off switch.
-pub fn run_gate(worktree: &Path, team: &[Agent], brain: &Sealed) -> Vec<GateResult> {
-    let mut checks: Vec<(String, String)> = team.iter().filter(|a| a.role == "tester" && a.active).filter_map(|a| Some((a.name.clone(), a.command.clone()?))).collect();
-    checks.extend(brain.rules.iter().filter_map(|r| Some((r.id.clone(), r.check.clone()?))));
-    checks
-        .into_iter()
+/// How the gate judges a command: green, or — for order 0, which only sets
+/// the project up — that it runs at all.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GateMode {
+    Green,
+    Runs,
+}
+
+/// The gate's commands for an order: every active tester's, and the
+/// `check:` of the rules that apply to it — the planner's and the ones its
+/// agents cited. `all` takes every check of the brain (order 0, and the
+/// full verification). A command shared by several rules runs once.
+pub fn gate_commands(team: &[Agent], brain: &Sealed, rules: &std::collections::HashSet<String>, all: bool) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut add = |name: &str, command: &str| match out.iter_mut().find(|(_, c)| c == command) {
+        Some((names, _)) => {
+            names.push_str(", ");
+            names.push_str(name);
+        }
+        None => out.push((name.to_string(), command.to_string())),
+    };
+    for a in team.iter().filter(|a| a.role == "tester" && a.active) {
+        if let Some(c) = &a.command {
+            add(&a.name, c);
+        }
+    }
+    for r in brain.rules.iter().filter(|r| all || rules.contains(&r.id)) {
+        if let Some(c) = &r.check {
+            add(&r.id, c);
+        }
+    }
+    out
+}
+
+/// Output that says the command didn't run at all, rather than ran and failed.
+pub fn not_runnable(code: Option<i32>, output: &str) -> bool {
+    let lower = output.to_lowercase();
+    code == Some(127)
+        || lower.contains("command not found")
+        || lower.contains("err_pnpm_no_script")
+        || lower.contains("missing script")
+        || lower.contains("cannot find module")
+        || regex::Regex::new(r#"command "[^"]*" not found"#).map(|re| re.is_match(&lower)).unwrap_or(false)
+}
+
+/// The test gate: the commands, run in the worktree with no AI and the
+/// user's PATH. It has no off switch.
+pub fn run_gate(worktree: &Path, commands: &[(String, String)], mode: GateMode) -> Vec<GateResult> {
+    commands
+        .iter()
         .map(|(name, command)| {
-            let mut cmd = std::process::Command::new("sh");
-            cmd.args(["-c", &command]).current_dir(worktree);
-            let (ok, tail) = match crate::process_timeout::run_with_timeout(cmd, GATE_TIMEOUT) {
+            let (ok, tail) = match super::env::shell(command, worktree, GATE_TIMEOUT) {
                 Ok(out) => {
                     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
                     let lines: Vec<&str> = text.lines().collect();
                     let tail = lines[lines.len().saturating_sub(30)..].join("\n");
-                    let tail = if out.status.code() == Some(127) { format!("comando no encontrado: {command}\n{tail}") } else { tail };
-                    (out.status.success(), tail)
+                    let missing = not_runnable(out.status.code(), &text);
+                    let tail = if missing { format!("no se puede ejecutar: {command}\n{tail}") } else { tail };
+                    let ok = match mode {
+                        GateMode::Green => out.status.success(),
+                        GateMode::Runs => !missing,
+                    };
+                    (ok, tail)
                 }
                 Err(e) => (false, e),
             };
-            GateResult { name, command, ok, tail }
+            GateResult { name: name.clone(), command: command.clone(), ok, tail }
         })
         .collect()
 }
@@ -640,6 +695,7 @@ pub fn open_app(worktree: &Path, start_cmd: Option<&str>, url: Option<&str>) -> 
             std::process::Command::new("sh")
                 .args(["-c", cmd])
                 .current_dir(worktree)
+                .env("PATH", super::env::user_path())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn()
@@ -756,6 +812,9 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
     }
     let team = run.team.clone();
     let agent = |role: &str| team.iter().find(|a| a.role == role && a.active).cloned();
+    // Order 0 sets the project up: no testers, and a gate that only asks
+    // every command to run.
+    let bootstrap = order.origin == "bootstrap";
 
     loop {
         if run.status != "running" {
@@ -841,6 +900,13 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                 if let Some(n) = run.state.note.take() {
                     extra.push_str(&format!("\nNota de una persona: {n}\n"));
                 }
+                if bootstrap {
+                    let all = gate_commands(&team, &brain, &Default::default(), true);
+                    extra.push_str("\n=== ORDEN 0 · PREPARAR EL PROYECTO ===\nEl repo está vacío. Crea el stack que dice el brain (Tecnologías), instala las dependencias y añade los scripts y la configuración necesarios para que TODOS estos comandos se puedan ejecutar (que existan; pueden fallar mientras no haya producto). No implementes funcionalidades del producto.\n");
+                    for (names, c) in &all {
+                        extra.push_str(&format!("- `{c}`  ({names})\n"));
+                    }
+                }
                 match run_agent(ctx, &mut run, &a, &order, &brain, &extra, true, None, None)? {
                     Step::Answer(r) => {
                         if let Some(s) = r.get("summary").and_then(Value::as_str) {
@@ -853,6 +919,7 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                     Step::Halted => return Ok(run),
                 }
             }
+            "test" if bootstrap => run.stage = "gate".into(),
             "test" => {
                 let testers: Vec<Agent> = team.iter().filter(|a| a.role == "tester" && a.active).cloned().collect();
                 let done: std::collections::HashSet<String> = {
@@ -878,7 +945,14 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                     start_step(&conn, &run, None, "¿Suite en verde?", "sin IA", "test")?
                 };
                 (ctx.changed)();
-                let results = run_gate(Path::new(&run.worktree), &team, &brain);
+                let cited: std::collections::HashSet<String> = {
+                    let conn = lock(ctx.db)?;
+                    let mut stmt = conn.prepare("SELECT DISTINCT rule_id FROM factory_decisions WHERE run_id = ?1 AND rule_id IS NOT NULL").map_err(|e| e.to_string())?;
+                    let rows = stmt.query_map(params![run.id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+                    rows.filter_map(Result::ok).chain(order.rules.iter().cloned()).collect()
+                };
+                let commands = gate_commands(&team, &brain, &cited, bootstrap);
+                let results = run_gate(Path::new(&run.worktree), &commands, if bootstrap { GateMode::Runs } else { GateMode::Green });
                 let green = !results.is_empty() && results.iter().all(|r| r.ok);
                 let conn = lock(ctx.db)?;
                 for r in &results {
@@ -1243,7 +1317,8 @@ pub(crate) mod tests {
         conn.execute("UPDATE factory_projects SET mode = ?1, delivery = ?2 WHERE project_id = 'p1'", params![mode, delivery]).unwrap();
         // The example brain without its checks, which need Python tools.
         let md: String = brain::EXAMPLE.lines().filter(|l| !l.trim_start().starts_with("check:")).collect::<Vec<_>>().join("\n");
-        brain::seal(&conn, &repo.join(".appdata"), "p1", "Citas Vet", &md, "import").unwrap();
+        // App data beside the repo, not in it: the repo must stay the project's.
+        brain::seal(&conn, &repo.with_extension("appdata"), "p1", "Citas Vet", &md, "import").unwrap();
         let mut team = crate::factory::team::load(&conn, "p1").unwrap();
         for a in team.iter_mut().filter(|a| a.role == "tester") {
             a.command = Some(tester_cmd.into());
@@ -1393,6 +1468,53 @@ pub(crate) mod tests {
         git(&w.repo, &["reset", "--hard"], &[]).unwrap();
         merge_local(&w.repo, "dev", "feat/x", "Merge x", &crate::factory::setup::tests_identity()).unwrap();
         assert!(w.repo.join("x.txt").exists());
+    }
+
+    #[test]
+    fn the_gate_runs_the_orders_checks_once_each_and_order_zero_only_asks_them_to_run() {
+        let w = world("autonomous", "local", "true");
+        let conn = w.db.0.lock().unwrap();
+        let team = crate::factory::team::load(&conn, "p1").unwrap();
+        let mut brain = brain::load(&conn, "p1", None).unwrap().unwrap();
+        drop(conn);
+        for r in brain.rules.iter_mut() {
+            r.check = match r.id.as_str() {
+                "ARQ-01" | "ARQ-02" => Some("echo capas".into()),
+                "SEC-01" => Some("exit 3".into()),
+                "SEC-02" => Some("definitely-missing-xyz".into()),
+                _ => None,
+            };
+        }
+        let mine: std::collections::HashSet<String> = ["ARQ-01", "ARQ-02"].iter().map(|s| s.to_string()).collect();
+        let cmds = gate_commands(&team, &brain, &mine, false);
+        assert_eq!(cmds.iter().filter(|(_, c)| c == "echo capas").count(), 1, "one run for two rules");
+        assert!(cmds.iter().any(|(n, c)| c == "echo capas" && n == "ARQ-01, ARQ-02"));
+        assert!(!cmds.iter().any(|(_, c)| c == "exit 3"), "SEC-01 isn't this order's");
+        assert!(cmds.iter().filter(|(_, c)| c == "true").count() == 1, "both testers run `true`: once");
+
+        let all = gate_commands(&team, &brain, &Default::default(), true);
+        let runs = run_gate(&w.repo, &all, GateMode::Runs);
+        let by = |c: &str| runs.iter().find(|r| r.command == c).unwrap().ok;
+        assert!(by("exit 3"), "order 0: it ran, failing is fine");
+        assert!(!by("definitely-missing-xyz"), "order 0: not runnable is red");
+        let green = run_gate(&w.repo, &all, GateMode::Green);
+        assert!(!green.iter().find(|r| r.command == "exit 3").unwrap().ok);
+    }
+
+    #[test]
+    fn order_zero_sets_up_without_testers_and_passes_if_every_command_runs() {
+        // `false` runs (and fails): fine for order 0, which only sets things up.
+        let w = world("autonomous", "local", "false");
+        {
+            let conn = w.db.0.lock().unwrap();
+            conn.execute("UPDATE factory_orders SET origin = 'bootstrap' WHERE id = ?1", params![w.order_id]).unwrap();
+        }
+        let s = Script::new();
+        let c = ctx(&w, &s);
+        let run = start(&c, "p1", &w.order_id).unwrap();
+        let run = advance(&c, &run.id).unwrap();
+        assert_eq!(run.status, "merged", "{:?}", run.error);
+        assert!(!roles(&s).contains(&"tester".to_string()), "no testers in order 0");
     }
 
     #[test]

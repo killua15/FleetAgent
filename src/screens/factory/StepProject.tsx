@@ -328,7 +328,7 @@ export function StepProject({
                       {initing ? 'inicializando…' : 'Inicializar git (main + dev)'}
                     </button>
                   ) : (
-                    <span className={styles.hint}>No es un repo git: al crear el proyecto podrás inicializarlo con main y dev.</span>
+                    <span className={styles.hint}>No es un repo git: se inicializa al preparar (main con un primer commit + dev).</span>
                   )}
                 </>
               ) : repo.remoteUrl ? (
@@ -482,11 +482,11 @@ export function StepProject({
             : dirty
               ? 'Guarda los cambios para seguir.'
               : !repoReady
-                ? 'Inicializa git para seguir: cada orden trabaja en su propia rama.'
+                ? 'Sin git todavía: se inicializa al preparar (main + dev).'
                 : 'Revisa el proyecto y sigue.'
         }
         onNext={onNext}
-        nextDisabled={draft || dirty || !repoReady}
+        nextDisabled={draft || dirty}
         extra={
           <>
             {!draft && !dirty && <span className={`${styles.hint} ${styles.ok}`}>✓ guardado</span>}

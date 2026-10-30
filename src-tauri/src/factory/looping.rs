@@ -308,11 +308,38 @@ fn work<R: Runtime>(app: AppHandle<R>, project_id: String, worker: Arc<Worker>) 
                 break;
             }
             Next::Empty => {
-                if let Ok(conn) = db.0.lock() {
-                    let _ = set_state(&conn, &project_id, "stopped");
+                // Every order passed its own checks; before calling it done,
+                // the whole brain runs once on the base.
+                set_wait(&project_id, Some("verify"), Some("verificación completa: corriendo todos los check: del brain en la base…"));
+                emit(&app, &project_id);
+                let verdict = verify_all(&app, &project_id);
+                match verdict {
+                    Ok(Verification::NewOrders(n)) => {
+                        set_note(&project_id, None);
+                        notify(&app, "La verificación completa encontró fallos", &format!("{n} órdenes de verificación nuevas en la cola."));
+                        emit(&app, &project_id);
+                        continue;
+                    }
+                    Ok(Verification::Green) | Ok(Verification::Skipped) => {
+                        if let Ok(conn) = db.0.lock() {
+                            let _ = set_state(&conn, &project_id, "stopped");
+                        }
+                        let green = matches!(verdict, Ok(Verification::Green));
+                        set_note(&project_id, Some(if green { "cola vacía · verificación completa en verde" } else { "cola vacía: todo entregado" }));
+                        notify(&app, "La Factory terminó la cola", if green { "Todo entregado y la verificación completa en verde." } else { "No quedan órdenes por hacer en este proyecto." });
+                    }
+                    Ok(Verification::StillFailing(cmds)) => {
+                        if let Ok(conn) = db.0.lock() {
+                            let _ = set_state(&conn, &project_id, "stopped");
+                        }
+                        let why = format!("cola vacía, pero la verificación sigue fallando tras su orden: {}", cmds.join(" · "));
+                        set_note(&project_id, Some(&why));
+                        notify(&app, "La verificación completa sigue fallando", &why);
+                    }
+                    Err(e) => {
+                        halt(&app, &project_id, &format!("no se pudo hacer la verificación completa: {e}"));
+                    }
                 }
-                set_note(&project_id, Some("cola vacía: todo entregado"));
-                notify(&app, "La Factory terminó la cola", "No quedan órdenes por hacer en este proyecto.");
                 emit(&app, &project_id);
                 break;
             }
@@ -335,6 +362,98 @@ fn halt<R: Runtime>(app: &AppHandle<R>, project_id: &str, why: &str) {
     set_note(project_id, Some(&format!("parada: {why}")));
     notify(app, "La Factory se paró", why);
     emit(app, project_id);
+}
+
+/// What the full verification found.
+pub enum Verification {
+    /// Nothing merged since the last one: nothing to verify.
+    Skipped,
+    Green,
+    /// Failing commands became this many new orders.
+    NewOrders(usize),
+    /// These still fail, and already had their verification order.
+    StillFailing(Vec<String>),
+}
+
+/// The last merge each project was verified after, so an empty queue isn't
+/// verified twice for the same code.
+static VERIFIED: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Runs every command of the gate — testers and all the brain's `check:` —
+/// on the base, in a worktree of its own. What fails becomes an order.
+fn verify_all<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Result<Verification, String> {
+    let db = app.state::<DbConnection>();
+    let (project, brain, members, last_merge) = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let project = super::store::get(&conn, project_id)?;
+        let brain = super::brain::load(&conn, project_id, None)?.ok_or("sin brain sellado")?;
+        let members = super::team::load(&conn, project_id)?;
+        let last: Option<String> = conn
+            .query_row("SELECT MAX(finished_at) FROM factory_runs WHERE project_id = ?1 AND status = 'merged'", params![project_id], |r| r.get(0))
+            .ok()
+            .flatten();
+        (project, brain, members, last)
+    };
+    let Some(last_merge) = last_merge else { return Ok(Verification::Skipped) };
+    if VERIFIED.lock().ok().and_then(|v| v.get(project_id).cloned()).as_deref() == Some(last_merge.as_str()) {
+        return Ok(Verification::Skipped);
+    }
+    let repo = std::path::Path::new(&project.project_path);
+    let status = super::setup::repo_status(repo);
+    let base_branch = status.base_branch.clone().unwrap_or_else(|| "main".into());
+    let env = crate::git_identity::git_env_for_project(app, project_id);
+    let git = |dir: &std::path::Path, args: &[&str]| crate::commands::pull_requests::git_capture_with_env(dir, args, &env);
+    let base = if status.remote_url.is_some() && git(repo, &["fetch", "origin", &base_branch]).is_ok() { format!("origin/{base_branch}") } else { base_branch };
+    let dir = repo.join(".hangar").join("worktrees").join("factory-verify");
+    if dir.join(".git").exists() {
+        git(&dir, &["checkout", "--detach", "--force", &base])?;
+    } else {
+        std::fs::create_dir_all(dir.parent().expect("has a parent")).map_err(|e| e.to_string())?;
+        git(repo, &["worktree", "add", "--detach", &dir.to_string_lossy(), &base])?;
+    }
+    let _ = super::env::install_deps(&dir);
+    let commands = line::gate_commands(&members, &brain, &Default::default(), true);
+    let results = line::run_gate(&dir, &commands, line::GateMode::Green);
+    if let Ok(mut v) = VERIFIED.lock() {
+        v.insert(project_id.to_string(), last_merge);
+    }
+    let failing: Vec<&line::GateResult> = results.iter().filter(|r| !r.ok).collect();
+    if failing.is_empty() {
+        return Ok(Verification::Green);
+    }
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    verification_orders(&conn, project_id, &orders::key_prefix(&project.project_name), &brain, &failing)
+}
+
+/// Turns failing commands into verification orders, one per command and never
+/// twice: a command that already had its order is reported, not looped on.
+pub fn verification_orders(conn: &Connection, project_id: &str, prefix: &str, brain: &super::brain::Sealed, failing: &[&line::GateResult]) -> Result<Verification, String> {
+    let existing = orders::list(conn, project_id)?;
+    let mut created = 0;
+    let mut still = Vec::new();
+    for r in failing {
+        let title = format!("Verificación: `{}` falla", r.command);
+        if existing.iter().any(|o| o.title == title) {
+            still.push(r.command.clone());
+            continue;
+        }
+        let rules: Vec<String> = r.name.split(", ").filter(|n| brain.rules.iter().any(|x| &x.id == n)).map(str::to_string).collect();
+        orders::insert(
+            conn,
+            project_id,
+            &orders::NewOrder {
+                key: orders::next_key(conn, project_id, prefix)?,
+                title,
+                description: format!("La verificación completa de la base falla en `{}` ({}).\n\nSalida:\n{}", r.command, r.name, r.tail),
+                criteria: vec![format!("`{}` pasa en verde en la base.", r.command)],
+                origin: "verify".into(),
+                rules,
+                ..Default::default()
+            },
+        )?;
+        created += 1;
+    }
+    Ok(if created > 0 { Verification::NewOrders(created) } else { Verification::StillFailing(still) })
 }
 
 struct Parts {
@@ -483,35 +602,35 @@ pub fn factory_loop_status(db: State<DbConnection>, project_id: String) -> Resul
     Ok(status_of(&conn, &project_id))
 }
 
-/// ▶ Play. With nothing to do it says what's missing instead of starting.
+/// ▶ Play. It prepares the project first — fixing what it can, as «Preparar»
+/// does — and starts only when nothing is left that needs you.
 #[tauri::command]
-pub fn factory_play<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<LoopStatus, String> {
-    {
+pub async fn factory_play<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<LoopStatus, String> {
+    crate::blocking::run_blocking(move || {
+        let git_env = crate::git_identity::git_env_for_project(&app, &project_id);
         let db = app.state::<DbConnection>();
+        let checks = super::prepare::prepare(&db, &project_id, &git_env, true)?;
+        if let Err(why) = super::prepare::blocking(&checks) {
+            // In «En vivo» too, not only in a toast that goes away.
+            set_note(&project_id, Some(&format!("antes de empezar · {}", why.replace('\n', " · "))));
+            emit(&app, &project_id);
+            return Err(why);
+        }
+        emit(&app, &project_id);
+        {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            if let Some(run) = line::active_run(&conn, &project_id)? {
+                super::agent::clear_stop(&run.id);
+            }
+            set_state(&conn, &project_id, "running")?;
+            conn.execute("UPDATE factory_projects SET setup_step = 6 WHERE project_id = ?1", params![project_id]).map_err(|e| e.to_string())?;
+            set_note(&project_id, None);
+        }
+        ensure_worker(&app, &project_id);
         let conn = db.0.lock().map_err(|e| e.to_string())?;
-        let project = super::store::get(&conn, &project_id)?;
-        line::ready(&conn, &project_id).map_err(|why| {
-            let mut c = why.chars();
-            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
-        })?;
-        if decide(&conn, &project_id)? == Next::Empty {
-            return Err(if project.provider_kind == "none" {
-                "No hay tareas: pon un proveedor de tareas o crea las tareas desde un TRD.".into()
-            } else {
-                "No hay tareas en la cola: trae las del proveedor o créalas desde un TRD.".into()
-            });
-        }
-        if let Some(run) = line::active_run(&conn, &project_id)? {
-            super::agent::clear_stop(&run.id);
-        }
-        set_state(&conn, &project_id, "running")?;
-        conn.execute("UPDATE factory_projects SET setup_step = 6 WHERE project_id = ?1", params![project_id]).map_err(|e| e.to_string())?;
-        set_note(&project_id, None);
-    }
-    ensure_worker(&app, &project_id);
-    let db = app.state::<DbConnection>();
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    Ok(status_of(&conn, &project_id))
+        Ok(status_of(&conn, &project_id))
+    })
+    .await?
 }
 
 /// ⏸ Pausa: the order at work finishes; no other starts.
@@ -691,6 +810,24 @@ mod tests {
         let again = line::load_run(&conn, &run.id).unwrap();
         assert_eq!((again.status.as_str(), again.round, again.state.escalated), ("running", 0, false));
         assert_eq!(decide(&conn, "p1").unwrap(), Next::Resume(run.id));
+    }
+
+    #[test]
+    fn a_failing_full_verification_becomes_one_order_per_command_never_twice() {
+        let w = line::tests::world("autonomous", "local", "true");
+        let conn = w.db.0.lock().unwrap();
+        let brain = crate::factory::brain::load(&conn, "p1", None).unwrap().unwrap();
+        let e2e = line::GateResult { name: "ARQ-01, SEC-01".into(), command: "pnpm e2e".into(), ok: false, tail: "2 failed".into() };
+        match verification_orders(&conn, "p1", "VET", &brain, &[&e2e]).unwrap() {
+            Verification::NewOrders(1) => {}
+            _ => panic!("one new order"),
+        }
+        let o = orders::list(&conn, "p1").unwrap().into_iter().find(|o| o.origin == "verify").unwrap();
+        assert_eq!((o.title.as_str(), o.rules.clone()), ("Verificación: `pnpm e2e` falla", vec!["ARQ-01".to_string(), "SEC-01".to_string()]));
+        match verification_orders(&conn, "p1", "VET", &brain, &[&e2e]).unwrap() {
+            Verification::StillFailing(c) => assert_eq!(c, vec!["pnpm e2e"]),
+            _ => panic!("not twice"),
+        }
     }
 
     #[test]

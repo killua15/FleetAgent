@@ -1656,3 +1656,13 @@
   flex: none;
   background: var(--amber);
 }
+
+.prepRow {
+  display: grid;
+  grid-template-columns: 18px 130px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  font: 400 12px var(--font-ui);
+}

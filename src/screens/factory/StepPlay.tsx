@@ -3,10 +3,24 @@ import { invoke } from '../../lib/invoke';
 import { toastError } from '../../components/ErrorOverlay';
 import { MODE_LABEL, providerWhere, tildePath, type FactoryOrder, type FactoryProject, type RepoStatus, type SealedBrain, type TeamView } from '../../types/factory';
 import { StepFoot } from './Wizard';
+import { Preparation } from './Preparation';
 import styles from '../Factory.module.css';
 
 /** Step 5 · ▶ Play: everything the line will work with, and the button. */
-export function StepPlay({ project, home, onBack, onStarted }: { project: FactoryProject; home: string | null; onBack: () => void; onStarted: () => void }) {
+export function StepPlay({
+  project,
+  home,
+  onBack,
+  onStarted,
+  onGoStep,
+}: {
+  project: FactoryProject;
+  home: string | null;
+  onBack: () => void;
+  onStarted: () => void;
+  onGoStep: (step: number) => void;
+}) {
+  const [blocked, setBlocked] = useState(false);
   const [team, setTeam] = useState<TeamView | null>(null);
   const [brain, setBrain] = useState<SealedBrain | null>(null);
   const [orders, setOrders] = useState<FactoryOrder[]>([]);
@@ -47,11 +61,11 @@ export function StepPlay({ project, home, onBack, onStarted }: { project: Factor
         <span className={styles.lead}>Todo listo: así arranca la Factory</span>
         <div className={styles.checklist}>
           <div className={styles.checkItem}>
-            {repoReady ? ok : no}
+            {repoReady ? ok : <span className={styles.accTxt}>↻</span>}
             <span className={styles.checkKey}>Proyecto</span>
             <span>
               {tildePath(project.projectPath, home)}
-              {repo && !repoReady && <span className={styles.bad}> · no es un repo git con commits: inicialízalo en el paso Proyecto (main + dev)</span>}
+              {repo && !repoReady && <span className={styles.hint}> · sin git todavía: se inicializa al preparar (main + dev)</span>}
             </span>
           </div>
           <div className={styles.checkItem}>
@@ -95,11 +109,18 @@ export function StepPlay({ project, home, onBack, onStarted }: { project: Factor
             <span>Si una cuenta agota su límite, la orden espera y sigue sola al renovarse; sin créditos te avisa.</span>
           </div>
         </div>
+        <Preparation projectId={project.projectId} onGoStep={onGoStep} onChange={(checks) => setBlocked(checks.some((c) => c.status === 'blocked'))} />
         <div className={styles.row} style={{ marginTop: 6 }}>
-          <button className={`${styles.btnPrimary} ${styles.lg}`} disabled={starting} onClick={play}>
+          <button className={`${styles.btnPrimary} ${styles.lg}`} disabled={starting || blocked} title={blocked ? 'Resuelve antes lo marcado con ✗ en Preparación' : undefined} onClick={play}>
             {starting ? 'arrancando…' : '▶ Play'}
           </button>
-          <span className={styles.hint}>{first ? `Toma ${first.key} y sigue orden tras orden, en el orden de la cola.` : 'Sin tareas, ▶ te dirá qué falta.'}</span>
+          <span className={styles.hint}>
+            {blocked
+              ? 'Resuelve antes lo marcado con ✗ en Preparación.'
+              : first
+                ? `Prepara el proyecto, toma ${first.key} y sigue orden tras orden, en el orden de la cola.`
+                : 'Prepara el proyecto y toma la primera orden de la cola.'}
+          </span>
         </div>
       </div>
       <StepFoot step={5} hint="Pulsa ▶ Play para arrancar." onBack={onBack} />

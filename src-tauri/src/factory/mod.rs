@@ -6,11 +6,13 @@
 
 pub mod agent;
 pub mod brain;
+pub mod env;
 pub mod limits;
 pub mod line;
 pub mod looping;
 pub mod orders;
 pub mod planner;
+pub mod prepare;
 pub mod setup;
 pub mod store;
 pub mod team;

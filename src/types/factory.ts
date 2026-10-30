@@ -387,3 +387,24 @@ export function countdown(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
   return `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 }
+
+// ---------------------------------------------------------------- preparation
+
+/** One thing the line needs from the project (`factory::prepare::Check`). */
+export interface PrepCheck {
+  id: string;
+  label: string;
+  status: 'ok' | 'fixed' | 'todo' | 'warn' | 'blocked';
+  detail: string;
+  action: 'apply_testers' | 'team' | 'brain' | 'git_identity' | 'tasks' | null;
+}
+
+/** A tester whose command the brain says differently. */
+export interface TesterSuggestion {
+  agentId: string;
+  name: string;
+  current: string | null;
+  currentActive: boolean;
+  suggested: string | null;
+  active: boolean;
+}

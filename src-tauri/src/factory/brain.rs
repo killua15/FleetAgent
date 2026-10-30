@@ -121,6 +121,17 @@ fn take_level(body: &str) -> Option<(&'static str, &str)> {
     Some((level, &body[m.get(0)?.end()..]))
 }
 
+/// The command out of what follows `check:` — `pnpm test`, or the first
+/// backticked span of «`pnpm test` (`vitest run --coverage` con thresholds)».
+fn check_command(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let cmd = match raw.strip_prefix('`') {
+        Some(rest) => rest.split('`').next().unwrap_or(""),
+        None => raw,
+    };
+    Some(cmd.trim().to_string()).filter(|c| !c.is_empty())
+}
+
 /// Reads a BRAIN.md — or a CLAUDE.md / AGENTS.md written the same way — and
 /// says what it found. Never fails: whatever isn't recognised is reported.
 pub fn parse(text: &str) -> Report {
@@ -130,6 +141,7 @@ pub fn parse(text: &str) -> Report {
     let mut unnamed: Vec<usize> = Vec::new();
     let mut sec: Option<&str> = None;
     let heading = regex::Regex::new(r"^#{2,3}\s+(.+)$").expect("static regex");
+    let inline = regex::Regex::new(r"(?i)\s+check:\s*(.+)$").expect("static regex");
 
     for raw in text.lines() {
         let line = raw.trim();
@@ -146,7 +158,7 @@ pub fn parse(text: &str) -> Report {
         if let Some(rest) = line.strip_prefix("check:").or_else(|| line.strip_prefix("Check:")) {
             if current != "pend" {
                 if let Some(last) = rules.last_mut() {
-                    last.check = Some(rest.trim().to_string()).filter(|c| !c.is_empty());
+                    last.check = check_command(rest);
                 }
             }
             continue;
@@ -165,7 +177,12 @@ pub fn parse(text: &str) -> Report {
         if id.is_none() {
             unnamed.push(rules.len());
         }
-        rules.push(Rule { id: id.unwrap_or_default(), section: current.to_string(), level: level.to_string(), text: body.trim().to_string(), check: None });
+        // `check:` on the rule's own line, as many hand-written brains put it.
+        let (text, check) = match inline.captures(body) {
+            Some(m) => (body[..m.get(0).expect("whole match").start()].trim(), check_command(&m[1])),
+            None => (body.trim(), None),
+        };
+        rules.push(Rule { id: id.unwrap_or_default(), section: current.to_string(), level: level.to_string(), text: text.to_string(), check });
     }
 
     let mut used: std::collections::HashSet<String> = rules.iter().map(|r| r.id.clone()).filter(|id| !id.is_empty()).collect();
@@ -379,6 +396,25 @@ pub fn seal(conn: &Connection, root: &Path, project_id: &str, project_name: &str
     conn.execute("UPDATE factory_amendments SET status = 'included', included_in = ?2 WHERE project_id = ?1 AND status = 'open' AND ?2 > 1", params![project_id, next])
         .map_err(|e| e.to_string())?;
     Ok(Sealed { version, rules: report.rules, markdown: text })
+}
+
+/// Rebuilds the rule index of a sealed version from its file, with this
+/// parser. The file never changes; the index is derived from it, so a brain
+/// sealed by an older parser (that missed `check:` written on the rule's own
+/// line) gets its checks back. Returns how many rules have a check now.
+pub fn reindex(conn: &Connection, project_id: &str, version: i64) -> Result<usize, String> {
+    let Some(meta) = versions(conn, project_id)?.into_iter().find(|v| v.version == version) else { return Ok(0) };
+    let text = std::fs::read_to_string(&meta.path).map_err(|e| format!("no se pudo leer {}: {e}", meta.path))?;
+    let report = parse(&text);
+    conn.execute("DELETE FROM factory_brain_rules WHERE project_id = ?1 AND version = ?2", params![project_id, version]).map_err(|e| e.to_string())?;
+    for (i, r) in report.rules.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO factory_brain_rules (project_id, version, rule_id, section, level, text, check_cmd, position) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![project_id, version, r.id, r.section, r.level, r.text, r.check, i as i64],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(report.checks)
 }
 
 pub fn versions(conn: &Connection, project_id: &str) -> Result<Vec<Version>, String> {
@@ -646,6 +682,26 @@ pub(crate) mod tests {
         assert_eq!(r.rules.iter().map(|x| (x.id.as_str(), x.level.as_str())).collect::<Vec<_>>(), vec![("COD-01", "must"), ("TEC-01", "should")]);
         assert_eq!(r.unknown, vec!["Misc"]);
         assert!(r.missing_required.contains(&"prd".to_string()));
+    }
+
+    #[test]
+    fn a_check_on_the_rules_own_line_in_backticks_is_read() {
+        let r = parse(
+            "## Tecnologías\n- TEC-01 · DEBE · TypeScript con `\"strict\": true`.  check: `pnpm tsc --noEmit`\n\
+## Calidad\n- CAL-01 · DEBE · Cobertura ≥ 80 %.  check: `pnpm test` (`vitest run --coverage` con `thresholds`)\n\
+- CAL-02 · DEBE · e2e.  check: `pnpm e2e --list | grep -q '\\[firefox\\]' && pnpm e2e`\n- CAL-09 · DEBE · Sin check.\n",
+        );
+        let checks: Vec<(&str, Option<&str>)> = r.rules.iter().map(|x| (x.text.as_str(), x.check.as_deref())).collect();
+        assert_eq!(
+            checks,
+            vec![
+                ("TypeScript con `\"strict\": true`.", Some("pnpm tsc --noEmit")),
+                ("Cobertura ≥ 80 %.", Some("pnpm test")),
+                ("e2e.", Some("pnpm e2e --list | grep -q '\\[firefox\\]' && pnpm e2e")),
+                ("Sin check.", None),
+            ]
+        );
+        assert_eq!(parse("## Código\n- COD-01 · DEBE · x\n  check: `ruff check .`\n").rules[0].check.as_deref(), Some("ruff check ."));
     }
 
     #[test]

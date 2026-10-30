@@ -109,6 +109,7 @@ export function Factory() {
         project={p}
         home={home}
         onBack={() => go(4)}
+        onGoStep={(n) => setStep(n)}
         onStarted={() => {
           setReconfiguring(false);
           refresh(p.projectId);
