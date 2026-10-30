@@ -486,3 +486,311 @@
   gap: 10px;
   text-align: center;
 }
+
+.stepDone {
+  composes: step;
+  color: var(--mut);
+  cursor: pointer;
+}
+
+.stepDone .stepN {
+  background: var(--grnD);
+  color: var(--grn);
+  border-color: color-mix(in srgb, var(--grn) 45%, transparent);
+}
+
+.step:hover:not(:disabled),
+.stepDone:hover:not(:disabled) {
+  border-color: var(--line2);
+}
+
+/* ---------- cards ---------- */
+
+.cardFlat {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.cardHead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 16px 8px;
+}
+
+.cardPadCol {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.cardPad0 {
+  padding: 0 16px 16px;
+}
+
+.cardActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.num {
+  font: 500 11px var(--font-mono);
+  color: var(--mut);
+}
+
+.accTxt {
+  color: var(--acc);
+}
+
+.bad {
+  color: var(--red);
+}
+
+.dimTxt {
+  color: var(--dim);
+}
+
+/* ---------- brain ---------- */
+
+.session {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  min-height: 520px;
+}
+
+.chat {
+  min-height: 520px;
+}
+
+.terminal {
+  flex: 1;
+  min-height: 380px;
+  margin: 8px 10px 0;
+}
+
+.sessionEmpty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+}
+
+.chatFoot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.report {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 16px 10px;
+}
+
+.repLine {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  gap: 8px;
+  font: 400 12px var(--font-ui);
+  color: var(--mut);
+  line-height: 1.5;
+}
+
+.repLine b {
+  color: var(--txt);
+}
+
+.brainMd {
+  margin: 0;
+  padding: 12px 16px 16px;
+  font: 400 11.5px/1.6 var(--font-mono);
+  color: var(--mut);
+  white-space: pre-wrap;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.mdH {
+  color: var(--txt);
+  font-weight: 600;
+}
+
+.mdId {
+  color: var(--acc);
+  font-weight: 600;
+}
+
+.mdMust {
+  color: var(--red);
+}
+
+.mdShould {
+  color: var(--teal);
+}
+
+.mdChk {
+  color: var(--teal);
+}
+
+.mdNew {
+  background: var(--amberD);
+}
+
+.guide {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel2);
+  font: 400 11px/1.55 var(--font-mono);
+  color: var(--mut);
+  white-space: pre-wrap;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.numStep {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accD);
+  color: var(--acc);
+  font: 600 10.5px var(--font-mono);
+}
+
+.drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 22px;
+  border: 1px dashed var(--line2);
+  border-radius: 10px;
+  color: var(--mut);
+}
+
+.brainGrid {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 16px;
+}
+
+.secList {
+  padding: 10px;
+  gap: 2px;
+  align-self: flex-start;
+}
+
+.secGroup {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.12em;
+  color: var(--dim);
+  text-transform: uppercase;
+  padding: 8px 8px 4px;
+}
+
+.sec,
+.secOn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--mut);
+  font: 500 12px var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sec:hover {
+  background: var(--panel2);
+  color: var(--txt);
+}
+
+.secOn {
+  background: var(--accD);
+  color: var(--acc);
+}
+
+.ruleRow {
+  display: grid;
+  grid-template-columns: 64px 70px 1fr;
+  gap: 10px;
+  align-items: baseline;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.ruleRow:last-child {
+  border-bottom: 0;
+}
+
+.ruleId {
+  font: 600 11.5px var(--font-mono);
+  color: var(--acc);
+}
+
+.lvlMust,
+.lvlShould {
+  font: 600 10px var(--font-mono);
+  letter-spacing: 0.06em;
+}
+
+.lvlMust {
+  color: var(--red);
+}
+
+.lvlShould {
+  color: var(--teal);
+}
+
+.ruleTxt {
+  font: 400 12.5px var(--font-ui);
+  line-height: 1.5;
+}
+
+.check {
+  margin-top: 3px;
+  font: 400 11px var(--font-mono);
+  color: var(--teal);
+}
+
+.inbox {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.ruleTag {
+  display: inline-flex;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--amberD);
+  color: var(--amber);
+  font: 600 10.5px var(--font-mono);
+}

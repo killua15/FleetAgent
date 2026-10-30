@@ -20,7 +20,11 @@ export function ProjectHeader({ project, home }: { project: FactoryProject | nul
         <span className={styles.title}>{project.projectName}</span>
         <span className={styles.path}>{tildePath(project.projectPath, home)}</span>
       </div>
-      <span className={styles.chip}>📖 Brain · sin definir</span>
+      {project.brainVersion ? (
+        <span className={styles.chipAcc}>📖 Brain v{project.brainVersion} · sellado</span>
+      ) : (
+        <span className={styles.chip}>📖 Brain · sin definir</span>
+      )}
       <span className={styles.chip}>modo {MODE_LABEL[project.mode].toLowerCase()}</span>
       <span className={styles.chip}>entrega · {project.delivery === 'mr' ? 'MR → dev' : 'merge local'}</span>
       <span className={styles.chip}>tareas · {providerShort(project)}</span>

@@ -15,6 +15,7 @@ const project = (over: Partial<FactoryProject>): FactoryProject => ({
   appUrl: null,
   setupStep: 1,
   loopState: 'stopped',
+  brainVersion: null,
   createdAt: '',
   updatedAt: '',
   ...over,

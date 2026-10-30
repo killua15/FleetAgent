@@ -320,6 +320,12 @@ const MIGRATIONS: &[Migration] = &[
         run: factory_projects_table,
         transactional: true,
     },
+    Migration {
+        version: 40,
+        name: "factory_brain",
+        run: factory_brain_tables,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -1167,6 +1173,52 @@ fn knowledge_sources_tables(conn: &Connection) -> Result<(), String> {
 fn factory_projects_table(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(FACTORY_PROJECTS_DDL).map_err(|e| format!("could not create factory_projects: {e}"))
 }
+
+/// The brain: sealed versions (the file lives in app data and never changes),
+/// their rules indexed to cite and count, the amendments inbox, and which
+/// version the project uses now.
+fn factory_brain_tables(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(FACTORY_BRAIN_DDL).map_err(|e| format!("could not create the brain tables: {e}"))
+}
+
+pub(crate) const FACTORY_BRAIN_DDL: &str = "ALTER TABLE factory_projects ADD COLUMN brain_version INTEGER;
+CREATE TABLE IF NOT EXISTS factory_brain_versions (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  version    INTEGER NOT NULL,
+  path       TEXT NOT NULL,
+  sha        TEXT NOT NULL,
+  rule_count INTEGER NOT NULL,
+  source     TEXT NOT NULL,
+  sealed_at  TEXT NOT NULL,
+  PRIMARY KEY (project_id, version)
+);
+CREATE TABLE IF NOT EXISTS factory_brain_rules (
+  project_id TEXT NOT NULL,
+  version    INTEGER NOT NULL,
+  rule_id    TEXT NOT NULL,
+  section    TEXT NOT NULL,
+  level      TEXT NOT NULL,
+  text       TEXT NOT NULL,
+  check_cmd  TEXT,
+  position   INTEGER NOT NULL,
+  PRIMARY KEY (project_id, version, rule_id),
+  FOREIGN KEY (project_id, version) REFERENCES factory_brain_versions(project_id, version) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS factory_amendments (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  question    TEXT NOT NULL,
+  order_key   TEXT,
+  provisional TEXT,
+  status      TEXT NOT NULL DEFAULT 'open',
+  included_in INTEGER,
+  created_at  TEXT NOT NULL
+);";
+
+/// Every Factory migration's DDL, in order — what the Factory's own tests
+/// build their in-memory database from.
+#[cfg(test)]
+pub(crate) const FACTORY_DDLS: &[&str] = &[FACTORY_PROJECTS_DDL, FACTORY_BRAIN_DDL];
 
 pub(crate) const FACTORY_PROJECTS_DDL: &str = "CREATE TABLE IF NOT EXISTS factory_projects (
   project_id           TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,

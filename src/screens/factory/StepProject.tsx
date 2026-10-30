@@ -8,7 +8,6 @@ import type { SourceScope, TaskSource } from '../../types/task';
 import {
   MODE_HINT,
   MODE_LABEL,
-  STEP_PHASE,
   tildePath,
   type FactoryDelivery,
   type FactoryMode,
@@ -17,6 +16,7 @@ import {
   type NewFolder,
   type RepoStatus,
 } from '../../types/factory';
+import { StepFoot } from './Wizard';
 import styles from '../Factory.module.css';
 
 const MODES: FactoryMode[] = ['supervised', 'delegated', 'autonomous'];
@@ -40,11 +40,13 @@ export function StepProject({
   home,
   onCreated,
   onSaved,
+  onNext,
 }: {
   project: FactoryProject | null;
   home: string | null;
   onCreated: (p: FactoryProject) => void;
   onSaved: (p: FactoryProject) => void;
+  onNext: () => void;
 }) {
   const { navigate } = useNavigation();
   const draft = project === null;
@@ -469,17 +471,22 @@ export function StepProject({
         </div>
       </div>
 
-      <div className={styles.stepFoot}>
-        <span className={styles.hint}>Paso 1 de 5</span>
-        <span className={styles.spacer} />
-        {!draft && !dirty && <span className={`${styles.hint} ${styles.ok}`}>✓ guardado</span>}
-        <button className={styles.btnPrimary} disabled={saving || !dirty || !folderReady || !providerReady || !name.trim()} onClick={save}>
-          {saving ? (draft ? 'creando…' : 'guardando…') : draft ? (isNewFolder ? 'Crear carpeta y proyecto' : 'Crear proyecto') : 'Guardar'}
-        </button>
-        <button className={styles.btn} disabled title={`llega en ${STEP_PHASE[2]}`}>
-          Siguiente · Equipo →
-        </button>
-      </div>
+      <StepFoot
+        step={1}
+        hint={draft ? 'Elige la carpeta y crea el proyecto.' : dirty ? 'Guarda los cambios para seguir.' : 'Revisa el proyecto y sigue.'}
+        onNext={onNext}
+        nextDisabled={draft || dirty}
+        extra={
+          <>
+            {!draft && !dirty && <span className={`${styles.hint} ${styles.ok}`}>✓ guardado</span>}
+            {(draft || dirty) && (
+              <button className={styles.btnPrimary} disabled={saving || !folderReady || !providerReady || !name.trim()} onClick={save}>
+                {saving ? (draft ? 'creando…' : 'guardando…') : draft ? (isNewFolder ? 'Crear carpeta y proyecto' : 'Crear proyecto') : 'Guardar'}
+              </button>
+            )}
+          </>
+        }
+      />
     </>
   );
 }

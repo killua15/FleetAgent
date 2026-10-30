@@ -19,9 +19,11 @@ export interface FactoryProject {
   mode: FactoryMode;
   appStartCmd: string | null;
   appUrl: string | null;
-  /** The wizard step the user is on, 1–5. */
+  /** The wizard step the user is on, 1–5; 6 once ▶ Play was pressed. */
   setupStep: number;
   loopState: FactoryLoopState;
+  /** The sealed brain version new orders freeze. */
+  brainVersion: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -45,9 +47,6 @@ export interface RepoStatus {
 export type NewFolder = { kind: 'existing'; path: string } | { kind: 'new'; parent: string; name: string };
 
 export const FACTORY_STEPS = ['Proyecto', 'Equipo', 'Brain', 'Tareas', '▶ Play'] as const;
-
-/** The phase each later step lands in, shown on the locked steps. */
-export const STEP_PHASE: Record<number, string> = { 2: 'F2', 3: 'F1', 4: 'F3', 5: 'F5' };
 
 export const MODE_LABEL: Record<FactoryMode, string> = {
   supervised: 'Supervisado',
@@ -78,3 +77,68 @@ export function lastSegment(path: string): string {
 export function tildePath(path: string, home: string | null): string {
   return home && path.startsWith(home + '/') ? '~' + path.slice(home.length) : path;
 }
+
+// ---------------------------------------------------------------- brain
+
+export const BRAIN_SECTIONS: [string, string][] = [
+  ['prd', 'Producto'],
+  ['arq', 'Arquitectura'],
+  ['tec', 'Tecnologías'],
+  ['cod', 'Código'],
+  ['dat', 'Datos'],
+  ['sec', 'Seguridad'],
+  ['cal', 'Calidad'],
+  ['git', 'Git y entrega'],
+  ['dep', 'Despliegue'],
+  ['rsg', 'Riesgo'],
+  ['dec', 'Decisiones'],
+];
+
+export const sectionName = (key: string): string => BRAIN_SECTIONS.find(([k]) => k === key)?.[1] ?? key;
+
+export interface BrainRule {
+  id: string;
+  section: string;
+  level: 'must' | 'should';
+  text: string;
+  check: string | null;
+}
+
+/** What an import found (`factory::brain::Report`). */
+export interface BrainReport {
+  rules: BrainRule[];
+  pending: string[];
+  assigned: string[];
+  unknown: string[];
+  sections: string[];
+  missing: string[];
+  missingRequired: string[];
+  checks: number;
+  markdown: string;
+}
+
+export interface BrainVersion {
+  version: number;
+  path: string;
+  sha: string;
+  ruleCount: number;
+  source: string;
+  sealedAt: string;
+}
+
+export interface SealedBrain extends BrainVersion {
+  rules: BrainRule[];
+  markdown: string;
+}
+
+export interface Amendment {
+  id: string;
+  question: string;
+  orderKey: string | null;
+  provisional: string | null;
+  status: 'open' | 'included' | 'dismissed';
+  includedIn: number | null;
+  createdAt: string;
+}
+
+export const levelLabel = (level: BrainRule['level']) => (level === 'must' ? 'DEBE' : 'DEBERÍA');

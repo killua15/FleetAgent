@@ -4,6 +4,7 @@
 //! F0 is the ground floor — which projects joined, the wizard's first step
 //! (folder, repo, task provider, delivery, mode) and nothing that runs yet.
 
+pub mod brain;
 pub mod setup;
 pub mod store;
 

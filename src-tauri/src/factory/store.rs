@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 pub const PROVIDERS: [&str; 3] = ["clickup", "github", "none"];
 pub const DELIVERIES: [&str; 2] = ["mr", "local"];
 pub const MODES: [&str; 3] = ["supervised", "delegated", "autonomous"];
-/// Project, Team, Brain, Tasks, Play.
-pub const LAST_STEP: i64 = 5;
+/// Project, Team, Brain, Tasks, Play — and 6 once ▶ Play was pressed and
+/// the project shows the line at work.
+pub const LAST_STEP: i64 = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -40,11 +41,14 @@ pub struct FactoryProject {
     pub app_start_cmd: Option<String>,
     #[serde(default)]
     pub app_url: Option<String>,
-    /// The wizard step the user is on, 1–5.
+    /// The wizard step the user is on, 1–5; 6 once it's running.
     pub setup_step: i64,
-    /// `stopped`, `running` or `paused`. Only F5 changes it.
+    /// `stopped`, `running` or `paused`.
     #[serde(default = "stopped")]
     pub loop_state: String,
+    /// The sealed brain version new orders freeze; `None` until one is sealed.
+    #[serde(default)]
+    pub brain_version: Option<i64>,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
@@ -56,7 +60,7 @@ fn stopped() -> String {
 }
 
 const SELECT: &str = "SELECT f.project_id, p.name, p.path, f.provider_kind, f.provider_source_id, f.provider_scope_id, f.provider_scope_label,
-        f.delivery, f.mode, f.app_start_cmd, f.app_url, f.setup_step, f.loop_state, f.created_at, f.updated_at
+        f.delivery, f.mode, f.app_start_cmd, f.app_url, f.setup_step, f.loop_state, f.created_at, f.updated_at, f.brain_version
    FROM factory_projects f JOIN projects p ON p.id = f.project_id";
 
 fn from_row(r: &rusqlite::Row) -> rusqlite::Result<FactoryProject> {
@@ -76,6 +80,7 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<FactoryProject> {
         loop_state: r.get(12)?,
         created_at: r.get(13)?,
         updated_at: r.get(14)?,
+        brain_version: r.get(15)?,
     })
 }
 
@@ -158,7 +163,9 @@ pub(crate) mod tests {
     pub(crate) fn conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON; CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT, path TEXT);").unwrap();
-        conn.execute_batch(crate::db::FACTORY_PROJECTS_DDL).unwrap();
+        for ddl in crate::db::FACTORY_DDLS {
+            conn.execute_batch(ddl).unwrap();
+        }
         conn.execute_batch("INSERT INTO projects VALUES ('p1', 'citas-vet', '/repos/citas-vet');").unwrap();
         conn
     }

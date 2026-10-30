@@ -7,14 +7,15 @@ import { toastError } from '../components/ErrorOverlay';
 import type { FactoryProject } from '../types/factory';
 import { ProjectSidebar } from './factory/ProjectSidebar';
 import { ProjectHeader } from './factory/ProjectHeader';
-import { Wizard } from './factory/Wizard';
+import { StepFoot, Wizard } from './factory/Wizard';
 import { StepProject } from './factory/StepProject';
+import { StepBrain } from './factory/StepBrain';
 import styles from './Factory.module.css';
 
 /**
  * The Factory: projects whose tasks an automated line takes from order to
- * delivery. F0 is its ground floor — the projects that joined and the first
- * setup step; the team, the brain, the tasks and the line arrive in F1–F5.
+ * delivery. A project is set up once through the five-step wizard; after ▶
+ * Play it shows the line at work.
  */
 export function Factory() {
   const [projects, setProjects] = useState<FactoryProject[]>([]);
@@ -22,6 +23,7 @@ export function Factory() {
   const [creating, setCreating] = useState(false);
   const [loading, setLoading] = useState(true);
   const [home, setHome] = useState<string | null>(null);
+  const [step, setStep] = useState(1);
 
   useEffect(() => {
     homeDir()
@@ -31,6 +33,7 @@ export function Factory() {
       .then((found) => {
         setProjects(found);
         setSelectedId(found[0]?.projectId ?? null);
+        setStep(Math.min(5, found[0]?.setupStep ?? 1));
         setCreating(found.length === 0);
       })
       .catch((e) => toastError(String(e)))
@@ -41,20 +44,67 @@ export function Factory() {
 
   const replace = (p: FactoryProject) => setProjects((prev) => (prev.some((x) => x.projectId === p.projectId) ? prev.map((x) => (x.projectId === p.projectId ? p : x)) : [...prev, p]));
 
+  const select = (id: string) => {
+    setCreating(false);
+    setSelectedId(id);
+    setStep(Math.min(5, projects.find((p) => p.projectId === id)?.setupStep ?? 1));
+  };
+
+  /** Moves the wizard, remembering how far the project got. */
+  const go = async (n: number) => {
+    setStep(n);
+    if (!selected || n <= selected.setupStep) return;
+    try {
+      replace(await invoke<FactoryProject>('factory_update_project', { project: { ...selected, setupStep: n } }));
+    } catch (e) {
+      toastError(String(e));
+    }
+  };
+
+  const refresh = async (projectId: string) => {
+    try {
+      replace(await invoke<FactoryProject>('factory_get_project', { projectId }));
+    } catch (e) {
+      toastError(String(e));
+    }
+  };
+
+  const renderStep = (p: FactoryProject | null) => {
+    if (!p || step === 1) {
+      return (
+        <StepProject
+          key={p?.projectId ?? 'new'}
+          project={p}
+          home={home}
+          onCreated={(created) => {
+            replace(created);
+            setSelectedId(created.projectId);
+            setCreating(false);
+            setStep(1);
+          }}
+          onSaved={replace}
+          onNext={() => go(2)}
+        />
+      );
+    }
+    if (step === 3) {
+      return <StepBrain key={p.projectId} project={p} onSealed={() => refresh(p.projectId)} onBack={() => go(2)} onNext={() => go(4)} />;
+    }
+    return (
+      <>
+        <div className={styles.stepBody}>
+          <span className={styles.hint}>Este paso llega en la siguiente fase.</span>
+        </div>
+        <StepFoot step={step} hint="" onBack={() => go(step - 1)} onNext={step < 5 ? () => go(step + 1) : undefined} />
+      </>
+    );
+  };
+
   return (
     <div className={styles.screen}>
       <AppTopBar />
       <div className={styles.layout}>
-        <ProjectSidebar
-          projects={projects}
-          selectedId={selectedId}
-          creating={creating}
-          onSelect={(id) => {
-            setCreating(false);
-            setSelectedId(id);
-          }}
-          onNew={() => setCreating(true)}
-        />
+        <ProjectSidebar projects={projects} selectedId={selectedId} creating={creating} onSelect={select} onNew={() => setCreating(true)} />
         <main className={styles.main}>
           {loading ? (
             <div className={styles.empty}>
@@ -63,18 +113,8 @@ export function Factory() {
           ) : (
             <>
               <ProjectHeader project={selected} home={home} />
-              <Wizard>
-                <StepProject
-                  key={selected?.projectId ?? 'new'}
-                  project={selected}
-                  home={home}
-                  onCreated={(p) => {
-                    replace(p);
-                    setSelectedId(p.projectId);
-                    setCreating(false);
-                  }}
-                  onSaved={replace}
-                />
+              <Wizard step={selected ? step : 1} reached={selected ? Math.min(5, selected.setupStep) : 1} onGo={go}>
+                {renderStep(selected)}
               </Wizard>
             </>
           )}
