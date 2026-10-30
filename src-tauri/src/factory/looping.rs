@@ -1,0 +1,567 @@
+//! The loop: ▶ Play takes the queue one order at a time, in its order, until
+//! it's empty or you stop it. A usage limit makes it wait and go on by itself
+//! when the window resets; a lack of credits, a ✋ or three failures in a row
+//! make it stop and say so. It survives Hangar restarting.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Duration;
+
+use chrono::{DateTime, Utc};
+use rusqlite::{params, Connection};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+
+use super::agent::CliRunner;
+use super::line::{self, Ctx, Run};
+use super::orders;
+use crate::db::DbConnection;
+
+/// Failed orders in a row before the loop stops itself.
+pub const BREAKER: usize = 3;
+
+const TICK: Duration = Duration::from_secs(2);
+/// How often delivered MRs are asked whether they were merged.
+const MERGE_POLL: Duration = Duration::from_secs(120);
+
+/// One worker per project, and a word on what it's doing for the UI.
+struct Worker {
+    wake: AtomicBool,
+}
+
+static WORKERS: LazyLock<Mutex<HashMap<String, Arc<Worker>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static NOTES: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn set_note(project_id: &str, note: Option<&str>) {
+    if let Ok(mut n) = NOTES.lock() {
+        match note {
+            Some(text) => n.insert(project_id.to_string(), text.to_string()),
+            None => n.remove(project_id),
+        };
+    }
+}
+
+fn set_state(conn: &Connection, project_id: &str, state: &str) -> Result<(), String> {
+    conn.execute("UPDATE factory_projects SET loop_state = ?2, updated_at = ?3 WHERE project_id = ?1", params![project_id, state, Utc::now().to_rfc3339()]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn loop_state(conn: &Connection, project_id: &str) -> String {
+    conn.query_row("SELECT loop_state FROM factory_projects WHERE project_id = ?1", params![project_id], |r| r.get(0)).unwrap_or_else(|_| "stopped".into())
+}
+
+/// Whether the account can start work now, per Hangar's own quota forecast.
+/// An account never sampled counts as having room.
+fn has_room(conn: &Connection, account_id: &str) -> bool {
+    match crate::quota::account_quotas(conn) {
+        Ok(quotas) => quotas
+            .iter()
+            .find(|q| q.account_id == account_id)
+            .map(|q| crate::run_queue::has_capacity(&crate::run_queue::AccountCapacity::from_quota(q, false)))
+            .unwrap_or(true),
+        Err(_) => true,
+    }
+}
+
+/// What ▶ would do now, decided from the queue alone — the part that can be
+/// tested without a worker.
+#[derive(Debug, PartialEq)]
+pub enum Next {
+    /// Go on with this run (waiting, stopped or ✋ resolved).
+    Resume(String),
+    /// Start this order.
+    Start(String),
+    /// Orders remain, but they wait for MRs to be merged.
+    WaitMerges,
+    /// Nothing to do.
+    Empty,
+}
+
+pub fn decide(conn: &Connection, project_id: &str) -> Result<Next, String> {
+    if let Some(run) = line::active_run(conn, project_id)? {
+        return Ok(Next::Resume(run.id));
+    }
+    if let Some(order) = orders::next(conn, project_id)? {
+        return Ok(Next::Start(order.id));
+    }
+    let pending = orders::list(conn, project_id)?.into_iter().any(|o| o.status == "todo" || o.status == "delivered");
+    Ok(if pending { Next::WaitMerges } else { Next::Empty })
+}
+
+/// Consecutive failed orders, newest first, up to the last that wasn't.
+pub fn failures_in_a_row(conn: &Connection, project_id: &str) -> Result<usize, String> {
+    Ok(line::runs(conn, project_id, BREAKER as i64)?.iter().take_while(|r| r.status == "failed").count())
+}
+
+fn emit<R: Runtime>(app: &AppHandle<R>, project_id: &str) {
+    let _ = app.emit("factory-updated", project_id);
+}
+
+fn notify<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
+    crate::notifications::record(app, crate::notifications::kind::AGENT, |s| s.notify_session_waiting, title, body, crate::notifications::Target::screen("factory"));
+}
+
+/// Asks the forge about every open MR of the project; a merged one unblocks
+/// what depends on it.
+fn poll_merges<R: Runtime>(app: &AppHandle<R>, project_id: &str) {
+    let db = app.state::<DbConnection>();
+    let open: Vec<Run> = match db.0.lock() {
+        Ok(conn) => line::runs(&conn, project_id, 100).unwrap_or_default().into_iter().filter(|r| r.status == "delivered" && r.mr_number.is_some()).collect(),
+        Err(_) => return,
+    };
+    for mut run in open {
+        let Ok(repo) = crate::forges::detect_repo(std::path::Path::new(&run.worktree)) else { continue };
+        let Ok(facts) = crate::forges::fetch_single_pr_facts(&repo, run.mr_number.unwrap_or_default()) else { continue };
+        if facts.state == "merged" {
+            run.status = "merged".into();
+            if let Ok(conn) = db.0.lock() {
+                let _ = line::save_run(&conn, &run);
+                if let Ok(order) = orders::get(&conn, &run.order_id) {
+                    drop(conn);
+                    notify(app, &format!("{} fusionada", order.key), "La MR se fusionó: lo que dependía de ella ya puede empezar.");
+                }
+            }
+            emit(app, project_id);
+        }
+    }
+}
+
+/// The worker: runs until the queue is empty, ⏹, a pause finishing its
+/// order, or the breaker.
+fn work<R: Runtime>(app: AppHandle<R>, project_id: String, worker: Arc<Worker>) {
+    let db = app.state::<DbConnection>();
+    let mut last_merge_poll: Option<std::time::Instant> = None;
+    loop {
+        let state = match db.0.lock() {
+            Ok(conn) => loop_state(&conn, &project_id),
+            Err(_) => break,
+        };
+        if state == "stopped" {
+            break;
+        }
+        if last_merge_poll.is_none_or(|t| t.elapsed() >= MERGE_POLL) {
+            poll_merges(&app, &project_id);
+            last_merge_poll = Some(std::time::Instant::now());
+        }
+        let next = match db.0.lock() {
+            Ok(conn) => decide(&conn, &project_id),
+            Err(_) => break,
+        };
+        let next = match next {
+            Ok(n) => n,
+            Err(e) => {
+                set_note(&project_id, Some(&e));
+                break;
+            }
+        };
+        match next {
+            Next::Resume(run_id) => {
+                let run = match db.0.lock() {
+                    Ok(conn) => line::load_run(&conn, &run_id),
+                    Err(_) => break,
+                };
+                let Ok(run) = run else { break };
+                let due = match run.status.as_str() {
+                    "running" => true,
+                    "waiting_limit" => run.resume_at.as_deref().and_then(|t| DateTime::parse_from_rfc3339(t).ok()).is_none_or(|t| t.with_timezone(&Utc) <= Utc::now()),
+                    // A ⏹'d order goes on when ▶ is pressed again.
+                    "stopped" => true,
+                    // ✋ waits for a person; Resolve wakes this up.
+                    _ => false,
+                };
+                if !due {
+                    set_note(&project_id, Some(if run.status == "waiting_limit" { "en espera por límite de uso" } else { "esperando a una persona" }));
+                    sleep_or_wake(&worker, &app, &project_id);
+                    continue;
+                }
+                set_note(&project_id, None);
+                drive(&app, &project_id, &run_id);
+                // After an order: pause means stop here; the breaker too.
+                let conn = match db.0.lock() {
+                    Ok(c) => c,
+                    Err(_) => break,
+                };
+                let finished = line::load_run(&conn, &run_id).map(|r| matches!(r.status.as_str(), "delivered" | "merged" | "failed")).unwrap_or(true);
+                if finished && loop_state(&conn, &project_id) == "paused" {
+                    let _ = set_state(&conn, &project_id, "stopped");
+                    set_note(&project_id, Some("en pausa: la orden en curso terminó"));
+                    break;
+                }
+                if failures_in_a_row(&conn, &project_id).unwrap_or(0) >= BREAKER {
+                    let _ = set_state(&conn, &project_id, "stopped");
+                    drop(conn);
+                    set_note(&project_id, Some("parada: 3 órdenes fallidas seguidas"));
+                    notify(&app, "La Factory se paró", "Tres órdenes seguidas fallaron. Revísalas en Entregas antes de seguir.");
+                    emit(&app, &project_id);
+                    break;
+                }
+            }
+            Next::Start(order_id) => {
+                let (spec_account, paused) = match db.0.lock() {
+                    Ok(conn) => (
+                        super::team::load(&conn, &project_id).ok().and_then(|t| t.into_iter().find(|a| a.role == "spec").and_then(|a| a.account_id)),
+                        loop_state(&conn, &project_id) == "paused",
+                    ),
+                    Err(_) => break,
+                };
+                if paused {
+                    if let Ok(conn) = db.0.lock() {
+                        let _ = set_state(&conn, &project_id, "stopped");
+                    }
+                    break;
+                }
+                // Look at the quota before starting, not after the first refusal.
+                if let Some(acc) = &spec_account {
+                    let room = db.0.lock().map(|c| has_room(&c, acc)).unwrap_or(true);
+                    if !room {
+                        set_note(&project_id, Some("esperando cuota: la cuenta del spec writer está al límite"));
+                        sleep_long(&worker, &app, &project_id, Duration::from_secs(300));
+                        continue;
+                    }
+                }
+                let ctx_parts = context(&app, &project_id);
+                let started = {
+                    let notify_fn = |t: &str, b: &str| notify(&app, t, b);
+                    let changed_fn = || emit(&app, &project_id);
+                    let runner = match ctx_parts.runner(&db, &project_id) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            set_note(&project_id, Some(&e));
+                            break;
+                        }
+                    };
+                    let ctx = Ctx { db: &db, runner: &runner, git_env: ctx_parts.git_env.clone(), root: ctx_parts.root.clone(), notify: &notify_fn, changed: &changed_fn };
+                    line::start(&ctx, &project_id, &order_id)
+                };
+                match started {
+                    Ok(_) => emit(&app, &project_id),
+                    Err(e) => {
+                        // An order that can't even start fails, so the queue
+                        // moves on instead of trying it forever.
+                        if let Ok(conn) = db.0.lock() {
+                            let _ = orders::set_status(&conn, &order_id, "failed");
+                        }
+                        set_note(&project_id, Some(&e));
+                        notify(&app, "Una orden no pudo empezar", &e);
+                        emit(&app, &project_id);
+                    }
+                }
+            }
+            Next::WaitMerges => {
+                set_note(&project_id, Some("esperando a que se fusionen las MR de las que dependen las demás"));
+                sleep_long(&worker, &app, &project_id, MERGE_POLL);
+                last_merge_poll = None;
+            }
+            Next::Empty => {
+                if let Ok(conn) = db.0.lock() {
+                    let _ = set_state(&conn, &project_id, "stopped");
+                }
+                set_note(&project_id, Some("cola vacía: todo entregado"));
+                notify(&app, "La Factory terminó la cola", "No quedan órdenes por hacer en este proyecto.");
+                emit(&app, &project_id);
+                break;
+            }
+        }
+    }
+    if let Ok(mut w) = WORKERS.lock() {
+        if w.get(&project_id).is_some_and(|x| Arc::ptr_eq(x, &worker)) {
+            w.remove(&project_id);
+        }
+    }
+    emit(&app, &project_id);
+}
+
+struct Parts {
+    git_env: Vec<(String, String)>,
+    root: Option<std::path::PathBuf>,
+}
+
+impl Parts {
+    /// The CLIs of every account the project's team and its running order use.
+    fn runner(&self, db: &DbConnection, project_id: &str) -> Result<CliRunner, String> {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let mut ids: Vec<String> = super::team::load(&conn, project_id)?.into_iter().filter_map(|a| a.account_id).collect();
+        if let Some(run) = line::active_run(&conn, project_id)? {
+            ids.extend(run.team.iter().filter_map(|a| a.account_id.clone()));
+            ids.extend(run.state.accounts.values().cloned());
+        }
+        ids.sort();
+        ids.dedup();
+        CliRunner::for_accounts(&conn, &ids, self.root.clone())
+    }
+}
+
+fn context<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Parts {
+    Parts { git_env: crate::git_identity::git_env_for_project(app, project_id), root: crate::app_data::root(app).ok() }
+}
+
+/// Advances one run until it delivers, waits or fails.
+fn drive<R: Runtime>(app: &AppHandle<R>, project_id: &str, run_id: &str) {
+    let db = app.state::<DbConnection>();
+    let parts = context(app, project_id);
+    let runner = match parts.runner(&db, project_id) {
+        Ok(r) => r,
+        Err(e) => {
+            set_note(project_id, Some(&e));
+            return;
+        }
+    };
+    let notify_fn = |t: &str, b: &str| notify(app, t, b);
+    let changed_fn = || emit(app, project_id);
+    let ctx = Ctx { db: &db, runner: &runner, git_env: parts.git_env.clone(), root: parts.root.clone(), notify: &notify_fn, changed: &changed_fn };
+    if let Err(e) = line::advance(&ctx, run_id) {
+        set_note(project_id, Some(&e));
+        if let Ok(conn) = db.0.lock() {
+            if let Ok(mut run) = line::load_run(&conn, run_id) {
+                run.status = "failed".into();
+                run.error = Some(e.clone());
+                run.finished_at = Some(Utc::now().to_rfc3339());
+                let _ = line::save_run(&conn, &run);
+            }
+        }
+        notify(app, "Una orden falló", &e);
+    }
+    emit(app, project_id);
+}
+
+fn sleep_or_wake<R: Runtime>(worker: &Worker, app: &AppHandle<R>, project_id: &str) {
+    sleep_long(worker, app, project_id, Duration::from_secs(15));
+}
+
+/// Sleeps up to `total`, waking early on Resolve, ⏹ or a pause.
+fn sleep_long<R: Runtime>(worker: &Worker, app: &AppHandle<R>, project_id: &str, total: Duration) {
+    emit(app, project_id);
+    let mut slept = Duration::ZERO;
+    while slept < total {
+        if worker.wake.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        std::thread::sleep(TICK);
+        slept += TICK;
+    }
+}
+
+/// Starts the project's worker unless one is running; wakes it otherwise.
+fn ensure_worker<R: Runtime>(app: &AppHandle<R>, project_id: &str) {
+    let mut workers = match WORKERS.lock() {
+        Ok(w) => w,
+        Err(_) => return,
+    };
+    if let Some(w) = workers.get(project_id) {
+        w.wake.store(true, Ordering::SeqCst);
+        return;
+    }
+    let worker = Arc::new(Worker { wake: AtomicBool::new(false) });
+    workers.insert(project_id.to_string(), worker.clone());
+    let app = app.clone();
+    let id = project_id.to_string();
+    std::thread::spawn(move || work(app, id, worker));
+}
+
+/// Picks up, after Hangar restarts, every project whose line was running.
+pub fn resume_all<R: Runtime>(app: &AppHandle<R>) {
+    let projects: Vec<String> = {
+        let db = app.state::<DbConnection>();
+        let Ok(conn) = db.0.lock() else { return };
+        let Ok(mut stmt) = conn.prepare("SELECT project_id FROM factory_projects WHERE loop_state IN ('running', 'paused')") else { return };
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map(|r| r.filter_map(Result::ok).collect()).unwrap_or_default();
+        rows
+    };
+    for p in projects {
+        ensure_worker(app, &p);
+    }
+}
+
+// ---------------------------------------------------------------- commands
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopStatus {
+    /// `stopped`, `running` or `paused`.
+    pub state: String,
+    /// Whether a worker is alive right now.
+    pub working: bool,
+    pub note: Option<String>,
+}
+
+fn status_of(conn: &Connection, project_id: &str) -> LoopStatus {
+    LoopStatus {
+        state: loop_state(conn, project_id),
+        working: WORKERS.lock().map(|w| w.contains_key(project_id)).unwrap_or(false),
+        note: NOTES.lock().ok().and_then(|n| n.get(project_id).cloned()),
+    }
+}
+
+#[tauri::command]
+pub fn factory_loop_status(db: State<DbConnection>, project_id: String) -> Result<LoopStatus, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    Ok(status_of(&conn, &project_id))
+}
+
+/// ▶ Play. With nothing to do it says what's missing instead of starting.
+#[tauri::command]
+pub fn factory_play<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<LoopStatus, String> {
+    {
+        let db = app.state::<DbConnection>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let project = super::store::get(&conn, &project_id)?;
+        if project.brain_version.is_none() {
+            return Err("Sella antes el brain: la línea decide con él.".into());
+        }
+        let check = super::team::check(&conn, &super::team::load(&conn, &project_id)?)?;
+        if let Some(p) = check.problems.first() {
+            return Err(format!("El equipo no puede trabajar: {p}"));
+        }
+        if decide(&conn, &project_id)? == Next::Empty {
+            return Err(if project.provider_kind == "none" {
+                "No hay tareas: pon un proveedor de tareas o crea las tareas desde un TRD.".into()
+            } else {
+                "No hay tareas en la cola: trae las del proveedor o créalas desde un TRD.".into()
+            });
+        }
+        if let Some(run) = line::active_run(&conn, &project_id)? {
+            super::agent::clear_stop(&run.id);
+        }
+        set_state(&conn, &project_id, "running")?;
+        conn.execute("UPDATE factory_projects SET setup_step = 6 WHERE project_id = ?1", params![project_id]).map_err(|e| e.to_string())?;
+        set_note(&project_id, None);
+    }
+    ensure_worker(&app, &project_id);
+    let db = app.state::<DbConnection>();
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    Ok(status_of(&conn, &project_id))
+}
+
+/// ⏸ Pausa: the order at work finishes; no other starts.
+#[tauri::command]
+pub fn factory_pause(db: State<DbConnection>, project_id: String) -> Result<LoopStatus, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    if loop_state(&conn, &project_id) == "running" {
+        set_state(&conn, &project_id, "paused")?;
+    }
+    Ok(status_of(&conn, &project_id))
+}
+
+/// ⏹ Stop: now. The agent at work is killed; ▶ (or Reintentar) picks the
+/// order up where it was, in the same conversation.
+#[tauri::command]
+pub fn factory_stop<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<LoopStatus, String> {
+    let db = app.state::<DbConnection>();
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    set_state(&conn, &project_id, "stopped")?;
+    if let Some(run) = line::active_run(&conn, &project_id)? {
+        if run.status == "running" {
+            // Kills the agent at work, or stops the line at the next stage.
+            super::agent::stop(&run.id);
+        } else if run.status == "waiting_limit" {
+            let mut r = run;
+            r.status = "stopped".into();
+            line::save_run(&conn, &r)?;
+        }
+    }
+    if let Some(w) = WORKERS.lock().ok().and_then(|w| w.get(&project_id).cloned()) {
+        w.wake.store(true, Ordering::SeqCst);
+    }
+    set_note(&project_id, Some("parada · ▶ retoma la orden donde quedó"));
+    drop(conn);
+    emit(&app, &project_id);
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    Ok(status_of(&conn, &project_id))
+}
+
+/// A person's answer to a ✋, a lack of credits or «Usar otra cuenta».
+#[tauri::command]
+pub fn factory_run_resolve<R: Runtime>(app: AppHandle<R>, run_id: String, action: String, note: Option<String>, account_id: Option<String>) -> Result<(), String> {
+    let project_id = {
+        let db = app.state::<DbConnection>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let run = line::resolve(&conn, &run_id, &action, note, account_id)?;
+        if loop_state(&conn, &run.project_id) == "stopped" {
+            // Answering is asking it to go on.
+            set_state(&conn, &run.project_id, "running")?;
+        }
+        run.project_id
+    };
+    ensure_worker(&app, &project_id);
+    emit(&app, &project_id);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn play_resumes_the_order_in_flight_before_taking_another() {
+        let w = line::tests::world("autonomous", "local", "true");
+        let conn = w.db.0.lock().unwrap();
+        let other = orders::insert(&conn, "p1", &orders::NewOrder { key: "VET-3".into(), title: "Agenda".into(), origin: "trd".into(), ..Default::default() }).unwrap();
+        assert_eq!(decide(&conn, "p1").unwrap(), Next::Start(w.order_id.clone()));
+        drop(conn);
+
+        let s = line::tests::Script::new();
+        s.limit("builder");
+        static N: fn(&str, &str) = |_, _| {};
+        static C: fn() = || {};
+        let ctx = Ctx { db: &w.db, runner: &s, git_env: crate::factory::setup::tests_identity(), root: None, notify: &N, changed: &C };
+        let run = line::start(&ctx, "p1", &w.order_id).unwrap();
+        let run = line::advance(&ctx, &run.id).unwrap();
+        assert_eq!(run.status, "waiting_limit");
+
+        let conn = w.db.0.lock().unwrap();
+        assert_eq!(decide(&conn, "p1").unwrap(), Next::Resume(run.id.clone()), "the waiting order comes first, not VET-3");
+        assert_eq!(failures_in_a_row(&conn, "p1").unwrap(), 0, "a limit is not a failure");
+        drop(conn);
+        line::advance(&ctx, &run.id).unwrap();
+        let conn = w.db.0.lock().unwrap();
+        assert_eq!(decide(&conn, "p1").unwrap(), Next::Start(other));
+    }
+
+    #[test]
+    fn an_empty_queue_and_one_waiting_for_merges_are_told_apart() {
+        let w = line::tests::world("autonomous", "mr", "true");
+        let conn = w.db.0.lock().unwrap();
+        orders::set_status(&conn, &w.order_id, "delivered").unwrap();
+        assert_eq!(decide(&conn, "p1").unwrap(), Next::WaitMerges);
+        orders::set_status(&conn, &w.order_id, "merged").unwrap();
+        assert_eq!(decide(&conn, "p1").unwrap(), Next::Empty);
+    }
+
+    #[test]
+    fn stop_halts_the_line_between_stages_and_play_goes_on_from_there() {
+        let w = line::tests::world("autonomous", "local", "true");
+        let s = line::tests::Script::new();
+        static N: fn(&str, &str) = |_, _| {};
+        static C: fn() = || {};
+        let ctx = Ctx { db: &w.db, runner: &s, git_env: crate::factory::setup::tests_identity(), root: None, notify: &N, changed: &C };
+        let run = line::start(&ctx, "p1", &w.order_id).unwrap();
+        crate::factory::agent::stop(&run.id);
+        let run = line::advance(&ctx, &run.id).unwrap();
+        assert_eq!((run.status.as_str(), run.stage.as_str()), ("stopped", "spec"));
+        assert!(s.calls.lock().unwrap().is_empty(), "nothing ran after ⏹");
+        crate::factory::agent::clear_stop(&run.id);
+        assert_eq!(line::advance(&ctx, &run.id).unwrap().status, "merged");
+    }
+
+    #[test]
+    fn three_failures_in_a_row_trip_the_breaker() {
+        let w = line::tests::world("autonomous", "local", "false");
+        let s = line::tests::Script::new();
+        static N: fn(&str, &str) = |_, _| {};
+        static C: fn() = || {};
+        let ctx = Ctx { db: &w.db, runner: &s, git_env: crate::factory::setup::tests_identity(), root: None, notify: &N, changed: &C };
+        for i in 0..BREAKER {
+            let id = if i == 0 {
+                w.order_id.clone()
+            } else {
+                let conn = w.db.0.lock().unwrap();
+                orders::insert(&conn, "p1", &orders::NewOrder { key: format!("VET-{}", 10 + i), title: "x".into(), origin: "trd".into(), ..Default::default() }).unwrap()
+            };
+            let run = line::start(&ctx, "p1", &id).unwrap();
+            assert_eq!(line::advance(&ctx, &run.id).unwrap().status, "failed");
+        }
+        let conn = w.db.0.lock().unwrap();
+        assert_eq!(failures_in_a_row(&conn, "p1").unwrap(), BREAKER);
+    }
+}

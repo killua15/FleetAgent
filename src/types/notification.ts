@@ -4,7 +4,7 @@ export type NotificationKind = 'approval' | 'pr' | 'task' | 'agent';
 
 /** Where clicking a notification takes you. Matches `notifications::Target`. */
 export interface NotificationTarget {
-  kind: 'terminal' | 'session' | 'pr' | 'task';
+  kind: 'terminal' | 'session' | 'pr' | 'task' | 'factory';
   id: string | null;
 }
 

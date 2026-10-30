@@ -8,6 +8,7 @@ pub mod agent;
 pub mod brain;
 pub mod limits;
 pub mod line;
+pub mod looping;
 pub mod orders;
 pub mod planner;
 pub mod setup;

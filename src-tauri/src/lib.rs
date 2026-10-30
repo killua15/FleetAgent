@@ -196,6 +196,10 @@ pub fn run() {
             //
             // The PR screen reads the database these fill, so what they really
             // buy is a screen that paints with no network in its way.
+            // The Factory picks up where it was: a line that was running
+            // before Hangar closed goes on, a limit wait included.
+            factory::looping::resume_all(app.handle());
+
             let poll_handle = app.handle().clone();
             heartbeat("pr-poll", move || {
                 std::thread::sleep(std::time::Duration::from_secs(300));
@@ -540,6 +544,11 @@ pub fn run() {
             factory::planner::factory_trd_read,
             factory::view::factory_live,
             factory::view::factory_deliveries,
+            factory::looping::factory_loop_status,
+            factory::looping::factory_play,
+            factory::looping::factory_pause,
+            factory::looping::factory_stop,
+            factory::looping::factory_run_resolve,
             knowledge_sources::list_knowledge_sources,
             knowledge_sources::save_knowledge_source,
             knowledge_sources::delete_knowledge_source,

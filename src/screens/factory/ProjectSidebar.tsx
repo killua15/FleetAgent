@@ -1,10 +1,15 @@
 import type { FactoryProject } from '../../types/factory';
 import styles from '../Factory.module.css';
 
-/** What a project is doing, in the sidebar's few words. Until F5 every
- *  project is still being set up. */
+/** What a project is doing, in the sidebar's few words. */
 function stateLine(p: FactoryProject): string {
-  return `configurando · paso ${p.setupStep} de 5`;
+  if (p.setupStep < 6) return `configurando · paso ${p.setupStep} de 5`;
+  return { running: 'trabajando', paused: 'en pausa · termina la orden', stopped: 'parada' }[p.loopState];
+}
+
+function dotClass(p: FactoryProject): string {
+  if (p.setupStep < 6) return styles.dotCfg;
+  return p.loopState === 'running' ? styles.dotRun : p.loopState === 'paused' ? styles.dotWait : styles.dot;
 }
 
 /** Only the projects that joined the Factory — not every folder Hangar knows. */
@@ -32,7 +37,7 @@ export function ProjectSidebar({
           title={p.projectPath}
         >
           <span className={styles.projectName}>
-            <span className={styles.dotCfg} />
+            <span className={dotClass(p)} />
             <span>{p.projectName}</span>
           </span>
           <span className={styles.projectState}>{stateLine(p)}</span>

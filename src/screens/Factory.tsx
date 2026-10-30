@@ -7,11 +7,13 @@ import { toastError } from '../components/ErrorOverlay';
 import type { FactoryProject } from '../types/factory';
 import { ProjectSidebar } from './factory/ProjectSidebar';
 import { ProjectHeader } from './factory/ProjectHeader';
-import { StepFoot, Wizard } from './factory/Wizard';
+import { Wizard } from './factory/Wizard';
 import { StepProject } from './factory/StepProject';
 import { StepBrain } from './factory/StepBrain';
 import { StepTeam } from './factory/StepTeam';
 import { StepTasks } from './factory/StepTasks';
+import { StepPlay } from './factory/StepPlay';
+import { Ops } from './factory/Ops';
 import styles from './Factory.module.css';
 
 /**
@@ -26,6 +28,8 @@ export function Factory() {
   const [loading, setLoading] = useState(true);
   const [home, setHome] = useState<string | null>(null);
   const [step, setStep] = useState(1);
+  /** Looking at the wizard of a project that's already running. */
+  const [reconfiguring, setReconfiguring] = useState(false);
 
   useEffect(() => {
     homeDir()
@@ -48,6 +52,7 @@ export function Factory() {
 
   const select = (id: string) => {
     setCreating(false);
+    setReconfiguring(false);
     setSelectedId(id);
     setStep(Math.min(5, projects.find((p) => p.projectId === id)?.setupStep ?? 1));
   };
@@ -99,12 +104,16 @@ export function Factory() {
       return <StepTasks key={p.projectId} project={p} onBack={() => go(3)} onNext={() => go(5)} onToProvider={() => setStep(1)} />;
     }
     return (
-      <>
-        <div className={styles.stepBody}>
-          <span className={styles.hint}>Este paso llega en la siguiente fase.</span>
-        </div>
-        <StepFoot step={step} hint="" onBack={() => go(step - 1)} onNext={step < 5 ? () => go(step + 1) : undefined} />
-      </>
+      <StepPlay
+        key={p.projectId}
+        project={p}
+        home={home}
+        onBack={() => go(4)}
+        onStarted={() => {
+          setReconfiguring(false);
+          refresh(p.projectId);
+        }}
+      />
     );
   };
 
@@ -121,9 +130,21 @@ export function Factory() {
           ) : (
             <>
               <ProjectHeader project={selected} home={home} />
-              <Wizard step={selected ? step : 1} reached={selected ? Math.min(5, selected.setupStep) : 1} onGo={go}>
-                {renderStep(selected)}
-              </Wizard>
+              {selected && selected.setupStep >= 6 && !reconfiguring ? (
+                <Ops
+                  key={selected.projectId}
+                  project={selected}
+                  onReconfigure={() => {
+                    setReconfiguring(true);
+                    setStep(1);
+                  }}
+                  onChanged={() => refresh(selected.projectId)}
+                />
+              ) : (
+                <Wizard step={selected ? step : 1} reached={selected ? Math.min(5, selected.setupStep) : 1} onGo={go}>
+                  {renderStep(selected)}
+                </Wizard>
+              )}
             </>
           )}
         </main>

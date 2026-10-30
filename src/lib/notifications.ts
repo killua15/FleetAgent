@@ -83,6 +83,8 @@ export function targetRoute(n: AppNotification): { screen: ScreenName; params?: 
       return { screen: 'pr-reviews' };
     case 'task':
       return { screen: 'terminals', params: { showTasks: true } };
+    case 'factory':
+      return { screen: 'factory' };
     default:
       return null;
   }
