@@ -314,6 +314,12 @@ const MIGRATIONS: &[Migration] = &[
         run: knowledge_sources_tables,
         transactional: true,
     },
+    Migration {
+        version: 39,
+        name: "factory_projects",
+        run: factory_projects_table,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -1154,6 +1160,29 @@ fn notifications_core_kinds_only(conn: &Connection) -> Result<(), String> {
 fn knowledge_sources_tables(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(KNOWLEDGE_SOURCES_DDL).map_err(|e| format!("could not create the knowledge source tables: {e}"))
 }
+
+/// The Factory's view of a project: where its tasks come from, how a finished
+/// order is delivered, how far the setup went and whether the loop runs.
+/// One row per Hangar project that joined the Factory.
+fn factory_projects_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(FACTORY_PROJECTS_DDL).map_err(|e| format!("could not create factory_projects: {e}"))
+}
+
+pub(crate) const FACTORY_PROJECTS_DDL: &str = "CREATE TABLE IF NOT EXISTS factory_projects (
+  project_id           TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  provider_kind        TEXT NOT NULL DEFAULT 'none',
+  provider_source_id   TEXT,
+  provider_scope_id    TEXT,
+  provider_scope_label TEXT,
+  delivery             TEXT NOT NULL DEFAULT 'local',
+  mode                 TEXT NOT NULL DEFAULT 'supervised',
+  app_start_cmd        TEXT,
+  app_url              TEXT,
+  setup_step           INTEGER NOT NULL DEFAULT 1,
+  loop_state           TEXT NOT NULL DEFAULT 'stopped',
+  created_at           TEXT NOT NULL,
+  updated_at           TEXT NOT NULL
+);";
 
 pub(crate) const KNOWLEDGE_SOURCES_DDL: &str = "CREATE TABLE IF NOT EXISTS knowledge_sources (
   id             TEXT PRIMARY KEY,

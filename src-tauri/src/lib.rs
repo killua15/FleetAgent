@@ -10,6 +10,7 @@ mod commands;
 mod credential_vault;
 mod db;
 mod diagrams;
+mod factory;
 mod forges;
 mod git_identity;
 mod graph;
@@ -506,6 +507,12 @@ pub fn run() {
             task_sources::list_source_tasks,
             task_sources::cache::list_cached_tasks,
             task_sources::cache::refresh_tasks,
+            factory::factory_list_projects,
+            factory::factory_get_project,
+            factory::factory_create_project,
+            factory::factory_update_project,
+            factory::factory_repo_status,
+            factory::factory_init_repo,
             knowledge_sources::list_knowledge_sources,
             knowledge_sources::save_knowledge_source,
             knowledge_sources::delete_knowledge_source,
