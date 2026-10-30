@@ -184,6 +184,9 @@ pub fn codex_args(call: &AgentCall, schema_file: &std::path::Path, last_message:
     if let Some(id) = &call.resume {
         args.extend(["resume".into(), id.clone()]);
     }
+    // `exec resume` takes neither --sandbox nor --cd: the sandbox goes as
+    // config, which both accept, and the folder is the process's own.
+    let sandbox = if call.write { "workspace-write" } else { "read-only" };
     args.extend([
         "--json".into(),
         "--model".into(),
@@ -192,13 +195,14 @@ pub fn codex_args(call: &AgentCall, schema_file: &std::path::Path, last_message:
         schema_file.to_string_lossy().to_string(),
         "--output-last-message".into(),
         last_message.to_string_lossy().to_string(),
-        "--sandbox".into(),
-        if call.write { "workspace-write" } else { "read-only" }.into(),
+        "-c".into(),
+        format!("sandbox_mode=\"{sandbox}\""),
         "--skip-git-repo-check".into(),
-        "--cd".into(),
-        call.cwd.to_string_lossy().to_string(),
-        call.prompt.clone(),
     ]);
+    if call.resume.is_none() {
+        args.extend(["--cd".into(), call.cwd.to_string_lossy().to_string()]);
+    }
+    args.push(call.prompt.clone());
     args
 }
 
@@ -411,9 +415,12 @@ mod tests {
     fn codex_runs_exec_in_the_worktree_and_resumes_by_thread() {
         let a = codex_args(&call(false, Some("th-9")), std::path::Path::new("/s.json"), std::path::Path::new("/l.txt"));
         assert_eq!(&a[..3], &["exec", "resume", "th-9"]);
-        assert!(a.windows(2).any(|w| w == ["--sandbox", "read-only"]));
-        assert!(a.windows(2).any(|w| w == ["--cd", "/tmp/wt"]));
+        assert!(a.windows(2).any(|w| w == ["-c", "sandbox_mode=\"read-only\""]));
+        assert!(!a.contains(&"--cd".to_string()), "exec resume has no --cd");
         assert_eq!(a.last().unwrap(), "haz esto");
+        let fresh = codex_args(&call(true, None), std::path::Path::new("/s.json"), std::path::Path::new("/l.txt"));
+        assert!(fresh.windows(2).any(|w| w == ["--cd", "/tmp/wt"]));
+        assert!(fresh.windows(2).any(|w| w == ["-c", "sandbox_mode=\"workspace-write\""]));
     }
 
     #[test]
