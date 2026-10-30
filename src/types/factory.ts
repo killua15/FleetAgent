@@ -254,3 +254,136 @@ export function providerWhere(p: FactoryProject): string {
   if (p.providerKind === 'clickup') return `la lista «${lastSegment(p.providerScopeLabel ?? 'ClickUp')}» de ClickUp`;
   return `las issues de ${p.providerScopeId ?? 'GitHub'}`;
 }
+
+// ---------------------------------------------------------------- the line
+
+export type Station = 'ing' | 'fab' | 'test' | 'rev' | 'dec' | 'ent';
+
+export const STATION_NAME: Record<Station, string> = {
+  ing: 'Ingeniería',
+  fab: 'Fabricación',
+  test: 'Testers',
+  rev: 'Revisión',
+  dec: 'Decisión',
+  ent: 'Entrega',
+};
+
+export interface GateResult {
+  name: string;
+  command: string;
+  ok: boolean;
+  tail: string;
+}
+
+export interface RunState {
+  spec: Record<string, unknown> | null;
+  feedback: string | null;
+  findings: Record<string, unknown>[];
+  warnings: string[];
+  escalated: boolean;
+  gateOk: boolean;
+  gate: GateResult[];
+  humanKind: 'spec_review' | 'diff' | 'approver' | 'credits' | 'merge' | null;
+  human: string | null;
+  summary: string | null;
+}
+
+export interface FactoryRun {
+  id: string;
+  projectId: string;
+  orderId: string;
+  status: 'running' | 'waiting_limit' | 'waiting_human' | 'stopped' | 'failed' | 'delivered' | 'merged';
+  stage: string;
+  round: number;
+  team: FactoryAgent[];
+  brainVersion: number;
+  branch: string;
+  worktree: string;
+  base: string;
+  resumeAt: string | null;
+  mrUrl: string | null;
+  costUsd: number;
+  error: string | null;
+  state: RunState;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface StepRow {
+  id: string;
+  runId: string;
+  agentId: string | null;
+  label: string;
+  model: string;
+  station: Station;
+  status: 'running' | 'done' | 'failed' | 'wait' | 'human' | 'skipped' | 'stopped';
+  round: number;
+  note: string | null;
+  costUsd: number;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface ActivityRow {
+  id: number;
+  stepId: string | null;
+  station: Station;
+  at: string;
+  kind: 'read' | 'edit' | 'cmd' | 'brain' | 'warn' | 'gate' | 'text';
+  text: string;
+  ruleId: string | null;
+}
+
+export interface DecisionRow {
+  stepId: string | null;
+  station: Station;
+  at: string;
+  ruleId: string | null;
+  text: string;
+}
+
+export interface DayRow {
+  orderKey: string;
+  title: string;
+  status: string;
+  resumeAt: string | null;
+  steps: StepRow[];
+}
+
+export interface LiveData {
+  run: FactoryRun | null;
+  order: FactoryOrder | null;
+  steps: StepRow[];
+  activity: ActivityRow[];
+  decisions: DecisionRow[];
+  today: DayRow[];
+  averages: Partial<Record<Station, number>>;
+}
+
+export interface Delivery {
+  runId: string;
+  orderKey: string;
+  title: string;
+  status: FactoryRun['status'];
+  stage: string;
+  mrUrl: string | null;
+  rounds: number;
+  roundRules: string[];
+  rulesCited: number;
+  costUsd: number;
+  startedAt: string;
+  finishedAt: string | null;
+  error: string | null;
+}
+
+/** `2026-10-30T13:46:20Z` → `13:46`, local time. */
+export function hhmm(iso: string): string {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** Seconds → `0:13:40`. */
+export function countdown(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}

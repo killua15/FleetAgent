@@ -338,6 +338,12 @@ const MIGRATIONS: &[Migration] = &[
         run: factory_orders_table,
         transactional: true,
     },
+    Migration {
+        version: 43,
+        name: "factory_line",
+        run: factory_line_tables,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -1186,6 +1192,72 @@ fn factory_projects_table(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(FACTORY_PROJECTS_DDL).map_err(|e| format!("could not create factory_projects: {e}"))
 }
 
+/// The line at work: one run per order (its frozen team and brain, the stage
+/// it's at, why it waits), each agent's step with its times, what it did, and
+/// every decision with the rule it cites.
+fn factory_line_tables(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(FACTORY_LINE_DDL).map_err(|e| format!("could not create the line tables: {e}"))
+}
+
+pub(crate) const FACTORY_LINE_DDL: &str = "CREATE TABLE IF NOT EXISTS factory_runs (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  order_id      TEXT NOT NULL REFERENCES factory_orders(id) ON DELETE CASCADE,
+  status        TEXT NOT NULL,
+  stage         TEXT NOT NULL,
+  round         INTEGER NOT NULL DEFAULT 0,
+  team          TEXT NOT NULL,
+  brain_version INTEGER NOT NULL,
+  branch        TEXT NOT NULL,
+  worktree      TEXT NOT NULL,
+  base          TEXT NOT NULL,
+  resume_at     TEXT,
+  mr_url        TEXT,
+  mr_number     INTEGER,
+  cost_usd      REAL NOT NULL DEFAULT 0,
+  error         TEXT,
+  state         TEXT NOT NULL DEFAULT '{}',
+  started_at    TEXT NOT NULL,
+  finished_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS factory_runs_project ON factory_runs(project_id, started_at);
+CREATE TABLE IF NOT EXISTS factory_steps (
+  id          TEXT PRIMARY KEY,
+  run_id      TEXT NOT NULL REFERENCES factory_runs(id) ON DELETE CASCADE,
+  agent_id    TEXT,
+  label       TEXT NOT NULL,
+  model       TEXT NOT NULL DEFAULT '',
+  station     TEXT NOT NULL,
+  status      TEXT NOT NULL,
+  round       INTEGER NOT NULL DEFAULT 0,
+  session_id  TEXT,
+  note        TEXT,
+  cost_usd    REAL NOT NULL DEFAULT 0,
+  started_at  TEXT NOT NULL,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS factory_steps_run ON factory_steps(run_id, started_at);
+CREATE TABLE IF NOT EXISTS factory_activity (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id  TEXT NOT NULL REFERENCES factory_runs(id) ON DELETE CASCADE,
+  step_id TEXT,
+  station TEXT NOT NULL,
+  at      TEXT NOT NULL,
+  kind    TEXT NOT NULL,
+  text    TEXT NOT NULL,
+  rule_id TEXT
+);
+CREATE INDEX IF NOT EXISTS factory_activity_run ON factory_activity(run_id, id);
+CREATE TABLE IF NOT EXISTS factory_decisions (
+  id       TEXT PRIMARY KEY,
+  run_id   TEXT NOT NULL REFERENCES factory_runs(id) ON DELETE CASCADE,
+  step_id  TEXT,
+  station  TEXT NOT NULL,
+  at       TEXT NOT NULL,
+  rule_id  TEXT,
+  text     TEXT NOT NULL
+);";
+
 /// The queue: the project's orders, from its provider, a TRD or by hand,
 /// with their acceptance criteria and dependencies.
 fn factory_orders_table(conn: &Connection) -> Result<(), String> {
@@ -1283,7 +1355,7 @@ CREATE TABLE IF NOT EXISTS factory_amendments (
 /// Every Factory migration's DDL, in order — what the Factory's own tests
 /// build their in-memory database from.
 #[cfg(test)]
-pub(crate) const FACTORY_DDLS: &[&str] = &[FACTORY_PROJECTS_DDL, FACTORY_BRAIN_DDL, FACTORY_AGENTS_DDL, FACTORY_ORDERS_DDL];
+pub(crate) const FACTORY_DDLS: &[&str] = &[FACTORY_PROJECTS_DDL, FACTORY_BRAIN_DDL, FACTORY_AGENTS_DDL, FACTORY_ORDERS_DDL, FACTORY_LINE_DDL];
 
 pub(crate) const FACTORY_PROJECTS_DDL: &str = "CREATE TABLE IF NOT EXISTS factory_projects (
   project_id           TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,

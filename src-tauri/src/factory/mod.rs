@@ -7,11 +7,13 @@
 pub mod agent;
 pub mod brain;
 pub mod limits;
+pub mod line;
 pub mod orders;
 pub mod planner;
 pub mod setup;
 pub mod store;
 pub mod team;
+pub mod view;
 
 use std::path::Path;
 

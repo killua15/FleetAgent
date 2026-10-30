@@ -91,13 +91,23 @@ fn was_stopped(key: &str) -> bool {
     STOPPED.lock().map(|mut s| s.remove(key)).unwrap_or(false)
 }
 
+/// Whether ⏹ was pressed for `key` since it last looked — consumed, so the
+/// line stops between stages, not only inside an agent.
+pub fn stop_requested(key: &str) -> bool {
+    was_stopped(key)
+}
+
+/// Forgets a ⏹ nobody acted on, so ▶ doesn't stop again at once.
+pub fn clear_stop(key: &str) {
+    let _ = was_stopped(key);
+}
+
 /// The account's CLI, binary and environment.
 #[derive(Debug, Clone)]
 pub struct Launch {
     pub provider: String,
     pub binary: String,
     pub env: Vec<(String, String)>,
-    pub account_name: String,
 }
 
 /// The real runner: the account's own CLI.
@@ -133,7 +143,7 @@ impl CliRunner {
             if spec.binary != "codex" && spec.binary != crate::providers::claude::BINARY {
                 return Err(format!("{}: la Factory todavía solo corre Claude Code y Codex", account.name));
             }
-            launches.insert(id.clone(), Launch { provider, binary, env, account_name: account.name });
+            launches.insert(id.clone(), Launch { provider, binary, env });
         }
         Ok(CliRunner { launches, root })
     }
@@ -236,6 +246,9 @@ impl Runner for CliRunner {
     fn run(&self, call: &AgentCall, on: &mut dyn FnMut(Activity)) -> AgentResult {
         let failed = |why: String| AgentResult { outcome: Outcome::Failed(why), json: None, session_id: None, cost_usd: 0.0 };
         let Some(launch) = self.launches.get(&call.account_id) else { return failed(format!("cuenta {} sin resolver", call.account_id)) };
+        if was_stopped(&call.key) {
+            return AgentResult { outcome: Outcome::Stopped, json: None, session_id: None, cost_usd: 0.0 };
+        }
 
         let scratch = std::env::temp_dir().join(format!("hangar-factory-{}", uuid::Uuid::new_v4().simple()));
         let (args, last_message) = if launch.provider == "codex" {
@@ -426,7 +439,7 @@ mod tests {
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let mut launches = HashMap::new();
-        launches.insert("a".to_string(), Launch { provider: "claude".into(), binary: bin.to_string_lossy().to_string(), env: vec![], account_name: "work".into() });
+        launches.insert("a".to_string(), Launch { provider: "claude".into(), binary: bin.to_string_lossy().to_string(), env: vec![] });
         CliRunner { launches, root: None }
     }
 

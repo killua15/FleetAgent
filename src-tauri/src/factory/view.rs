@@ -1,0 +1,220 @@
+//! What the live view and the Entregas tab read: the order at work with its
+//! steps, activity and decisions; today's orders for the timeline; and every
+//! delivery with its rounds, cited rules and cost.
+
+use std::collections::HashMap;
+
+use chrono::{DateTime, Local, Utc};
+use rusqlite::{params, Connection};
+use serde::Serialize;
+use tauri::State;
+
+use super::line::{self, Run};
+use super::orders::{self, Order};
+use crate::db::DbConnection;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepRow {
+    pub id: String,
+    pub run_id: String,
+    pub agent_id: Option<String>,
+    pub label: String,
+    pub model: String,
+    pub station: String,
+    /// `running`, `done`, `failed`, `wait`, `human`, `skipped`, `stopped`.
+    pub status: String,
+    pub round: i64,
+    pub note: Option<String>,
+    pub cost_usd: f64,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityRow {
+    pub id: i64,
+    pub step_id: Option<String>,
+    pub station: String,
+    pub at: String,
+    pub kind: String,
+    pub text: String,
+    pub rule_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionRow {
+    pub step_id: Option<String>,
+    pub station: String,
+    pub at: String,
+    pub rule_id: Option<String>,
+    pub text: String,
+}
+
+/// One order of today, for the «Hoy» timeline.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DayRow {
+    pub order_key: String,
+    pub title: String,
+    pub status: String,
+    pub resume_at: Option<String>,
+    pub steps: Vec<StepRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Live {
+    pub run: Option<Run>,
+    pub order: Option<Order>,
+    pub steps: Vec<StepRow>,
+    pub activity: Vec<ActivityRow>,
+    pub decisions: Vec<DecisionRow>,
+    pub today: Vec<DayRow>,
+    /// Station → average seconds a step took, from finished orders: what the
+    /// timeline estimates the rest with.
+    pub averages: HashMap<String, f64>,
+}
+
+fn steps_of(conn: &Connection, run_id: &str) -> Result<Vec<StepRow>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, run_id, agent_id, label, model, station, status, round, note, cost_usd, started_at, finished_at FROM factory_steps WHERE run_id = ?1 ORDER BY started_at")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![run_id], |r| {
+            Ok(StepRow {
+                id: r.get(0)?,
+                run_id: r.get(1)?,
+                agent_id: r.get(2)?,
+                label: r.get(3)?,
+                model: r.get(4)?,
+                station: r.get(5)?,
+                status: r.get(6)?,
+                round: r.get(7)?,
+                note: r.get(8)?,
+                cost_usd: r.get(9)?,
+                started_at: r.get(10)?,
+                finished_at: r.get(11)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+}
+
+fn averages(conn: &Connection, project_id: &str) -> Result<HashMap<String, f64>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.station, s.started_at, s.finished_at FROM factory_steps s JOIN factory_runs r ON r.id = s.run_id
+              WHERE r.project_id = ?1 AND s.status = 'done' AND s.finished_at IS NOT NULL ORDER BY s.started_at DESC LIMIT 400",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(params![project_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).map_err(|e| e.to_string())?;
+    let mut sums: HashMap<String, (f64, f64)> = HashMap::new();
+    for (station, a, b) in rows.filter_map(Result::ok) {
+        let (Ok(a), Ok(b)) = (DateTime::parse_from_rfc3339(&a), DateTime::parse_from_rfc3339(&b)) else { continue };
+        let e = sums.entry(station).or_default();
+        e.0 += (b - a).num_seconds().max(0) as f64;
+        e.1 += 1.0;
+    }
+    Ok(sums.into_iter().map(|(k, (s, n))| (k, s / n)).collect())
+}
+
+pub fn live(conn: &Connection, project_id: &str) -> Result<Live, String> {
+    let run = match line::active_run(conn, project_id)? {
+        Some(r) => Some(r),
+        None => line::runs(conn, project_id, 1)?.into_iter().next(),
+    };
+    let (order, steps, activity, decisions) = match &run {
+        Some(r) => {
+            let mut stmt = conn
+                .prepare("SELECT id, step_id, station, at, kind, text, rule_id FROM factory_activity WHERE run_id = ?1 ORDER BY id DESC LIMIT 300")
+                .map_err(|e| e.to_string())?;
+            let mut activity: Vec<ActivityRow> = stmt
+                .query_map(params![r.id], |x| Ok(ActivityRow { id: x.get(0)?, step_id: x.get(1)?, station: x.get(2)?, at: x.get(3)?, kind: x.get(4)?, text: x.get(5)?, rule_id: x.get(6)? }))
+                .map_err(|e| e.to_string())?
+                .filter_map(Result::ok)
+                .collect();
+            activity.reverse();
+            let mut stmt = conn.prepare("SELECT step_id, station, at, rule_id, text FROM factory_decisions WHERE run_id = ?1 ORDER BY at").map_err(|e| e.to_string())?;
+            let decisions = stmt
+                .query_map(params![r.id], |x| Ok(DecisionRow { step_id: x.get(0)?, station: x.get(1)?, at: x.get(2)?, rule_id: x.get(3)?, text: x.get(4)? }))
+                .map_err(|e| e.to_string())?
+                .filter_map(Result::ok)
+                .collect();
+            (orders::get(conn, &r.order_id).ok(), steps_of(conn, &r.id)?, activity, decisions)
+        }
+        None => (None, Vec::new(), Vec::new(), Vec::new()),
+    };
+
+    // Today, in local time: every order that had a step since midnight.
+    let midnight = Local::now().date_naive().and_hms_opt(0, 0, 0).and_then(|t| t.and_local_timezone(Local).single()).map(|t| t.with_timezone(&Utc).to_rfc3339()).unwrap_or_default();
+    let mut today = Vec::new();
+    for r in line::runs(conn, project_id, 50)? {
+        if r.finished_at.as_deref().is_some_and(|f| f < midnight.as_str()) {
+            continue;
+        }
+        let Ok(o) = orders::get(conn, &r.order_id) else { continue };
+        today.push(DayRow { order_key: o.key, title: o.title, status: r.status.clone(), resume_at: r.resume_at.clone(), steps: steps_of(conn, &r.id)? });
+    }
+    today.reverse();
+    Ok(Live { run, order, steps, activity, decisions, today, averages: averages(conn, project_id)? })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Delivery {
+    pub run_id: String,
+    pub order_key: String,
+    pub title: String,
+    pub status: String,
+    pub stage: String,
+    pub mr_url: Option<String>,
+    pub rounds: i64,
+    /// The rules the round-trips were for (`SEC-01`).
+    pub round_rules: Vec<String>,
+    pub rules_cited: i64,
+    pub cost_usd: f64,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub error: Option<String>,
+}
+
+pub fn deliveries(conn: &Connection, project_id: &str) -> Result<Vec<Delivery>, String> {
+    let mut out = Vec::new();
+    for r in line::runs(conn, project_id, 200)? {
+        let Ok(o) = orders::get(conn, &r.order_id) else { continue };
+        let cited: i64 = conn.query_row("SELECT COUNT(DISTINCT rule_id) FROM factory_decisions WHERE run_id = ?1 AND rule_id IS NOT NULL", params![r.id], |x| x.get(0)).map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT DISTINCT rule_id FROM factory_activity WHERE run_id = ?1 AND station = 'dec' AND kind = 'warn' AND rule_id IS NOT NULL").map_err(|e| e.to_string())?;
+        let round_rules = stmt.query_map(params![r.id], |x| x.get(0)).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+        out.push(Delivery {
+            run_id: r.id,
+            order_key: o.key,
+            title: o.title,
+            status: r.status,
+            stage: r.stage,
+            mr_url: r.mr_url,
+            rounds: r.round,
+            round_rules,
+            rules_cited: cited,
+            cost_usd: r.cost_usd,
+            started_at: r.started_at,
+            finished_at: r.finished_at,
+            error: r.error,
+        });
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn factory_live(db: State<DbConnection>, project_id: String) -> Result<Live, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    live(&conn, &project_id)
+}
+
+#[tauri::command]
+pub fn factory_deliveries(db: State<DbConnection>, project_id: String) -> Result<Vec<Delivery>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    deliveries(&conn, &project_id)
+}

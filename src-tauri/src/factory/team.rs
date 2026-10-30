@@ -71,13 +71,6 @@ const SEEDS: [Seed; 12] = [
     Seed { role: "approver", group: "Decisión", name: "Aprobador", short: "aprobador", duty: "ship o te pregunta", sections: &["rsg", "git"], slot: "other", model: "gpt-5", active: true, required: true, command: None, escalate: None, note: Some("otra familia de modelo") },
 ];
 
-/// The testers «+ Añadir tester» offers, in order.
-pub const EXTRA_TESTERS: [(&str, &str, &str, &str); 3] = [
-    ("Tester de rendimiento", "rendimiento", "tiempos de respuesta", "locust --headless -t 1m"),
-    ("Tester de contrato", "contrato", "la API cumple su OpenAPI", "schemathesis run openapi.json"),
-    ("Tester de mutación", "mutación", "¿los tests detectan fallos?", "mutmut run"),
-];
-
 /// Which company's models an account runs — the approver should be from a
 /// different one than the builder, so it doesn't agree with itself.
 pub fn family(provider: &str) -> &str {

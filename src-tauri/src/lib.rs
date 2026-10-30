@@ -538,6 +538,8 @@ pub fn run() {
             factory::planner::factory_order_add,
             factory::planner::factory_trd_refine,
             factory::planner::factory_trd_read,
+            factory::view::factory_live,
+            factory::view::factory_deliveries,
             knowledge_sources::list_knowledge_sources,
             knowledge_sources::save_knowledge_source,
             knowledge_sources::delete_knowledge_source,

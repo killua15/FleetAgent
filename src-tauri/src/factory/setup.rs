@@ -107,6 +107,13 @@ pub fn expand_home(path: &str) -> PathBuf {
     crate::app_data::expand_home(path, crate::app_data::home_dir().as_deref())
 }
 
+/// A git identity for commits made by tests, which can't rely on the
+/// machine's global one.
+#[cfg(test)]
+pub(crate) fn tests_identity() -> Vec<(String, String)> {
+    [("GIT_AUTHOR_NAME", "t"), ("GIT_AUTHOR_EMAIL", "t@t"), ("GIT_COMMITTER_NAME", "t"), ("GIT_COMMITTER_EMAIL", "t@t")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
