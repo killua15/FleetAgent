@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Account } from '../../types/account';
-import { brainLabel, countdown, hhmm, STATION_NAME, type ActivityRow, type LiveData, type Station, type StepRow } from '../../types/factory';
+import { brainLabel, countdown, hhmm, STATION_NAME, type ActivityRow, type FactoryOrder, type LiveData, type Station, type StepRow } from '../../types/factory';
 import { Timeline } from './Timeline';
 import styles from '../Factory.module.css';
 
@@ -47,11 +47,37 @@ export interface LoopStatus {
   state: 'stopped' | 'running' | 'paused';
   working: boolean;
   note: string | null;
-  wait: 'quota' | 'merges' | null;
+  wait: 'quota' | 'merges' | 'blocked' | null;
 }
 
 /** Before any order has run: what the loop is doing instead, in the open. */
-function NotStarted({ loop, onStartAnyway }: { loop: LoopStatus | null; onStartAnyway: () => void }) {
+function NotStarted({
+  loop,
+  failed,
+  onStartAnyway,
+  onRetry,
+}: {
+  loop: LoopStatus | null;
+  failed: FactoryOrder[];
+  onStartAnyway: () => void;
+  onRetry: (orderId: string) => void;
+}) {
+  if (loop?.wait === 'blocked') {
+    return (
+      <div className={styles.bannerRed}>
+        <span>✗</span>
+        <span>
+          <b>{loop.note}</b>
+        </span>
+        <span className={styles.spacer} />
+        {failed.map((o) => (
+          <button key={o.id} className={`${styles.btn} ${styles.sm}`} onClick={() => onRetry(o.id)}>
+            Reintentar {o.key}
+          </button>
+        ))}
+      </div>
+    );
+  }
   if (loop && loop.state !== 'stopped' && loop.note) {
     return (
       <div className={styles.bannerAmber}>
@@ -96,12 +122,17 @@ export function LiveView({
   accounts,
   onResolve,
   onStartAnyway,
+  failed,
+  onRetry,
 }: {
   live: LiveData;
   loop: LoopStatus | null;
   accounts: Account[];
   onResolve: (action: string, note?: string, accountId?: string) => void;
   onStartAnyway: () => void;
+  /** Failed or stopped orders, to retry from the «blocked» banner. */
+  failed: FactoryOrder[];
+  onRetry: (orderId: string) => void;
 }) {
   const run = live.run;
   const [picked, setPicked] = useState<Big | null>(null);
@@ -114,7 +145,7 @@ export function LiveView({
   }, []);
 
   if (!run || !live.order) {
-    return <NotStarted loop={loop} onStartAnyway={onStartAnyway} />;
+    return <NotStarted loop={loop} failed={failed} onStartAnyway={onStartAnyway} onRetry={onRetry} />;
   }
 
   const name = (id: string | null | undefined) => accounts.find((a) => a.id === id)?.name ?? '—';

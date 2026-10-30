@@ -94,6 +94,16 @@ export function Ops({ project, onReconfigure, onChanged }: { project: FactoryPro
     }
   };
 
+  const retry = async (orderId: string) => {
+    try {
+      await invoke('factory_order_retry', { orderId });
+      toastSuccess('Vuelve a la cola: pulsa ▶ para seguir');
+      refresh();
+    } catch (e) {
+      toastError(String(e));
+    }
+  };
+
   const startAnyway = async () => {
     try {
       setLoop(await invoke<LoopStatus>('factory_start_anyway', { projectId: pid }));
@@ -163,7 +173,15 @@ export function Ops({ project, onReconfigure, onChanged }: { project: FactoryPro
         ))}
       </nav>
       <div className={styles.opsBody}>
-        {tab === 'live' && (live ? <LiveView live={live} loop={loop} accounts={accounts} onResolve={resolve} onStartAnyway={startAnyway} /> : null)}
+        {tab === 'live' && (live ? <LiveView
+              live={live}
+              loop={loop}
+              accounts={accounts}
+              onResolve={resolve}
+              onStartAnyway={startAnyway}
+              failed={orders.filter((o) => o.status === 'failed' || o.status === 'stopped')}
+              onRetry={retry}
+            /> : null)}
         {tab === 'queue' && (
           <>
             {local && (
@@ -191,7 +209,7 @@ export function Ops({ project, onReconfigure, onChanged }: { project: FactoryPro
               Solo las tareas de <b>este proyecto</b> ({providerWhere(project)}). ▶ las toma de una en una, <b>en este orden</b>: arrastra para reordenar. Las bloqueadas
               esperan a sus dependencias.
             </span>
-            <QueueList orders={orders} providerShort={providerShort(project)} onReorder={reorder} />
+            <QueueList orders={orders} providerShort={providerShort(project)} onReorder={reorder} onRetry={retry} />
           </>
         )}
         {tab === 'brain' && (

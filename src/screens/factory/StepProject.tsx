@@ -234,6 +234,9 @@ export function StepProject({
   };
 
   const noRemote = isNewFolder || !repo?.remoteUrl;
+  // Every order works on its own branch: without a repo with commits there's
+  // nothing to branch from.
+  const repoReady = !!repo?.isRepo && repo.hasCommits;
   const base = repo?.baseBranch ?? 'dev';
   const usable = sources.filter((s) => s.kind === 'clickup' || s.kind === 'github');
 
@@ -473,9 +476,17 @@ export function StepProject({
 
       <StepFoot
         step={1}
-        hint={draft ? 'Elige la carpeta y crea el proyecto.' : dirty ? 'Guarda los cambios para seguir.' : 'Revisa el proyecto y sigue.'}
+        hint={
+          draft
+            ? 'Elige la carpeta y crea el proyecto.'
+            : dirty
+              ? 'Guarda los cambios para seguir.'
+              : !repoReady
+                ? 'Inicializa git para seguir: cada orden trabaja en su propia rama.'
+                : 'Revisa el proyecto y sigue.'
+        }
         onNext={onNext}
-        nextDisabled={draft || dirty}
+        nextDisabled={draft || dirty || !repoReady}
         extra={
           <>
             {!draft && !dirty && <span className={`${styles.hint} ${styles.ok}`}>✓ guardado</span>}

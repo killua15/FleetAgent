@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '../../lib/invoke';
 import { toastError } from '../../components/ErrorOverlay';
-import { MODE_LABEL, providerWhere, tildePath, type FactoryOrder, type FactoryProject, type SealedBrain, type TeamView } from '../../types/factory';
+import { MODE_LABEL, providerWhere, tildePath, type FactoryOrder, type FactoryProject, type RepoStatus, type SealedBrain, type TeamView } from '../../types/factory';
 import { StepFoot } from './Wizard';
 import styles from '../Factory.module.css';
 
@@ -11,12 +11,14 @@ export function StepPlay({ project, home, onBack, onStarted }: { project: Factor
   const [brain, setBrain] = useState<SealedBrain | null>(null);
   const [orders, setOrders] = useState<FactoryOrder[]>([]);
   const [starting, setStarting] = useState(false);
+  const [repo, setRepo] = useState<RepoStatus | null>(null);
 
   useEffect(() => {
     invoke<TeamView>('factory_team_get', { projectId: project.projectId }).then(setTeam).catch(() => setTeam(null));
     invoke<SealedBrain | null>('factory_brain_get', { projectId: project.projectId, version: null }).then(setBrain).catch(() => setBrain(null));
     invoke<FactoryOrder[]>('factory_orders_list', { projectId: project.projectId }).then(setOrders).catch(() => setOrders([]));
-  }, [project.projectId]);
+    invoke<RepoStatus>('factory_repo_status', { path: project.projectPath }).then(setRepo).catch(() => setRepo(null));
+  }, [project.projectId, project.projectPath]);
 
   const play = async () => {
     setStarting(true);
@@ -37,6 +39,7 @@ export function StepPlay({ project, home, onBack, onStarted }: { project: Factor
   const first = todo.find((o) => o.blockedBy.length === 0);
   const ok = <span className={styles.ok}>✓</span>;
   const no = <span className={styles.bad}>✗</span>;
+  const repoReady = !!repo?.isRepo && repo.hasCommits;
 
   return (
     <>
@@ -44,9 +47,12 @@ export function StepPlay({ project, home, onBack, onStarted }: { project: Factor
         <span className={styles.lead}>Todo listo: así arranca la Factory</span>
         <div className={styles.checklist}>
           <div className={styles.checkItem}>
-            {ok}
+            {repoReady ? ok : no}
             <span className={styles.checkKey}>Proyecto</span>
-            <span>{tildePath(project.projectPath, home)}</span>
+            <span>
+              {tildePath(project.projectPath, home)}
+              {repo && !repoReady && <span className={styles.bad}> · no es un repo git con commits: inicialízalo en el paso Proyecto (main + dev)</span>}
+            </span>
           </div>
           <div className={styles.checkItem}>
             {ok}

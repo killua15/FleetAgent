@@ -234,6 +234,25 @@ pub fn branch_name(order: &Order) -> String {
     format!("feat/{key}-{}", slug(&order.title))
 }
 
+/// Whether the project can run orders at all: a git repo with commits, a
+/// sealed brain and a team that can work. What fails here is the project's,
+/// not any one order's.
+pub fn ready(conn: &Connection, project_id: &str) -> Result<(), String> {
+    let project = super::store::get(conn, project_id)?;
+    let status = super::setup::repo_status(Path::new(&project.project_path));
+    if !status.is_repo || !status.has_commits {
+        return Err("la carpeta del proyecto no es un repo git con commits: inicialízalo en el paso Proyecto (main + dev)".into());
+    }
+    if project.brain_version.is_none() {
+        return Err("sella antes el brain: la línea decide con él".into());
+    }
+    let check = super::team::check(conn, &super::team::load(conn, project_id)?)?;
+    if let Some(problem) = check.problems.first() {
+        return Err(format!("el equipo no puede trabajar: {problem}"));
+    }
+    Ok(())
+}
+
 /// Starts the order: freezes the brain and the team, cuts its branch from the
 /// base and opens its worktree. Refuses when the line can't run.
 pub fn start(ctx: &Ctx, project_id: &str, order_id: &str) -> Result<Run, String> {
@@ -269,7 +288,20 @@ pub fn start(ctx: &Ctx, project_id: &str, order_id: &str) -> Result<Run, String>
         std::fs::create_dir_all(worktree.parent().expect("has a parent")).map_err(|e| e.to_string())?;
         let exists = git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")], &[]).is_ok();
         let added = if exists { git(repo, &["worktree", "add", &dir, &branch], &[]) } else { git(repo, &["worktree", "add", &dir, "-b", &branch, &base], &[]) };
-        added.map_err(|e| format!("no se pudo abrir el worktree de {}: {e}", order.key))?;
+        if let Err(e) = added {
+            // The order's own failure: kept as a run, so Entregas says why.
+            let why = format!("no se pudo abrir el worktree de {}: {e}", order.key);
+            let conn = lock(ctx.db)?;
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO factory_runs (id, project_id, order_id, status, stage, round, team, brain_version, branch, worktree, base, error, state, started_at, finished_at)
+                 VALUES (?1, ?2, ?3, 'failed', 'spec', 0, '[]', ?4, ?5, ?6, ?7, ?8, '{}', ?9, ?9)",
+                params![uuid::Uuid::new_v4().to_string(), project_id, order_id, brain_version, branch, worktree.to_string_lossy(), base_branch, why, now],
+            )
+            .map_err(|e| e.to_string())?;
+            orders::set_status(&conn, order_id, "failed")?;
+            return Err(why);
+        }
     }
 
     let run = Run {

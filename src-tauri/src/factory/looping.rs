@@ -98,6 +98,9 @@ pub enum Next {
     Start(String),
     /// Orders remain, but they wait for MRs to be merged.
     WaitMerges,
+    /// Orders remain, but they wait on orders that failed or were stopped:
+    /// nothing moves until one of those is retried.
+    Blocked(Vec<String>),
     /// Nothing to do.
     Empty,
 }
@@ -109,8 +112,16 @@ pub fn decide(conn: &Connection, project_id: &str) -> Result<Next, String> {
     if let Some(order) = orders::next(conn, project_id)? {
         return Ok(Next::Start(order.id));
     }
-    let pending = orders::list(conn, project_id)?.into_iter().any(|o| o.status == "todo" || o.status == "delivered");
-    Ok(if pending { Next::WaitMerges } else { Next::Empty })
+    let all = orders::list(conn, project_id)?;
+    if all.iter().any(|o| o.status == "delivered") {
+        return Ok(Next::WaitMerges);
+    }
+    if !all.iter().any(|o| o.status == "todo") {
+        return Ok(Next::Empty);
+    }
+    let waited_on: std::collections::HashSet<&str> = all.iter().filter(|o| o.status == "todo").flat_map(|o| o.deps.iter().map(String::as_str)).collect();
+    let by = all.iter().filter(|o| matches!(o.status.as_str(), "failed" | "stopped") && waited_on.contains(o.key.as_str())).map(|o| o.key.clone()).collect();
+    Ok(Next::Blocked(by))
 }
 
 /// Consecutive failed orders, newest first, up to the last that wasn't.
@@ -247,6 +258,10 @@ fn work<R: Runtime>(app: AppHandle<R>, project_id: String, worker: Arc<Worker>) 
                         continue;
                     }
                 }
+                if let Some(Err(why)) = db.0.lock().ok().map(|c| line::ready(&c, &project_id)) {
+                    halt(&app, &project_id, &why);
+                    break;
+                }
                 set_note(&project_id, None);
                 let ctx_parts = context(&app, &project_id);
                 let started = {
@@ -265,8 +280,8 @@ fn work<R: Runtime>(app: AppHandle<R>, project_id: String, worker: Arc<Worker>) 
                 match started {
                     Ok(_) => emit(&app, &project_id),
                     Err(e) => {
-                        // An order that can't even start fails, so the queue
-                        // moves on instead of trying it forever.
+                        // The project was ready, so this is the order's own
+                        // failure: it's marked, and the queue moves on.
                         if let Ok(conn) = db.0.lock() {
                             let _ = orders::set_status(&conn, &order_id, "failed");
                         }
@@ -280,6 +295,17 @@ fn work<R: Runtime>(app: AppHandle<R>, project_id: String, worker: Arc<Worker>) 
                 set_wait(&project_id, Some("merges"), Some("esperando a que se fusionen las MR de las que dependen las demás"));
                 sleep_long(&worker, &app, &project_id, MERGE_POLL);
                 last_merge_poll = None;
+            }
+            Next::Blocked(by) => {
+                let keys = if by.is_empty() { "una orden anterior".to_string() } else { by.join(", ") };
+                let why = format!("{keys} {} y las demás dependen de {}: reintenta {keys} en la Cola", if by.len() > 1 { "fallaron" } else { "falló" }, if by.len() > 1 { "ellas" } else { "ella" });
+                if let Ok(conn) = db.0.lock() {
+                    let _ = set_state(&conn, &project_id, "stopped");
+                }
+                set_wait(&project_id, Some("blocked"), Some(&why));
+                notify(&app, "La Factory se paró", &why);
+                emit(&app, &project_id);
+                break;
             }
             Next::Empty => {
                 if let Ok(conn) = db.0.lock() {
@@ -464,13 +490,10 @@ pub fn factory_play<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result
         let db = app.state::<DbConnection>();
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let project = super::store::get(&conn, &project_id)?;
-        if project.brain_version.is_none() {
-            return Err("Sella antes el brain: la línea decide con él.".into());
-        }
-        let check = super::team::check(&conn, &super::team::load(&conn, &project_id)?)?;
-        if let Some(p) = check.problems.first() {
-            return Err(format!("El equipo no puede trabajar: {p}"));
-        }
+        line::ready(&conn, &project_id).map_err(|why| {
+            let mut c = why.chars();
+            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+        })?;
         if decide(&conn, &project_id)? == Next::Empty {
             return Err(if project.provider_kind == "none" {
                 "No hay tareas: pon un proveedor de tareas o crea las tareas desde un TRD.".into()
@@ -526,6 +549,43 @@ pub fn factory_stop<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result
     emit(&app, &project_id);
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     Ok(status_of(&conn, &project_id))
+}
+
+/// «Reintentar» on a failed order: its last run goes on at its stage, with
+/// its rounds counted afresh; without a run it goes back to the queue.
+pub fn retry_order(conn: &Connection, order_id: &str) -> Result<(), String> {
+    let order = orders::get(conn, order_id)?;
+    if !matches!(order.status.as_str(), "failed" | "stopped") {
+        return Err(format!("{} no está fallida ni parada", order.key));
+    }
+    let last: Option<String> = conn.query_row("SELECT id FROM factory_runs WHERE order_id = ?1 ORDER BY started_at DESC LIMIT 1", params![order_id], |r| r.get(0)).ok();
+    // A run that never got its worktree has no team to go on with: the order
+    // just goes back to the queue, and that run stays as history.
+    match last.and_then(|id| line::load_run(conn, &id).ok()).filter(|r| matches!(r.status.as_str(), "failed" | "stopped") && !r.team.is_empty()) {
+        Some(mut run) => {
+            run.round = 0;
+            run.state.escalated = false;
+            run.error = None;
+            run.finished_at = None;
+            run.status = "running".into();
+            line::save_run(conn, &run)
+        }
+        None => orders::set_status(conn, order_id, "todo"),
+    }
+}
+
+#[tauri::command]
+pub fn factory_order_retry<R: Runtime>(app: AppHandle<R>, order_id: String) -> Result<(), String> {
+    let project_id = {
+        let db = app.state::<DbConnection>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let project: String = conn.query_row("SELECT project_id FROM factory_orders WHERE id = ?1", params![order_id], |r| r.get(0)).map_err(|_| "esa orden ya no existe".to_string())?;
+        retry_order(&conn, &order_id)?;
+        project
+    };
+    set_note(&project_id, None);
+    emit(&app, &project_id);
+    Ok(())
 }
 
 /// A person's answer to a ✋, a lack of credits or «Usar otra cuenta».
@@ -595,6 +655,42 @@ mod tests {
         conn.execute("DELETE FROM account_usage_samples", []).unwrap();
         conn.execute("UPDATE accounts SET status = 'exhausted' WHERE id = 'work'", []).unwrap();
         assert!(room(&conn, "work", None).unwrap_err().contains("agotada"));
+    }
+
+    #[test]
+    fn orders_waiting_on_a_failed_one_are_blocked_not_waiting_for_merges() {
+        let w = line::tests::world("autonomous", "local", "true");
+        let conn = w.db.0.lock().unwrap();
+        orders::insert(&conn, "p1", &orders::NewOrder { key: "VET-3".into(), title: "x".into(), deps: vec!["VET-2".into()], origin: "trd".into(), ..Default::default() }).unwrap();
+        orders::set_status(&conn, &w.order_id, "failed").unwrap();
+        assert_eq!(decide(&conn, "p1").unwrap(), Next::Blocked(vec!["VET-2".into()]));
+        retry_order(&conn, &w.order_id).unwrap();
+        assert_eq!(decide(&conn, "p1").unwrap(), Next::Start(w.order_id.clone()), "no run yet: back to the queue");
+    }
+
+    #[test]
+    fn a_folder_without_git_stops_the_project_and_leaves_the_order_alone() {
+        let w = line::tests::world("autonomous", "local", "true");
+        std::fs::remove_dir_all(w.repo.join(".git")).unwrap();
+        let conn = w.db.0.lock().unwrap();
+        assert!(line::ready(&conn, "p1").unwrap_err().contains("no es un repo git"));
+        assert_eq!(orders::get(&conn, &w.order_id).unwrap().status, "todo");
+    }
+
+    #[test]
+    fn retrying_a_failed_run_goes_on_at_its_stage_with_fresh_rounds() {
+        let w = line::tests::world("autonomous", "local", "false");
+        let s = line::tests::Script::new();
+        static N: fn(&str, &str) = |_, _| {};
+        static C: fn() = || {};
+        let ctx = Ctx { db: &w.db, runner: &s, git_env: crate::factory::setup::tests_identity(), root: None, notify: &N, changed: &C };
+        let run = line::start(&ctx, "p1", &w.order_id).unwrap();
+        assert_eq!(line::advance(&ctx, &run.id).unwrap().status, "failed");
+        let conn = w.db.0.lock().unwrap();
+        retry_order(&conn, &w.order_id).unwrap();
+        let again = line::load_run(&conn, &run.id).unwrap();
+        assert_eq!((again.status.as_str(), again.round, again.state.escalated), ("running", 0, false));
+        assert_eq!(decide(&conn, "p1").unwrap(), Next::Resume(run.id));
     }
 
     #[test]

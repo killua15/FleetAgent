@@ -9,7 +9,17 @@ const CHIP: Record<string, string> = { acc: styles.chipAcc, red: styles.chipRed,
  * The project's queue in the order ▶ takes it. Drag (or ↑ ↓) to reorder the
  * orders still to do; an order waits for the ones it depends on.
  */
-export function QueueList({ orders, providerShort, onReorder }: { orders: FactoryOrder[]; providerShort: string; onReorder?: (ids: string[]) => void }) {
+export function QueueList({
+  orders,
+  providerShort,
+  onReorder,
+  onRetry,
+}: {
+  orders: FactoryOrder[];
+  providerShort: string;
+  onReorder?: (ids: string[]) => void;
+  onRetry?: (orderId: string) => void;
+}) {
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
   const done = new Set(orders.filter((o) => o.status === 'merged').map((o) => o.key));
@@ -67,6 +77,11 @@ export function QueueList({ orders, providerShort, onReorder }: { orders: Factor
             <span className={styles.qDeps}>{o.deps.length ? `⤷ ${o.deps.map((d) => (done.has(d) ? `${d} ✓` : d)).join(' · ')}` : ''}</span>
             <span className={styles.chip}>{o.extId ? providerShort : 'local'}</span>
             <span className={CHIP[tone]}>{label}</span>
+            {onRetry && (o.status === 'failed' || o.status === 'stopped') && (
+              <button className={`${styles.btn} ${styles.sm}`} onClick={() => onRetry(o.id)}>
+                Reintentar
+              </button>
+            )}
             {movable && (
               <span className={styles.qMove}>
                 <button className={styles.btnGhost} disabled={i === 0} title="subir" onClick={() => move(o.id, i - 1)}>
