@@ -135,9 +135,9 @@ export function Factory() {
                 <Ops
                   key={selected.projectId}
                   project={selected}
-                  onReconfigure={() => {
+                  onReconfigure={(n) => {
                     setReconfiguring(true);
-                    setStep(1);
+                    setStep(n ?? 1);
                   }}
                   onChanged={() => refresh(selected.projectId)}
                 />

@@ -612,7 +612,7 @@ pub async fn factory_play<R: Runtime>(app: AppHandle<R>, project_id: String) -> 
         let checks = super::prepare::prepare(&db, &project_id, &git_env, true)?;
         if let Err(why) = super::prepare::blocking(&checks) {
             // In «En vivo» too, not only in a toast that goes away.
-            set_note(&project_id, Some(&format!("antes de empezar · {}", why.replace('\n', " · "))));
+            set_wait(&project_id, Some("prepare"), Some(&format!("antes de empezar · {}", why.replace('\n', " · "))));
             emit(&app, &project_id);
             return Err(why);
         }

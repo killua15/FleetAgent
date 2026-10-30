@@ -276,6 +276,13 @@ const RUNNERS: [&str; 14] = ["pnpm", "npm", "yarn", "bun", "npx", "vitest", "jes
 
 /// How the brain's Calidad section says the project is tested: unit,
 /// integration and E2E commands, as far as its `check:` tell.
+impl Suggestion {
+    /// `unitario` out of «Tester unitario», for a short sentence.
+    pub fn short(&self) -> String {
+        self.name.strip_prefix("Tester de ").or_else(|| self.name.strip_prefix("Tester ")).unwrap_or(&self.name).to_string()
+    }
+}
+
 pub fn brain_test_commands(brain: &super::brain::Sealed) -> (Option<String>, Option<String>, Option<String>) {
     let is_runner = |c: &str| super::env::first_program(c).is_some_and(|p| RUNNERS.contains(&p.as_str()));
     let cmds: Vec<&str> = brain.rules.iter().filter(|r| r.section == "cal").filter_map(|r| r.check.as_deref()).filter(|c| is_runner(c)).collect();

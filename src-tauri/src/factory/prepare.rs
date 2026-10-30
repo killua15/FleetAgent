@@ -133,23 +133,37 @@ pub fn prepare(db: &DbConnection, project_id: &str, git_env: &[(String, String)]
     for w in &verdict.warnings {
         out.push(check("team", "Equipo", "warn", w.clone(), Some("team")));
     }
+    // The team as it will be once the brain's tester commands are applied:
+    // what the tools check judges, so a command about to be replaced isn't
+    // reported missing on top of the suggestion that replaces it.
+    let mut planned = members.clone();
     if let Some(s) = &sealed {
         let changes = team::suggestions(&members, s);
         if !changes.is_empty() {
             let words: Vec<String> = changes
                 .iter()
                 .map(|c| match &c.suggested {
-                    Some(cmd) if c.active => format!("{} → `{cmd}`", c.name),
-                    _ => format!("{} → apagado", c.name),
+                    Some(cmd) if c.active => format!("{} → `{cmd}`", c.short()),
+                    _ => format!("{} → apagado", c.short()),
                 })
                 .collect();
-            out.push(check("testers", "Testers", "blocked", format!("el brain dice cómo se prueba este proyecto: {}", words.join(" · ")), Some("apply_testers")));
+            let old: Vec<String> = changes.iter().filter_map(|c| c.current.clone()).filter_map(|c| env::first_program(&c)).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+            let lead = if old.is_empty() { "los testers no usan lo que dice el brain".to_string() } else { format!("los testers usan comandos de otro stack ({})", old.join(", ")) };
+            out.push(check("testers", "Testers", "blocked", format!("{lead}; el brain dice: {}. Pulsa Aplicar.", words.join(" · ")), Some("apply_testers")));
+            for c in &changes {
+                if let Some(a) = planned.iter_mut().find(|a| a.id == c.agent_id) {
+                    a.active = c.active;
+                    if let Some(cmd) = &c.suggested {
+                        a.command = Some(cmd.clone());
+                    }
+                }
+            }
         }
     }
 
     // Every program the gate will call has to exist.
     if let Some(s) = &sealed {
-        let mut missing: Vec<String> = line::gate_commands(&members, s, &Default::default(), true).iter().filter_map(|(_, c)| env::first_program(c)).filter(|p| !p.contains('/') && !env::has_executable(p)).collect();
+        let mut missing: Vec<String> = line::gate_commands(&planned, s, &Default::default(), true).iter().filter_map(|(_, c)| env::first_program(c)).filter(|p| !p.contains('/') && !env::has_executable(p)).collect();
         missing.sort();
         missing.dedup();
         if !missing.is_empty() {
@@ -263,6 +277,22 @@ mod tests {
         // Run again: nothing left to fix.
         let again = prepare(&w.db, "p1", &env, true).unwrap();
         assert!(again.iter().all(|c| c.status != "fixed"), "{again:?}");
+    }
+
+    #[test]
+    fn a_tester_command_the_brain_replaces_is_not_reported_missing_too() {
+        let w = line::tests::world("autonomous", "local", "pytest-not-installed-xyz -q");
+        {
+            let conn = w.db.0.lock().unwrap();
+            // The brain says how this project is tested, with a runner that
+            // exists here. Looked at without fixing: fixing re-indexes the
+            // brain from its file, which has no such check.
+            conn.execute("UPDATE factory_brain_rules SET check_cmd = 'python3 -c \"print(1)\" # test' WHERE project_id = 'p1' AND rule_id = 'CAL-01'", []).unwrap();
+        }
+        let checks = prepare(&w.db, "p1", &setup::tests_identity(), false).unwrap();
+        let testers = checks.iter().find(|c| c.id == "testers").expect("the brain's suggestion");
+        assert!(testers.detail.contains("pytest-not-installed-xyz") && testers.detail.contains("Pulsa Aplicar"), "{}", testers.detail);
+        assert_eq!(checks.iter().find(|c| c.id == "tools").unwrap().status, "ok", "{checks:?}");
     }
 
     #[test]

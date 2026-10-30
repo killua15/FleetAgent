@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { Account } from '../../types/account';
 import { brainLabel, countdown, hhmm, STATION_NAME, type ActivityRow, type FactoryOrder, type LiveData, type Station, type StepRow } from '../../types/factory';
 import { Timeline } from './Timeline';
+import { Preparation } from './Preparation';
 import styles from '../Factory.module.css';
 
 type Big = 'ing' | 'fab' | 'cal' | 'ent';
@@ -47,23 +48,31 @@ export interface LoopStatus {
   state: 'stopped' | 'running' | 'paused';
   working: boolean;
   note: string | null;
-  wait: 'quota' | 'merges' | 'blocked' | 'verify' | null;
+  wait: 'quota' | 'merges' | 'blocked' | 'verify' | 'prepare' | null;
 }
 
 /** Before any order has run: what the loop is doing instead, in the open. */
 function NotStarted({
+  projectId,
   loop,
   failed,
   onStartAnyway,
   onRetry,
   onPlay,
+  onGoStep,
 }: {
+  projectId: string;
   loop: LoopStatus | null;
   failed: FactoryOrder[];
   onStartAnyway: () => void;
   onRetry: (orderId: string) => void;
   onPlay: () => void;
+  onGoStep: (step: number) => void;
 }) {
+  // ▶ was refused by the preparation: show it, with what to press.
+  if (loop?.wait === 'prepare') {
+    return <Preparation projectId={projectId} onGoStep={onGoStep} onPlay={onPlay} />;
+  }
   if (loop?.wait === 'blocked') {
     return (
       <div className={styles.bannerRed}>
@@ -131,6 +140,8 @@ export function LiveView({
   failed,
   onRetry,
   onPlay,
+  onGoStep,
+  projectId,
 }: {
   live: LiveData;
   loop: LoopStatus | null;
@@ -142,6 +153,9 @@ export function LiveView({
   onRetry: (orderId: string) => void;
   /** ▶ — which prepares the project first. */
   onPlay: () => void;
+  /** Opens the wizard at a step, to fix something there. */
+  onGoStep: (step: number) => void;
+  projectId: string;
 }) {
   const run = live.run;
   const [picked, setPicked] = useState<Big | null>(null);
@@ -154,7 +168,7 @@ export function LiveView({
   }, []);
 
   if (!run || !live.order) {
-    return <NotStarted loop={loop} failed={failed} onStartAnyway={onStartAnyway} onRetry={onRetry} onPlay={onPlay} />;
+    return <NotStarted projectId={projectId} loop={loop} failed={failed} onStartAnyway={onStartAnyway} onRetry={onRetry} onPlay={onPlay} onGoStep={onGoStep} />;
   }
 
   const name = (id: string | null | undefined) => accounts.find((a) => a.id === id)?.name ?? '—';

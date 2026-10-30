@@ -18,7 +18,18 @@ const ICON: Record<PrepCheck['status'], [string, string]> = {
  * what can be fixed without asking (git, dev, the brain's index, order 0),
  * fixed on «Preparar ahora» or on ▶. What needs you says where.
  */
-export function Preparation({ projectId, onGoStep, onChange }: { projectId: string; onGoStep: (step: number) => void; onChange?: (checks: PrepCheck[]) => void }) {
+export function Preparation({
+  projectId,
+  onGoStep,
+  onChange,
+  onPlay,
+}: {
+  projectId: string;
+  onGoStep: (step: number) => void;
+  onChange?: (checks: PrepCheck[]) => void;
+  /** Shown as ▶ next to «Preparar ahora» — in «En vivo», where ▶ was refused. */
+  onPlay?: () => void;
+}) {
   const { navigate } = useNavigation();
   const [checks, setChecks] = useState<PrepCheck[] | null>(null);
   const [working, setWorking] = useState(false);
@@ -80,6 +91,16 @@ export function Preparation({ projectId, onGoStep, onChange }: { projectId: stri
         <button className={`${pending ? styles.btnPrimary : styles.btn} ${styles.sm}`} disabled={working} onClick={() => run(true)}>
           {working ? 'preparando…' : 'Preparar ahora'}
         </button>
+        {onPlay && (
+          <button
+            className={`${styles.btnPrimary} ${styles.sm}`}
+            disabled={working || !checks || checks.some((c) => c.status === 'blocked')}
+            title={checks?.some((c) => c.status === 'blocked') ? 'Resuelve antes lo marcado con ✗' : undefined}
+            onClick={onPlay}
+          >
+            ▶ Play
+          </button>
+        )}
       </div>
       <div className={styles.col} style={{ gap: 6, padding: '0 16px 14px' }}>
         {!checks && <span className={styles.hint}>comprobando…</span>}

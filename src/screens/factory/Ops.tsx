@@ -32,7 +32,7 @@ function statusLine(loop: LoopStatus | null, live: LiveData | null, orders: Fact
  * The line at work: ▶ ⏸ ⏹, and the five tabs — En vivo, Cola, Brain, Equipo,
  * Entregas. It refreshes on every `factory-updated` the backend emits.
  */
-export function Ops({ project, onReconfigure, onChanged }: { project: FactoryProject; onReconfigure: () => void; onChanged: () => void }) {
+export function Ops({ project, onReconfigure, onChanged }: { project: FactoryProject; onReconfigure: (step?: number) => void; onChanged: () => void }) {
   const [tab, setTab] = useState<Tab>('live');
   const [live, setLive] = useState<LiveData | null>(null);
   const [loop, setLoop] = useState<LoopStatus | null>(null);
@@ -153,7 +153,7 @@ export function Ops({ project, onReconfigure, onChanged }: { project: FactoryPro
             ⏹ Stop
           </button>
         </div>
-        <button className={`${styles.btnGhost} ${styles.sm}`} title="Ver la configuración desde el principio" onClick={onReconfigure}>
+        <button className={`${styles.btnGhost} ${styles.sm}`} title="Ver la configuración desde el principio" onClick={() => onReconfigure()}>
           ↺ Reconfigurar
         </button>
       </div>
@@ -182,6 +182,8 @@ export function Ops({ project, onReconfigure, onChanged }: { project: FactoryPro
               failed={orders.filter((o) => o.status === 'failed' || o.status === 'stopped')}
               onRetry={retry}
               onPlay={() => control('factory_play', '▶ Proyecto preparado: toma la siguiente orden')}
+              onGoStep={(n) => onReconfigure(n)}
+              projectId={pid}
             /> : null)}
         {tab === 'queue' && (
           <>
@@ -192,7 +194,7 @@ export function Ops({ project, onReconfigure, onChanged }: { project: FactoryPro
                   <b>Sin proveedor:</b> las órdenes viven en Hangar. Conecta ClickUp o GitHub cuando quieras y se exportan las que nadie empezó.
                 </span>
                 <span className={styles.spacer} />
-                <button className={`${styles.btn} ${styles.sm}`} onClick={onReconfigure}>
+                <button className={`${styles.btn} ${styles.sm}`} onClick={() => onReconfigure(1)}>
                   Conectar y exportar
                 </button>
               </div>
