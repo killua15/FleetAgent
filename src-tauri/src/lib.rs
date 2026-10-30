@@ -549,6 +549,7 @@ pub fn run() {
             factory::looping::factory_pause,
             factory::looping::factory_stop,
             factory::looping::factory_run_resolve,
+            factory::looping::factory_start_anyway,
             knowledge_sources::list_knowledge_sources,
             knowledge_sources::save_knowledge_source,
             knowledge_sources::delete_knowledge_source,

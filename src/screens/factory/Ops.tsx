@@ -6,18 +6,13 @@ import type { Account } from '../../types/account';
 import { providerShort, providerWhere, type Delivery, type FactoryOrder, type FactoryProject, type LiveData, type SealedBrain } from '../../types/factory';
 import { BrainView } from './BrainView';
 import { DeliveriesView } from './DeliveriesView';
-import { LiveView } from './LiveView';
+import { LiveView, type LoopStatus } from './LiveView';
 import { QueueList } from './QueueList';
 import { TeamEditor } from './TeamEditor';
 import styles from '../Factory.module.css';
 
 type Tab = 'live' | 'queue' | 'brain' | 'team' | 'out';
 
-interface LoopStatus {
-  state: 'stopped' | 'running' | 'paused';
-  working: boolean;
-  note: string | null;
-}
 
 /** What the line is doing, in one line, as the prototype's status bar. */
 function statusLine(loop: LoopStatus | null, live: LiveData | null, orders: FactoryOrder[]): string {
@@ -99,6 +94,15 @@ export function Ops({ project, onReconfigure, onChanged }: { project: FactoryPro
     }
   };
 
+  const startAnyway = async () => {
+    try {
+      setLoop(await invoke<LoopStatus>('factory_start_anyway', { projectId: pid }));
+      refresh();
+    } catch (e) {
+      toastError(String(e));
+    }
+  };
+
   const reorder = async (ids: string[]) => {
     try {
       setOrders(await invoke<FactoryOrder[]>('factory_orders_reorder', { projectId: pid, ids }));
@@ -159,7 +163,7 @@ export function Ops({ project, onReconfigure, onChanged }: { project: FactoryPro
         ))}
       </nav>
       <div className={styles.opsBody}>
-        {tab === 'live' && (live ? <LiveView live={live} accounts={accounts} onResolve={resolve} /> : null)}
+        {tab === 'live' && (live ? <LiveView live={live} loop={loop} accounts={accounts} onResolve={resolve} onStartAnyway={startAnyway} /> : null)}
         {tab === 'queue' && (
           <>
             {local && (

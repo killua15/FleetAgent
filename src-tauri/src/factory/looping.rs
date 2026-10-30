@@ -31,12 +31,20 @@ struct Worker {
 }
 
 static WORKERS: LazyLock<Mutex<HashMap<String, Arc<Worker>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
-static NOTES: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Project → what the worker is waiting for (`quota`, `merges`), if a wait,
+/// and the words for it.
+static NOTES: LazyLock<Mutex<HashMap<String, (Option<&'static str>, String)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Projects whose next order starts even with the quota check against it.
+static START_ANYWAY: LazyLock<Mutex<std::collections::HashSet<String>>> = LazyLock::new(|| Mutex::new(Default::default()));
 
 fn set_note(project_id: &str, note: Option<&str>) {
+    set_wait(project_id, None, note);
+}
+
+fn set_wait(project_id: &str, kind: Option<&'static str>, note: Option<&str>) {
     if let Ok(mut n) = NOTES.lock() {
         match note {
-            Some(text) => n.insert(project_id.to_string(), text.to_string()),
+            Some(text) => n.insert(project_id.to_string(), (kind, text.to_string())),
             None => n.remove(project_id),
         };
     }
@@ -51,17 +59,33 @@ fn loop_state(conn: &Connection, project_id: &str) -> String {
     conn.query_row("SELECT loop_state FROM factory_projects WHERE project_id = ?1", params![project_id], |r| r.get(0)).unwrap_or_else(|_| "stopped".into())
 }
 
-/// Whether the account can start work now, per Hangar's own quota forecast.
-/// An account never sampled counts as having room.
-fn has_room(conn: &Connection, account_id: &str) -> bool {
-    match crate::quota::account_quotas(conn) {
-        Ok(quotas) => quotas
-            .iter()
-            .find(|q| q.account_id == account_id)
-            .map(|q| crate::run_queue::has_capacity(&crate::run_queue::AccountCapacity::from_quota(q, false)))
-            .unwrap_or(true),
-        Err(_) => true,
+/// Usage at which the Factory doesn't start an order on an account. Higher
+/// than the run queue's 70 %: the line notices the real limit itself and
+/// waits for the reset without counting it a failure, so holding back early
+/// only idles an account that still has room.
+pub const MAX_START_PCT: f64 = 95.0;
+
+/// Whether the account can start an order now, per Hangar's quota samples;
+/// `Err` says why not. An account never sampled has room.
+pub fn room(conn: &Connection, account_id: &str, root: Option<&std::path::Path>) -> Result<(), String> {
+    let Ok(quotas) = crate::quota::account_quotas(conn) else { return Ok(()) };
+    let Some(q) = quotas.iter().find(|q| q.account_id == account_id) else { return Ok(()) };
+    let reset = root
+        .and_then(|r| crate::auto_continue::latest_rate_limits(r, account_id))
+        .and_then(|l| crate::auto_continue::resume_at(&l, 0))
+        .map(|at| format!(" · se renueva a las {}", at.with_timezone(&chrono::Local).format("%H:%M")))
+        .unwrap_or_default();
+    if q.status != "healthy" {
+        return Err(format!("«{}» está {}{reset}", q.account_name, if q.status == "exhausted" { "agotada" } else { "enfriándose" }));
     }
+    for (window, label) in [(&q.session, "de la sesión"), (&q.weekly, "de la semana")] {
+        if let Some(f) = window {
+            if f.pct >= MAX_START_PCT {
+                return Err(format!("«{}» va por el {:.0} % {label}{reset}", q.account_name, f.pct));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// What ▶ would do now, decided from the queue alone — the part that can be
@@ -211,15 +235,19 @@ fn work<R: Runtime>(app: AppHandle<R>, project_id: String, worker: Arc<Worker>) 
                     }
                     break;
                 }
-                // Look at the quota before starting, not after the first refusal.
-                if let Some(acc) = &spec_account {
-                    let room = db.0.lock().map(|c| has_room(&c, acc)).unwrap_or(true);
-                    if !room {
-                        set_note(&project_id, Some("esperando cuota: la cuenta del spec writer está al límite"));
-                        sleep_long(&worker, &app, &project_id, Duration::from_secs(300));
+                // Look at the quota before starting, not after the first
+                // refusal — unless you said to start anyway.
+                let anyway = START_ANYWAY.lock().map(|mut s| s.remove(&project_id)).unwrap_or(false);
+                if let (Some(acc), false) = (&spec_account, anyway) {
+                    let root = crate::app_data::root(&app).ok();
+                    let verdict = db.0.lock().map(|c| room(&c, acc, root.as_deref())).unwrap_or(Ok(()));
+                    if let Err(why) = verdict {
+                        set_wait(&project_id, Some("quota"), Some(&format!("esperando cuota: {why}")));
+                        sleep_long(&worker, &app, &project_id, Duration::from_secs(120));
                         continue;
                     }
                 }
+                set_note(&project_id, None);
                 let ctx_parts = context(&app, &project_id);
                 let started = {
                     let notify_fn = |t: &str, b: &str| notify(&app, t, b);
@@ -227,7 +255,7 @@ fn work<R: Runtime>(app: AppHandle<R>, project_id: String, worker: Arc<Worker>) 
                     let runner = match ctx_parts.runner(&db, &project_id) {
                         Ok(r) => r,
                         Err(e) => {
-                            set_note(&project_id, Some(&e));
+                            halt(&app, &project_id, &e);
                             break;
                         }
                     };
@@ -249,7 +277,7 @@ fn work<R: Runtime>(app: AppHandle<R>, project_id: String, worker: Arc<Worker>) 
                 }
             }
             Next::WaitMerges => {
-                set_note(&project_id, Some("esperando a que se fusionen las MR de las que dependen las demás"));
+                set_wait(&project_id, Some("merges"), Some("esperando a que se fusionen las MR de las que dependen las demás"));
                 sleep_long(&worker, &app, &project_id, MERGE_POLL);
                 last_merge_poll = None;
             }
@@ -270,6 +298,17 @@ fn work<R: Runtime>(app: AppHandle<R>, project_id: String, worker: Arc<Worker>) 
         }
     }
     emit(&app, &project_id);
+}
+
+/// Stops the loop on something it can't get past by waiting — an account
+/// whose CLI can't be prepared — and says so, instead of leaving it «running».
+fn halt<R: Runtime>(app: &AppHandle<R>, project_id: &str, why: &str) {
+    if let Ok(conn) = app.state::<DbConnection>().0.lock() {
+        let _ = set_state(&conn, project_id, "stopped");
+    }
+    set_note(project_id, Some(&format!("parada: {why}")));
+    notify(app, "La Factory se paró", why);
+    emit(app, project_id);
 }
 
 struct Parts {
@@ -303,7 +342,7 @@ fn drive<R: Runtime>(app: &AppHandle<R>, project_id: &str, run_id: &str) {
     let runner = match parts.runner(&db, project_id) {
         Ok(r) => r,
         Err(e) => {
-            set_note(project_id, Some(&e));
+            halt(app, project_id, &e);
             return;
         }
     };
@@ -383,14 +422,33 @@ pub struct LoopStatus {
     /// Whether a worker is alive right now.
     pub working: bool,
     pub note: Option<String>,
+    /// What the worker waits for before starting an order: `quota` or `merges`.
+    pub wait: Option<String>,
 }
 
 fn status_of(conn: &Connection, project_id: &str) -> LoopStatus {
+    let note = NOTES.lock().ok().and_then(|n| n.get(project_id).cloned());
     LoopStatus {
         state: loop_state(conn, project_id),
         working: WORKERS.lock().map(|w| w.contains_key(project_id)).unwrap_or(false),
-        note: NOTES.lock().ok().and_then(|n| n.get(project_id).cloned()),
+        wait: note.as_ref().and_then(|(k, _)| k.map(str::to_string)),
+        note: note.map(|(_, text)| text),
     }
+}
+
+/// «Empezar igualmente»: the next order starts even though the spec
+/// writer's account looks nearly spent. The line still waits if it hits
+/// the real limit.
+#[tauri::command]
+pub fn factory_start_anyway<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<LoopStatus, String> {
+    if let Ok(mut s) = START_ANYWAY.lock() {
+        s.insert(project_id.clone());
+    }
+    set_note(&project_id, None);
+    ensure_worker(&app, &project_id);
+    let db = app.state::<DbConnection>();
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    Ok(status_of(&conn, &project_id))
 }
 
 #[tauri::command]
@@ -516,6 +574,27 @@ mod tests {
         line::advance(&ctx, &run.id).unwrap();
         let conn = w.db.0.lock().unwrap();
         assert_eq!(decide(&conn, "p1").unwrap(), Next::Start(other));
+    }
+
+    #[test]
+    fn only_an_account_nearly_spent_or_benched_holds_an_order_back() {
+        let w = line::tests::world("autonomous", "local", "true");
+        let conn = w.db.0.lock().unwrap();
+        conn.execute_batch(
+            "ALTER TABLE accounts ADD COLUMN name TEXT DEFAULT 'David Personal 1';
+             ALTER TABLE accounts ADD COLUMN status TEXT DEFAULT 'healthy';
+             ALTER TABLE accounts ADD COLUMN scope TEXT DEFAULT 'personal';
+             CREATE TABLE account_usage_samples (id TEXT PRIMARY KEY, account_id TEXT, session_pct REAL, weekly_pct REAL, context_pct REAL, sampled_at TEXT);",
+        )
+        .unwrap();
+        assert!(room(&conn, "work", None).is_ok(), "never sampled: room");
+        crate::quota::record_sample(&conn, "work", Some(63.0), Some(75.0), None).unwrap();
+        assert!(room(&conn, "work", None).is_ok(), "75 % of the week isn't a reason to idle");
+        crate::quota::record_sample(&conn, "work", Some(63.0), Some(96.0), None).unwrap();
+        assert!(room(&conn, "work", None).unwrap_err().contains("96 % de la semana"));
+        conn.execute("DELETE FROM account_usage_samples", []).unwrap();
+        conn.execute("UPDATE accounts SET status = 'exhausted' WHERE id = 'work'", []).unwrap();
+        assert!(room(&conn, "work", None).unwrap_err().contains("agotada"));
     }
 
     #[test]

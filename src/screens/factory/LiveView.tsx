@@ -42,14 +42,66 @@ function stationState(steps: StepRow[], later: boolean): { text: string; cls: st
  * the timeline, what each agent did (every decision with its rule), the
  * quality layers and this order's decisions.
  */
+/** What the loop is doing, as `factory_loop_status` says. */
+export interface LoopStatus {
+  state: 'stopped' | 'running' | 'paused';
+  working: boolean;
+  note: string | null;
+  wait: 'quota' | 'merges' | null;
+}
+
+/** Before any order has run: what the loop is doing instead, in the open. */
+function NotStarted({ loop, onStartAnyway }: { loop: LoopStatus | null; onStartAnyway: () => void }) {
+  if (loop && loop.state !== 'stopped' && loop.note) {
+    return (
+      <div className={styles.bannerAmber}>
+        <span style={{ fontSize: 15 }}>⏸</span>
+        <span>
+          <b>{loop.note}</b>
+          {loop.wait === 'quota' && <span className={styles.hint}> · vuelve a mirar cada 2 minutos; si llega al límite real, la orden espera sola al reset.</span>}
+        </span>
+        <span className={styles.spacer} />
+        {loop.wait === 'quota' && (
+          <button className={`${styles.btn} ${styles.sm}`} onClick={onStartAnyway}>
+            Empezar igualmente
+          </button>
+        )}
+      </div>
+    );
+  }
+  if (loop && loop.state !== 'stopped') {
+    return (
+      <span className={styles.hint}>
+        <span className={styles.spin} />
+        arrancando con la primera orden de la cola…
+      </span>
+    );
+  }
+  if (loop?.note) {
+    return (
+      <div className={styles.bannerRed}>
+        <span>✗</span>
+        <span>
+          <b>{loop.note}</b>
+        </span>
+      </div>
+    );
+  }
+  return <span className={styles.hint}>Todavía no ha pasado ninguna orden por la línea. Pulsa ▶ Play para empezar con la primera de la cola.</span>;
+}
+
 export function LiveView({
   live,
+  loop,
   accounts,
   onResolve,
+  onStartAnyway,
 }: {
   live: LiveData;
+  loop: LoopStatus | null;
   accounts: Account[];
   onResolve: (action: string, note?: string, accountId?: string) => void;
+  onStartAnyway: () => void;
 }) {
   const run = live.run;
   const [picked, setPicked] = useState<Big | null>(null);
@@ -62,7 +114,7 @@ export function LiveView({
   }, []);
 
   if (!run || !live.order) {
-    return <span className={styles.hint}>Todavía no ha pasado ninguna orden por la línea. Pulsa ▶ Play para empezar con la primera de la cola.</span>;
+    return <NotStarted loop={loop} onStartAnyway={onStartAnyway} />;
   }
 
   const name = (id: string | null | undefined) => accounts.find((a) => a.id === id)?.name ?? '—';
