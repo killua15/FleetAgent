@@ -191,3 +191,66 @@ export const EXTRA_TESTERS = [
 export function brainLabel(sections: string[]): string {
   return sections.length ? sections.map((s) => sectionName(s).toLowerCase()).join(' · ') : 'la regla citada';
 }
+
+// ---------------------------------------------------------------- orders
+
+export type OrderStatus = 'todo' | 'running' | 'waiting_limit' | 'waiting_human' | 'stopped' | 'failed' | 'delivered' | 'merged';
+
+export interface FactoryOrder {
+  id: string;
+  key: string;
+  title: string;
+  description: string;
+  criteria: string[];
+  deps: string[];
+  position: number;
+  status: OrderStatus;
+  origin: 'provider' | 'trd' | 'manual';
+  extId: string | null;
+  extUrl: string | null;
+  touchesUi: boolean;
+  rules: string[];
+  brainVersion: number | null;
+  createdAt: string;
+  blockedBy: string[];
+}
+
+export interface PlannedOrder {
+  title: string;
+  description: string;
+  criteria: string[];
+  deps: number[];
+  trdPart: string;
+  rules: string[];
+  touchesUi: boolean;
+}
+
+export interface TrdPlan {
+  orders: PlannedOrder[];
+  coverage: { part: string; orders: number[]; rules: string[] }[];
+  risks: string[];
+  uncovered: string[];
+}
+
+/** The chip an order shows in the queue: colour class and words. */
+export function orderChip(o: FactoryOrder, isNext: boolean): [string, string] {
+  if (o.status === 'todo') return o.blockedBy.length ? ['red', 'bloqueada'] : isNext ? ['acc', '▶ siguiente'] : ['', 'por hacer'];
+  const map: Record<OrderStatus, [string, string]> = {
+    todo: ['', 'por hacer'],
+    running: ['acc', 'en curso'],
+    waiting_limit: ['amber', 'en espera'],
+    waiting_human: ['amber', '✋ te espera'],
+    stopped: ['', 'parada'],
+    failed: ['red', 'fallida'],
+    delivered: ['teal', 'MR abierta'],
+    merged: ['grn', 'fusionada'],
+  };
+  return map[o.status];
+}
+
+/** Where the project's tasks live, in words, for hints. */
+export function providerWhere(p: FactoryProject): string {
+  if (p.providerKind === 'none') return 'el backlog local de Hangar';
+  if (p.providerKind === 'clickup') return `la lista «${lastSegment(p.providerScopeLabel ?? 'ClickUp')}» de ClickUp`;
+  return `las issues de ${p.providerScopeId ?? 'GitHub'}`;
+}

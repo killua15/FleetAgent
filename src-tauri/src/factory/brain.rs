@@ -574,6 +574,7 @@ pub async fn factory_brain_session<R: Runtime>(
         };
         // A file left by an earlier session would be imported as this one's.
         let _ = std::fs::remove_file(Path::new(&project.project_path).join(GENERATED));
+        crate::task_sources::exclude_hangar_dir_locally(Path::new(&project.project_path));
         let prompt = session_prompt(&project.project_name, base.as_deref(), &inbox);
         crate::terminals::open_terminal_blocking(
             app,

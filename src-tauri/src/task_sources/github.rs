@@ -65,6 +65,19 @@ pub fn fetch(link: &TaskSourceLink, project_path: &Path) -> Result<Vec<Task>, St
     parse_issues(&raw, &link.source_id, &repo)
 }
 
+/// Opens an issue in `repo`, assigned to whoever `gh` is logged in as, and
+/// returns its number and url.
+pub fn create_issue(repo: &str, title: &str, body: &str) -> Result<(String, String), String> {
+    gh_available_and_authed()?;
+    let output = gh_output(None, &["issue", "create", "--repo", repo, "--title", title, "--body", body, "--assignee", "@me"])?;
+    if !output.status.success() {
+        return Err(format!("gh issue create failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    let url = String::from_utf8_lossy(&output.stdout).lines().rev().find(|l| l.starts_with("http")).unwrap_or("").trim().to_string();
+    let number = url.rsplit('/').next().filter(|n| n.chars().all(|c| c.is_ascii_digit()) && !n.is_empty()).ok_or("gh created the issue but didn't print its url")?.to_string();
+    Ok((number, url))
+}
+
 /// Split out from `fetch` so the shape `gh` returns can be tested without a
 /// network, a repo or a login.
 pub(crate) fn parse_issues(raw: &str, source_id: &str, repo: &str) -> Result<Vec<Task>, String> {

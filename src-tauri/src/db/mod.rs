@@ -332,6 +332,12 @@ const MIGRATIONS: &[Migration] = &[
         run: factory_agents_table,
         transactional: true,
     },
+    Migration {
+        version: 42,
+        name: "factory_orders",
+        run: factory_orders_table,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -1180,6 +1186,34 @@ fn factory_projects_table(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(FACTORY_PROJECTS_DDL).map_err(|e| format!("could not create factory_projects: {e}"))
 }
 
+/// The queue: the project's orders, from its provider, a TRD or by hand,
+/// with their acceptance criteria and dependencies.
+fn factory_orders_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(FACTORY_ORDERS_DDL).map_err(|e| format!("could not create factory_orders: {e}"))
+}
+
+pub(crate) const FACTORY_ORDERS_DDL: &str = "CREATE TABLE IF NOT EXISTS factory_orders (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  key           TEXT NOT NULL,
+  title         TEXT NOT NULL,
+  description   TEXT NOT NULL DEFAULT '',
+  criteria      TEXT NOT NULL DEFAULT '[]',
+  deps          TEXT NOT NULL DEFAULT '[]',
+  position      INTEGER NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'todo',
+  origin        TEXT NOT NULL,
+  ext_id        TEXT,
+  ext_url       TEXT,
+  touches_ui    INTEGER NOT NULL DEFAULT 0,
+  rules         TEXT NOT NULL DEFAULT '[]',
+  brain_version INTEGER,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  UNIQUE (project_id, key)
+);
+CREATE INDEX IF NOT EXISTS factory_orders_queue ON factory_orders(project_id, position);";
+
 /// The team: every agent on the line, with its account, model, the brain
 /// sections it reads and — for testers — the command it runs.
 fn factory_agents_table(conn: &Connection) -> Result<(), String> {
@@ -1249,7 +1283,7 @@ CREATE TABLE IF NOT EXISTS factory_amendments (
 /// Every Factory migration's DDL, in order — what the Factory's own tests
 /// build their in-memory database from.
 #[cfg(test)]
-pub(crate) const FACTORY_DDLS: &[&str] = &[FACTORY_PROJECTS_DDL, FACTORY_BRAIN_DDL, FACTORY_AGENTS_DDL];
+pub(crate) const FACTORY_DDLS: &[&str] = &[FACTORY_PROJECTS_DDL, FACTORY_BRAIN_DDL, FACTORY_AGENTS_DDL, FACTORY_ORDERS_DDL];
 
 pub(crate) const FACTORY_PROJECTS_DDL: &str = "CREATE TABLE IF NOT EXISTS factory_projects (
   project_id           TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,

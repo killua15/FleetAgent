@@ -11,6 +11,7 @@ import { StepFoot, Wizard } from './factory/Wizard';
 import { StepProject } from './factory/StepProject';
 import { StepBrain } from './factory/StepBrain';
 import { StepTeam } from './factory/StepTeam';
+import { StepTasks } from './factory/StepTasks';
 import styles from './Factory.module.css';
 
 /**
@@ -93,6 +94,9 @@ export function Factory() {
     }
     if (step === 3) {
       return <StepBrain key={p.projectId} project={p} onSealed={() => refresh(p.projectId)} onBack={() => go(2)} onNext={() => go(4)} />;
+    }
+    if (step === 4) {
+      return <StepTasks key={p.projectId} project={p} onBack={() => go(3)} onNext={() => go(5)} onToProvider={() => setStep(1)} />;
     }
     return (
       <>
