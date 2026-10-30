@@ -7,6 +7,7 @@
 pub mod brain;
 pub mod setup;
 pub mod store;
+pub mod team;
 
 use std::path::Path;
 

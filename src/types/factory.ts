@@ -142,3 +142,52 @@ export interface Amendment {
 }
 
 export const levelLabel = (level: BrainRule['level']) => (level === 'must' ? 'DEBE' : 'DEBERÍA');
+
+// ---------------------------------------------------------------- team
+
+export interface FactoryAgent {
+  id: string;
+  role: 'spec' | 'critic' | 'builder' | 'tester' | 'reviewer_code' | 'reviewer_security' | 'reviewer_ui' | 'reviewer_ux' | 'verifier' | 'approver';
+  group: string;
+  name: string;
+  short: string;
+  duty: string;
+  sections: string[];
+  accountId: string | null;
+  model: string;
+  active: boolean;
+  required: boolean;
+  command: string | null;
+  escalateModel: string | null;
+  note: string | null;
+  position: number;
+}
+
+export interface TeamCheck {
+  problems: string[];
+  warnings: string[];
+}
+
+export interface TeamView {
+  agents: FactoryAgent[];
+  check: TeamCheck;
+}
+
+export const GROUP_HINT: Record<string, string> = {
+  Ingeniería: 'escriben la spec de cada orden',
+  Fabricación: 'escribe el código',
+  Testers: 'cada uno con su modelo y su comando',
+  Revisores: 'en paralelo, cada uno con su sección del brain',
+  Decisión: 'solo recibe órdenes con los tests en verde',
+};
+
+export const EXTRA_TESTERS = [
+  { name: 'Tester de rendimiento', short: 'rendimiento', duty: 'tiempos de respuesta', command: 'locust --headless -t 1m' },
+  { name: 'Tester de contrato', short: 'contrato', duty: 'la API cumple su OpenAPI', command: 'schemathesis run openapi.json' },
+  { name: 'Tester de mutación', short: 'mutación', duty: '¿los tests detectan fallos?', command: 'mutmut run' },
+];
+
+/** `['cod','arq']` → `código · arquitectura`; empty means the rule cited. */
+export function brainLabel(sections: string[]): string {
+  return sections.length ? sections.map((s) => sectionName(s).toLowerCase()).join(' · ') : 'la regla citada';
+}
