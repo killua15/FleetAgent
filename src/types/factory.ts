@@ -273,6 +273,10 @@ export interface GateResult {
   command: string;
   ok: boolean;
   tail: string;
+  /** The text of the brain rules it checks; null for a tester's command. */
+  rule?: string | null;
+  /** Rounds in a row it has been red. */
+  reds: number;
 }
 
 export interface RunState {
@@ -286,6 +290,10 @@ export interface RunState {
   humanKind: 'spec_review' | 'diff' | 'approver' | 'credits' | 'merge' | null;
   human: string | null;
   summary: string | null;
+  /** Brain checks a person said not to run for this order. */
+  waived: string[];
+  /** Brain checks filed as broken: back when a newer brain is sealed. */
+  broken: string[];
 }
 
 export interface FactoryRun {

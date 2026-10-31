@@ -556,6 +556,7 @@ pub fn run() {
             factory::looping::factory_stop,
             factory::looping::factory_stop_all,
             factory::looping::factory_run_resolve,
+            factory::looping::factory_run_check,
             factory::looping::factory_start_anyway,
             factory::looping::factory_order_retry,
             factory::prepare::factory_prepare,

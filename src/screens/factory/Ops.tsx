@@ -7,6 +7,7 @@ import { providerShort, providerWhere, type Delivery, type FactoryOrder, type Fa
 import { BrainView } from './BrainView';
 import { DeliveriesView } from './DeliveriesView';
 import { LiveView, type LoopStatus } from './LiveView';
+import type { CheckAction } from './GatePanel';
 import { QueueList } from './QueueList';
 import { TeamEditor } from './TeamEditor';
 import styles from '../Factory.module.css';
@@ -88,6 +89,23 @@ export function Ops({ project, onReconfigure, onChanged }: { project: FactoryPro
     if (!live?.run) return;
     try {
       await invoke('factory_run_resolve', { runId: live.run.id, action, note: note ?? null, accountId: accountId ?? null });
+      refresh();
+    } catch (e) {
+      toastError(String(e));
+    }
+  };
+
+  const check = async (action: CheckAction, command: string | null, note?: string) => {
+    if (!live?.run) return;
+    try {
+      await invoke('factory_run_check', { runId: live.run.id, action, check: command, note: note?.trim() ? note : null });
+      toastSuccess(
+        action === 'fix'
+          ? 'Vuelve a Fabricación con la salida del check'
+          : action === 'broken'
+            ? 'A la bandeja del Brain: no corre hasta que lo arregles, selles y reintentes'
+            : 'Ignorado en esta orden: queda en los avisos de la entrega',
+      );
       refresh();
     } catch (e) {
       toastError(String(e));
@@ -178,6 +196,7 @@ export function Ops({ project, onReconfigure, onChanged }: { project: FactoryPro
               loop={loop}
               accounts={accounts}
               onResolve={resolve}
+              onCheck={check}
               onStartAnyway={startAnyway}
               failed={orders.filter((o) => o.status === 'failed' || o.status === 'stopped')}
               onRetry={retry}

@@ -771,7 +771,7 @@ pub async fn factory_stop_all<R: Runtime>(app: AppHandle<R>) -> Result<usize, St
 }
 
 /// «Reintentar» on a failed order: its last run goes on at its stage, with
-/// its rounds counted afresh and today's team; without a run it goes back to
+/// its rounds counted afresh and today's team and brain; without a run it goes back to
 /// the queue.
 pub fn retry_order(conn: &Connection, order_id: &str) -> Result<(), String> {
     let order = orders::get(conn, order_id)?;
@@ -783,7 +783,7 @@ pub fn retry_order(conn: &Connection, order_id: &str) -> Result<(), String> {
     // just goes back to the queue, and that run stays as history.
     match last.and_then(|id| line::load_run(conn, &id).ok()).filter(|r| matches!(r.status.as_str(), "failed" | "stopped") && !r.team.is_empty()) {
         Some(mut run) => {
-            line::take_current_team(conn, &mut run)?;
+            line::refresh_for_retry(conn, &mut run)?;
             run.round = 0;
             run.state.escalated = false;
             run.error = None;
@@ -819,6 +819,26 @@ pub async fn factory_run_resolve<R: Runtime>(app: AppHandle<R>, run_id: String, 
         }
         super::procs::clear_stop(&run.project_id);
         ensure_worker(app, &run.project_id);
+        emit(app, &run.project_id);
+        Ok(())
+    })
+    .await
+}
+
+/// «Arreglar en Fabricación», «El check está mal» or «Ignorar en esta orden»
+/// on a red check of the gate; `check` is its command, or none for every red.
+#[tauri::command]
+pub async fn factory_run_check<R: Runtime>(app: AppHandle<R>, run_id: String, action: String, check: Option<String>, note: Option<String>) -> Result<(), String> {
+    on_db(app, move |app, conn| {
+        let run = line::resolve_check(conn, &run_id, &action, check.as_deref(), note)?;
+        if action == "fix" {
+            // Sending it to the builder is asking the line to go on.
+            if loop_state(conn, &run.project_id) == "stopped" {
+                set_state(conn, &run.project_id, "running")?;
+            }
+            super::procs::clear_stop(&run.project_id);
+            ensure_worker(app, &run.project_id);
+        }
         emit(app, &run.project_id);
         Ok(())
     })
@@ -919,7 +939,7 @@ mod tests {
         let w = line::tests::world("autonomous", "local", "true");
         let conn = w.db.0.lock().unwrap();
         let brain = crate::factory::brain::load(&conn, "p1", None).unwrap().unwrap();
-        let e2e = line::GateResult { name: "ARQ-01, SEC-01".into(), command: "pnpm e2e".into(), ok: false, tail: "2 failed".into() };
+        let e2e = line::GateResult { name: "ARQ-01, SEC-01".into(), command: "pnpm e2e".into(), ok: false, tail: "2 failed".into(), rule: None, reds: 1 };
         match verification_orders(&conn, "p1", "VET", &brain, &[&e2e]).unwrap() {
             Verification::NewOrders(1) => {}
             _ => panic!("one new order"),

@@ -69,6 +69,12 @@ pub struct RunState {
     pub note: Option<String>,
     pub approver: Option<Value>,
     pub summary: Option<String>,
+    /// Brain checks a person said not to run for this order («Ignorar en
+    /// esta orden»). Never a tester's command: the suite has no off switch.
+    pub waived: Vec<String>,
+    /// Brain checks a person filed as broken («El check está mal»): they
+    /// don't run until the order goes on with a newer brain.
+    pub broken: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -77,7 +83,14 @@ pub struct GateResult {
     pub name: String,
     pub command: String,
     pub ok: bool,
+    /// For a red one, what failed first, then how the output ended.
     pub tail: String,
+    /// The text of the brain rules behind it, if it's a rule's check.
+    #[serde(default)]
+    pub rule: Option<String>,
+    /// Rounds in a row it has been red, this one included.
+    #[serde(default)]
+    pub reds: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,7 +243,8 @@ pub fn slug(text: &str) -> String {
 }
 
 pub fn branch_name(order: &Order) -> String {
-    let key: String = order.key.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+    // Lowercase, like the slug: brains ask for `feat/[a-z0-9-]+`.
+    let key: String = order.key.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').map(|c| c.to_ascii_lowercase()).collect();
     format!("feat/{key}-{}", slug(&order.title))
 }
 
@@ -658,8 +672,7 @@ pub fn run_gate(project: &str, worktree: &Path, commands: &[(String, String)], m
             let (ok, tail) = match super::env::shell(project, "gate", command, worktree, GATE_TIMEOUT) {
                 Ok(out) => {
                     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-                    let lines: Vec<&str> = text.lines().collect();
-                    let tail = lines[lines.len().saturating_sub(30)..].join("\n");
+                    let tail = if out.status.success() { last_lines(&text, 30) } else { failure_excerpt(&text) };
                     let missing = not_runnable(out.status.code(), &text);
                     let tail = if missing { format!("no se puede ejecutar: {command}\n{tail}") } else { tail };
                     let ok = match mode {
@@ -670,7 +683,46 @@ pub fn run_gate(project: &str, worktree: &Path, commands: &[(String, String)], m
                 }
                 Err(e) => (false, e),
             };
-            GateResult { name: name.clone(), command: command.clone(), ok, tail }
+            GateResult { name: name.clone(), command: command.clone(), ok, tail, rule: None, reds: 0 }
+        })
+        .collect()
+}
+
+fn last_lines(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
+}
+
+/// What a red command's output says failed — the test runners' and
+/// compilers' failure lines first, then how it ended. A plain tail loses
+/// Playwright's list of failed tests under its summary and the web server's
+/// noise.
+pub fn failure_excerpt(text: &str) -> String {
+    let re = regex::Regex::new(r"(?i)(✘|✗|×|\bFAIL\b|\d+ failed|\d+ flaky|^\s*\d+\) |error TS\d+|\berror:|Error:|fatal:|AssertionError|expect\(|Timeout.*exceeded|ELIFECYCLE)").expect("valid regex");
+    let mut first: Vec<&str> = Vec::new();
+    for l in text.lines() {
+        if re.is_match(l) && !first.contains(&l) {
+            first.push(l);
+            if first.len() == 40 {
+                break;
+            }
+        }
+    }
+    let end = last_lines(text, 15);
+    if first.is_empty() {
+        return end;
+    }
+    format!("{}\n…\n{end}", first.join("\n"))
+}
+
+/// The gate's commands without the checks a person waived for this order. A
+/// command shared with a rule still waived-in, or with a tester, still runs.
+pub fn without_waived(commands: Vec<(String, String)>, waived: &[String]) -> Vec<(String, String)> {
+    commands
+        .into_iter()
+        .filter_map(|(names, command)| {
+            let kept: Vec<&str> = names.split(", ").filter(|n| !waived.iter().any(|w| w == n)).collect();
+            (!kept.is_empty()).then(|| (kept.join(", "), command))
         })
         .collect()
 }
@@ -968,8 +1020,9 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                     let rows = stmt.query_map(params![run.id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
                     rows.filter_map(Result::ok).chain(order.rules.iter().cloned()).collect()
                 };
-                let commands = gate_commands(&team, &brain, &cited, bootstrap);
-                let results = run_gate(&run.project_id, Path::new(&run.worktree), &commands, if bootstrap { GateMode::Runs } else { GateMode::Green });
+                let skipped: Vec<String> = run.state.waived.iter().chain(&run.state.broken).cloned().collect();
+                let commands = without_waived(gate_commands(&team, &brain, &cited, bootstrap), &skipped);
+                let mut results = run_gate(&run.project_id, Path::new(&run.worktree), &commands, if bootstrap { GateMode::Runs } else { GateMode::Green });
                 // ⏹ in the middle of the gate: no verdict on half a suite —
                 // it runs again from the start on ▶.
                 if super::procs::stop_requested(&run.project_id) {
@@ -980,6 +1033,12 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                     drop(conn);
                     (ctx.changed)();
                     return Ok(run);
+                }
+                for r in results.iter_mut() {
+                    let texts: Vec<String> = r.name.split(", ").filter_map(|n| brain.rules.iter().find(|x| x.id == n)).map(|x| format!("{} · {}", x.id, x.text)).collect();
+                    r.rule = (!texts.is_empty()).then(|| texts.join("\n"));
+                    let before = run.state.gate.iter().find(|g| g.command == r.command).map(|g| g.reds).unwrap_or(0);
+                    r.reds = if r.ok { 0 } else { before + 1 };
                 }
                 let green = !results.is_empty() && results.iter().all(|r| r.ok);
                 let conn = lock(ctx.db)?;
@@ -1278,21 +1337,117 @@ pub fn resolve(conn: &Connection, run_id: &str, action: &str, note: Option<Strin
     if run.finished_at.is_some() && (action == "retry" || action == "skip_approver") {
         run.finished_at = None;
         run.error = None;
-        take_current_team(conn, &mut run)?;
+        refresh_for_retry(conn, &mut run)?;
     }
     save_run(conn, &run)?;
     Ok(run)
 }
 
-/// A failed order is retried with the team as it is now: what made it fail
-/// (an approver on a model its account lacks) is fixed in Equipo, not in the
-/// run. The brain stays frozen.
-pub fn take_current_team(conn: &Connection, run: &mut Run) -> Result<(), String> {
+/// A failed order is retried with the team and the brain as they are now:
+/// what made it fail (an approver on a model its account lacks, a broken
+/// check) is fixed in Equipo or in the Brain, not in the run.
+pub fn refresh_for_retry(conn: &Connection, run: &mut Run) -> Result<(), String> {
     let team = super::team::load(conn, &run.project_id)?;
     if !team.is_empty() {
         run.team = team;
     }
+    let sealed: Option<i64> = conn.query_row("SELECT brain_version FROM factory_projects WHERE project_id = ?1", params![run.project_id], |r| r.get(0)).ok().flatten();
+    if let Some(v) = sealed.filter(|v| *v > run.brain_version) {
+        run.brain_version = v;
+        conn.execute("UPDATE factory_runs SET brain_version = ?2 WHERE id = ?1", params![run.id, v]).map_err(|e| e.to_string())?;
+        conn.execute("UPDATE factory_orders SET brain_version = ?2 WHERE id = ?1", params![run.order_id, v]).map_err(|e| e.to_string())?;
+        // The checks filed as broken were fixed in this version: they run again.
+        run.state.broken.clear();
+        activity(conn, &run.id, None, "ing", "brain", &format!("sigue con el brain v{v}"), None)?;
+    }
     Ok(())
+}
+
+/// The brain rules a gate command checks. A tester's command isn't the
+/// brain's: it can't be waived or filed against the brain (`fix_where` says
+/// where it's fixed instead).
+fn brain_rules_of(conn: &Connection, run: &Run, r: &GateResult, fix_where: &str) -> Result<Vec<String>, String> {
+    let known: std::collections::HashSet<String> = {
+        let mut stmt = conn.prepare("SELECT rule_id FROM factory_brain_rules WHERE project_id = ?1 AND version = ?2").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![run.project_id, run.brain_version], |x| x.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        rows.filter_map(Result::ok).collect()
+    };
+    let names: Vec<String> = r.name.split(", ").map(str::to_string).collect();
+    match names.iter().find(|n| !known.contains(*n)) {
+        Some(tester) => Err(format!("{tester} es un tester, no una regla del brain: {fix_where}")),
+        None => Ok(names),
+    }
+}
+
+/// What a person does with one check of the gate: `fix` sends it to the
+/// builder, `broken` files it as an amendment to the brain, `waive` stops
+/// running it for this order. `check` is the command, as the gate ran it.
+pub fn resolve_check(conn: &Connection, run_id: &str, action: &str, check: Option<&str>, note: Option<String>) -> Result<Run, String> {
+    let mut run = load_run(conn, run_id)?;
+    // While the line works on it, its worker owns the run's state.
+    if run.status == "running" {
+        return Err("la orden está en marcha: espera a que se pare o páusala".into());
+    }
+    let order = orders::get(conn, &run.order_id)?;
+    let note = note.filter(|n| !n.trim().is_empty());
+    let red: Vec<GateResult> = run.state.gate.iter().filter(|g| !g.ok && check.is_none_or(|c| g.command == c)).cloned().collect();
+    if red.is_empty() {
+        return Err("ese check ya no está en rojo".into());
+    }
+    match action {
+        "fix" => {
+            let mut why = String::from("Una persona te pide que arregles estos checks de la puerta:\n\n");
+            why.push_str(&red.iter().map(|r| format!("✗ {} ({})\n{}", r.name, r.command, r.tail)).collect::<Vec<_>>().join("\n\n"));
+            if let Some(n) = &note {
+                why.push_str(&format!("\n\nNota: {n}"));
+            }
+            activity(conn, &run.id, None, "fab", "warn", &format!("↺ una persona la devuelve a Fabricación: {}", red.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")), None)?;
+            if run.finished_at.is_some() {
+                // A failed order gets its rounds afresh, with today's team.
+                refresh_for_retry(conn, &mut run)?;
+                run.round = 0;
+                run.state.escalated = false;
+                run.finished_at = None;
+                run.error = None;
+            }
+            run.round += 1;
+            run.state.feedback = Some(why);
+            run.state.gate_ok = false;
+            run.stage = "build".into();
+            run.status = "running".into();
+            run.resume_at = None;
+            run.state.human = None;
+            run.state.human_kind = None;
+        }
+        "broken" => {
+            let r = &red[0];
+            let rules = brain_rules_of(conn, &run, r, "cámbialo en Equipo")?;
+            let question = format!("El check de {} no funciona: `{}`", r.name, r.command);
+            let context = format!("{}\n{}", note.clone().unwrap_or_default(), r.tail).trim().to_string();
+            super::brain::add_amendment(conn, &run.project_id, &question, Some(&order.key), Some(&context))?;
+            for id in rules {
+                if !run.state.broken.contains(&id) {
+                    run.state.broken.push(id);
+                }
+            }
+            activity(conn, &run.id, None, "test", "warn", &format!("check de {} → bandeja del brain; no corre hasta que lo arregles y selles", r.name), None)?;
+        }
+        "waive" => {
+            let r = &red[0];
+            let rules = brain_rules_of(conn, &run, r, "arréglalo en Fabricación o apágalo en Equipo")?;
+            for id in &rules {
+                if !run.state.waived.contains(id) {
+                    run.state.waived.push(id.clone());
+                }
+            }
+            run.state.warnings.retain(|w| !w.starts_with("Checks ignorados por una persona:"));
+            run.state.warnings.push(format!("Checks ignorados por una persona: {}", run.state.waived.join(", ")));
+            activity(conn, &run.id, None, "test", "warn", &format!("{} ignorado en esta orden por una persona", rules.join(", ")), None)?;
+        }
+        other => return Err(format!("acción desconocida `{other}`")),
+    }
+    save_run(conn, &run)?;
+    Ok(run)
 }
 
 /// The agent the run is stuck on: the one of its last step.
@@ -1458,7 +1613,7 @@ pub(crate) mod tests {
             {"rule_id":null,"text":"no se avisa al veterinario","question":"¿Se avisa al veterinario cuando se cancela una cita?"}]}));
         let c = ctx(&w, &s);
         let run = start(&c, "p1", &w.order_id).unwrap();
-        assert!(run.branch.starts_with("feat/VET-2-cancelar-una-cita"));
+        assert!(run.branch.starts_with("feat/vet-2-cancelar-una-cita"));
         let run = advance(&c, &run.id).unwrap();
         assert_eq!(run.status, "merged", "{:?}", run.error);
         assert_eq!(run.round, 1, "one round for SEC-01");
@@ -1758,5 +1913,87 @@ pub(crate) mod tests {
             blocked_by: vec![],
         };
         assert_eq!(branch_name(&o), "feat/12-cancelar-una-cita-delete-citas-id");
+        let pok = Order { key: "POK-1".into(), title: "Inicializar repo".into(), ..o };
+        assert_eq!(branch_name(&pok), "feat/pok-1-inicializar-repo", "GIT-04 wants `[a-z0-9-]`");
+    }
+
+    #[test]
+    fn a_red_command_shows_what_failed_not_just_how_it_ended() {
+        let mut out = String::from("$ playwright test\n[WebServer] $ vite build\n");
+        out.push_str("  ✘  12 [firefox] › e2e/csp.spec.ts:8:3 › / serves the CSP without violations (1.2s)\n");
+        for i in 0..60 {
+            out.push_str(&format!("[WebServer] dist/assets/chunk-{i}.js  1.2 kB\n"));
+        }
+        out.push_str("  4 failed\n    [firefox] › e2e/bootstrap.spec.ts:59:1 › CA9: no external fonts\n  31 passed (5.3s)\n ELIFECYCLE  Command failed with exit code 1.\n");
+        let ex = failure_excerpt(&out);
+        assert!(ex.contains("✘  12 [firefox] › e2e/csp.spec.ts"), "{ex}");
+        assert!(ex.contains("4 failed") && ex.contains("CA9: no external fonts"), "{ex}");
+        assert!(ex.lines().count() < 30);
+    }
+
+    #[test]
+    fn waived_checks_leave_the_gate_but_a_shared_command_still_runs() {
+        let cmds = vec![("Tester unitario, CAL-01".to_string(), "pnpm test".to_string()), ("GIT-04".to_string(), "git branch".to_string()), ("RSG-09, RSG-10".to_string(), "diff".to_string())];
+        let kept = without_waived(cmds, &["GIT-04".into(), "CAL-01".into(), "RSG-09".into()]);
+        assert_eq!(kept, vec![("Tester unitario".to_string(), "pnpm test".to_string()), ("RSG-10".to_string(), "diff".to_string())]);
+    }
+
+    /// A failed run with these red checks, as the gate leaves it.
+    fn failed_with(w: &World, red: &[(&str, &str)]) -> Run {
+        let s = Script::new();
+        let c = ctx(w, &s);
+        let run = start(&c, "p1", &w.order_id).unwrap();
+        let conn = w.db.0.lock().unwrap();
+        let mut run = load_run(&conn, &run.id).unwrap();
+        run.state.gate = red.iter().map(|(n, cmd)| GateResult { name: n.to_string(), command: cmd.to_string(), ok: false, tail: format!("{cmd}: rojo"), rule: None, reds: 4 }).collect();
+        run.stage = "gate".into();
+        run.round = MAX_ROUNDS + 1;
+        run.status = "failed".into();
+        run.finished_at = Some(Utc::now().to_rfc3339());
+        save_run(&conn, &run).unwrap();
+        run
+    }
+
+    #[test]
+    fn a_red_check_goes_to_fabricacion_the_brain_or_is_waived() {
+        let w = world("autonomous", "local", "true");
+        let rule: String = w.db.0.lock().unwrap().query_row("SELECT rule_id FROM factory_brain_rules WHERE project_id = 'p1' LIMIT 1", [], |r| r.get(0)).unwrap();
+        let run = failed_with(&w, &[("Tester unitario", "pnpm e2e"), (&rule, "git check-ignore -q a b")]);
+        let conn = w.db.0.lock().unwrap();
+
+        // A tester's command is the suite: it can't be waived nor blamed on the brain.
+        assert!(resolve_check(&conn, &run.id, "waive", Some("pnpm e2e"), None).unwrap_err().contains("es un tester"));
+        assert!(resolve_check(&conn, &run.id, "broken", Some("pnpm e2e"), None).is_err());
+
+        let r = resolve_check(&conn, &run.id, "broken", Some("git check-ignore -q a b"), Some("solo admite una ruta".into())).unwrap();
+        assert_eq!(r.state.broken, vec![rule.clone()]);
+        let inbox = brain::amendments(&conn, "p1").unwrap();
+        assert!(inbox[0].question.contains("git check-ignore -q a b"));
+        assert_eq!(r.status, "failed", "filing it doesn't restart the order");
+
+        let r = resolve_check(&conn, &run.id, "waive", Some("git check-ignore -q a b"), None).unwrap();
+        assert_eq!(r.state.waived, vec![rule.clone()]);
+        assert!(r.state.warnings.iter().any(|w| w == &format!("Checks ignorados por una persona: {rule}")));
+
+        let r = resolve_check(&conn, &run.id, "fix", Some("pnpm e2e"), Some("mira Firefox".into())).unwrap();
+        assert_eq!((r.status.as_str(), r.stage.as_str(), r.round), ("running", "build", 1), "a failed order gets its rounds afresh");
+        let fb = r.state.feedback.unwrap();
+        assert!(fb.contains("pnpm e2e: rojo") && fb.contains("mira Firefox") && !fb.contains("check-ignore"), "{fb}");
+        assert!(r.finished_at.is_none() && r.error.is_none());
+    }
+
+    #[test]
+    fn a_retry_goes_on_with_the_newest_brain_and_its_fixed_checks_run_again() {
+        let w = world("autonomous", "local", "true");
+        let rule: String = w.db.0.lock().unwrap().query_row("SELECT rule_id FROM factory_brain_rules WHERE project_id = 'p1' LIMIT 1", [], |r| r.get(0)).unwrap();
+        let run = failed_with(&w, &[(&rule, "exit 1")]);
+        let conn = w.db.0.lock().unwrap();
+        resolve_check(&conn, &run.id, "broken", None, None).unwrap();
+        let md: String = brain::EXAMPLE.lines().filter(|l| !l.trim_start().starts_with("check:")).collect::<Vec<_>>().join("\n");
+        brain::seal(&conn, &w.repo.with_extension("appdata"), "p1", "Citas Vet", &md, "import").unwrap();
+        let r = resolve(&conn, &run.id, "retry", None, None).unwrap();
+        assert_eq!(r.brain_version, run.brain_version + 1);
+        assert!(r.state.broken.is_empty(), "fixed in the new brain: it runs again");
+        assert_eq!(orders::get(&conn, &w.order_id).unwrap().brain_version, Some(r.brain_version));
     }
 }

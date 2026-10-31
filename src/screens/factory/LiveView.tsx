@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { Account } from '../../types/account';
 import { brainLabel, countdown, hhmm, STATION_NAME, type ActivityRow, type FactoryOrder, type LiveData, type Station, type StepRow } from '../../types/factory';
+import { GatePanel, type CheckAction } from './GatePanel';
 import { Timeline } from './Timeline';
 import { Preparation } from './Preparation';
 import styles from '../Factory.module.css';
@@ -147,6 +148,7 @@ export function LiveView({
   loop,
   accounts,
   onResolve,
+  onCheck,
   onStartAnyway,
   failed,
   onRetry,
@@ -158,6 +160,8 @@ export function LiveView({
   loop: LoopStatus | null;
   accounts: Account[];
   onResolve: (action: string, note?: string, accountId?: string) => void;
+  /** What to do with a red check of the gate. */
+  onCheck: (action: CheckAction, check: string | null, note?: string) => void;
   onStartAnyway: () => void;
   /** Failed or stopped orders, to retry from the «blocked» banner. */
   failed: FactoryOrder[];
@@ -200,6 +204,11 @@ export function LiveView({
   };
 
   const feed = live.activity.filter((a) => BIG_OF[a.station] === sel);
+  const redChecks = run.state.gate.filter((g) => !g.ok).length;
+  const showGate = () => {
+    setPicked('cal');
+    document.getElementById('factory-gate')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
   const resumeAt = run.resumeAt ? new Date(run.resumeAt).getTime() : null;
   const testers = team.filter((a) => a.role === 'tester');
   const reviewers = team.filter((a) => a.role.startsWith('reviewer'));
@@ -310,6 +319,14 @@ export function LiveView({
           <span>✗</span>
           <span>
             <b>{order.key} falló.</b> {run.error}
+            {redChecks > 0 && (
+              <>
+                {' · '}
+                <button className={styles.linkBtn} onClick={showGate}>
+                  {run.state.gate.length - redChecks} de {run.state.gate.length} en verde · ver los {redChecks} en rojo
+                </button>
+              </>
+            )}
           </span>
           <span className={styles.spacer} />
           {run.stage === 'approve' && run.state.gateOk && (
@@ -358,6 +375,8 @@ export function LiveView({
           );
         })}
       </div>
+
+      {(sel === 'cal' || redChecks > 0) && <GatePanel run={run} onCheck={onCheck} />}
 
       <Timeline live={live} onPickStation={(s) => setPicked(BIG_OF[s])} />
 

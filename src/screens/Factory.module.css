@@ -1678,3 +1678,87 @@
   text-align: left;
   cursor: pointer;
 }
+
+/* ---- the test gate's verdict ---- */
+
+.gateNote {
+  padding: 0 16px 8px;
+}
+
+.gateList {
+  display: flex;
+  flex-direction: column;
+  padding: 0 16px 12px;
+  gap: 6px;
+}
+
+.gateRow {
+  border-radius: 8px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  min-width: 0;
+}
+
+.gateHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  background: none;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.gateHead:disabled {
+  cursor: default;
+}
+
+.gateCmd {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gateBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 10px 10px;
+}
+
+.gateOut {
+  margin: 0;
+  max-height: 280px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  font: 400 11px/1.5 var(--font-mono);
+  color: var(--mut);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.gateActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.linkBtn {
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--acc);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
