@@ -50,25 +50,24 @@ struct Seed {
     slot: &'static str,
     model: &'static str,
     active: bool,
-    required: bool,
     command: Option<&'static str>,
     escalate: Option<&'static str>,
     note: Option<&'static str>,
 }
 
 const SEEDS: [Seed; 12] = [
-    Seed { role: "spec", group: "Ingeniería", name: "Spec writer", short: "spec", duty: "TRD + TDD + rama", sections: &["arq", "prd", "rsg"], slot: "work", model: "opus", active: true, required: true, command: None, escalate: None, note: None },
-    Seed { role: "critic", group: "Ingeniería", name: "Crítico R0", short: "crítico", duty: "reescribe si rompe una regla", sections: &["prd", "arq"], slot: "personal", model: "haiku", active: true, required: false, command: None, escalate: None, note: None },
-    Seed { role: "builder", group: "Fabricación", name: "Builder", short: "builder", duty: "commits en su worktree", sections: &["cod", "tec", "git"], slot: "work", model: "sonnet", active: true, required: true, command: None, escalate: Some("opus"), note: None },
-    Seed { role: "tester", group: "Testers", name: "Tester unitario", short: "unitario", duty: "cada criterio → un test", sections: &["cal"], slot: "work", model: "sonnet", active: true, required: false, command: Some("pytest -q"), escalate: None, note: None },
-    Seed { role: "tester", group: "Testers", name: "Tester de integración", short: "integración", duty: "API + base de datos", sections: &["cal", "dat"], slot: "work", model: "sonnet", active: true, required: false, command: Some("pytest -m integration"), escalate: None, note: None },
-    Seed { role: "tester", group: "Testers", name: "Tester E2E", short: "e2e", duty: "flujos completos", sections: &["cal"], slot: "personal", model: "sonnet", active: false, required: false, command: Some("npx playwright test"), escalate: None, note: Some("cuando haya interfaz") },
-    Seed { role: "reviewer_code", group: "Revisores", name: "Revisor de código", short: "código", duty: "errores, legibilidad", sections: &["cod", "arq"], slot: "work", model: "opus", active: true, required: false, command: None, escalate: None, note: None },
-    Seed { role: "reviewer_security", group: "Revisores", name: "Seguridad", short: "seguridad", duty: "entradas, secretos, auth", sections: &["sec"], slot: "work", model: "opus", active: true, required: false, command: None, escalate: None, note: None },
-    Seed { role: "reviewer_ui", group: "Revisores", name: "Revisor UI", short: "UI", duty: "capturas vs diseño", sections: &["prd", "cod"], slot: "personal", model: "sonnet", active: true, required: false, command: None, escalate: None, note: Some("solo si toca la interfaz") },
-    Seed { role: "reviewer_ux", group: "Revisores", name: "Revisor UX", short: "UX", duty: "flujos y textos", sections: &["prd"], slot: "personal", model: "sonnet", active: true, required: false, command: None, escalate: None, note: Some("solo si toca la interfaz") },
-    Seed { role: "verifier", group: "Decisión", name: "Verificador", short: "verificador", duty: "¿el hallazgo es real?", sections: &[], slot: "personal", model: "haiku", active: true, required: false, command: None, escalate: None, note: None },
-    Seed { role: "approver", group: "Decisión", name: "Aprobador", short: "aprobador", duty: "ship o te pregunta", sections: &["rsg", "git"], slot: "other", model: "gpt-5", active: true, required: true, command: None, escalate: None, note: Some("otra familia de modelo") },
+    Seed { role: "spec", group: "Ingeniería", name: "Spec writer", short: "spec", duty: "TRD + TDD + rama", sections: &["arq", "prd", "rsg"], slot: "work", model: "opus", active: true, command: None, escalate: None, note: None },
+    Seed { role: "critic", group: "Ingeniería", name: "Crítico R0", short: "crítico", duty: "reescribe si rompe una regla", sections: &["prd", "arq"], slot: "personal", model: "haiku", active: true, command: None, escalate: None, note: None },
+    Seed { role: "builder", group: "Fabricación", name: "Builder", short: "builder", duty: "commits en su worktree", sections: &["cod", "tec", "git"], slot: "work", model: "sonnet", active: true, command: None, escalate: Some("opus"), note: None },
+    Seed { role: "tester", group: "Testers", name: "Tester unitario", short: "unitario", duty: "cada criterio → un test", sections: &["cal"], slot: "work", model: "sonnet", active: true, command: Some("pytest -q"), escalate: None, note: None },
+    Seed { role: "tester", group: "Testers", name: "Tester de integración", short: "integración", duty: "API + base de datos", sections: &["cal", "dat"], slot: "work", model: "sonnet", active: true, command: Some("pytest -m integration"), escalate: None, note: None },
+    Seed { role: "tester", group: "Testers", name: "Tester E2E", short: "e2e", duty: "flujos completos", sections: &["cal"], slot: "personal", model: "sonnet", active: false, command: Some("npx playwright test"), escalate: None, note: Some("cuando haya interfaz") },
+    Seed { role: "reviewer_code", group: "Revisores", name: "Revisor de código", short: "código", duty: "errores, legibilidad", sections: &["cod", "arq"], slot: "work", model: "opus", active: true, command: None, escalate: None, note: None },
+    Seed { role: "reviewer_security", group: "Revisores", name: "Seguridad", short: "seguridad", duty: "entradas, secretos, auth", sections: &["sec"], slot: "work", model: "opus", active: true, command: None, escalate: None, note: None },
+    Seed { role: "reviewer_ui", group: "Revisores", name: "Revisor UI", short: "UI", duty: "capturas vs diseño", sections: &["prd", "cod"], slot: "personal", model: "sonnet", active: true, command: None, escalate: None, note: Some("solo si toca la interfaz") },
+    Seed { role: "reviewer_ux", group: "Revisores", name: "Revisor UX", short: "UX", duty: "flujos y textos", sections: &["prd"], slot: "personal", model: "sonnet", active: true, command: None, escalate: None, note: Some("solo si toca la interfaz") },
+    Seed { role: "verifier", group: "Decisión", name: "Verificador", short: "verificador", duty: "¿el hallazgo es real?", sections: &[], slot: "personal", model: "haiku", active: true, command: None, escalate: None, note: None },
+    Seed { role: "approver", group: "Decisión", name: "Aprobador", short: "aprobador", duty: "ship o te pregunta", sections: &["rsg", "git"], slot: "other", model: "gpt-5", active: true, command: None, escalate: None, note: Some("otra familia de modelo") },
 ];
 
 /// Which company's models an account runs — the approver should be from a
@@ -82,27 +81,76 @@ pub fn family(provider: &str) -> &str {
     }
 }
 
-/// The models an account can run. Claude's CLI takes aliases; Codex has no
-/// catalog Hangar can read, so it's the prototype's list.
-pub fn models_for(provider: &str, default_model: Option<&str>) -> Vec<String> {
+/// The only agents the line can't run without. The approver is not one: a
+/// team on a single model family has nobody to give a second opinion.
+pub fn is_required(role: &str) -> bool {
+    matches!(role, "spec" | "builder")
+}
+
+/// The models an account can run. Claude's CLI takes aliases; Codex keeps
+/// the catalog of what this login may use in its config folder, and a model
+/// outside it (a ChatGPT account on `gpt-5`) fails every turn.
+pub fn models_for(provider: &str, default_model: Option<&str>, config_dir: Option<&str>) -> Vec<String> {
     match provider {
         "claude" => crate::providers::claude::known_model_aliases().into_iter().map(|m| m.id).collect(),
-        "codex" => vec!["gpt-5".into(), "gpt-5-codex".into(), "gpt-5-mini".into()],
+        "codex" => {
+            let dir = config_dir.map(super::setup::expand_home);
+            let listed = dir.as_deref().map(codex_catalog).unwrap_or_default();
+            if !listed.is_empty() {
+                return listed;
+            }
+            // No catalog yet (never opened): the model its config picks.
+            match dir.as_deref().and_then(codex_config_model).or_else(|| default_model.map(str::to_string)) {
+                Some(m) => vec![m],
+                None => vec!["gpt-5-codex".into()],
+            }
+        }
         _ => default_model.map(|m| vec![m.to_string()]).unwrap_or_default(),
     }
 }
 
-/// `(id, provider, default_model)` of every account, oldest first.
-fn accounts(conn: &Connection) -> Result<Vec<(String, String, Option<String>)>, String> {
-    let mut stmt = conn.prepare("SELECT id, provider, default_model FROM accounts ORDER BY created_at").map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(|e| e.to_string())?;
+/// The models Codex lists for this login (`models_cache.json`), as its own
+/// picker shows them.
+fn codex_catalog(dir: &std::path::Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(dir.join("models_cache.json")) else { return Vec::new() };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return Vec::new() };
+    v.get("models")
+        .and_then(serde_json::Value::as_array)
+        .map(|ms| {
+            ms.iter()
+                .filter(|m| m.get("visibility").and_then(serde_json::Value::as_str) == Some("list"))
+                .filter_map(|m| m.get("slug").and_then(serde_json::Value::as_str).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `model = "…"` in the account's `config.toml`.
+fn codex_config_model(dir: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join("config.toml")).ok()?;
+    let line = text.lines().take_while(|l| !l.trim_start().starts_with('[')).find(|l| l.trim_start().starts_with("model ") || l.trim_start().starts_with("model="))?;
+    let value = line.split_once('=')?.1.trim().trim_matches('"');
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+/// One account as the team sees it: `(id, provider, the models it runs)`,
+/// oldest first.
+fn accounts(conn: &Connection) -> Result<Vec<(String, String, Vec<String>)>, String> {
+    let mut stmt = conn.prepare("SELECT id, provider, default_model, config_dir_path FROM accounts ORDER BY created_at").map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            let (provider, default, dir): (String, Option<String>, Option<String>) = (r.get(1)?, r.get(2)?, r.get(3)?);
+            let models = models_for(&provider, default.as_deref(), dir.as_deref());
+            Ok((r.get(0)?, provider, models))
+        })
+        .map_err(|e| e.to_string())?;
     rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
 }
 
 /// The prototype's team on this machine's accounts.
 pub fn default_team(conn: &Connection) -> Result<Vec<Agent>, String> {
     let all = accounts(conn)?;
-    let claude: Vec<&(String, String, Option<String>)> = all.iter().filter(|a| a.1 == "claude").collect();
+    let claude: Vec<&(String, String, Vec<String>)> = all.iter().filter(|a| a.1 == "claude").collect();
     let work = claude.first().copied().or(all.first());
     let personal = claude.get(1).copied().or(work);
     let other = all.iter().find(|a| work.is_some_and(|w| family(&a.1) != family(&w.1))).or(work);
@@ -117,8 +165,7 @@ pub fn default_team(conn: &Connection) -> Result<Vec<Agent>, String> {
             };
             // A model this account can't run falls back to its first one.
             let model = match account {
-                Some((_, provider, default)) => {
-                    let models = models_for(provider, default.as_deref());
+                Some((_, _, models)) => {
                     if models.iter().any(|m| m == s.model) || models.is_empty() { s.model.to_string() } else { models[0].clone() }
                 }
                 None => s.model.to_string(),
@@ -134,7 +181,7 @@ pub fn default_team(conn: &Connection) -> Result<Vec<Agent>, String> {
                 account_id: account.map(|a| a.0.clone()),
                 model,
                 active: s.active,
-                required: s.required,
+                required: is_required(s.role),
                 command: s.command.map(Into::into),
                 escalate_model: s.escalate.map(Into::into),
                 note: s.note.map(Into::into),
@@ -157,7 +204,9 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<Agent> {
         account_id: r.get(7)?,
         model: r.get(8)?,
         active: r.get(9)?,
-        required: r.get(10)?,
+        // By role, not as stored: a team saved when the approver was
+        // obligatory can switch it off now.
+        required: is_required(&r.get::<_, String>(1)?),
         command: r.get(11)?,
         escalate_model: r.get(12)?,
         note: r.get(13)?,
@@ -208,8 +257,8 @@ pub fn save(conn: &Connection, project_id: &str, team: &[Agent]) -> Result<(), S
                 serde_json::to_string(&a.sections).unwrap_or_else(|_| "[]".into()),
                 a.account_id,
                 a.model,
-                a.active || a.required,
-                a.required,
+                a.active || is_required(&a.role),
+                is_required(&a.role),
                 a.command.as_deref().map(str::trim).filter(|c| !c.is_empty()),
                 a.escalate_model,
                 a.note,
@@ -230,10 +279,12 @@ pub struct TeamCheck {
 }
 
 pub fn check(conn: &Connection, team: &[Agent]) -> Result<TeamCheck, String> {
-    let providers: std::collections::HashMap<String, String> = accounts(conn)?.into_iter().map(|(id, p, _)| (id, p)).collect();
+    let all = accounts(conn)?;
+    let providers: std::collections::HashMap<String, String> = all.iter().map(|(id, p, _)| (id.clone(), p.clone())).collect();
+    let models: std::collections::HashMap<&str, &Vec<String>> = all.iter().map(|(id, _, m)| (id.as_str(), m)).collect();
     let mut out = TeamCheck::default();
-    let on = |role: &str| team.iter().find(|a| a.role == role && (a.active || a.required));
-    for (role, label) in [("spec", "spec writer"), ("builder", "builder"), ("approver", "aprobador")] {
+    let on = |role: &str| team.iter().find(|a| a.role == role && (a.active || is_required(&a.role)));
+    for (role, label) in [("spec", "spec writer"), ("builder", "builder")] {
         match on(role) {
             None => out.problems.push(format!("Falta el {label}: es obligatorio.")),
             Some(a) if a.account_id.as_deref().map(|id| !providers.contains_key(id)).unwrap_or(true) => out.problems.push(format!("{}: elige una cuenta.", a.name)),
@@ -243,9 +294,19 @@ pub fn check(conn: &Connection, team: &[Agent]) -> Result<TeamCheck, String> {
     if !team.iter().any(|a| a.role == "tester" && a.active) {
         out.problems.push("Activa al menos un tester: sin tests no se aprueba nada.".into());
     }
-    for a in team.iter().filter(|a| a.active && !a.required) {
+    for a in team.iter().filter(|a| a.active && !is_required(&a.role)) {
         if a.account_id.as_deref().map(|id| !providers.contains_key(id)).unwrap_or(true) {
             out.problems.push(format!("{}: elige una cuenta.", a.name));
+        }
+    }
+    // A model Codex doesn't offer this login fails on every turn. (Claude's
+    // CLI takes ids beyond its aliases, so only Codex is checked.)
+    for a in team.iter().filter(|a| a.active || is_required(&a.role)) {
+        let codex = a.account_id.as_deref().and_then(|id| providers.get(id)).is_some_and(|p| p == "codex");
+        if let Some(list) = a.account_id.as_deref().and_then(|id| models.get(id)).filter(|_| codex) {
+            if !list.is_empty() && !list.contains(&a.model) {
+                out.problems.push(format!("{}: la cuenta no ofrece el modelo {}; elige otro.", a.name, a.model));
+            }
         }
     }
     let fam = |a: &Agent| a.account_id.as_ref().and_then(|id| providers.get(id)).map(|p| family(p).to_string());
@@ -397,7 +458,7 @@ pub async fn factory_team_apply_suggestions<R: tauri::Runtime>(app: tauri::AppHa
 #[tauri::command]
 pub async fn factory_models<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
     crate::factory::with_db(app, move |conn| {
-        Ok(accounts(&conn)?.into_iter().map(|(id, provider, default)| (id, models_for(&provider, default.as_deref()))).collect())
+        Ok(accounts(&conn)?.into_iter().map(|(id, _, models)| (id, models)).collect())
     })
     .await
 }
@@ -408,9 +469,9 @@ pub(crate) mod tests {
 
     pub(crate) fn conn_with_accounts(accounts: &[(&str, &str)]) -> Connection {
         let conn = crate::factory::store::tests::conn();
-        conn.execute_batch("CREATE TABLE accounts (id TEXT PRIMARY KEY, provider TEXT, default_model TEXT, created_at TEXT);").unwrap();
+        conn.execute_batch("CREATE TABLE accounts (id TEXT PRIMARY KEY, provider TEXT, default_model TEXT, created_at TEXT, config_dir_path TEXT);").unwrap();
         for (i, (id, provider)) in accounts.iter().enumerate() {
-            conn.execute("INSERT INTO accounts VALUES (?1, ?2, NULL, ?3)", params![id, provider, i.to_string()]).unwrap();
+            conn.execute("INSERT INTO accounts VALUES (?1, ?2, NULL, ?3, NULL)", params![id, provider, i.to_string()]).unwrap();
         }
         crate::factory::store::add(&conn, "p1", "local").unwrap();
         conn
@@ -424,7 +485,7 @@ pub(crate) mod tests {
         let by = |name: &str| team.iter().find(|a| a.name == name).unwrap();
         assert_eq!((by("Spec writer").account_id.as_deref(), by("Spec writer").model.as_str()), (Some("work"), "opus"));
         assert_eq!(by("Crítico R0").account_id.as_deref(), Some("personal"));
-        assert_eq!((by("Aprobador").account_id.as_deref(), by("Aprobador").model.as_str()), (Some("cx"), "gpt-5"));
+        assert_eq!((by("Aprobador").account_id.as_deref(), by("Aprobador").model.as_str()), (Some("cx"), "gpt-5-codex"), "a model the account offers");
         assert_eq!(by("Builder").escalate_model.as_deref(), Some("opus"));
         assert!(!by("Tester E2E").active);
         let check = check(&c, &team).unwrap();
@@ -475,6 +536,45 @@ pub(crate) mod tests {
         let check = check(&c, &team).unwrap();
         assert!(check.problems.is_empty());
         assert_eq!(check.warnings.len(), 1);
+    }
+
+    #[test]
+    fn a_team_on_one_family_runs_without_an_approver() {
+        let c = conn_with_accounts(&[("work", "claude")]);
+        let mut team = load(&c, "p1").unwrap();
+        let approver = team.iter_mut().find(|a| a.role == "approver").unwrap();
+        assert!(!approver.required, "it can be switched off");
+        approver.active = false;
+        save(&c, "p1", &team).unwrap();
+        let check = check(&c, &load(&c, "p1").unwrap()).unwrap();
+        assert!(check.problems.is_empty() && check.warnings.is_empty(), "no approver, no same-family warning: {check:?}");
+        // A team saved when the approver was obligatory reads as optional.
+        c.execute("UPDATE factory_agents SET required = 1 WHERE role = 'approver'", []).unwrap();
+        assert!(!load(&c, "p1").unwrap().iter().find(|a| a.role == "approver").unwrap().required);
+    }
+
+    #[test]
+    fn codex_offers_the_models_its_login_lists() {
+        let dir = std::env::temp_dir().join(format!("hangar-codex-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = dir.to_string_lossy().to_string();
+        std::fs::write(dir.join("config.toml"), "model = \"gpt-5.6-terra\"\n[projects.\"/x\"]\nmodel = \"no\"\n").unwrap();
+        assert_eq!(models_for("codex", None, Some(&d)), vec!["gpt-5.6-terra"], "no catalog yet: its config's model");
+        std::fs::write(
+            dir.join("models_cache.json"),
+            r#"{"models":[{"slug":"gpt-reserve","visibility":"hide"},{"slug":"gpt-6-luna","visibility":"list"},{"slug":"gpt-5.6-luna","visibility":"list"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(models_for("codex", None, Some(&d)), vec!["gpt-6-luna", "gpt-5.6-luna"]);
+
+        // An approver left on `gpt-5`, which a ChatGPT login can't use, blocks.
+        let c = conn_with_accounts(&[("work", "claude"), ("cx", "codex")]);
+        c.execute("UPDATE accounts SET config_dir_path = ?1 WHERE id = 'cx'", params![d]).unwrap();
+        let mut team = load(&c, "p1").unwrap();
+        team.iter_mut().find(|a| a.role == "approver").unwrap().model = "gpt-5".into();
+        let check = check(&c, &team).unwrap();
+        assert!(check.problems.iter().any(|p| p.contains("no ofrece el modelo gpt-5")), "{check:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

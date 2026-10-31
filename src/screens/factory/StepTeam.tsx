@@ -24,7 +24,7 @@ export function StepTeam({ project, onBack, onNext }: { project: FactoryProject;
         </div>
         <span className={styles.hint}>
           Cada agente lee solo su parte del brain y cita la regla con la que decide. Mezcla modelos fuertes y baratos, y pon el aprobador en otra familia de modelo para que
-          no se dé la razón a sí mismo.
+          no se dé la razón a sí mismo. Si trabajas con una sola familia, puedes apagarlo: decide la puerta de tests.
         </span>
         <TeamEditor projectId={project.projectId} onChange={setView} />
       </div>

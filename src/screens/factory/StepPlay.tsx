@@ -79,7 +79,7 @@ export function StepPlay({
             {team && !team.check.problems.length ? ok : no}
             <span className={styles.checkKey}>Equipo</span>
             <span>
-              {on.length} agentes · testers: {testers.map((a) => `${a.short} (${a.model})`).join(', ') || 'ninguno'} · aprobador {approver?.model ?? '—'} · sin tests en verde no se aprueba
+              {on.length} agentes · testers: {testers.map((a) => `${a.short} (${a.model})`).join(', ') || 'ninguno'} · {approver ? `aprobador ${approver.model}` : 'sin aprobador'} · sin tests en verde no se aprueba
             </span>
           </div>
           <div className={styles.checkItem}>

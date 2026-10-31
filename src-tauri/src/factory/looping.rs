@@ -771,7 +771,8 @@ pub async fn factory_stop_all<R: Runtime>(app: AppHandle<R>) -> Result<usize, St
 }
 
 /// «Reintentar» on a failed order: its last run goes on at its stage, with
-/// its rounds counted afresh; without a run it goes back to the queue.
+/// its rounds counted afresh and today's team; without a run it goes back to
+/// the queue.
 pub fn retry_order(conn: &Connection, order_id: &str) -> Result<(), String> {
     let order = orders::get(conn, order_id)?;
     if !matches!(order.status.as_str(), "failed" | "stopped") {
@@ -782,6 +783,7 @@ pub fn retry_order(conn: &Connection, order_id: &str) -> Result<(), String> {
     // just goes back to the queue, and that run stays as history.
     match last.and_then(|id| line::load_run(conn, &id).ok()).filter(|r| matches!(r.status.as_str(), "failed" | "stopped") && !r.team.is_empty()) {
         Some(mut run) => {
+            line::take_current_team(conn, &mut run)?;
             run.round = 0;
             run.state.escalated = false;
             run.error = None;

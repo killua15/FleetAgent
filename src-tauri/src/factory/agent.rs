@@ -196,6 +196,69 @@ pub fn codex_args(call: &AgentCall, schema_file: &std::path::Path, last_message:
     args
 }
 
+/// The schema as Codex's structured output accepts it: OpenAI's strict mode
+/// wants every object closed (`additionalProperties: false`) and every
+/// property required, so an optional one becomes required and nullable.
+/// Anything less and the turn fails before the model says a word.
+pub fn strict_schema(schema: &Value) -> Value {
+    let mut out = schema.clone();
+    make_strict(&mut out);
+    out
+}
+
+fn make_strict(v: &mut Value) {
+    let Some(obj) = v.as_object_mut() else { return };
+    if let Some(items) = obj.get_mut("items") {
+        make_strict(items);
+    }
+    if !obj.get("properties").is_some_and(Value::is_object) {
+        return;
+    }
+    let required: Vec<String> = obj.get("required").and_then(Value::as_array).map(|r| r.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+    let props = obj.get_mut("properties").and_then(Value::as_object_mut).expect("checked above");
+    let mut all = Vec::new();
+    for (name, prop) in props.iter_mut() {
+        make_strict(prop);
+        if !required.contains(name) {
+            nullable(prop);
+        }
+        all.push(Value::String(name.clone()));
+    }
+    obj.insert("required".into(), Value::Array(all));
+    obj.insert("additionalProperties".into(), Value::Bool(false));
+}
+
+fn nullable(prop: &mut Value) {
+    let Some(obj) = prop.as_object_mut() else { return };
+    let null = Value::String("null".into());
+    match obj.get_mut("type") {
+        Some(Value::String(t)) if t != "null" => {
+            let t = Value::String(t.clone());
+            obj.insert("type".into(), Value::Array(vec![t, null.clone()]));
+        }
+        Some(Value::Array(ts)) if !ts.contains(&null) => ts.push(null.clone()),
+        _ => {}
+    }
+    if let Some(Value::Array(options)) = obj.get_mut("enum") {
+        if !options.contains(&Value::Null) {
+            options.push(Value::Null);
+        }
+    }
+}
+
+/// What a Codex `error` or `turn.failed` event says, unwrapped from the API's
+/// own JSON when it comes nested in the message.
+pub fn codex_error(event: &Value) -> Option<String> {
+    let message = match event.get("type").and_then(Value::as_str)? {
+        "error" => event.get("message"),
+        "turn.failed" => event.pointer("/error/message"),
+        _ => None,
+    }?
+    .as_str()?;
+    let inner = serde_json::from_str::<Value>(message).ok().and_then(|v| v.pointer("/error/message").and_then(Value::as_str).map(str::to_string));
+    Some(inner.unwrap_or_else(|| message.to_string()))
+}
+
 /// A JSON object out of an answer that may wrap it in prose or a fence.
 pub fn json_in(text: &str) -> Option<Value> {
     if let Ok(v) = serde_json::from_str::<Value>(text.trim()) {
@@ -252,7 +315,7 @@ impl Runner for CliRunner {
             }
             let schema_file = scratch.join("schema.json");
             let last = scratch.join("last.txt");
-            let _ = std::fs::write(&schema_file, call.schema.to_string());
+            let _ = std::fs::write(&schema_file, strict_schema(&call.schema).to_string());
             (codex_args(call, &schema_file, &last), Some(last))
         } else {
             (claude_args(call), None)
@@ -309,6 +372,9 @@ impl Runner for CliRunner {
         let mut all = String::new();
         let mut saw_result = false;
         let mut result_error = false;
+        // Codex reports its failures (a model the login can't use, a schema
+        // the API refuses) as events, not on stderr.
+        let mut cli_error: Option<String> = None;
         if let Some(out) = child.stdout.take() {
             for line in BufReader::new(out).lines().map_while(Result::ok) {
                 all.push_str(&line);
@@ -317,6 +383,9 @@ impl Runner for CliRunner {
                 if launch.provider == "codex" {
                     if let Some(id) = event.get("thread_id").and_then(Value::as_str) {
                         session_id = Some(id.to_string());
+                    }
+                    if let Some(e) = codex_error(&event) {
+                        cli_error = Some(e);
                     }
                     if let Some(item) = event.get("item") {
                         match item.get("type").and_then(Value::as_str) {
@@ -376,12 +445,20 @@ impl Runner for CliRunner {
             (true, false) => err.clone(),
             (false, _) => format!("{final_text}\n{err}\n{all}"),
         };
+        // Codex's own error events are the CLI speaking, never the agent.
+        let said = match &cli_error {
+            Some(e) => format!("{said}\n{e}"),
+            None => said,
+        };
         let outcome = match (&json, limits::classify(&said)) {
             (Some(_), _) => Outcome::Ok,
             (None, Some(Signal::Limit)) => Outcome::Limit { resume_at: limits::resume_at(&said, self.root.as_deref(), &call.account_id) },
             (None, Some(Signal::NoCredits)) => Outcome::NoCredits,
             (None, None) => {
-                let why = err.lines().chain(final_text.lines()).rev().find(|l| !l.trim().is_empty()).unwrap_or("el agente terminó sin respuesta").to_string();
+                let why = cli_error
+                    .clone()
+                    .or_else(|| err.lines().chain(final_text.lines()).rev().find(|l| !l.trim().is_empty()).map(str::to_string))
+                    .unwrap_or_else(|| "el agente terminó sin respuesta".into());
                 let code = status.ok().and_then(|s| s.code()).map(|c| format!(" (salida {c})")).unwrap_or_default();
                 Outcome::Failed(format!("{why}{code}"))
             }
@@ -440,6 +517,46 @@ mod tests {
             {"type":"tool_use","name":"Bash","input":{"command":"pytest -q"}},
             {"type":"text","text":"hola"}]}});
         assert_eq!(claude_activity(&ev), vec![Activity { kind: "read", text: "app/routers/citas.py".into() }, Activity { kind: "cmd", text: "pytest -q".into() }]);
+    }
+
+    #[test]
+    fn codex_gets_a_strict_schema_and_its_errors_are_read() {
+        let approver = crate::factory::line::role_schema("approver");
+        let s = strict_schema(&approver);
+        assert_eq!(s["additionalProperties"], false);
+        assert_eq!(s["required"].as_array().unwrap().len(), s["properties"].as_object().unwrap().len());
+        let item = &s["properties"]["decisions"]["items"];
+        assert_eq!(item["additionalProperties"], false);
+        assert!(item["required"].as_array().unwrap().contains(&serde_json::json!("question")), "optional made required…");
+        assert_eq!(item["properties"]["question"]["type"], serde_json::json!(["string", "null"]), "…and nullable");
+        assert_eq!(item["properties"]["text"]["type"], "string", "a required one stays as it was");
+        for role in ["spec", "critic", "builder", "verifier", "reviewer_code"] {
+            fn closed(v: &Value) -> bool {
+                match v {
+                    Value::Object(o) => (!o.contains_key("properties") || o.get("additionalProperties") == Some(&Value::Bool(false))) && o.values().all(closed),
+                    Value::Array(a) => a.iter().all(closed),
+                    _ => true,
+                }
+            }
+            assert!(closed(&strict_schema(&crate::factory::line::role_schema(role))), "{role}");
+        }
+
+        let failed = serde_json::json!({"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"error\":{\"message\":\"Invalid schema for response_format\"}}"}});
+        assert_eq!(codex_error(&failed).as_deref(), Some("Invalid schema for response_format"));
+        let model = serde_json::json!({"type":"error","message":"The 'gpt-5' model is not supported when using Codex with a ChatGPT account."});
+        assert!(codex_error(&model).unwrap().contains("not supported"));
+        assert!(codex_error(&serde_json::json!({"type":"item.completed","item":{"type":"error","message":"metadata"}})).is_none(), "a warning item isn't the turn failing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_codex_that_fails_says_why() {
+        let mut runner = fake(r#"echo '{"type":"thread.started","thread_id":"t1"}'; echo '{"type":"error","message":"The '"'"'gpt-5'"'"' model is not supported when using Codex with a ChatGPT account."}'; echo '{"type":"turn.failed","error":{"message":"The '"'"'gpt-5'"'"' model is not supported when using Codex with a ChatGPT account."}}'; exit 1"#);
+        runner.launches.get_mut("a").unwrap().provider = "codex".into();
+        let mut c = call(false, None);
+        c.cwd = std::env::temp_dir();
+        let r = runner.run(&c, &mut |_| {});
+        assert!(matches!(&r.outcome, Outcome::Failed(why) if why.contains("not supported when using Codex")), "{:?}", r.outcome);
     }
 
     /// The fake CLI: a script standing in for `claude`, printing stream-json.

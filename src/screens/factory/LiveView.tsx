@@ -312,7 +312,20 @@ export function LiveView({
             <b>{order.key} falló.</b> {run.error}
           </span>
           <span className={styles.spacer} />
-          <button className={`${styles.btn} ${styles.sm}`} onClick={() => onResolve('retry')}>
+          {run.stage === 'approve' && run.state.gateOk && (
+            <button
+              className={`${styles.btnPrimary} ${styles.sm}`}
+              title="Los tests están en verde y la revisión terminó: la entregas tú en lugar del aprobador"
+              onClick={() => onResolve('skip_approver')}
+            >
+              Entregar sin aprobador
+            </button>
+          )}
+          <button
+            className={`${styles.btn} ${styles.sm}`}
+            title="Sigue en la misma etapa con el equipo tal como está ahora en Equipo"
+            onClick={() => onResolve('retry')}
+          >
             Reintentar donde quedó
           </button>
         </div>

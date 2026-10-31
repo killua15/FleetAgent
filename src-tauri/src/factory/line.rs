@@ -1094,19 +1094,31 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                     run.stage = "gate".into();
                     continue;
                 }
-                let a = agent("approver").ok_or("el equipo no tiene aprobador")?;
-                let extra = format!("\n=== RESUMEN ===\n{}\nSuite: {} comprobaciones en verde. Avisos: {}\n", run.state.summary.clone().unwrap_or_default(), run.state.gate.len(), run.state.warnings.join(" · "));
-                let ans = match run_agent(ctx, &mut run, &a, &order, &brain, &extra, false, None, None)? {
-                    Step::Answer(ans) => ans,
-                    Step::Halted => return Ok(run),
+                // Without an approver the spec's risk flag stands in for its
+                // «ask»: delegated mode still stops on a risky order.
+                let (ask, reason) = match agent("approver") {
+                    Some(a) => {
+                        let extra = format!("\n=== RESUMEN ===\n{}\nSuite: {} comprobaciones en verde. Avisos: {}\n", run.state.summary.clone().unwrap_or_default(), run.state.gate.len(), run.state.warnings.join(" · "));
+                        let ans = match run_agent(ctx, &mut run, &a, &order, &brain, &extra, false, None, None)? {
+                            Step::Answer(ans) => ans,
+                            Step::Halted => return Ok(run),
+                        };
+                        let ask = ans.get("decision").and_then(Value::as_str) == Some("ask");
+                        let reason = ans.get("reason").and_then(Value::as_str).unwrap_or("").to_string();
+                        run.state.approver = Some(ans);
+                        (ask, format!("El aprobador pregunta: {reason}"))
+                    }
+                    None => {
+                        let spec = run.state.spec.as_ref();
+                        let risky = spec.and_then(|s| s.get("risk")).and_then(Value::as_bool).unwrap_or(false);
+                        let why = spec.and_then(|s| s.get("risk_reason")).and_then(Value::as_str).filter(|r| !r.trim().is_empty()).unwrap_or("el brain marca riesgo");
+                        (risky, format!("Sin aprobador, y la spec marca riesgo: {why}"))
+                    }
                 };
-                let ask = ans.get("decision").and_then(Value::as_str) == Some("ask");
-                let reason = ans.get("reason").and_then(Value::as_str).unwrap_or("").to_string();
-                run.state.approver = Some(ans);
                 let conn = lock(ctx.db)?;
                 let human = match project.mode.as_str() {
                     "supervised" => Some(("diff", format!("Modo supervisado: revisa el diff de {} antes de entregar.", order.key))),
-                    "delegated" if ask => Some(("approver", format!("El aprobador pregunta: {reason}"))),
+                    "delegated" if ask => Some(("approver", reason.clone())),
                     _ => None,
                 };
                 run.stage = "deliver".into();
@@ -1124,7 +1136,7 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                 }
                 if ask {
                     // Autonomous: it never stops; the risk goes in the MR.
-                    run.state.warnings.push(format!("El aprobador habría preguntado: {reason}"));
+                    run.state.warnings.push(format!("Se habría parado a preguntar. {reason}"));
                 }
                 save_run(&conn, &run)?;
             }
@@ -1242,6 +1254,16 @@ pub fn resolve(conn: &Connection, run_id: &str, action: &str, note: Option<Strin
             run.state.gate_ok = false;
             run.stage = "build".into();
         }
+        // The approver is the one that failed and the suite is green: a
+        // person takes its place and the order goes to delivery.
+        "skip_approver" => {
+            if run.stage != "approve" || !run.state.gate_ok {
+                return Err("solo se puede entregar sin aprobador con la suite en verde, en la etapa del aprobador".into());
+            }
+            run.stage = "deliver".into();
+            run.state.approver = Some(serde_json::json!({ "decision": "ship", "reason": "una persona la entregó sin aprobador" }));
+            activity(conn, &run.id, None, "dec", "warn", "entregada sin aprobador por decisión de una persona", None)?;
+        }
         "other_account" => {
             let account = account_id.ok_or("elige la cuenta")?;
             let agent = current_agent(conn, &run)?;
@@ -1253,12 +1275,24 @@ pub fn resolve(conn: &Connection, run_id: &str, action: &str, note: Option<Strin
     run.resume_at = None;
     run.state.human = None;
     run.state.human_kind = None;
-    if run.finished_at.is_some() && action == "retry" {
+    if run.finished_at.is_some() && (action == "retry" || action == "skip_approver") {
         run.finished_at = None;
         run.error = None;
+        take_current_team(conn, &mut run)?;
     }
     save_run(conn, &run)?;
     Ok(run)
+}
+
+/// A failed order is retried with the team as it is now: what made it fail
+/// (an approver on a model its account lacks) is fixed in Equipo, not in the
+/// run. The brain stays frozen.
+pub fn take_current_team(conn: &Connection, run: &mut Run) -> Result<(), String> {
+    let team = super::team::load(conn, &run.project_id)?;
+    if !team.is_empty() {
+        run.team = team;
+    }
+    Ok(())
 }
 
 /// The agent the run is stuck on: the one of its last step.
@@ -1502,6 +1536,96 @@ pub(crate) mod tests {
             resolve(&conn, &run.id, "continue", None, None).unwrap();
         }
         assert_eq!(advance(&c, &run.id).unwrap().status, "merged");
+    }
+
+    fn approver_off(w: &World) {
+        let conn = w.db.0.lock().unwrap();
+        let mut team = crate::factory::team::load(&conn, "p1").unwrap();
+        team.iter_mut().find(|a| a.role == "approver").unwrap().active = false;
+        crate::factory::team::save(&conn, "p1", &team).unwrap();
+    }
+
+    #[test]
+    fn without_an_approver_the_gate_still_decides_and_delegated_stops_on_risk() {
+        // One world at a time: each holds the stop gate, and a second taken
+        // while a ⏹ test waits for it never comes.
+        {
+            let w = world("autonomous", "local", "true");
+            approver_off(&w);
+            let s = Script::new();
+            let c = ctx(&w, &s);
+            let run = start(&c, "p1", &w.order_id).unwrap();
+            let run = advance(&c, &run.id).unwrap();
+            assert_eq!(run.status, "merged", "{:?}", run.error);
+            assert!(!roles(&s).contains(&"approver".to_string()));
+            assert!(roles(&s).contains(&"tester".to_string()), "the gate's suite still ran");
+        }
+
+        let w = world("delegated", "local", "true");
+        approver_off(&w);
+        let s = Script::new();
+        s.on("spec", json!({"summary":"x","steps":[],"files":[],"tests":[],"risk":true,"risk_reason":"toca pagos","decisions":[]}));
+        let c = ctx(&w, &s);
+        let run = start(&c, "p1", &w.order_id).unwrap();
+        let run = advance(&c, &run.id).unwrap();
+        assert_eq!(run.state.human_kind.as_deref(), Some("spec_review"), "risky: the spec waits first, as ever");
+        {
+            let conn = w.db.0.lock().unwrap();
+            resolve(&conn, &run.id, "continue", None, None).unwrap();
+        }
+        let run = advance(&c, &run.id).unwrap();
+        assert_eq!((run.status.as_str(), run.state.human_kind.as_deref()), ("waiting_human", Some("approver")));
+        assert!(run.state.human.as_deref().unwrap().contains("toca pagos"));
+    }
+
+    #[test]
+    fn a_failed_approver_is_skipped_by_a_person_or_retried_with_todays_team() {
+        // «Entregar sin aprobador»: straight to delivery, the suite green.
+        // One world at a time (see above).
+        {
+            let w = world("autonomous", "local", "true");
+            let s = Script::new();
+            s.fail("approver");
+            let c = ctx(&w, &s);
+            let run = start(&c, "p1", &w.order_id).unwrap();
+            let run = advance(&c, &run.id).unwrap();
+            assert_eq!((run.status.as_str(), run.stage.as_str()), ("failed", "approve"));
+            {
+                let conn = w.db.0.lock().unwrap();
+                resolve(&conn, &run.id, "skip_approver", None, None).unwrap();
+            }
+            assert_eq!(advance(&c, &run.id).unwrap().status, "merged");
+            assert_eq!(roles(&s).iter().filter(|r| *r == "approver").count(), 1, "not asked again");
+        }
+
+        // Switched off in Equipo, then «Reintentar»: the run takes the team as it is now.
+        let w = world("autonomous", "local", "true");
+        let s = Script::new();
+        s.fail("approver");
+        let c = ctx(&w, &s);
+        let run = start(&c, "p1", &w.order_id).unwrap();
+        let run = advance(&c, &run.id).unwrap();
+        assert_eq!(run.status, "failed");
+        approver_off(&w);
+        {
+            let conn = w.db.0.lock().unwrap();
+            let run = resolve(&conn, &run.id, "retry", None, None).unwrap();
+            assert!(!run.team.iter().any(|a| a.role == "approver" && a.active));
+        }
+        assert_eq!(advance(&c, &run.id).unwrap().status, "merged");
+        assert_eq!(roles(&s).iter().filter(|r| *r == "approver").count(), 1);
+    }
+
+    #[test]
+    fn skipping_the_approver_needs_a_green_suite_at_its_stage() {
+        let w = world("autonomous", "local", "true");
+        let s = Script::new();
+        s.fail("spec");
+        let c = ctx(&w, &s);
+        let run = start(&c, "p1", &w.order_id).unwrap();
+        let run = advance(&c, &run.id).unwrap();
+        let conn = w.db.0.lock().unwrap();
+        assert!(resolve(&conn, &run.id, "skip_approver", None, None).is_err());
     }
 
     #[test]
