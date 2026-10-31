@@ -294,6 +294,21 @@ export interface RunState {
   waived: string[];
   /** Brain checks filed as broken: back when a newer brain is sealed. */
   broken: string[];
+  /** Why each round went back to Fabricación, oldest first. */
+  history: RoundFail[];
+}
+
+export interface FailItem {
+  name: string;
+  detail: string;
+}
+
+export interface RoundFail {
+  /** The round that failed (0 is the first pass). */
+  round: number;
+  at: string;
+  kind: 'gate' | 'review';
+  items: FailItem[];
 }
 
 export interface FactoryRun {

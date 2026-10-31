@@ -825,6 +825,34 @@ pub async fn factory_run_resolve<R: Runtime>(app: AppHandle<R>, run_id: String, 
     .await
 }
 
+/// «Arreglar en una consola»: a real Hangar terminal on the project, its CLI
+/// already told which worktree to work in and what stayed red. The database
+/// is read first and let go: opening a terminal takes the lock itself.
+#[tauri::command]
+pub async fn factory_run_console<R: Runtime>(app: AppHandle<R>, run_id: String, account_id: String) -> Result<crate::terminals::TerminalInfo, String> {
+    crate::blocking::run_blocking(move || {
+        let (project_id, prompt) = {
+            let db = app.state::<crate::db::DbConnection>();
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            let run = line::load_run(&conn, &run_id)?;
+            let order = orders::get(&conn, &run.order_id)?;
+            let project = super::store::get(&conn, &run.project_id)?;
+            (run.project_id.clone(), line::console_prompt(&run, &order, &project.project_path))
+        };
+        crate::terminals::open_terminal_blocking(
+            app,
+            crate::terminals::TerminalTarget { kind: crate::terminals::TargetKind::Project, id: project_id },
+            Some(account_id),
+            Some(crate::terminals::InitCommand::Start),
+            None,
+            Some(prompt),
+            100,
+            30,
+        )
+    })
+    .await?
+}
+
 /// «Arreglar en Fabricación», «El check está mal» or «Ignorar en esta orden»
 /// on a red check of the gate; `check` is its command, or none for every red.
 #[tauri::command]

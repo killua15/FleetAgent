@@ -1705,16 +1705,18 @@
   gap: 10px;
   width: 100%;
   padding: 8px 10px;
-  background: none;
-  border: 0;
   color: inherit;
   text-align: left;
-  cursor: pointer;
   min-width: 0;
 }
 
-.gateHead:disabled {
-  cursor: default;
+summary.gateHead {
+  cursor: pointer;
+  list-style: none;
+}
+
+summary.gateHead::-webkit-details-marker {
+  display: none;
 }
 
 .gateCmd {
@@ -1761,4 +1763,84 @@
   font: inherit;
   text-decoration: underline;
   cursor: pointer;
+}
+
+/* ---- accordions: <details> with the Factory's own chevron ---- */
+
+.acc > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.acc > summary::-webkit-details-marker {
+  display: none;
+}
+
+.accHead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 16px;
+  min-width: 0;
+}
+
+.accHead::before,
+summary.gateHead::before {
+  content: '▸';
+  color: var(--dim);
+  font-size: 10px;
+  transition: transform 0.12s ease;
+}
+
+details[open] > .accHead::before,
+details[open] > summary.gateHead::before {
+  transform: rotate(90deg);
+}
+
+.accBody {
+  margin: 0 10px 10px;
+}
+
+.failPanel {
+  border-color: color-mix(in srgb, var(--red) 45%, var(--line));
+}
+
+.rounds {
+  margin: 0 16px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+
+.rounds > .accHead {
+  padding: 8px 10px;
+}
+
+.roundItem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.failActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 16px 12px;
+}
+
+.gateNote.failActions {
+  padding: 0 16px 8px;
+}
+
+.failConsole {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 12px;
+}
+
+.failConsole > .failActions {
+  padding-bottom: 0;
 }

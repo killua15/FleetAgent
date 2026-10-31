@@ -75,7 +75,33 @@ pub struct RunState {
     /// Brain checks a person filed as broken («El check está mal»): they
     /// don't run until the order goes on with a newer brain.
     pub broken: Vec<String>,
+    /// Why each round went back to Fabricación, oldest first — what tells a
+    /// check the builder can't fix from one it just hadn't yet.
+    pub history: Vec<RoundFail>,
 }
+
+/// One trip back to Fabricación: the gate's red checks or the review's
+/// confirmed findings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoundFail {
+    /// The round that failed (0 is the first pass).
+    pub round: i64,
+    pub at: String,
+    /// `gate` or `review`.
+    pub kind: String,
+    pub items: Vec<FailItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FailItem {
+    pub name: String,
+    pub detail: String,
+}
+
+/// How many rounds a run remembers.
+const HISTORY: usize = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -1054,7 +1080,12 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                 } else {
                     let failures: Vec<String> = results.iter().filter(|r| !r.ok).map(|r| format!("✗ {} ({})\n{}", r.name, r.command, r.tail)).collect();
                     let why = if results.is_empty() { "no hay ningún tester activo con comando: sin tests no se aprueba".to_string() } else { failures.join("\n\n") };
-                    tell = back_to_build(&conn, &mut run, &order, why)?;
+                    let items: Vec<FailItem> = if results.is_empty() {
+                        vec![FailItem { name: "sin tests".into(), detail: why.clone() }]
+                    } else {
+                        results.iter().filter(|r| !r.ok).map(|r| FailItem { name: r.name.clone(), detail: format!("$ {}\n{}", r.command, r.tail) }).collect()
+                    };
+                    tell = back_to_build(&conn, &mut run, &order, why, "gate", items)?;
                 }
                 save_run(&conn, &run)?;
                 drop(conn);
@@ -1138,7 +1169,14 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                     for f in &confirmed {
                         activity(&conn, &run.id, None, "dec", "warn", &format!("hallazgo confirmado: {}", f.get("text").and_then(Value::as_str).unwrap_or("")), f.get("rule_id").and_then(Value::as_str))?;
                     }
-                    tell = back_to_build(&conn, &mut run, &order, format!("Hallazgos confirmados de la revisión:\n{}", list.join("\n")))?;
+                    let items: Vec<FailItem> = confirmed
+                        .iter()
+                        .map(|f| FailItem {
+                            name: format!("{} · {}", f.get("rule_id").and_then(Value::as_str).unwrap_or("sin regla"), f.get("severity").and_then(Value::as_str).unwrap_or("")),
+                            detail: format!("{}: {}", f.get("file").and_then(Value::as_str).unwrap_or(""), f.get("text").and_then(Value::as_str).unwrap_or("")),
+                        })
+                        .collect();
+                    tell = back_to_build(&conn, &mut run, &order, format!("Hallazgos confirmados de la revisión:\n{}", list.join("\n")), "review", items)?;
                 }
                 save_run(&conn, &run)?;
                 drop(conn);
@@ -1216,7 +1254,10 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
 /// K rounds the builder escalates; after MAX_ROUNDS the order fails.
 /// Returns the notification to send, if any — the caller holds the database
 /// lock and sends it once it has let go.
-fn back_to_build(conn: &Connection, run: &mut Run, order: &Order, why: String) -> Result<Option<(String, String)>, String> {
+fn back_to_build(conn: &Connection, run: &mut Run, order: &Order, why: String, kind: &str, items: Vec<FailItem>) -> Result<Option<(String, String)>, String> {
+    run.state.history.push(RoundFail { round: run.round, at: Utc::now().to_rfc3339(), kind: kind.into(), items });
+    let excess = run.state.history.len().saturating_sub(HISTORY);
+    run.state.history.drain(..excess);
     run.round += 1;
     activity(conn, &run.id, None, "fab", "warn", &format!("↺ vuelve a Fabricación · ronda {}", run.round), None)?;
     if run.round > MAX_ROUNDS {
@@ -1450,6 +1491,42 @@ pub fn resolve_check(conn: &Connection, run_id: &str, action: &str, check: Optio
     Ok(run)
 }
 
+/// The first message of «Arreglar en una consola»: a person and an agent fix
+/// by hand what the line couldn't, in the order's own worktree and branch.
+pub fn console_prompt(run: &Run, order: &Order, project_path: &str) -> String {
+    let rel = Path::new(&run.worktree).strip_prefix(project_path).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| run.worktree.clone());
+    let mut p = format!(
+        "Estás arreglando a mano la orden {} («{}») de la Factory de Hangar, que la línea no consiguió dejar en verde.\n\n\
+         Trabaja SOLO en su worktree, `{rel}` (ruta completa: {}), rama `{}`: haz `cd {rel}` antes de nada. No toques la raíz del proyecto ni otras ramas.\n\n",
+        order.key, order.title, run.worktree, run.branch
+    );
+    let red: Vec<&GateResult> = run.state.gate.iter().filter(|g| !g.ok).collect();
+    if !red.is_empty() {
+        p.push_str("=== LO QUE SIGUE EN ROJO EN LA PUERTA DE TESTS ===\n");
+        for g in &red {
+            p.push_str(&format!("\n✗ {} — `{}`\n{}\n", g.name, g.command, g.tail));
+        }
+        p.push('\n');
+    }
+    if let Some(fb) = run.state.feedback.as_deref().filter(|_| red.is_empty()) {
+        p.push_str(&format!("=== LO ÚLTIMO QUE SE LE PIDIÓ AL BUILDER ===\n{fb}\n\n"));
+    }
+    if !run.state.history.is_empty() {
+        p.push_str("=== RONDAS ===\n");
+        for h in &run.state.history {
+            let names: Vec<&str> = h.items.iter().map(|i| i.name.as_str()).collect();
+            p.push_str(&format!("- ronda {} · {}: {}\n", h.round, if h.kind == "gate" { "puerta" } else { "revisión" }, names.join(", ")));
+        }
+        p.push('\n');
+    }
+    p.push_str(
+        "Primero reproduce cada fallo con su comando dentro del worktree y explícame en una frase la causa de cada uno: si es el código, el test, el check o el entorno. \
+         Luego arregla lo que sea del código o de los tests. Si un check está mal escrito, dímelo en vez de cambiarlo: se arregla en el brain. \
+         Cuando todo pase, haz commit en la rama y avísame; yo pulsaré «Reintentar» en Hangar.",
+    );
+    p
+}
+
 /// The agent the run is stuck on: the one of its last step.
 fn current_agent(conn: &Connection, run: &Run) -> Result<String, String> {
     conn.query_row("SELECT agent_id FROM factory_steps WHERE run_id = ?1 AND agent_id IS NOT NULL ORDER BY started_at DESC LIMIT 1", params![run.id], |r| r.get(0))
@@ -1617,6 +1694,9 @@ pub(crate) mod tests {
         let run = advance(&c, &run.id).unwrap();
         assert_eq!(run.status, "merged", "{:?}", run.error);
         assert_eq!(run.round, 1, "one round for SEC-01");
+        assert_eq!(run.state.history.len(), 1);
+        assert_eq!((run.state.history[0].round, run.state.history[0].kind.as_str()), (0, "review"));
+        assert!(run.state.history[0].items[0].name.starts_with("SEC-01") && run.state.history[0].items[0].detail.contains("app/repos/citas.py"));
         assert_eq!(
             roles(&s),
             vec!["spec", "critic", "builder", "tester", "tester", "reviewer_code", "reviewer_security", "verifier", "builder", "tester", "tester", "reviewer_code", "reviewer_security", "approver"]
@@ -1640,6 +1720,14 @@ pub(crate) mod tests {
         let run = advance(&c, &run.id).unwrap();
         assert_eq!(run.status, "failed");
         assert_eq!(run.round, MAX_ROUNDS + 1);
+        // Every round is remembered, the last one included: what stayed red.
+        assert_eq!(run.state.history.iter().map(|h| h.round).collect::<Vec<_>>(), (0..=MAX_ROUNDS).collect::<Vec<_>>());
+        assert!(run.state.history.iter().all(|h| h.kind == "gate" && h.items.iter().any(|i| i.detail.starts_with("$ false"))));
+        let prompt = console_prompt(&run, &orders::get(&w.db.0.lock().unwrap(), &w.order_id).unwrap(), &w.repo.to_string_lossy());
+        assert!(prompt.contains("cd .hangar/worktrees/factory-vet-2"), "{prompt}");
+        assert!(prompt.contains(&format!("rama `{}`", run.branch)));
+        assert!(prompt.contains("`false`") && prompt.contains("ronda 4 · puerta"));
+        assert!(prompt.contains("haz commit en la rama"));
         let calls = s.calls.lock().unwrap().clone();
         assert!(!calls.iter().any(|c| c.0 == "approver" || c.0.starts_with("reviewer")), "red never reaches review or the approver");
         let builder_models: Vec<String> = calls.iter().filter(|c| c.0 == "builder").map(|c| c.2.clone()).collect();

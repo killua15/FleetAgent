@@ -68,7 +68,7 @@ const live: LiveData = {
     mrUrl: null,
     costUsd: 0.94,
     error: null,
-    state: { spec: null, feedback: null, findings: [], warnings: [], escalated: false, gateOk: false, gate: [], humanKind: null, human: null, summary: null, waived: [], broken: [] },
+    state: { spec: null, feedback: null, findings: [], warnings: [], escalated: false, gateOk: false, gate: [], humanKind: null, human: null, summary: null, waived: [], broken: [], history: [] },
     startedAt: at('13:21'),
     finishedAt: null,
   },

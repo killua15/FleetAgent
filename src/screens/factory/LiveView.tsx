@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { Account } from '../../types/account';
 import { brainLabel, countdown, hhmm, STATION_NAME, type ActivityRow, type FactoryOrder, type LiveData, type Station, type StepRow } from '../../types/factory';
+import { FailurePanel } from './FailurePanel';
 import { GatePanel, type CheckAction } from './GatePanel';
 import { Timeline } from './Timeline';
 import { Preparation } from './Preparation';
@@ -205,9 +206,15 @@ export function LiveView({
 
   const feed = live.activity.filter((a) => BIG_OF[a.station] === sel);
   const redChecks = run.state.gate.filter((g) => !g.ok).length;
+  // A failure the line can explain (rounds that went back, a red gate) gets
+  // its own panel; an agent that crashed just says why in the banner.
+  const explained = run.status === 'failed' && ((run.state.history?.length ?? 0) > 0 || redChecks > 0);
   const showGate = () => {
     setPicked('cal');
-    document.getElementById('factory-gate')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const gate = document.getElementById('factory-gate');
+    // Folded away earlier: unfold it, that's what the link asks for.
+    if (gate instanceof HTMLDetailsElement) gate.open = true;
+    gate?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
   const resumeAt = run.resumeAt ? new Date(run.resumeAt).getTime() : null;
   const testers = team.filter((a) => a.role === 'tester');
@@ -338,15 +345,19 @@ export function LiveView({
               Entregar sin aprobador
             </button>
           )}
-          <button
-            className={`${styles.btn} ${styles.sm}`}
-            title="Sigue en la misma etapa con el equipo tal como está ahora en Equipo"
-            onClick={() => onResolve('retry')}
-          >
-            Reintentar donde quedó
-          </button>
+          {!explained && (
+            <button
+              className={`${styles.btn} ${styles.sm}`}
+              title="Sigue en la misma etapa con el equipo tal como está ahora en Equipo"
+              onClick={() => onResolve('retry')}
+            >
+              Reintentar donde quedó
+            </button>
+          )}
         </div>
       )}
+
+      {explained && <FailurePanel run={run} orderKey={order.key} accounts={accounts} onResolve={onResolve} onCheck={onCheck} />}
 
       <div className={styles.order}>
         <span className={styles.orderKey}>{order.key}</span>
