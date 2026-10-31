@@ -378,7 +378,7 @@ impl Runner for CliRunner {
         };
         let outcome = match (&json, limits::classify(&said)) {
             (Some(_), _) => Outcome::Ok,
-            (None, Some(Signal::Limit)) => Outcome::Limit { resume_at: limits::resume_at(self.root.as_deref(), &call.account_id) },
+            (None, Some(Signal::Limit)) => Outcome::Limit { resume_at: limits::resume_at(&said, self.root.as_deref(), &call.account_id) },
             (None, Some(Signal::NoCredits)) => Outcome::NoCredits,
             (None, None) => {
                 let why = err.lines().chain(final_text.lines()).rev().find(|l| !l.trim().is_empty()).unwrap_or("el agente terminó sin respuesta").to_string();

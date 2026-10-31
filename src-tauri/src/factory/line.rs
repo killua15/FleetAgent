@@ -517,6 +517,10 @@ fn run_agent(ctx: &Ctx, run: &mut Run, agent: &Agent, order: &Order, brain: &Sea
         run.state.sessions.insert(agent.id.clone(), id.clone());
         run.state.sessions.insert(format!("{}@{account}", agent.id), id.clone());
     }
+    // What to tell the user — sent after the lock is released, never with it
+    // held: a notification writes to the database too, and the same lock
+    // taken twice by one thread waits on itself forever (the whole app froze).
+    let mut tell: Option<(String, String)> = None;
     let conn = lock(ctx.db)?;
     let outcome = match result.outcome {
         Outcome::Ok => {
@@ -530,7 +534,7 @@ fn run_agent(ctx: &Ctx, run: &mut Run, agent: &Agent, order: &Order, brain: &Sea
             run.status = "waiting_limit".into();
             run.resume_at = Some(resume_at.to_rfc3339());
             activity(&conn, &run.id, Some(&step_id), st, "warn", &format!("límite de uso de la cuenta: espera y sigue sola a las {}", resume_at.with_timezone(&chrono::Local).format("%H:%M")), None)?;
-            (ctx.notify)(&format!("{} espera por límite", order.key), &format!("{} llegó al límite de su cuenta; sigue sola a las {}.", agent.name, resume_at.with_timezone(&chrono::Local).format("%H:%M")));
+            tell = Some((format!("{} espera por límite", order.key), format!("{} llegó al límite de su cuenta; sigue sola a las {}.", agent.name, resume_at.with_timezone(&chrono::Local).format("%H:%M"))));
             Step::Halted
         }
         Outcome::NoCredits => {
@@ -538,7 +542,7 @@ fn run_agent(ctx: &Ctx, run: &mut Run, agent: &Agent, order: &Order, brain: &Sea
             run.status = "waiting_human".into();
             run.state.human_kind = Some("credits".into());
             run.state.human = Some(format!("La cuenta de {} no tiene créditos. Recarga y pulsa Reintentar, o usa otra cuenta.", agent.name));
-            (ctx.notify)(&format!("{}: sin créditos", order.key), &format!("La cuenta de {} no tiene créditos.", agent.name));
+            tell = Some((format!("{}: sin créditos", order.key), format!("La cuenta de {} no tiene créditos.", agent.name)));
             Step::Halted
         }
         Outcome::Stopped => {
@@ -551,12 +555,15 @@ fn run_agent(ctx: &Ctx, run: &mut Run, agent: &Agent, order: &Order, brain: &Sea
             run.status = "failed".into();
             run.error = Some(format!("{}: {why}", agent.name));
             run.finished_at = Some(Utc::now().to_rfc3339());
-            (ctx.notify)(&format!("{} falló", order.key), &format!("{}: {why}", agent.name));
+            tell = Some((format!("{} falló", order.key), format!("{}: {why}", agent.name)));
             Step::Halted
         }
     };
     save_run(&conn, run)?;
     drop(conn);
+    if let Some((title, body)) = tell {
+        (ctx.notify)(&title, &body);
+    }
     (ctx.changed)();
     Ok(outcome)
 }
@@ -822,6 +829,9 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
     // Order 0 sets the project up: no testers, and a gate that only asks
     // every command to run.
     let bootstrap = order.origin == "bootstrap";
+    // A notification a stage decides on while it holds the database lock,
+    // sent after it lets go.
+    let mut tell: Option<(String, String)> = None;
 
     loop {
         if run.status != "running" {
@@ -985,9 +995,13 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                 } else {
                     let failures: Vec<String> = results.iter().filter(|r| !r.ok).map(|r| format!("✗ {} ({})\n{}", r.name, r.command, r.tail)).collect();
                     let why = if results.is_empty() { "no hay ningún tester activo con comando: sin tests no se aprueba".to_string() } else { failures.join("\n\n") };
-                    back_to_build(&conn, &mut run, &order, why, ctx)?;
+                    tell = back_to_build(&conn, &mut run, &order, why)?;
                 }
                 save_run(&conn, &run)?;
+                drop(conn);
+                if let Some((title, body)) = tell.take() {
+                    (ctx.notify)(&title, &body);
+                }
             }
             "review" => {
                 let mut reviewers: Vec<Agent> = team.iter().filter(|a| a.active && (a.role == "reviewer_code" || a.role == "reviewer_security")).cloned().collect();
@@ -1065,9 +1079,13 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                     for f in &confirmed {
                         activity(&conn, &run.id, None, "dec", "warn", &format!("hallazgo confirmado: {}", f.get("text").and_then(Value::as_str).unwrap_or("")), f.get("rule_id").and_then(Value::as_str))?;
                     }
-                    back_to_build(&conn, &mut run, &order, format!("Hallazgos confirmados de la revisión:\n{}", list.join("\n")), ctx)?;
+                    tell = back_to_build(&conn, &mut run, &order, format!("Hallazgos confirmados de la revisión:\n{}", list.join("\n")))?;
                 }
                 save_run(&conn, &run)?;
+                drop(conn);
+                if let Some((title, body)) = tell.take() {
+                    (ctx.notify)(&title, &body);
+                }
             }
             "approve" => {
                 // The approver only ever sees a green suite: if the gate
@@ -1125,15 +1143,16 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
 
 /// Red, or findings confirmed: back to Fabricación with what to fix. After
 /// K rounds the builder escalates; after MAX_ROUNDS the order fails.
-fn back_to_build(conn: &Connection, run: &mut Run, order: &Order, why: String, ctx: &Ctx) -> Result<(), String> {
+/// Returns the notification to send, if any — the caller holds the database
+/// lock and sends it once it has let go.
+fn back_to_build(conn: &Connection, run: &mut Run, order: &Order, why: String) -> Result<Option<(String, String)>, String> {
     run.round += 1;
     activity(conn, &run.id, None, "fab", "warn", &format!("↺ vuelve a Fabricación · ronda {}", run.round), None)?;
     if run.round > MAX_ROUNDS {
         run.status = "failed".into();
         run.error = Some(format!("sigue sin pasar tras {MAX_ROUNDS} rondas"));
         run.finished_at = Some(Utc::now().to_rfc3339());
-        (ctx.notify)(&format!("{} falló", order.key), &format!("Sigue sin pasar tras {MAX_ROUNDS} rondas."));
-        return Ok(());
+        return Ok(Some((format!("{} falló", order.key), format!("Sigue sin pasar tras {MAX_ROUNDS} rondas."))));
     }
     if run.round > K_ROUNDS && !run.state.escalated {
         run.state.escalated = true;
@@ -1144,7 +1163,7 @@ fn back_to_build(conn: &Connection, run: &mut Run, order: &Order, why: String, c
     run.state.feedback = Some(why);
     run.state.gate_ok = false;
     run.stage = "build".into();
-    Ok(())
+    Ok(None)
 }
 
 fn deliver(ctx: &Ctx, run: &mut Run, order: &Order, project: &super::store::FactoryProject) -> Result<(), String> {
@@ -1266,6 +1285,12 @@ pub(crate) mod tests {
         }
         pub(crate) fn on(&self, role: &str, json: Value) {
             self.answers.lock().unwrap().entry(role.into()).or_default().push(AgentResult { outcome: Outcome::Ok, json: Some(json), session_id: Some(format!("s-{role}")), cost_usd: 0.1 });
+        }
+        pub(crate) fn fail(&self, role: &str) {
+            self.answers.lock().unwrap().entry(role.into()).or_default().push(AgentResult { outcome: Outcome::Failed("boom".into()), json: None, session_id: None, cost_usd: 0.0 });
+        }
+        pub(crate) fn broke(&self, role: &str) {
+            self.answers.lock().unwrap().entry(role.into()).or_default().push(AgentResult { outcome: Outcome::NoCredits, json: None, session_id: None, cost_usd: 0.0 });
         }
         pub(crate) fn limit(&self, role: &str) {
             self.answers.lock().unwrap().entry(role.into()).or_default().push(AgentResult {
@@ -1558,6 +1583,34 @@ pub(crate) mod tests {
         let run = advance(&c, &run.id).unwrap();
         assert_eq!(run.status, "merged", "{:?}", run.error);
         assert!(!roles(&s).contains(&"tester".to_string()), "no testers in order 0");
+    }
+
+    /// A notification is written to the database too: sent while the line
+    /// holds the lock, the same thread waits on itself and the whole app
+    /// freezes — which is what happened when an order hit a usage limit.
+    #[test]
+    fn notifications_are_sent_without_the_database_lock_held() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for case in ["limit", "fail", "credits", "rounds"] {
+            let w = world("autonomous", "local", if case == "rounds" { "false" } else { "true" });
+            let s = Script::new();
+            match case {
+                "limit" => s.limit("spec"),
+                "fail" => s.fail("spec"),
+                "credits" => s.broke("spec"),
+                _ => {}
+            }
+            let sent = AtomicUsize::new(0);
+            let notify = |_: &str, _: &str| {
+                assert!(w.db.0.try_lock().is_ok(), "{case}: notified with the database lock held");
+                sent.fetch_add(1, Ordering::SeqCst);
+            };
+            static C: fn() = || {};
+            let ctx = Ctx { db: &w.db, runner: &s, git_env: crate::factory::setup::tests_identity(), root: None, notify: &notify, changed: &C };
+            let run = start(&ctx, "p1", &w.order_id).unwrap();
+            advance(&ctx, &run.id).unwrap();
+            assert!(sent.load(Ordering::SeqCst) >= 1, "{case}: the user was told");
+        }
     }
 
     #[test]

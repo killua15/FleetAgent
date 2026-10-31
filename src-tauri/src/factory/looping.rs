@@ -196,8 +196,14 @@ fn emit<R: Runtime>(app: &AppHandle<R>, project_id: &str) {
     });
 }
 
+/// On a thread of its own: recording a notification takes the database lock,
+/// and the line must never wait on it — let alone call this while holding it,
+/// which once deadlocked the whole app.
 fn notify<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
-    crate::notifications::record(app, crate::notifications::kind::AGENT, |s| s.notify_session_waiting, title, body, crate::notifications::Target::screen("factory"));
+    let (app, title, body) = (app.clone(), title.to_string(), body.to_string());
+    std::thread::spawn(move || {
+        crate::notifications::record(&app, crate::notifications::kind::AGENT, |s| s.notify_session_waiting, &title, &body, crate::notifications::Target::screen("factory"));
+    });
 }
 
 /// Asks the forge about every open MR of the project; a merged one unblocks
