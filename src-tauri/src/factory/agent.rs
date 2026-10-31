@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -19,7 +19,9 @@ use super::limits::{self, Signal};
 /// Everything one agent turn needs.
 #[derive(Debug, Clone)]
 pub struct AgentCall {
-    /// Ties the process to its order, so ⏹ Stop can kill it.
+    /// The project it works for: ⏹ on the project stops it.
+    pub project: String,
+    /// What it is within the project (the run, or `plan`), to cancel just it.
     pub key: String,
     pub account_id: String,
     pub model: String,
@@ -69,39 +71,6 @@ pub trait Runner: Send + Sync {
     fn run(&self, call: &AgentCall, on: &mut dyn FnMut(Activity)) -> AgentResult;
 }
 
-/// The running processes by key, for ⏹ Stop.
-static RUNNING: LazyLock<Mutex<HashMap<String, u32>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
-/// Keys stopped on purpose, so their exit reads as `Stopped`, not a failure.
-static STOPPED: LazyLock<Mutex<std::collections::HashSet<String>>> = LazyLock::new(|| Mutex::new(Default::default()));
-
-/// Kills the agent working under `key`, if one is. Returns whether there was.
-pub fn stop(key: &str) -> bool {
-    let pid = RUNNING.lock().ok().and_then(|mut m| m.remove(key));
-    if let Ok(mut s) = STOPPED.lock() {
-        s.insert(key.to_string());
-    }
-    if let Some(pid) = pid {
-        crate::turn_runner::kill_pid_with_grace(pid);
-        return true;
-    }
-    false
-}
-
-fn was_stopped(key: &str) -> bool {
-    STOPPED.lock().map(|mut s| s.remove(key)).unwrap_or(false)
-}
-
-/// Whether ⏹ was pressed for `key` since it last looked — consumed, so the
-/// line stops between stages, not only inside an agent.
-pub fn stop_requested(key: &str) -> bool {
-    was_stopped(key)
-}
-
-/// Forgets a ⏹ nobody acted on, so ▶ doesn't stop again at once.
-pub fn clear_stop(key: &str) {
-    let _ = was_stopped(key);
-}
-
 /// The account's CLI, binary and environment.
 #[derive(Debug, Clone)]
 pub struct Launch {
@@ -119,33 +88,54 @@ pub struct CliRunner {
     pub root: Option<PathBuf>,
 }
 
+/// The rows of the accounts a team uses — read with the database lock held,
+/// so that the slow part (binaries, the keychain) can run without it.
+pub fn accounts_for(conn: &rusqlite::Connection, account_ids: &[String]) -> Result<Vec<(String, crate::terminals::AccountForTerminal)>, String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for id in account_ids {
+        if seen.insert(id.clone()) {
+            out.push((id.clone(), crate::terminals::load_account(conn, id)?));
+        }
+    }
+    Ok(out)
+}
+
 impl CliRunner {
-    /// Resolves every account the team uses. `HANGAR_FACTORY_AGENT_BIN`
-    /// replaces the CLI with a fake one, to walk the line without spending.
-    pub fn for_accounts(conn: &rusqlite::Connection, account_ids: &[String], root: Option<PathBuf>) -> Result<Self, String> {
+    /// How to launch each account's CLI: its binary and its environment,
+    /// a key from the keychain included. Never call it holding the database
+    /// lock — a keychain prompt or a login shell can take its time.
+    /// `HANGAR_FACTORY_AGENT_BIN` replaces the CLI with a fake one, to walk
+    /// the line without spending.
+    pub fn from_accounts(accounts: Vec<(String, crate::terminals::AccountForTerminal)>, root: Option<PathBuf>) -> Result<Self, String> {
         let fake = std::env::var("HANGAR_FACTORY_AGENT_BIN").ok();
         let mut launches = HashMap::new();
-        for id in account_ids {
-            if launches.contains_key(id) {
-                continue;
-            }
-            let account = crate::terminals::load_account(conn, id)?;
+        for (id, account) in accounts {
             let spec = crate::providers::spec(&account.provider).ok_or_else(|| format!("proveedor desconocido `{}`", account.provider))?;
+            if spec.binary != "codex" && spec.binary != crate::providers::claude::BINARY {
+                return Err(format!("{}: la Factory todavía solo corre Claude Code y Codex", account.name));
+            }
             let mut env = vec![(spec.config_dir_env.to_string(), account.config_dir_path.clone())];
             env.extend(spec.extra_env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
-            env.extend(crate::terminals::account_key_env(&account, id)?);
+            env.extend(crate::terminals::account_key_env(&account, &id)?);
             let binary = match &fake {
                 Some(path) => path.clone(),
                 None if spec.binary == crate::providers::claude::BINARY => crate::providers::claude::binary(),
                 None => crate::providers::resolve_binary(spec.binary),
             };
             let provider = if spec.binary == "codex" { "codex" } else { "claude" }.to_string();
-            if spec.binary != "codex" && spec.binary != crate::providers::claude::BINARY {
-                return Err(format!("{}: la Factory todavía solo corre Claude Code y Codex", account.name));
-            }
-            launches.insert(id.clone(), Launch { provider, binary, env });
+            launches.insert(id, Launch { provider, binary, env });
         }
         Ok(CliRunner { launches, root })
+    }
+
+    /// Both phases, locking the database only for the first.
+    pub fn load(db: &crate::db::DbConnection, account_ids: &[String], root: Option<PathBuf>) -> Result<Self, String> {
+        let accounts = {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            accounts_for(&conn, account_ids)?
+        };
+        Self::from_accounts(accounts, root)
     }
 }
 
@@ -250,7 +240,8 @@ impl Runner for CliRunner {
     fn run(&self, call: &AgentCall, on: &mut dyn FnMut(Activity)) -> AgentResult {
         let failed = |why: String| AgentResult { outcome: Outcome::Failed(why), json: None, session_id: None, cost_usd: 0.0 };
         let Some(launch) = self.launches.get(&call.account_id) else { return failed(format!("cuenta {} sin resolver", call.account_id)) };
-        if was_stopped(&call.key) {
+        let stopped = || super::procs::job_stopped(&call.project, &call.key);
+        if stopped() {
             return AgentResult { outcome: Outcome::Stopped, json: None, session_id: None, cost_usd: 0.0 };
         }
 
@@ -274,20 +265,19 @@ impl Runner for CliRunner {
         for (k, v) in &launch.env {
             cmd.env(k, v);
         }
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
+        // Its own process group: ⏹ takes down the CLI and everything it ran.
+        let mut tracked = match super::procs::spawn(&call.project, &call.key, &mut cmd) {
+            Ok(t) => t,
+            Err(_) if stopped() => return AgentResult { outcome: Outcome::Stopped, json: None, session_id: None, cost_usd: 0.0 },
             Err(e) => return failed(format!("no se pudo arrancar {}: {e}", launch.binary)),
         };
-        if let Ok(mut m) = RUNNING.lock() {
-            m.insert(call.key.clone(), child.id());
-        }
+        let pid = tracked.id();
+        let child = &mut tracked.child;
 
         // The watchdog: a turn past its timeout is killed like a ⏹.
         let done = Arc::new(Mutex::new(false));
         {
             let done = done.clone();
-            let key = call.key.clone();
-            let pid = child.id();
             let timeout = call.timeout;
             std::thread::spawn(move || {
                 let step = Duration::from_secs(1);
@@ -299,9 +289,7 @@ impl Runner for CliRunner {
                         return;
                     }
                 }
-                if RUNNING.lock().map(|m| m.get(&key) == Some(&pid)).unwrap_or(false) {
-                    crate::turn_runner::kill_pid_with_grace(pid);
-                }
+                super::procs::kill_group(pid);
             });
         }
 
@@ -319,6 +307,8 @@ impl Runner for CliRunner {
         let mut result: Option<Value> = None;
         let mut final_text = String::new();
         let mut all = String::new();
+        let mut saw_result = false;
+        let mut result_error = false;
         if let Some(out) = child.stdout.take() {
             for line in BufReader::new(out).lines().map_while(Result::ok) {
                 all.push_str(&line);
@@ -332,7 +322,10 @@ impl Runner for CliRunner {
                         match item.get("type").and_then(Value::as_str) {
                             Some("command_execution") => on(Activity { kind: "cmd", text: item.get("command").and_then(Value::as_str).unwrap_or("").chars().take(240).collect() }),
                             Some("file_change") => on(Activity { kind: "edit", text: item.to_string().chars().take(240).collect() }),
-                            Some("agent_message") => final_text = item.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
+                            Some("agent_message") => {
+                                saw_result = true;
+                                final_text = item.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+                            }
                             _ => {}
                         }
                     }
@@ -345,20 +338,20 @@ impl Runner for CliRunner {
                     on(a);
                 }
                 if event.get("type").and_then(Value::as_str) == Some("result") {
+                    saw_result = true;
                     cost = event.get("total_cost_usd").and_then(Value::as_f64).unwrap_or(0.0);
                     final_text = event.get("result").and_then(Value::as_str).unwrap_or("").to_string();
                     result = event.get("structured_output").cloned().filter(Value::is_object);
                     if event.get("is_error").and_then(Value::as_bool) == Some(true) {
                         result = None;
+                        result_error = true;
                     }
                 }
             }
         }
         let status = child.wait();
         *done.lock().unwrap_or_else(|e| e.into_inner()) = true;
-        if let Ok(mut m) = RUNNING.lock() {
-            m.remove(&call.key);
-        }
+        drop(tracked);
         let err = err_reader.join().unwrap_or_default();
         if let Some(last) = &last_message {
             if let Ok(text) = std::fs::read_to_string(last) {
@@ -367,11 +360,23 @@ impl Runner for CliRunner {
         }
         let _ = std::fs::remove_dir_all(&scratch);
 
-        if was_stopped(&call.key) {
+        if stopped() {
             return AgentResult { outcome: Outcome::Stopped, json: None, session_id, cost_usd: cost };
         }
         let json = result.or_else(|| json_in(&final_text));
-        let outcome = match (&json, limits::classify(&format!("{final_text}\n{err}\n{}", if json.is_none() { all.as_str() } else { "" }))) {
+        // A limit is what the CLI says, not what the agent wrote: with a result
+        // event, only its text and stderr count — a brain about an API's rate
+        // limits must not read as the account's. Without one (it crashed),
+        // everything it printed.
+        let said = match (saw_result, result_error) {
+            // The CLI's own error: its words count.
+            (true, true) => format!("{final_text}\n{err}"),
+            // The agent finished, just not in the shape asked: its text is its
+            // own, whatever it says about rate limits.
+            (true, false) => err.clone(),
+            (false, _) => format!("{final_text}\n{err}\n{all}"),
+        };
+        let outcome = match (&json, limits::classify(&said)) {
             (Some(_), _) => Outcome::Ok,
             (None, Some(Signal::Limit)) => Outcome::Limit { resume_at: limits::resume_at(self.root.as_deref(), &call.account_id) },
             (None, Some(Signal::NoCredits)) => Outcome::NoCredits,
@@ -391,6 +396,7 @@ mod tests {
 
     fn call(write: bool, resume: Option<&str>) -> AgentCall {
         AgentCall {
+            project: "p-agent-tests".into(),
             key: "k".into(),
             account_id: "a".into(),
             model: "sonnet".into(),
@@ -471,6 +477,11 @@ mod tests {
 
         let broke = fake(r#"echo 'Credit balance is too low' >&2; exit 1"#);
         assert_eq!(broke.run(&c, &mut |_| {}).outcome, Outcome::NoCredits);
+
+        // An agent whose own text talks about an API's rate limit is not an
+        // account at its limit.
+        let chatty = fake(r#"echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PokeAPI tiene rate limit"}]}}'; echo '{"type":"result","is_error":false,"result":"Respeto el rate limit de PokeAPI","session_id":"s3"}'"#);
+        assert!(matches!(chatty.run(&c, &mut |_| {}).outcome, Outcome::Failed(_)));
 
         let failed = fake(r#"echo 'boom: not logged in' >&2; exit 2"#);
         assert!(matches!(failed.run(&c, &mut |_| {}).outcome, Outcome::Failed(why) if why.contains("not logged in")));

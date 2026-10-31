@@ -36,11 +36,23 @@ fn merge(first: &str, second: &str) -> String {
     first.split(':').chain(second.split(':')).filter(|d| !d.is_empty() && seen.insert(d.to_string())).collect::<Vec<_>>().join(":")
 }
 
-/// A shell command in `dir`, with the user's PATH.
-pub fn shell(command: &str, dir: &Path, timeout: Duration) -> Result<Output, String> {
+/// A shell command in `dir`, with the user's PATH — tracked under `project`,
+/// so ⏹ kills it and whatever it started.
+pub fn shell(project: &str, key: &str, command: &str, dir: &Path, timeout: Duration) -> Result<Output, String> {
     let mut cmd = Command::new("sh");
     cmd.args(["-c", command]).current_dir(dir).env("PATH", user_path());
-    crate::process_timeout::run_with_timeout(cmd, timeout)
+    super::procs::run(project, key, cmd, timeout)
+}
+
+/// Works out, once and off any critical path, what the Factory would
+/// otherwise work out the first time it needs it: the login shell's PATH and
+/// where `claude` and `codex` are. Called at startup on a thread of its own.
+pub fn warm_up() {
+    std::thread::spawn(|| {
+        let _ = user_path();
+        let _ = crate::providers::claude::binary();
+        let _ = crate::providers::resolve_binary("codex");
+    });
 }
 
 /// Whether an executable is on the user's PATH.
@@ -67,7 +79,7 @@ pub fn first_program(command: &str) -> Option<String> {
 
 /// Installs a worktree's dependencies with whatever its lockfile says, so the
 /// tests and the checks can run. `None` when there's nothing to install.
-pub fn install_deps(dir: &Path) -> Option<Result<String, String>> {
+pub fn install_deps(project: &str, dir: &Path) -> Option<Result<String, String>> {
     let (cmd, label) = if dir.join("pnpm-lock.yaml").exists() {
         ("pnpm install --frozen-lockfile", "pnpm install")
     } else if dir.join("package-lock.json").exists() {
@@ -83,7 +95,7 @@ pub fn install_deps(dir: &Path) -> Option<Result<String, String>> {
     } else {
         return None;
     };
-    Some(match shell(cmd, dir, Duration::from_secs(15 * 60)) {
+    Some(match shell(project, "install", cmd, dir, Duration::from_secs(15 * 60)) {
         Ok(o) if o.status.success() => Ok(label.to_string()),
         Ok(o) => Err(format!("{label} falló: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or(""))),
         Err(e) => Err(format!("{label}: {e}")),

@@ -4,9 +4,9 @@
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use tauri::State;
 
-use crate::db::DbConnection;
+
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -351,45 +351,55 @@ pub struct TeamView {
 }
 
 #[tauri::command]
-pub fn factory_team_get(db: State<DbConnection>, project_id: String) -> Result<TeamView, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let agents = load(&conn, &project_id)?;
-    let check = check(&conn, &agents)?;
-    Ok(TeamView { agents, check })
+pub async fn factory_team_get<R: tauri::Runtime>(app: tauri::AppHandle<R>, project_id: String) -> Result<TeamView, String> {
+    crate::factory::with_db(app, move |conn| {
+        let agents = load(&conn, &project_id)?;
+        let check = check(&conn, &agents)?;
+        Ok(TeamView { agents, check })
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn factory_team_save(db: State<DbConnection>, project_id: String, agents: Vec<Agent>) -> Result<TeamView, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    save(&conn, &project_id, &agents)?;
-    let agents = load(&conn, &project_id)?;
-    let check = check(&conn, &agents)?;
-    Ok(TeamView { agents, check })
+pub async fn factory_team_save<R: tauri::Runtime>(app: tauri::AppHandle<R>, project_id: String, agents: Vec<Agent>) -> Result<TeamView, String> {
+    crate::factory::with_db(app, move |conn| {
+        save(&conn, &project_id, &agents)?;
+        let agents = load(&conn, &project_id)?;
+        let check = check(&conn, &agents)?;
+        Ok(TeamView { agents, check })
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn factory_team_suggestions(db: State<DbConnection>, project_id: String) -> Result<Vec<Suggestion>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let Some(brain) = super::brain::load(&conn, &project_id, None)? else { return Ok(Vec::new()) };
-    Ok(suggestions(&load(&conn, &project_id)?, &brain))
+pub async fn factory_team_suggestions<R: tauri::Runtime>(app: tauri::AppHandle<R>, project_id: String) -> Result<Vec<Suggestion>, String> {
+    crate::factory::with_db(app, move |conn| {
+        let Some(brain) = super::brain::load(&conn, &project_id, None)? else { return Ok(Vec::new()) };
+        Ok(suggestions(&load(&conn, &project_id)?, &brain))
+    })
+    .await
 }
 
 /// «Aplicar los del brain».
 #[tauri::command]
-pub fn factory_team_apply_suggestions(db: State<DbConnection>, project_id: String) -> Result<TeamView, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let brain = super::brain::load(&conn, &project_id, None)?.ok_or("todavía no hay un brain sellado")?;
-    apply_suggestions(&conn, &project_id, &brain)?;
-    let agents = load(&conn, &project_id)?;
-    let check = check(&conn, &agents)?;
-    Ok(TeamView { agents, check })
+pub async fn factory_team_apply_suggestions<R: tauri::Runtime>(app: tauri::AppHandle<R>, project_id: String) -> Result<TeamView, String> {
+    crate::factory::with_db(app, move |conn| {
+        let brain = super::brain::load(&conn, &project_id, None)?.ok_or("todavía no hay un brain sellado")?;
+        apply_suggestions(&conn, &project_id, &brain)?;
+        let agents = load(&conn, &project_id)?;
+        let check = check(&conn, &agents)?;
+        Ok(TeamView { agents, check })
+    })
+    .await
 }
 
 /// Account id → the models it can run, for the team's selects.
 #[tauri::command]
-pub fn factory_models(db: State<DbConnection>) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    Ok(accounts(&conn)?.into_iter().map(|(id, provider, default)| (id, models_for(&provider, default.as_deref()))).collect())
+pub async fn factory_models<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+    crate::factory::with_db(app, move |conn| {
+        Ok(accounts(&conn)?.into_iter().map(|(id, provider, default)| (id, models_for(&provider, default.as_deref()))).collect())
+    })
+    .await
 }
 
 #[cfg(test)]

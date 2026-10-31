@@ -53,6 +53,8 @@ use usage_scraper::UsageCache;
 /// transcripts nobody is reading anymore.
 fn shutdown_children(app: &tauri::AppHandle) {
     turn_runner::kill_all_turns(app);
+    // Nothing the Factory started outlives Hangar either.
+    factory::procs::kill_everything();
     process_manager::kill_all(app);
     login_manager::kill_all_logins(app);
     terminals::kill_all(app);
@@ -198,6 +200,7 @@ pub fn run() {
             // buy is a screen that paints with no network in its way.
             // The Factory picks up where it was: a line that was running
             // before Hangar closed goes on, a limit wait included.
+            factory::env::warm_up();
             factory::looping::resume_all(app.handle());
 
             let poll_handle = app.handle().clone();
@@ -537,6 +540,7 @@ pub fn run() {
             factory::team::factory_team_apply_suggestions,
             factory::planner::factory_plan_trd,
             factory::planner::factory_plan_approve,
+            factory::planner::factory_plan_cancel,
             factory::planner::factory_orders_export,
             factory::planner::factory_orders_sync,
             factory::planner::factory_orders_list,
@@ -550,6 +554,7 @@ pub fn run() {
             factory::looping::factory_play,
             factory::looping::factory_pause,
             factory::looping::factory_stop,
+            factory::looping::factory_stop_all,
             factory::looping::factory_run_resolve,
             factory::looping::factory_start_anyway,
             factory::looping::factory_order_retry,

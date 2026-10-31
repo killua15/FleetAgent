@@ -3,7 +3,7 @@ import { homeDir } from '@tauri-apps/api/path';
 import { invoke } from '../lib/invoke';
 import { AppTopBar } from '../components/AppTopBar';
 import { Spinner } from '../components/Spinner';
-import { toastError } from '../components/ErrorOverlay';
+import { toastError, toastSuccess } from '../components/ErrorOverlay';
 import type { FactoryProject } from '../types/factory';
 import { ProjectSidebar } from './factory/ProjectSidebar';
 import { ProjectHeader } from './factory/ProjectHeader';
@@ -76,6 +76,16 @@ export function Factory() {
     }
   };
 
+  const stopAll = async () => {
+    try {
+      const n = await invoke<number>('factory_stop_all');
+      toastSuccess(`⏹ Parado: ${n} proyecto${n === 1 ? '' : 's'}`);
+      setProjects(await invoke<FactoryProject[]>('factory_list_projects'));
+    } catch (e) {
+      toastError(String(e));
+    }
+  };
+
   const renderStep = (p: FactoryProject | null) => {
     if (!p || step === 1) {
       return (
@@ -122,7 +132,7 @@ export function Factory() {
     <div className={styles.screen}>
       <AppTopBar />
       <div className={styles.layout}>
-        <ProjectSidebar projects={projects} selectedId={selectedId} creating={creating} onSelect={select} onNew={() => setCreating(true)} />
+        <ProjectSidebar projects={projects} selectedId={selectedId} creating={creating} onSelect={select} onNew={() => setCreating(true)} onStopAll={stopAll} />
         <main className={styles.main}>
           {loading ? (
             <div className={styles.empty}>

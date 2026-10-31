@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { dayTimeline, orderTimeline, pct, type TlModel } from '../../lib/factoryTimeline';
 import type { LiveData, Station } from '../../types/factory';
 import styles from '../Factory.module.css';
@@ -21,8 +21,9 @@ const fmt = (ms: number) => {
  */
 export function Timeline({ live, onPickStation }: { live: LiveData; onPickStation: (station: Station) => void }) {
   const [mode, setMode] = useState<'order' | 'day'>('order');
-  const model: TlModel | null = mode === 'order' ? orderTimeline(live) : dayTimeline(live);
-  const rules = new Map(live.decisions.filter((d) => d.ruleId).map((d) => [d.ruleId!, d.text]));
+  // Recomputed when the data or the scale changes, not on every render.
+  const model: TlModel | null = useMemo(() => (mode === 'order' ? orderTimeline(live) : dayTimeline(live)), [live, mode]);
+  const rules = useMemo(() => new Map(live.decisions.filter((d) => d.ruleId).map((d) => [d.ruleId!, d.text])), [live.decisions]);
 
   const ticks: number[] = [];
   if (model) {

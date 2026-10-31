@@ -1666,3 +1666,15 @@
   border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
   font: 400 12px var(--font-ui);
 }
+
+.stopAll {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--red) 45%, transparent);
+  border-radius: 8px;
+  background: var(--redD);
+  color: var(--red);
+  font: 600 11.5px var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+}

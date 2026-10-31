@@ -11,7 +11,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use super::agent::CliRunner;
 use super::line::{self, Ctx, Run};
@@ -124,13 +124,76 @@ pub fn decide(conn: &Connection, project_id: &str) -> Result<Next, String> {
     Ok(Next::Blocked(by))
 }
 
+/// Whether the worker should drive this run now. A ⏹'d order goes on when ▶
+/// is pressed again — but one that was waiting for a limit keeps waiting for
+/// it: ⏹ and ▶ are not a way round the reset. ✋ waits for a person.
+pub fn due(run: &Run, now: DateTime<Utc>) -> bool {
+    let reset_passed = run.resume_at.as_deref().and_then(|t| DateTime::parse_from_rfc3339(t).ok()).is_none_or(|t| t.with_timezone(&Utc) <= now);
+    match run.status.as_str() {
+        "running" => true,
+        "waiting_limit" | "stopped" => reset_passed,
+        _ => false,
+    }
+}
+
+/// On ▶: an order ⏹'d while it waited for a limit goes back to waiting, with
+/// its countdown, instead of running into the limit again.
+pub fn back_to_waiting(conn: &Connection, project_id: &str) -> Result<(), String> {
+    if let Some(mut run) = line::active_run(conn, project_id)? {
+        let future = run.resume_at.as_deref().and_then(|t| DateTime::parse_from_rfc3339(t).ok()).is_some_and(|t| t.with_timezone(&Utc) > Utc::now());
+        if run.status == "stopped" && future {
+            run.status = "waiting_limit".into();
+            line::save_run(conn, &run)?;
+        }
+    }
+    Ok(())
+}
+
 /// Consecutive failed orders, newest first, up to the last that wasn't.
 pub fn failures_in_a_row(conn: &Connection, project_id: &str) -> Result<usize, String> {
     Ok(line::runs(conn, project_id, BREAKER as i64)?.iter().take_while(|r| r.status == "failed").count())
 }
 
+/// Project → when it last told the UI, and whether a later word is pending.
+static EMITTED: LazyLock<Mutex<HashMap<String, (std::time::Instant, bool)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+const EMIT_EVERY: Duration = Duration::from_millis(500);
+
+/// Tells the UI the project changed — at most twice a second. An agent
+/// streams an activity line many times a second; each used to be an event,
+/// and each event a round of reads in the live view. A burst becomes one
+/// event now and one at the end of the window, so the last change always
+/// arrives.
 fn emit<R: Runtime>(app: &AppHandle<R>, project_id: &str) {
-    let _ = app.emit("factory-updated", project_id);
+    let now = std::time::Instant::now();
+    let send_now = {
+        let Ok(mut m) = EMITTED.lock() else { return };
+        match m.get_mut(project_id) {
+            Some((last, pending)) if now.duration_since(*last) < EMIT_EVERY => {
+                if *pending {
+                    return;
+                }
+                *pending = true;
+                false
+            }
+            _ => {
+                m.insert(project_id.to_string(), (now, false));
+                true
+            }
+        }
+    };
+    if send_now {
+        let _ = app.emit("factory-updated", project_id);
+        return;
+    }
+    let app = app.clone();
+    let id = project_id.to_string();
+    std::thread::spawn(move || {
+        std::thread::sleep(EMIT_EVERY);
+        if let Ok(mut m) = EMITTED.lock() {
+            m.insert(id.clone(), (std::time::Instant::now(), false));
+        }
+        let _ = app.emit("factory-updated", id);
+    });
 }
 
 fn notify<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
@@ -197,16 +260,8 @@ fn work<R: Runtime>(app: AppHandle<R>, project_id: String, worker: Arc<Worker>) 
                     Err(_) => break,
                 };
                 let Ok(run) = run else { break };
-                let due = match run.status.as_str() {
-                    "running" => true,
-                    "waiting_limit" => run.resume_at.as_deref().and_then(|t| DateTime::parse_from_rfc3339(t).ok()).is_none_or(|t| t.with_timezone(&Utc) <= Utc::now()),
-                    // A ⏹'d order goes on when ▶ is pressed again.
-                    "stopped" => true,
-                    // ✋ waits for a person; Resolve wakes this up.
-                    _ => false,
-                };
-                if !due {
-                    set_note(&project_id, Some(if run.status == "waiting_limit" { "en espera por límite de uso" } else { "esperando a una persona" }));
+                if !due(&run, Utc::now()) {
+                    set_note(&project_id, Some(if run.status == "waiting_human" { "esperando a una persona" } else { "en espera por límite de uso" }));
                     sleep_or_wake(&worker, &app, &project_id);
                     continue;
                 }
@@ -258,7 +313,7 @@ fn work<R: Runtime>(app: AppHandle<R>, project_id: String, worker: Arc<Worker>) 
                         continue;
                     }
                 }
-                if let Some(Err(why)) = db.0.lock().ok().map(|c| line::ready(&c, &project_id)) {
+                if let Err(why) = line::ready(&db, &project_id) {
                     halt(&app, &project_id, &why);
                     break;
                 }
@@ -411,9 +466,12 @@ fn verify_all<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Result<Verifi
         std::fs::create_dir_all(dir.parent().expect("has a parent")).map_err(|e| e.to_string())?;
         git(repo, &["worktree", "add", "--detach", &dir.to_string_lossy(), &base])?;
     }
-    let _ = super::env::install_deps(&dir);
+    let _ = super::env::install_deps(project_id, &dir);
     let commands = line::gate_commands(&members, &brain, &Default::default(), true);
-    let results = line::run_gate(&dir, &commands, line::GateMode::Green);
+    let results = line::run_gate(project_id, &dir, &commands, line::GateMode::Green);
+    if super::procs::stop_requested(project_id) {
+        return Ok(Verification::Skipped);
+    }
     if let Ok(mut v) = VERIFIED.lock() {
         v.insert(project_id.to_string(), last_merge);
     }
@@ -464,15 +522,18 @@ struct Parts {
 impl Parts {
     /// The CLIs of every account the project's team and its running order use.
     fn runner(&self, db: &DbConnection, project_id: &str) -> Result<CliRunner, String> {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        let mut ids: Vec<String> = super::team::load(&conn, project_id)?.into_iter().filter_map(|a| a.account_id).collect();
-        if let Some(run) = line::active_run(&conn, project_id)? {
-            ids.extend(run.team.iter().filter_map(|a| a.account_id.clone()));
-            ids.extend(run.state.accounts.values().cloned());
-        }
-        ids.sort();
-        ids.dedup();
-        CliRunner::for_accounts(&conn, &ids, self.root.clone())
+        let ids: Vec<String> = {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            let mut ids: Vec<String> = super::team::load(&conn, project_id)?.into_iter().filter_map(|a| a.account_id).collect();
+            if let Some(run) = line::active_run(&conn, project_id)? {
+                ids.extend(run.team.iter().filter_map(|a| a.account_id.clone()));
+                ids.extend(run.state.accounts.values().cloned());
+            }
+            ids.sort();
+            ids.dedup();
+            ids
+        };
+        CliRunner::load(db, &ids, self.root.clone())
     }
 }
 
@@ -581,25 +642,33 @@ fn status_of(conn: &Connection, project_id: &str) -> LoopStatus {
     }
 }
 
+/// A command's database work, off the UI thread: a synchronous command runs
+/// on it, and waiting there for the database lock froze the whole window.
+async fn on_db<R: Runtime, T: Send + 'static>(app: AppHandle<R>, f: impl FnOnce(&AppHandle<R>, &Connection) -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    crate::blocking::run_blocking(move || {
+        let db = app.state::<DbConnection>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        f(&app, &conn)
+    })
+    .await?
+}
+
 /// «Empezar igualmente»: the next order starts even though the spec
 /// writer's account looks nearly spent. The line still waits if it hits
 /// the real limit.
 #[tauri::command]
-pub fn factory_start_anyway<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<LoopStatus, String> {
+pub async fn factory_start_anyway<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<LoopStatus, String> {
     if let Ok(mut s) = START_ANYWAY.lock() {
         s.insert(project_id.clone());
     }
     set_note(&project_id, None);
     ensure_worker(&app, &project_id);
-    let db = app.state::<DbConnection>();
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    Ok(status_of(&conn, &project_id))
+    on_db(app, move |_, conn| Ok(status_of(conn, &project_id))).await
 }
 
 #[tauri::command]
-pub fn factory_loop_status(db: State<DbConnection>, project_id: String) -> Result<LoopStatus, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    Ok(status_of(&conn, &project_id))
+pub async fn factory_loop_status<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<LoopStatus, String> {
+    on_db(app, move |_, conn| Ok(status_of(conn, &project_id))).await
 }
 
 /// ▶ Play. It prepares the project first — fixing what it can, as «Preparar»
@@ -607,6 +676,8 @@ pub fn factory_loop_status(db: State<DbConnection>, project_id: String) -> Resul
 #[tauri::command]
 pub async fn factory_play<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<LoopStatus, String> {
     crate::blocking::run_blocking(move || {
+        // ▶ forgets an earlier ⏹.
+        super::procs::clear_stop(&project_id);
         let git_env = crate::git_identity::git_env_for_project(&app, &project_id);
         let db = app.state::<DbConnection>();
         let checks = super::prepare::prepare(&db, &project_id, &git_env, true)?;
@@ -619,9 +690,7 @@ pub async fn factory_play<R: Runtime>(app: AppHandle<R>, project_id: String) -> 
         emit(&app, &project_id);
         {
             let conn = db.0.lock().map_err(|e| e.to_string())?;
-            if let Some(run) = line::active_run(&conn, &project_id)? {
-                super::agent::clear_stop(&run.id);
-            }
+            back_to_waiting(&conn, &project_id)?;
             set_state(&conn, &project_id, "running")?;
             conn.execute("UPDATE factory_projects SET setup_step = 6 WHERE project_id = ?1", params![project_id]).map_err(|e| e.to_string())?;
             set_note(&project_id, None);
@@ -635,39 +704,64 @@ pub async fn factory_play<R: Runtime>(app: AppHandle<R>, project_id: String) -> 
 
 /// ⏸ Pausa: the order at work finishes; no other starts.
 #[tauri::command]
-pub fn factory_pause(db: State<DbConnection>, project_id: String) -> Result<LoopStatus, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    if loop_state(&conn, &project_id) == "running" {
-        set_state(&conn, &project_id, "paused")?;
-    }
-    Ok(status_of(&conn, &project_id))
+pub async fn factory_pause<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<LoopStatus, String> {
+    on_db(app, move |_, conn| {
+        if loop_state(conn, &project_id) == "running" {
+            set_state(conn, &project_id, "paused")?;
+        }
+        Ok(status_of(conn, &project_id))
+    })
+    .await
 }
 
-/// ⏹ Stop: now. The agent at work is killed; ▶ (or Reintentar) picks the
-/// order up where it was, in the same conversation.
-#[tauri::command]
-pub fn factory_stop<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<LoopStatus, String> {
-    let db = app.state::<DbConnection>();
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    set_state(&conn, &project_id, "stopped")?;
-    if let Some(run) = line::active_run(&conn, &project_id)? {
-        if run.status == "running" {
-            // Kills the agent at work, or stops the line at the next stage.
-            super::agent::stop(&run.id);
-        } else if run.status == "waiting_limit" {
-            let mut r = run;
-            r.status = "stopped".into();
-            line::save_run(&conn, &r)?;
+/// ⏹ for one project: the loop stops, and every process of the project —
+/// the agent, the gate, an install, the app under review, and whatever each
+/// started — is killed in the background. The order keeps its stage (and, if
+/// it was waiting for a limit, its reset): ▶ picks it up there.
+fn stop_now<R: Runtime>(app: &AppHandle<R>, conn: &Connection, project_id: &str) -> Result<(), String> {
+    set_state(conn, project_id, "stopped")?;
+    super::procs::stop_project(project_id);
+    if let Some(mut run) = line::active_run(conn, project_id)? {
+        if run.status == "waiting_limit" {
+            run.status = "stopped".into();
+            line::save_run(conn, &run)?;
         }
     }
-    if let Some(w) = WORKERS.lock().ok().and_then(|w| w.get(&project_id).cloned()) {
+    if let Some(w) = WORKERS.lock().ok().and_then(|w| w.get(project_id).cloned()) {
         w.wake.store(true, Ordering::SeqCst);
     }
-    set_note(&project_id, Some("parada · ▶ retoma la orden donde quedó"));
-    drop(conn);
-    emit(&app, &project_id);
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    Ok(status_of(&conn, &project_id))
+    set_note(project_id, Some("parada · ▶ retoma la orden donde quedó"));
+    emit(app, project_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn factory_stop<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<LoopStatus, String> {
+    on_db(app, move |app, conn| {
+        stop_now(app, conn, &project_id)?;
+        Ok(status_of(conn, &project_id))
+    })
+    .await
+}
+
+/// «⏹ Parar todo»: every project of the Factory, at once.
+#[tauri::command]
+pub async fn factory_stop_all<R: Runtime>(app: AppHandle<R>) -> Result<usize, String> {
+    on_db(app, move |app, conn| {
+        let mut ids: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT project_id FROM factory_projects WHERE loop_state != 'stopped'").map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+            rows.filter_map(Result::ok).collect()
+        };
+        ids.extend(super::procs::busy_projects());
+        ids.sort();
+        ids.dedup();
+        for id in &ids {
+            stop_now(app, conn, id)?;
+        }
+        Ok(ids.len())
+    })
+    .await
 }
 
 /// «Reintentar» on a failed order: its last run goes on at its stage, with
@@ -694,35 +788,33 @@ pub fn retry_order(conn: &Connection, order_id: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn factory_order_retry<R: Runtime>(app: AppHandle<R>, order_id: String) -> Result<(), String> {
-    let project_id = {
-        let db = app.state::<DbConnection>();
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+pub async fn factory_order_retry<R: Runtime>(app: AppHandle<R>, order_id: String) -> Result<(), String> {
+    on_db(app, move |app, conn| {
         let project: String = conn.query_row("SELECT project_id FROM factory_orders WHERE id = ?1", params![order_id], |r| r.get(0)).map_err(|_| "esa orden ya no existe".to_string())?;
-        retry_order(&conn, &order_id)?;
-        project
-    };
-    set_note(&project_id, None);
-    emit(&app, &project_id);
-    Ok(())
+        retry_order(conn, &order_id)?;
+        set_note(&project, None);
+        emit(app, &project);
+        Ok(())
+    })
+    .await
 }
 
-/// A person's answer to a ✋, a lack of credits or «Usar otra cuenta».
+/// A person's answer to a ✋, a lack of credits, «Usar otra cuenta» or
+/// «Reintentar ahora» (`retry` on a limit wait).
 #[tauri::command]
-pub fn factory_run_resolve<R: Runtime>(app: AppHandle<R>, run_id: String, action: String, note: Option<String>, account_id: Option<String>) -> Result<(), String> {
-    let project_id = {
-        let db = app.state::<DbConnection>();
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        let run = line::resolve(&conn, &run_id, &action, note, account_id)?;
-        if loop_state(&conn, &run.project_id) == "stopped" {
+pub async fn factory_run_resolve<R: Runtime>(app: AppHandle<R>, run_id: String, action: String, note: Option<String>, account_id: Option<String>) -> Result<(), String> {
+    on_db(app, move |app, conn| {
+        let run = line::resolve(conn, &run_id, &action, note, account_id)?;
+        if loop_state(conn, &run.project_id) == "stopped" {
             // Answering is asking it to go on.
-            set_state(&conn, &run.project_id, "running")?;
+            set_state(conn, &run.project_id, "running")?;
         }
-        run.project_id
-    };
-    ensure_worker(&app, &project_id);
-    emit(&app, &project_id);
-    Ok(())
+        super::procs::clear_stop(&run.project_id);
+        ensure_worker(app, &run.project_id);
+        emit(app, &run.project_id);
+        Ok(())
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -792,7 +884,9 @@ mod tests {
         let w = line::tests::world("autonomous", "local", "true");
         std::fs::remove_dir_all(w.repo.join(".git")).unwrap();
         let conn = w.db.0.lock().unwrap();
-        assert!(line::ready(&conn, "p1").unwrap_err().contains("no es un repo git"));
+        drop(conn);
+        assert!(line::ready(&w.db, "p1").unwrap_err().contains("no es un repo git"));
+        let conn = w.db.0.lock().unwrap();
         assert_eq!(orders::get(&conn, &w.order_id).unwrap().status, "todo");
     }
 
@@ -842,18 +936,45 @@ mod tests {
 
     #[test]
     fn stop_halts_the_line_between_stages_and_play_goes_on_from_there() {
-        let w = line::tests::world("autonomous", "local", "true");
+        let w = line::tests::world_alone("autonomous", "local", "true");
         let s = line::tests::Script::new();
         static N: fn(&str, &str) = |_, _| {};
         static C: fn() = || {};
         let ctx = Ctx { db: &w.db, runner: &s, git_env: crate::factory::setup::tests_identity(), root: None, notify: &N, changed: &C };
         let run = line::start(&ctx, "p1", &w.order_id).unwrap();
-        crate::factory::agent::stop(&run.id);
+        crate::factory::procs::stop_project("p1");
         let run = line::advance(&ctx, &run.id).unwrap();
         assert_eq!((run.status.as_str(), run.stage.as_str()), ("stopped", "spec"));
         assert!(s.calls.lock().unwrap().is_empty(), "nothing ran after ⏹");
-        crate::factory::agent::clear_stop(&run.id);
+        crate::factory::procs::clear_stop("p1");
         assert_eq!(line::advance(&ctx, &run.id).unwrap().status, "merged");
+    }
+
+    #[test]
+    fn stop_and_play_during_a_limit_wait_keep_waiting_for_the_reset() {
+        let w = line::tests::world("autonomous", "local", "true");
+        let s = line::tests::Script::new();
+        s.limit("builder");
+        static N: fn(&str, &str) = |_, _| {};
+        static C: fn() = || {};
+        let ctx = Ctx { db: &w.db, runner: &s, git_env: crate::factory::setup::tests_identity(), root: None, notify: &N, changed: &C };
+        let run = line::start(&ctx, "p1", &w.order_id).unwrap();
+        let run = line::advance(&ctx, &run.id).unwrap();
+        assert_eq!(run.status, "waiting_limit");
+        let reset = run.resume_at.clone().unwrap();
+        assert!(!due(&run, Utc::now()), "before the reset: waits");
+
+        // ⏹ as stop_now does it, then ▶.
+        let conn = w.db.0.lock().unwrap();
+        let mut stopped = line::load_run(&conn, &run.id).unwrap();
+        stopped.status = "stopped".into();
+        line::save_run(&conn, &stopped).unwrap();
+        assert!(!due(&stopped, Utc::now()), "⏹ is not a way round the reset");
+        back_to_waiting(&conn, "p1").unwrap();
+        let again = line::load_run(&conn, &run.id).unwrap();
+        assert_eq!((again.status.as_str(), again.resume_at.as_deref()), ("waiting_limit", Some(reset.as_str())));
+        let after = DateTime::parse_from_rfc3339(&reset).unwrap().with_timezone(&Utc) + chrono::Duration::seconds(1);
+        assert!(due(&again, after), "after the reset it goes on");
     }
 
     #[test]

@@ -24,6 +24,17 @@ const KIND: Record<ActivityRow['kind'], [string, string]> = {
   text: ['nota', ''],
 };
 
+/** The only thing in «En vivo» that changes every second, so it's the only
+ *  thing that re-renders every second — not the timeline and the feed. */
+function Countdown({ until }: { until: number }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return <span className={styles.countdown}>{countdown((until - now) / 1000)}</span>;
+}
+
 const mins = (a: string, b: string | null) => Math.max(1, Math.round(((b ? new Date(b).getTime() : Date.now()) - new Date(a).getTime()) / 60_000));
 
 /** A station's state, in the prototype's words. */
@@ -161,11 +172,6 @@ export function LiveView({
   const [picked, setPicked] = useState<Big | null>(null);
   const [note, setNote] = useState('');
   const [other, setOther] = useState('');
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
 
   if (!run || !live.order) {
     return <NotStarted projectId={projectId} loop={loop} failed={failed} onStartAnyway={onStartAnyway} onRetry={onRetry} onPlay={onPlay} onGoStep={onGoStep} />;
@@ -217,7 +223,7 @@ export function LiveView({
           </span>
           <span className={styles.spacer} />
           <span>
-            sigue sola a las <b className={styles.mono}>{hhmm(run.resumeAt!)}</b> · <span className={styles.countdown}>{countdown((resumeAt - now) / 1000)}</span>
+            sigue sola a las <b className={styles.mono}>{hhmm(run.resumeAt!)}</b> · <Countdown until={resumeAt} />
           </span>
           <select className={styles.select} style={{ maxWidth: 180 }} value={other} onChange={(e) => setOther(e.target.value)}>
             <option value="">otra cuenta…</option>
@@ -231,6 +237,13 @@ export function LiveView({
           </select>
           <button className={`${styles.btn} ${styles.sm}`} disabled={!other} onClick={() => onResolve('other_account', undefined, other)}>
             Usar otra cuenta
+          </button>
+          <button
+            className={`${styles.btnGhost} ${styles.sm}`}
+            title={`Lo intenta ya en la misma cuenta: si sigue al límite hasta las ${hhmm(run.resumeAt!)}, volverá a esperar`}
+            onClick={() => onResolve('retry')}
+          >
+            Reintentar ahora
           </button>
         </div>
       )}

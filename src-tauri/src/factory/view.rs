@@ -7,11 +7,11 @@ use std::collections::HashMap;
 use chrono::{DateTime, Local, Utc};
 use rusqlite::{params, Connection};
 use serde::Serialize;
-use tauri::State;
+
 
 use super::line::{self, Run};
 use super::orders::{self, Order};
-use crate::db::DbConnection;
+
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -121,7 +121,13 @@ fn averages(conn: &Connection, project_id: &str) -> Result<HashMap<String, f64>,
     Ok(sums.into_iter().map(|(k, (s, n))| (k, s / n)).collect())
 }
 
+/// The project's orders by id, read once — not once per run.
+fn orders_by_id(conn: &Connection, project_id: &str) -> Result<HashMap<String, Order>, String> {
+    Ok(orders::list(conn, project_id)?.into_iter().map(|o| (o.id.clone(), o)).collect())
+}
+
 pub fn live(conn: &Connection, project_id: &str) -> Result<Live, String> {
+    let by_id = orders_by_id(conn, project_id)?;
     let run = match line::active_run(conn, project_id)? {
         Some(r) => Some(r),
         None => line::runs(conn, project_id, 1)?.into_iter().next(),
@@ -129,7 +135,7 @@ pub fn live(conn: &Connection, project_id: &str) -> Result<Live, String> {
     let (order, steps, activity, decisions) = match &run {
         Some(r) => {
             let mut stmt = conn
-                .prepare("SELECT id, step_id, station, at, kind, text, rule_id FROM factory_activity WHERE run_id = ?1 ORDER BY id DESC LIMIT 300")
+                .prepare("SELECT id, step_id, station, at, kind, text, rule_id FROM factory_activity WHERE run_id = ?1 ORDER BY id DESC LIMIT 100")
                 .map_err(|e| e.to_string())?;
             let mut activity: Vec<ActivityRow> = stmt
                 .query_map(params![r.id], |x| Ok(ActivityRow { id: x.get(0)?, step_id: x.get(1)?, station: x.get(2)?, at: x.get(3)?, kind: x.get(4)?, text: x.get(5)?, rule_id: x.get(6)? }))
@@ -143,7 +149,7 @@ pub fn live(conn: &Connection, project_id: &str) -> Result<Live, String> {
                 .map_err(|e| e.to_string())?
                 .filter_map(Result::ok)
                 .collect();
-            (orders::get(conn, &r.order_id).ok(), steps_of(conn, &r.id)?, activity, decisions)
+            (by_id.get(&r.order_id).cloned(), steps_of(conn, &r.id)?, activity, decisions)
         }
         None => (None, Vec::new(), Vec::new(), Vec::new()),
     };
@@ -155,8 +161,8 @@ pub fn live(conn: &Connection, project_id: &str) -> Result<Live, String> {
         if r.finished_at.as_deref().is_some_and(|f| f < midnight.as_str()) {
             continue;
         }
-        let Ok(o) = orders::get(conn, &r.order_id) else { continue };
-        today.push(DayRow { order_key: o.key, title: o.title, status: r.status.clone(), resume_at: r.resume_at.clone(), steps: steps_of(conn, &r.id)? });
+        let Some(o) = by_id.get(&r.order_id) else { continue };
+        today.push(DayRow { order_key: o.key.clone(), title: o.title.clone(), status: r.status.clone(), resume_at: r.resume_at.clone(), steps: steps_of(conn, &r.id)? });
     }
     today.reverse();
     Ok(Live { run, order, steps, activity, decisions, today, averages: averages(conn, project_id)? })
@@ -182,9 +188,10 @@ pub struct Delivery {
 }
 
 pub fn deliveries(conn: &Connection, project_id: &str) -> Result<Vec<Delivery>, String> {
+    let by_id = orders_by_id(conn, project_id)?;
     let mut out = Vec::new();
     for r in line::runs(conn, project_id, 200)? {
-        let Ok(o) = orders::get(conn, &r.order_id) else { continue };
+        let Some(o) = by_id.get(&r.order_id).cloned() else { continue };
         let cited: i64 = conn.query_row("SELECT COUNT(DISTINCT rule_id) FROM factory_decisions WHERE run_id = ?1 AND rule_id IS NOT NULL", params![r.id], |x| x.get(0)).map_err(|e| e.to_string())?;
         let mut stmt = conn.prepare("SELECT DISTINCT rule_id FROM factory_activity WHERE run_id = ?1 AND station = 'dec' AND kind = 'warn' AND rule_id IS NOT NULL").map_err(|e| e.to_string())?;
         let round_rules = stmt.query_map(params![r.id], |x| x.get(0)).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
@@ -208,13 +215,17 @@ pub fn deliveries(conn: &Connection, project_id: &str) -> Result<Vec<Delivery>, 
 }
 
 #[tauri::command]
-pub fn factory_live(db: State<DbConnection>, project_id: String) -> Result<Live, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    live(&conn, &project_id)
+pub async fn factory_live<R: tauri::Runtime>(app: tauri::AppHandle<R>, project_id: String) -> Result<Live, String> {
+    crate::factory::with_db(app, move |conn| {
+        live(&conn, &project_id)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn factory_deliveries(db: State<DbConnection>, project_id: String) -> Result<Vec<Delivery>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    deliveries(&conn, &project_id)
+pub async fn factory_deliveries<R: tauri::Runtime>(app: tauri::AppHandle<R>, project_id: String) -> Result<Vec<Delivery>, String> {
+    crate::factory::with_db(app, move |conn| {
+        deliveries(&conn, &project_id)
+    })
+    .await
 }

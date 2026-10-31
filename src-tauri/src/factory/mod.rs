@@ -13,6 +13,7 @@ pub mod looping;
 pub mod orders;
 pub mod planner;
 pub mod prepare;
+pub mod procs;
 pub mod setup;
 pub mod store;
 pub mod team;
@@ -22,22 +23,38 @@ use std::path::Path;
 
 use rusqlite::params;
 use serde::Deserialize;
-use tauri::{AppHandle, Manager, Runtime, State};
+use tauri::{AppHandle, Manager, Runtime};
 
 use crate::db::DbConnection;
 use setup::RepoStatus;
 use store::FactoryProject;
 
-#[tauri::command]
-pub fn factory_list_projects(db: State<DbConnection>) -> Result<Vec<FactoryProject>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    store::list(&conn)
+/// A command's database work, off the UI thread. A synchronous Tauri
+/// command runs on it, so one that waited for the database lock — which the
+/// line takes many times a second — froze the whole window.
+pub(crate) async fn with_db<R: Runtime, T: Send + 'static>(app: AppHandle<R>, f: impl FnOnce(&rusqlite::Connection) -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    crate::blocking::run_blocking(move || {
+        let db = app.state::<DbConnection>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        f(&conn)
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn factory_get_project(db: State<DbConnection>, project_id: String) -> Result<FactoryProject, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    store::get(&conn, &project_id)
+pub async fn factory_list_projects<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Vec<FactoryProject>, String> {
+    crate::factory::with_db(app, move |conn| {
+        store::list(&conn)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn factory_get_project<R: tauri::Runtime>(app: tauri::AppHandle<R>, project_id: String) -> Result<FactoryProject, String> {
+    crate::factory::with_db(app, move |conn| {
+        store::get(&conn, &project_id)
+    })
+    .await
 }
 
 /// Where the new Factory project lives: a folder that's already there, or one
@@ -97,18 +114,20 @@ fn prefill_provider(conn: &rusqlite::Connection, project: FactoryProject) -> Fac
 /// (keeping any branch template already there), so the task board and the
 /// Factory read the same list.
 #[tauri::command]
-pub fn factory_update_project(db: State<DbConnection>, project: FactoryProject) -> Result<FactoryProject, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let saved = store::update(&conn, &project)?;
-    if let (Some(source), Some(scope)) = (&saved.provider_source_id, &saved.provider_scope_id) {
-        conn.execute(
-            "INSERT INTO task_source_links (project_id, source_id, scope_id) VALUES (?1, ?2, ?3)
-             ON CONFLICT(project_id, source_id) DO UPDATE SET scope_id = excluded.scope_id",
-            params![saved.project_id, source, scope],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    Ok(saved)
+pub async fn factory_update_project<R: tauri::Runtime>(app: tauri::AppHandle<R>, project: FactoryProject) -> Result<FactoryProject, String> {
+    crate::factory::with_db(app, move |conn| {
+        let saved = store::update(&conn, &project)?;
+        if let (Some(source), Some(scope)) = (&saved.provider_source_id, &saved.provider_scope_id) {
+            conn.execute(
+                "INSERT INTO task_source_links (project_id, source_id, scope_id) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(project_id, source_id) DO UPDATE SET scope_id = excluded.scope_id",
+                params![saved.project_id, source, scope],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(saved)
+    })
+    .await
 }
 
 #[tauri::command]

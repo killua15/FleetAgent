@@ -19,12 +19,15 @@ export function ProjectSidebar({
   creating,
   onSelect,
   onNew,
+  onStopAll,
 }: {
   projects: FactoryProject[];
   selectedId: string | null;
   creating: boolean;
   onSelect: (projectId: string) => void;
   onNew: () => void;
+  /** ⏹ for every project at once. */
+  onStopAll: () => void;
 }) {
   return (
     <aside className={styles.side}>
@@ -46,6 +49,12 @@ export function ProjectSidebar({
       <button className={creating ? `${styles.newProject} ${styles.newProjectOn}` : styles.newProject} onClick={onNew}>
         + Nuevo proyecto
       </button>
+      <span className={styles.spacer} />
+      {projects.some((p) => p.setupStep >= 6 && p.loopState !== 'stopped') && (
+        <button className={styles.stopAll} title="Para la línea de todos los proyectos y mata sus procesos" onClick={onStopAll}>
+          ⏹ Parar todo
+        </button>
+      )}
     </aside>
   );
 }

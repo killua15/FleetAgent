@@ -237,17 +237,22 @@ pub fn branch_name(order: &Order) -> String {
 /// Whether the project can run orders at all: a git repo with commits, a
 /// sealed brain and a team that can work. What fails here is the project's,
 /// not any one order's.
-pub fn ready(conn: &Connection, project_id: &str) -> Result<(), String> {
-    let project = super::store::get(conn, project_id)?;
-    let status = super::setup::repo_status(Path::new(&project.project_path));
+pub fn ready(db: &DbConnection, project_id: &str) -> Result<(), String> {
+    let (path, brain_version, problem) = {
+        let conn = lock(db)?;
+        let project = super::store::get(&conn, project_id)?;
+        let check = super::team::check(&conn, &super::team::load(&conn, project_id)?)?;
+        (project.project_path, project.brain_version, check.problems.into_iter().next())
+    };
+    // git runs without the database lock: everything else in Hangar reads it.
+    let status = super::setup::repo_status(Path::new(&path));
     if !status.is_repo || !status.has_commits {
         return Err("la carpeta del proyecto no es un repo git con commits: inicialízalo en el paso Proyecto (main + dev)".into());
     }
-    if project.brain_version.is_none() {
+    if brain_version.is_none() {
         return Err("sella antes el brain: la línea decide con él".into());
     }
-    let check = super::team::check(conn, &super::team::load(conn, project_id)?)?;
-    if let Some(problem) = check.problems.first() {
+    if let Some(problem) = problem {
         return Err(format!("el equipo no puede trabajar: {problem}"));
     }
     Ok(())
@@ -306,7 +311,7 @@ pub fn start(ctx: &Ctx, project_id: &str, order_id: &str) -> Result<Run, String>
 
     // A fresh worktree has no node_modules or virtualenv: install them now, so
     // the tests and checks can run. Not fatal — the builder can try again.
-    let installed = super::env::install_deps(&worktree);
+    let installed = super::env::install_deps(project_id, &worktree);
 
     let run = Run {
         id: uuid::Uuid::new_v4().to_string(),
@@ -483,6 +488,7 @@ fn run_agent(ctx: &Ctx, run: &mut Run, agent: &Agent, order: &Order, brain: &Sea
         text = format!("Sigue con la orden donde la dejaste. Esto es lo que te toca ahora:\n\n{text}");
     }
     let call = AgentCall {
+        project: run.project_id.clone(),
         key: run.id.clone(),
         account_id: account.clone(),
         model,
@@ -636,11 +642,13 @@ pub fn not_runnable(code: Option<i32>, output: &str) -> bool {
 
 /// The test gate: the commands, run in the worktree with no AI and the
 /// user's PATH. It has no off switch.
-pub fn run_gate(worktree: &Path, commands: &[(String, String)], mode: GateMode) -> Vec<GateResult> {
+pub fn run_gate(project: &str, worktree: &Path, commands: &[(String, String)], mode: GateMode) -> Vec<GateResult> {
     commands
         .iter()
+        // ⏹ between commands: what ran is reported, the rest doesn't start.
+        .take_while(|_| !super::procs::stop_requested(project))
         .map(|(name, command)| {
-            let (ok, tail) = match super::env::shell(command, worktree, GATE_TIMEOUT) {
+            let (ok, tail) = match super::env::shell(project, "gate", command, worktree, GATE_TIMEOUT) {
                 Ok(out) => {
                     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
                     let lines: Vec<&str> = text.lines().collect();
@@ -674,33 +682,29 @@ fn chrome_mcp(root: &Path) -> Result<PathBuf, String> {
 
 /// Starts the project's app in the worktree and waits for its URL to answer.
 /// The child is killed when the guard drops.
-pub struct AppGuard(Option<std::process::Child>);
+pub struct AppGuard(Option<super::procs::Tracked>);
 
 impl Drop for AppGuard {
     fn drop(&mut self) {
-        if let Some(child) = &mut self.0 {
-            crate::turn_runner::kill_pid_with_grace(child.id());
-            let _ = child.wait();
+        // The whole group: a dev server's children go with it.
+        if let Some(t) = &mut self.0 {
+            super::procs::kill_group(t.id());
+            let _ = t.child.wait();
         }
     }
 }
 
-pub fn open_app(worktree: &Path, start_cmd: Option<&str>, url: Option<&str>) -> Result<AppGuard, String> {
+pub fn open_app(project: &str, worktree: &Path, start_cmd: Option<&str>, url: Option<&str>) -> Result<AppGuard, String> {
     let url = url.filter(|u| !u.trim().is_empty()).ok_or("el proyecto no tiene URL de la app (paso Proyecto)")?;
     if crate::providers::resolve_binary("npx") == "npx" && which("npx").is_none() {
         return Err("no hay npx para la herramienta de Chrome".into());
     }
     let child = match start_cmd.filter(|c| !c.trim().is_empty()) {
-        Some(cmd) => Some(
-            std::process::Command::new("sh")
-                .args(["-c", cmd])
-                .current_dir(worktree)
-                .env("PATH", super::env::user_path())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .map_err(|e| format!("no arrancó «{cmd}»: {e}"))?,
-        ),
+        Some(cmd) => {
+            let mut c = std::process::Command::new("sh");
+            c.args(["-c", cmd]).current_dir(worktree).env("PATH", super::env::user_path()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            Some(super::procs::spawn(project, "app", &mut c).map_err(|e| format!("no arrancó «{cmd}»: {e}"))?)
+        }
         None => None,
     };
     let guard = AppGuard(child);
@@ -708,6 +712,9 @@ pub fn open_app(worktree: &Path, start_cmd: Option<&str>, url: Option<&str>) -> 
     for _ in 0..40 {
         if client.get(url).send().is_ok() {
             return Ok(guard);
+        }
+        if super::procs::stop_requested(project) {
+            return Err("parado".into());
         }
         std::thread::sleep(Duration::from_millis(1500));
     }
@@ -821,7 +828,7 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
             return Ok(run);
         }
         // ⏹ between stages: stop here, at this stage, to go on later.
-        if super::agent::stop_requested(&run.id) {
+        if super::procs::stop_requested(&run.project_id) {
             run.status = "stopped".into();
             let conn = lock(ctx.db)?;
             save_run(&conn, &run)?;
@@ -952,7 +959,18 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                     rows.filter_map(Result::ok).chain(order.rules.iter().cloned()).collect()
                 };
                 let commands = gate_commands(&team, &brain, &cited, bootstrap);
-                let results = run_gate(Path::new(&run.worktree), &commands, if bootstrap { GateMode::Runs } else { GateMode::Green });
+                let results = run_gate(&run.project_id, Path::new(&run.worktree), &commands, if bootstrap { GateMode::Runs } else { GateMode::Green });
+                // ⏹ in the middle of the gate: no verdict on half a suite —
+                // it runs again from the start on ▶.
+                if super::procs::stop_requested(&run.project_id) {
+                    let conn = lock(ctx.db)?;
+                    finish_step(&conn, &step, "stopped", Some("parada"), None, 0.0)?;
+                    run.status = "stopped".into();
+                    save_run(&conn, &run)?;
+                    drop(conn);
+                    (ctx.changed)();
+                    return Ok(run);
+                }
                 let green = !results.is_empty() && results.iter().all(|r| r.ok);
                 let conn = lock(ctx.db)?;
                 for r in &results {
@@ -985,7 +1003,7 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                     if r.role == "reviewer_ui" || r.role == "reviewer_ux" {
                         if !app_tried {
                             app_tried = true;
-                            match open_app(Path::new(&run.worktree), project.app_start_cmd.as_deref(), project.app_url.as_deref()) {
+                            match open_app(&run.project_id, Path::new(&run.worktree), project.app_start_cmd.as_deref(), project.app_url.as_deref()) {
                                 Ok(g) => app = Some(g),
                                 Err(e) => {
                                     let w = format!("UI/UX: no se pudo abrir la app: {e}");
@@ -1304,11 +1322,34 @@ pub(crate) mod tests {
         pub db: DbConnection,
         pub repo: PathBuf,
         pub order_id: String,
+        _gate: Gate,
+    }
+
+    /// Every test world is project `p1`, and ⏹ is per project and global: a
+    /// test that presses it must not stop the others running beside it. They
+    /// share this gate; the one that stops takes it alone.
+    static STOP_GATE: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+    #[allow(dead_code)]
+    enum Gate {
+        Shared(std::sync::RwLockReadGuard<'static, ()>),
+        Alone(std::sync::RwLockWriteGuard<'static, ()>),
+    }
+
+    /// A world whose test presses ⏹: it waits for the others to finish.
+    pub(crate) fn world_alone(mode: &str, delivery: &str, tester_cmd: &str) -> World {
+        let gate = Gate::Alone(STOP_GATE.write().unwrap_or_else(|e| e.into_inner()));
+        build_world(mode, delivery, tester_cmd, gate)
     }
 
     /// A real git repo (main + dev), the Citas Vet brain sealed, the default
     /// team, and VET-2 in the queue.
     pub(crate) fn world(mode: &str, delivery: &str, tester_cmd: &str) -> World {
+        let gate = Gate::Shared(STOP_GATE.read().unwrap_or_else(|e| e.into_inner()));
+        build_world(mode, delivery, tester_cmd, gate)
+    }
+
+    fn build_world(mode: &str, delivery: &str, tester_cmd: &str, gate: Gate) -> World {
         let conn = crate::factory::team::tests::conn_with_accounts(&[("work", "claude"), ("cx", "codex")]);
         let repo = std::env::temp_dir().join(format!("hangar-line-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&repo).unwrap();
@@ -1330,7 +1371,9 @@ pub(crate) mod tests {
             &orders::NewOrder { key: "VET-2".into(), title: "Cancelar una cita".into(), criteria: vec!["Marca cancelada_at".into()], origin: "trd".into(), ..Default::default() },
         )
         .unwrap();
-        World { db: DbConnection(Mutex::new(conn)), repo, order_id }
+        // A ⏹ left over from another test doesn't belong to this world.
+        crate::factory::procs::clear_stop("p1");
+        World { db: DbConnection(Mutex::new(conn)), repo, order_id, _gate: gate }
     }
 
     fn ctx<'a>(w: &'a World, runner: &'a dyn Runner) -> Ctx<'a> {
@@ -1493,11 +1536,11 @@ pub(crate) mod tests {
         assert!(cmds.iter().filter(|(_, c)| c == "true").count() == 1, "both testers run `true`: once");
 
         let all = gate_commands(&team, &brain, &Default::default(), true);
-        let runs = run_gate(&w.repo, &all, GateMode::Runs);
+        let runs = run_gate("p1", &w.repo, &all, GateMode::Runs);
         let by = |c: &str| runs.iter().find(|r| r.command == c).unwrap().ok;
         assert!(by("exit 3"), "order 0: it ran, failing is fine");
         assert!(!by("definitely-missing-xyz"), "order 0: not runnable is red");
-        let green = run_gate(&w.repo, &all, GateMode::Green);
+        let green = run_gate("p1", &w.repo, &all, GateMode::Green);
         assert!(!green.iter().find(|r| r.command == "exit 3").unwrap().ok);
     }
 

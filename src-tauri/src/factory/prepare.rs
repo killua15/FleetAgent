@@ -105,61 +105,103 @@ pub fn prepare(db: &DbConnection, project_id: &str, git_env: &[(String, String)]
         out.push(check("identity", "Identidad git", "blocked", "sin nombre ni email para los commits: configúralos en Settings → Git identity", Some("git_identity")));
     }
 
-    // The brain, with its index rebuilt by this parser.
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let sealed = match project.brain_version {
-        None => {
-            out.push(check("brain", "Brain", "blocked", "sin sellar: la línea decide con él", Some("brain")));
-            None
-        }
-        Some(v) => {
-            if fix {
-                brain::reindex(&conn, project_id, v)?;
-            }
-            let s = brain::load(&conn, project_id, Some(v))?;
-            if let Some(s) = &s {
-                out.push(check("brain", "Brain", "ok", format!("v{v} · {} reglas · {} con check:", s.rules.len(), s.rules.iter().filter(|r| r.check.is_some()).count()), None));
-            }
-            s
-        }
-    };
+    // git again, before taking the database lock: an empty repo gets order 0.
+    let empty = (repo_ok || fix) && is_empty_repo(dir);
 
-    // The team, and how the brain says the project is tested.
-    let members = team::load(&conn, project_id)?;
-    let verdict = team::check(&conn, &members)?;
-    for p in &verdict.problems {
-        out.push(check("team", "Equipo", "blocked", p.clone(), Some("team")));
-    }
-    for w in &verdict.warnings {
-        out.push(check("team", "Equipo", "warn", w.clone(), Some("team")));
-    }
-    // The team as it will be once the brain's tester commands are applied:
-    // what the tools check judges, so a command about to be replaced isn't
-    // reported missing on top of the suggestion that replaces it.
-    let mut planned = members.clone();
-    if let Some(s) = &sealed {
-        let changes = team::suggestions(&members, s);
-        if !changes.is_empty() {
-            let words: Vec<String> = changes
-                .iter()
-                .map(|c| match &c.suggested {
-                    Some(cmd) if c.active => format!("{} → `{cmd}`", c.short()),
-                    _ => format!("{} → apagado", c.short()),
-                })
-                .collect();
-            let old: Vec<String> = changes.iter().filter_map(|c| c.current.clone()).filter_map(|c| env::first_program(&c)).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-            let lead = if old.is_empty() { "los testers no usan lo que dice el brain".to_string() } else { format!("los testers usan comandos de otro stack ({})", old.join(", ")) };
-            out.push(check("testers", "Testers", "blocked", format!("{lead}; el brain dice: {}. Pulsa Aplicar.", words.join(" · ")), Some("apply_testers")));
-            for c in &changes {
-                if let Some(a) = planned.iter_mut().find(|a| a.id == c.agent_id) {
-                    a.active = c.active;
-                    if let Some(cmd) = &c.suggested {
-                        a.command = Some(cmd.clone());
+    // Everything that reads or writes the database, in one short stretch with
+    // the lock held — the rest of Hangar waits on it. Nothing slow in here: no
+    // processes, no keychain, no network.
+    let mut queue_checks = Vec::new();
+    let (sealed, planned, account_rows) = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let sealed = match project.brain_version {
+            None => {
+                out.push(check("brain", "Brain", "blocked", "sin sellar: la línea decide con él", Some("brain")));
+                None
+            }
+            Some(v) => {
+                // The brain, with its index rebuilt by this parser.
+                if fix {
+                    brain::reindex(&conn, project_id, v)?;
+                }
+                let s = brain::load(&conn, project_id, Some(v))?;
+                if let Some(s) = &s {
+                    out.push(check("brain", "Brain", "ok", format!("v{v} · {} reglas · {} con check:", s.rules.len(), s.rules.iter().filter(|r| r.check.is_some()).count()), None));
+                }
+                s
+            }
+        };
+
+        // The team, and how the brain says the project is tested.
+        let members = team::load(&conn, project_id)?;
+        let verdict = team::check(&conn, &members)?;
+        for p in &verdict.problems {
+            out.push(check("team", "Equipo", "blocked", p.clone(), Some("team")));
+        }
+        for w in &verdict.warnings {
+            out.push(check("team", "Equipo", "warn", w.clone(), Some("team")));
+        }
+        // The team as it will be once the brain's tester commands are applied:
+        // what the tools check judges, so a command about to be replaced isn't
+        // reported missing on top of the suggestion that replaces it.
+        let mut planned = members.clone();
+        if let Some(s) = &sealed {
+            let changes = team::suggestions(&members, s);
+            if !changes.is_empty() {
+                let words: Vec<String> = changes
+                    .iter()
+                    .map(|c| match &c.suggested {
+                        Some(cmd) if c.active => format!("{} → `{cmd}`", c.short()),
+                        _ => format!("{} → apagado", c.short()),
+                    })
+                    .collect();
+                let old: Vec<String> = changes.iter().filter_map(|c| c.current.clone()).filter_map(|c| env::first_program(&c)).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+                let lead = if old.is_empty() { "los testers no usan lo que dice el brain".to_string() } else { format!("los testers usan comandos de otro stack ({})", old.join(", ")) };
+                out.push(check("testers", "Testers", "blocked", format!("{lead}; el brain dice: {}. Pulsa Aplicar.", words.join(" · ")), Some("apply_testers")));
+                for c in &changes {
+                    if let Some(a) = planned.iter_mut().find(|a| a.id == c.agent_id) {
+                        a.active = c.active;
+                        if let Some(cmd) = &c.suggested {
+                            a.command = Some(cmd.clone());
+                        }
                     }
                 }
             }
         }
-    }
+        let ids: Vec<String> = members.iter().filter(|a| a.active || a.required).filter_map(|a| a.account_id.clone()).collect();
+        let account_rows = super::agent::accounts_for(&conn, &ids);
+
+        // The queue: orders stopped by the project, and order 0 for an empty one.
+        if fix {
+            let back = orders::reset_never_started(&conn, project_id)?;
+            if !back.is_empty() {
+                queue_checks.push(check("orders", "Órdenes", "fixed", format!("{} vuelve a la cola: falló antes de empezar, por el proyecto", back.join(", ")), None));
+            }
+        }
+        if empty && !orders::list(&conn, project_id)?.iter().any(|o| o.origin == "bootstrap") {
+            let prefix = orders::key_prefix(&project.project_name);
+            if fix {
+                orders::add_bootstrap(&conn, project_id, &prefix)?;
+                queue_checks.push(check("bootstrap", "Orden 0", "fixed", format!("el repo está vacío: {prefix}-0 «Preparar el proyecto» va primero y deja ejecutable cada comando de la puerta"), None));
+            } else {
+                queue_checks.push(check("bootstrap", "Orden 0", "todo", format!("el repo está vacío: al preparar se añade {prefix}-0 «Preparar el proyecto»"), None));
+            }
+        }
+        let todo = orders::list(&conn, project_id)?.iter().filter(|o| o.status == "todo").count();
+        if todo == 0 && line::active_run(&conn, project_id)?.is_none() {
+            queue_checks.push(check(
+                "tasks",
+                "Tareas",
+                "blocked",
+                if project.provider_kind == "none" { "no hay tareas: pon un proveedor o créalas desde un TRD" } else { "no hay tareas en la cola: tráelas del proveedor o créalas desde un TRD" },
+                Some("tasks"),
+            ));
+        }
+        (sealed, planned, account_rows)
+    };
+
+    // From here on, without the lock: the filesystem, the login shell, the
+    // keychain.
 
     // Every program the gate will call has to exist.
     if let Some(s) = &sealed {
@@ -174,57 +216,28 @@ pub fn prepare(db: &DbConnection, project_id: &str, git_env: &[(String, String)]
     }
 
     // The CLIs the team's accounts run.
-    let accounts: Vec<String> = members.iter().filter(|a| a.active || a.required).filter_map(|a| a.account_id.clone()).collect();
-    if let Err(e) = super::agent::CliRunner::for_accounts(&conn, &accounts, None) {
-        out.push(check("cli", "CLIs", "blocked", e, Some("team")));
-    } else {
-        let mut bins = Vec::new();
-        for id in &accounts {
-            if let Ok(acc) = crate::terminals::load_account(&conn, id) {
-                let bin = if acc.provider == "codex" { "codex" } else { "claude" };
-                let path = if bin == "claude" { crate::providers::claude::binary() } else { crate::providers::resolve_binary(bin) };
-                if !Path::new(&path).is_file() && !env::has_executable(bin) {
-                    bins.push(bin);
-                }
+    match account_rows {
+        Err(e) => out.push(check("cli", "CLIs", "blocked", e, Some("team"))),
+        Ok(rows) => {
+            let mut bins: Vec<&str> = rows
+                .iter()
+                .map(|(_, acc)| if acc.provider == "codex" { "codex" } else { "claude" })
+                .filter(|bin| {
+                    let path = if *bin == "claude" { crate::providers::claude::binary() } else { crate::providers::resolve_binary(bin) };
+                    !Path::new(&path).is_file() && !env::has_executable(bin)
+                })
+                .collect();
+            bins.sort();
+            bins.dedup();
+            if let Err(e) = super::agent::CliRunner::from_accounts(rows, None) {
+                out.push(check("cli", "CLIs", "blocked", e, Some("team")));
+            } else if !bins.is_empty() {
+                out.push(check("cli", "CLIs", "blocked", format!("no se encuentra {}: instálalo para las cuentas del equipo", bins.join(", ")), Some("team")));
             }
-        }
-        bins.sort();
-        bins.dedup();
-        if !bins.is_empty() {
-            out.push(check("cli", "CLIs", "blocked", format!("no se encuentra {}: instálalo para las cuentas del equipo", bins.join(", ")), Some("team")));
         }
     }
 
-    // The queue: orders stopped by the project, and order 0 for an empty one.
-    if fix {
-        let back = orders::reset_never_started(&conn, project_id)?;
-        if !back.is_empty() {
-            out.push(check("orders", "Órdenes", "fixed", format!("{} vuelve a la cola: falló antes de empezar, por el proyecto", back.join(", ")), None));
-        }
-    }
-    if repo_ok || fix {
-        let empty = is_empty_repo(dir);
-        let has_boot = orders::list(&conn, project_id)?.iter().any(|o| o.origin == "bootstrap");
-        if empty && !has_boot {
-            let prefix = orders::key_prefix(&project.project_name);
-            if fix {
-                orders::add_bootstrap(&conn, project_id, &prefix)?;
-                out.push(check("bootstrap", "Orden 0", "fixed", format!("el repo está vacío: {prefix}-0 «Preparar el proyecto» va primero y deja ejecutable cada comando de la puerta"), None));
-            } else {
-                out.push(check("bootstrap", "Orden 0", "todo", format!("el repo está vacío: al preparar se añade {prefix}-0 «Preparar el proyecto»"), None));
-            }
-        }
-    }
-    let todo = orders::list(&conn, project_id)?.iter().filter(|o| o.status == "todo").count();
-    if todo == 0 && line::active_run(&conn, project_id)?.is_none() {
-        out.push(check(
-            "tasks",
-            "Tareas",
-            "blocked",
-            if project.provider_kind == "none" { "no hay tareas: pon un proveedor o créalas desde un TRD" } else { "no hay tareas en la cola: tráelas del proveedor o créalas desde un TRD" },
-            Some("tasks"),
-        ));
-    }
+    out.extend(queue_checks);
     Ok(out)
 }
 

@@ -260,9 +260,15 @@ export function StepTasks({ project, onBack, onNext, onToProvider }: { project: 
                 )}
               </span>
               <span className={styles.spacer} />
-              <button className={styles.btnPrimary} disabled={analyzing || !trd.trim() || !project.brainVersion} onClick={() => analyze()}>
-                🧩 Analizar y sacar tareas
-              </button>
+              {analyzing ? (
+                <button className={styles.btnDanger} onClick={() => invoke('factory_plan_cancel', { projectId: project.projectId })}>
+                  ⏹ Cancelar el análisis
+                </button>
+              ) : (
+                <button className={styles.btnPrimary} disabled={!trd.trim() || !project.brainVersion} onClick={() => analyze()}>
+                  🧩 Analizar y sacar tareas
+                </button>
+              )}
             </div>
           </div>
         )}

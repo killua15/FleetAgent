@@ -520,7 +520,7 @@ pub fn set_amendment_status(conn: &Connection, id: &str, status: &str) -> Result
 
 // ---------------------------------------------------------------- commands
 
-use tauri::{AppHandle, Manager, Runtime, State};
+use tauri::{AppHandle, Manager, Runtime};
 
 use crate::db::DbConnection;
 
@@ -542,45 +542,53 @@ pub fn factory_brain_example() -> &'static str {
 /// A .md the user picked, read for import. Capped: a brain is a page of rules,
 /// not a book.
 #[tauri::command]
-pub fn factory_read_markdown(path: String) -> Result<String, String> {
-    let meta = std::fs::metadata(&path).map_err(|e| format!("no se pudo leer {path}: {e}"))?;
-    if meta.len() > 1_000_000 {
-        return Err("el archivo pasa de 1 MB: no parece un BRAIN.md".to_string());
-    }
-    std::fs::read_to_string(&path).map_err(|e| format!("no se pudo leer {path}: {e}"))
+pub async fn factory_read_markdown(path: String) -> Result<String, String> {
+    crate::blocking::run_blocking(move || {
+        let meta = std::fs::metadata(&path).map_err(|e| format!("no se pudo leer {path}: {e}"))?;
+        if meta.len() > 1_000_000 {
+            return Err("el archivo pasa de 1 MB: no parece un BRAIN.md".to_string());
+        }
+        std::fs::read_to_string(&path).map_err(|e| format!("no se pudo leer {path}: {e}"))
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn factory_brain_seal<R: Runtime>(app: AppHandle<R>, project_id: String, markdown: String, source: String) -> Result<Sealed, String> {
+pub async fn factory_brain_seal<R: Runtime>(app: AppHandle<R>, project_id: String, markdown: String, source: String) -> Result<Sealed, String> {
     let root = crate::app_data::root(&app)?;
-    let db = app.state::<DbConnection>();
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let project = crate::factory::store::get(&conn, &project_id)?;
-    seal(&conn, &root, &project_id, &project.project_name, &markdown, &source)
+    crate::factory::with_db(app, move |conn| {
+        let project = crate::factory::store::get(conn, &project_id)?;
+        seal(conn, &root, &project_id, &project.project_name, &markdown, &source)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn factory_brain_get(db: State<DbConnection>, project_id: String, version: Option<i64>) -> Result<Option<Sealed>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    load(&conn, &project_id, version)
+pub async fn factory_brain_get<R: tauri::Runtime>(app: tauri::AppHandle<R>, project_id: String, version: Option<i64>) -> Result<Option<Sealed>, String> {
+    crate::factory::with_db(app, move |conn| {
+        load(&conn, &project_id, version)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn factory_brain_versions(db: State<DbConnection>, project_id: String) -> Result<Vec<Version>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    versions(&conn, &project_id)
+pub async fn factory_brain_versions<R: tauri::Runtime>(app: tauri::AppHandle<R>, project_id: String) -> Result<Vec<Version>, String> {
+    crate::factory::with_db(app, move |conn| {
+        versions(&conn, &project_id)
+    })
+    .await
 }
 
 /// Writes the current version to `path` as BRAIN.md, AGENTS.md or CLAUDE.md.
 #[tauri::command]
-pub fn factory_brain_export(db: State<DbConnection>, project_id: String, format: String, path: String) -> Result<(), String> {
-    let (sealed, name) = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        let name = crate::factory::store::get(&conn, &project_id)?.project_name;
-        (load(&conn, &project_id, None)?.ok_or("todavía no hay un brain sellado")?, name)
-    };
+pub async fn factory_brain_export<R: Runtime>(app: AppHandle<R>, project_id: String, format: String, path: String) -> Result<(), String> {
+    let (sealed, name) = crate::factory::with_db(app, move |conn| {
+        let name = crate::factory::store::get(conn, &project_id)?.project_name;
+        Ok((load(conn, &project_id, None)?.ok_or("todavía no hay un brain sellado")?, name))
+    })
+    .await?;
     let text = export(&sealed, &format, &name)?;
-    std::fs::write(&path, text).map_err(|e| format!("no se pudo escribir {path}: {e}"))
+    crate::blocking::run_blocking(move || std::fs::write(&path, text).map_err(|e| format!("no se pudo escribir {path}: {e}"))).await?
 }
 
 /// Opens the definition session: a real Hangar terminal in the project, with
@@ -634,24 +642,25 @@ pub fn factory_brain_generate<R: Runtime>(app: AppHandle<R>, terminal_id: String
 
 /// The file the session wrote, once it's there.
 #[tauri::command]
-pub fn factory_brain_read_generated(db: State<DbConnection>, project_id: String) -> Result<Option<String>, String> {
-    let path = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        Path::new(&crate::factory::store::get(&conn, &project_id)?.project_path).join(GENERATED)
-    };
-    Ok(std::fs::read_to_string(path).ok().filter(|t| !t.trim().is_empty()))
+pub async fn factory_brain_read_generated<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<Option<String>, String> {
+    let path = crate::factory::with_db(app, move |conn| Ok(Path::new(&crate::factory::store::get(conn, &project_id)?.project_path).join(GENERATED))).await?;
+    crate::blocking::run_blocking(move || std::fs::read_to_string(path).ok().filter(|t| !t.trim().is_empty())).await
 }
 
 #[tauri::command]
-pub fn factory_amendments_list(db: State<DbConnection>, project_id: String) -> Result<Vec<Amendment>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    amendments(&conn, &project_id)
+pub async fn factory_amendments_list<R: tauri::Runtime>(app: tauri::AppHandle<R>, project_id: String) -> Result<Vec<Amendment>, String> {
+    crate::factory::with_db(app, move |conn| {
+        amendments(&conn, &project_id)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn factory_amendment_set_status(db: State<DbConnection>, id: String, status: String) -> Result<(), String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    set_amendment_status(&conn, &id, &status)
+pub async fn factory_amendment_set_status<R: tauri::Runtime>(app: tauri::AppHandle<R>, id: String, status: String) -> Result<(), String> {
+    crate::factory::with_db(app, move |conn| {
+        set_amendment_status(&conn, &id, &status)
+    })
+    .await
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager, Runtime, State};
+use tauri::{AppHandle, Manager, Runtime};
 
 use super::agent::{AgentCall, CliRunner, Outcome, Runner};
 use super::orders::{self, NewOrder, Order};
@@ -170,16 +170,21 @@ pub async fn factory_plan_trd<R: Runtime>(app: AppHandle<R>, project_id: String,
     crate::blocking::run_blocking(move || {
         let root = crate::app_data::root(&app).ok();
         let db = app.state::<DbConnection>();
-        let (project, brain, account, model, runner) = {
+        let (project, brain, account, model, accounts) = {
             let conn = db.0.lock().map_err(|e| e.to_string())?;
             let project = super::store::get(&conn, &project_id)?;
             let brain = super::brain::load(&conn, &project_id, None)?.ok_or("primero sella el brain: el planificador decide con él")?;
             let (account, model) = spec_agent(&conn, &project_id)?;
-            let runner = CliRunner::for_accounts(&conn, std::slice::from_ref(&account), root)?;
-            (project, brain, account, model, runner)
+            let accounts = super::agent::accounts_for(&conn, std::slice::from_ref(&account))?;
+            (project, brain, account, model, accounts)
         };
+        // Binaries and the keychain, without holding the database.
+        let runner = CliRunner::from_accounts(accounts, root)?;
+        // A cancel of an earlier analysis doesn't cancel this one.
+        super::procs::clear_job(&project_id, "plan");
         let call = AgentCall {
-            key: format!("plan-{project_id}"),
+            project: project_id.clone(),
+            key: "plan".into(),
             account_id: account,
             model,
             cwd: project.project_path.clone().into(),
@@ -200,6 +205,12 @@ pub async fn factory_plan_trd<R: Runtime>(app: AppHandle<R>, project_id: String,
         }
     })
     .await?
+}
+
+/// «Cancelar»: stops the TRD analysis under way, and nothing else.
+#[tauri::command]
+pub fn factory_plan_cancel(project_id: String) -> bool {
+    super::procs::stop_job(&project_id, "plan") > 0
 }
 
 /// Aprobar: the orders go into the queue and, with a provider, are created in
@@ -280,30 +291,36 @@ pub async fn factory_orders_sync<R: Runtime>(app: AppHandle<R>, project_id: Stri
 }
 
 #[tauri::command]
-pub fn factory_orders_list(db: State<DbConnection>, project_id: String) -> Result<Vec<Order>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    orders::list(&conn, &project_id)
+pub async fn factory_orders_list<R: tauri::Runtime>(app: tauri::AppHandle<R>, project_id: String) -> Result<Vec<Order>, String> {
+    crate::factory::with_db(app, move |conn| {
+        orders::list(&conn, &project_id)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn factory_orders_reorder(db: State<DbConnection>, project_id: String, ids: Vec<String>) -> Result<Vec<Order>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    orders::reorder(&conn, &project_id, &ids)?;
-    orders::list(&conn, &project_id)
+pub async fn factory_orders_reorder<R: tauri::Runtime>(app: tauri::AppHandle<R>, project_id: String, ids: Vec<String>) -> Result<Vec<Order>, String> {
+    crate::factory::with_db(app, move |conn| {
+        orders::reorder(&conn, &project_id, &ids)?;
+        orders::list(&conn, &project_id)
+    })
+    .await
 }
 
 /// An order typed by hand, for a project without a provider.
 #[tauri::command]
-pub fn factory_order_add(db: State<DbConnection>, project_id: String, title: String, criteria: Vec<String>, deps: Vec<String>) -> Result<Vec<Order>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let project = super::store::get(&conn, &project_id)?;
-    if title.trim().is_empty() {
-        return Err("la orden necesita un título".into());
-    }
-    let key = orders::next_key(&conn, &project_id, &orders::key_prefix(&project.project_name))?;
-    let criteria = criteria.into_iter().map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect();
-    orders::insert(&conn, &project_id, &NewOrder { key, title: title.trim().into(), criteria, deps, origin: "manual".into(), ..Default::default() })?;
-    orders::list(&conn, &project_id)
+pub async fn factory_order_add<R: tauri::Runtime>(app: tauri::AppHandle<R>, project_id: String, title: String, criteria: Vec<String>, deps: Vec<String>) -> Result<Vec<Order>, String> {
+    crate::factory::with_db(app, move |conn| {
+        let project = super::store::get(&conn, &project_id)?;
+        if title.trim().is_empty() {
+            return Err("la orden necesita un título".into());
+        }
+        let key = orders::next_key(&conn, &project_id, &orders::key_prefix(&project.project_name))?;
+        let criteria = criteria.into_iter().map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect();
+        orders::insert(&conn, &project_id, &NewOrder { key, title: title.trim().into(), criteria, deps, origin: "manual".into(), ..Default::default() })?;
+        orders::list(&conn, &project_id)
+    })
+    .await
 }
 
 /// «No me convence»: the TRD goes into the project as a file and a terminal
@@ -343,10 +360,9 @@ Pregúntame lo que haga falta y, cuando lo acordemos, edita ese archivo. Respeta
 }
 
 #[tauri::command]
-pub fn factory_trd_read(db: State<DbConnection>, project_id: String) -> Result<Option<String>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let project = super::store::get(&conn, &project_id)?;
-    Ok(std::fs::read_to_string(Path::new(&project.project_path).join(TRD_FILE)).ok())
+pub async fn factory_trd_read<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<Option<String>, String> {
+    let path = crate::factory::with_db(app, move |conn| Ok(super::store::get(conn, &project_id)?.project_path)).await?;
+    crate::blocking::run_blocking(move || std::fs::read_to_string(Path::new(&path).join(TRD_FILE)).ok()).await
 }
 
 #[cfg(test)]
