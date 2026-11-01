@@ -3,7 +3,7 @@ import { invoke } from '../../lib/invoke';
 import { toastError } from '../../components/ErrorOverlay';
 import { TerminalPane } from '../../components/TerminalPane';
 import type { Account } from '../../types/account';
-import type { FactoryRun, FailItem } from '../../types/factory';
+import { RED_KIND, type FactoryRun, type FailItem } from '../../types/factory';
 import type { TerminalInfo } from '../../types/terminal';
 import type { CheckAction } from './GatePanel';
 import styles from '../Factory.module.css';
@@ -34,7 +34,11 @@ export function FailurePanel({
   // What stayed red at the very end: the gate's last verdict, or the review's
   // findings when that's what sent it back the last time.
   const final: FailItem[] =
-    last?.kind === 'review' ? last.items : gateRed.length ? gateRed.map((g) => ({ name: g.name, detail: `$ ${g.command}\n${g.tail}` })) : (last?.items ?? []);
+    last?.kind === 'review' || last?.kind === 'stalled'
+      ? last.items
+      : gateRed.length
+        ? gateRed.map((g) => ({ name: g.name, detail: `$ ${g.command}\n${g.tail}`, kind: g.kind }))
+        : (last?.items ?? []);
   const timesRed = (name: string) => history.filter((h) => h.items.some((i) => i.name === name)).length;
   const builder = run.team.find((a) => a.role === 'builder');
   const [accountId, setAccountId] = useState(builder?.accountId ?? accounts[0]?.id ?? '');
@@ -59,7 +63,15 @@ export function FailurePanel({
     setTerminalId(null);
   };
 
-  const what = last?.kind === 'review' ? `${final.length} ${final.length === 1 ? 'hallazgo siguió' : 'hallazgos siguieron'} sin resolver` : `${final.length} ${final.length === 1 ? 'check siguió' : 'checks siguieron'} en rojo hasta el final`;
+  const notCode = final.filter((i) => i.kind === 'entorno' || i.kind === 'brain').length;
+  const what =
+    last?.kind === 'stalled'
+      ? 'el builder terminó una ronda sin cambiar nada: no sabe o no puede arreglarlo — lee lo que dijo'
+      : notCode > 0
+        ? `${notCode} ${notCode === 1 ? 'rojo no es' : 'rojos no son'} del código: se paró sin gastar rondas`
+        : last?.kind === 'review'
+          ? `${final.length} ${final.length === 1 ? 'hallazgo siguió' : 'hallazgos siguieron'} sin resolver`
+          : `${final.length} ${final.length === 1 ? 'check siguió' : 'checks siguieron'} en rojo hasta el final`;
 
   return (
     <details className={`${styles.cardFlat} ${styles.acc} ${styles.failPanel}`} open>
@@ -82,6 +94,7 @@ export function FailurePanel({
                   <span className={styles.bad}>✗</span>
                   <span className={styles.lName}>{item.name}</span>
                   <span className={styles.spacer} />
+                  {item.kind && RED_KIND[item.kind] && <span className={styles.chipRed}>{RED_KIND[item.kind]}</span>}
                   {always ? (
                     <span className={styles.chipRed} title="El builder no lo arregló en ninguna ronda: mira si el fallo es del check o del entorno">
                       rojo en todas las rondas · quizá no es el código
@@ -111,7 +124,9 @@ export function FailurePanel({
                 <summary className={styles.gateHead}>
                   <span className={`${styles.mono} ${styles.dimTxt}`}>{h.round === 0 ? '1ª pasada' : `ronda ${h.round}`}</span>
                   <span className={styles.lName}>
-                    {h.kind === 'gate' ? 'puerta' : 'revisión'} · {h.items.length} {h.kind === 'gate' ? 'en rojo' : h.items.length === 1 ? 'hallazgo' : 'hallazgos'}
+                    {h.kind === 'stalled'
+                      ? 'builder sin cambios'
+                      : `${h.kind === 'gate' ? 'puerta' : 'revisión'} · ${h.items.length} ${h.kind === 'gate' ? 'en rojo' : h.items.length === 1 ? 'hallazgo' : 'hallazgos'}`}
                   </span>
                   <span className={`${styles.lSub} ${styles.gateCmd}`}>{h.items.map((i) => i.name).join(', ')}</span>
                 </summary>

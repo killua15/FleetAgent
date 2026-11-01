@@ -173,7 +173,7 @@ export function StepBrain({
               </div>
             </div>
           )}
-          <ImportReport report={report} from={from} nextVersion={nextVersion} sealing={sealing} onSeal={seal} onComplete={report?.missingRequired.length ? completeInChat : undefined} />
+          <ImportReport report={report} from={from} nextVersion={nextVersion} sealing={sealing} onSeal={seal} projectId={project.projectId} onComplete={report?.missingRequired.length ? completeInChat : undefined} />
         </div>
       </div>
       <StepFoot step={3} hint={hint} onBack={onBack} onNext={onNext} nextDisabled={!sealed} />

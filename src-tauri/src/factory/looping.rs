@@ -967,7 +967,7 @@ mod tests {
         let w = line::tests::world("autonomous", "local", "true");
         let conn = w.db.0.lock().unwrap();
         let brain = crate::factory::brain::load(&conn, "p1", None).unwrap().unwrap();
-        let e2e = line::GateResult { name: "ARQ-01, SEC-01".into(), command: "pnpm e2e".into(), ok: false, tail: "2 failed".into(), rule: None, reds: 1 };
+        let e2e = line::GateResult { name: "ARQ-01, SEC-01".into(), command: "pnpm e2e".into(), ok: false, tail: "2 failed".into(), rule: None, reds: 1, kind: "codigo".into() };
         match verification_orders(&conn, "p1", "VET", &brain, &[&e2e]).unwrap() {
             Verification::NewOrders(1) => {}
             _ => panic!("one new order"),

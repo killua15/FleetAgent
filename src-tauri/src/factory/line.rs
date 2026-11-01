@@ -78,6 +78,10 @@ pub struct RunState {
     /// Why each round went back to Fabricación, oldest first — what tells a
     /// check the builder can't fix from one it just hadn't yet.
     pub history: Vec<RoundFail>,
+    /// Session id → what Claude Code said it had cost so far. Its
+    /// `total_cost_usd` on `--resume` is the whole conversation's, so each
+    /// turn's own cost is the difference.
+    pub session_costs: HashMap<String, f64>,
 }
 
 /// One trip back to Fabricación: the gate's red checks or the review's
@@ -98,6 +102,9 @@ pub struct RoundFail {
 pub struct FailItem {
     pub name: String,
     pub detail: String,
+    /// For a gate red: `codigo`, `entorno` or `brain`.
+    #[serde(default)]
+    pub kind: String,
 }
 
 /// How many rounds a run remembers.
@@ -117,6 +124,10 @@ pub struct GateResult {
     /// Rounds in a row it has been red, this one included.
     #[serde(default)]
     pub reds: u32,
+    /// Whose red it is: `codigo` (the builder's), `entorno` (the machine's)
+    /// or `brain` (the check itself). Empty when green.
+    #[serde(default)]
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,10 +279,26 @@ pub fn slug(text: &str) -> String {
     s
 }
 
-pub fn branch_name(order: &Order) -> String {
-    // Lowercase, like the slug: brains ask for `feat/[a-z0-9-]+`.
-    let key: String = order.key.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').map(|c| c.to_ascii_lowercase()).collect();
-    format!("feat/{key}-{}", slug(&order.title))
+/// The names the line can give an order's branch: its key as written
+/// (`feat/POK-1-…`), then in lowercase (`feat/pok-1-…`).
+pub fn branch_candidates(key: &str, title: &str) -> Vec<String> {
+    let key: String = key.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+    let mut out = vec![format!("feat/{key}-{}", slug(title))];
+    let lower = out[0].to_ascii_lowercase();
+    if lower != out[0] {
+        out.push(lower);
+    }
+    out
+}
+
+/// The order's branch: the first name the brain's branch rule accepts — a
+/// brain may ask for `POK-1` or for `[a-z0-9-]+` — else the key as written.
+pub fn branch_name(order: &Order, rules: &[super::brain::Rule]) -> String {
+    let candidates = branch_candidates(&order.key, &order.title);
+    match super::lint::branch_pattern(rules) {
+        Some(re) => candidates.iter().find(|b| re.is_match(b)).cloned().unwrap_or_else(|| candidates[0].clone()),
+        None => candidates[0].clone(),
+    }
 }
 
 /// Whether the project can run orders at all: a git repo with commits, a
@@ -325,7 +352,11 @@ pub fn start(ctx: &Ctx, project_id: &str, order_id: &str) -> Result<Run, String>
     } else {
         base_branch.clone()
     };
-    let branch = branch_name(&order);
+    let rules = {
+        let conn = lock(ctx.db)?;
+        brain::load(&conn, project_id, Some(brain_version))?.map(|b| b.rules).unwrap_or_default()
+    };
+    let branch = branch_name(&order, &rules);
     let worktree = repo.join(".hangar").join("worktrees").join(format!("factory-{}", slug(&order.key)));
     crate::task_sources::exclude_hangar_dir_locally(repo);
     if !worktree.join(".git").exists() {
@@ -507,6 +538,17 @@ enum Step {
     Halted,
 }
 
+/// What one turn cost, out of the conversation's running total: a resumed
+/// conversation reports everything it has cost since it began.
+fn turn_cost(seen: &mut HashMap<String, f64>, resumed: Option<&str>, session: Option<&str>, total: f64) -> f64 {
+    let before = resumed.and_then(|id| seen.get(id)).copied().unwrap_or(0.0);
+    if let Some(id) = session {
+        seen.insert(id.to_string(), total);
+    }
+    // A total below what was seen is a conversation that started afresh.
+    if total >= before { total - before } else { total }
+}
+
 /// Runs one agent of the frozen team and records everything it did.
 fn run_agent(ctx: &Ctx, run: &mut Run, agent: &Agent, order: &Order, brain: &Sealed, extra: &str, write: bool, mcp: Option<PathBuf>, label: Option<&str>) -> Result<Step, String> {
     let st = station(&run.stage);
@@ -552,6 +594,8 @@ fn run_agent(ctx: &Ctx, run: &mut Run, agent: &Agent, order: &Order, brain: &Sea
             changed();
         })
     };
+    let mut result = result;
+    result.cost_usd = turn_cost(&mut run.state.session_costs, call.resume.as_deref(), result.session_id.as_deref(), result.cost_usd);
     run.cost_usd += result.cost_usd;
     if let Some(id) = &result.session_id {
         run.state.sessions.insert(agent.id.clone(), id.clone());
@@ -687,6 +731,33 @@ pub fn not_runnable(code: Option<i32>, output: &str) -> bool {
         || regex::Regex::new(r#"command "[^"]*" not found"#).map(|re| re.is_match(&lower)).unwrap_or(false)
 }
 
+/// Whose a red command is. The builder can only fix code: a machine that
+/// can't launch a browser, or a check that misuses its own tools, sends it
+/// round after round after something that isn't in the repo. A script or a
+/// module that doesn't exist yet is still code: the builder adds it.
+pub fn red_kind(output: &str) -> &'static str {
+    let lower = output.to_lowercase();
+    const ENV: [&str; 9] = [
+        "failed to launch the browser process",
+        "executable doesn't exist",
+        "playwright install",
+        "please install",
+        "cannot connect to the docker daemon",
+        "econnrefused",
+        "eaddrinuse",
+        "enospc",
+        "operation not permitted",
+    ];
+    const BRAIN: [&str; 7] = ["is only valid with a single pathname", "syntax error", "usage: ", "unknown option", "unrecognized option", "write epipe", "code: 'epipe'"];
+    if ENV.iter().any(|m| lower.contains(m)) {
+        "entorno"
+    } else if BRAIN.iter().any(|m| lower.contains(m)) || lower.lines().any(|l| l.trim_start().starts_with("fatal:")) {
+        "brain"
+    } else {
+        "codigo"
+    }
+}
+
 /// The test gate: the commands, run in the worktree with no AI and the
 /// user's PATH. It has no off switch.
 pub fn run_gate(project: &str, worktree: &Path, commands: &[(String, String)], mode: GateMode) -> Vec<GateResult> {
@@ -695,21 +766,25 @@ pub fn run_gate(project: &str, worktree: &Path, commands: &[(String, String)], m
         // ⏹ between commands: what ran is reported, the rest doesn't start.
         .take_while(|_| !super::procs::stop_requested(project))
         .map(|(name, command)| {
-            let (ok, tail) = match super::env::shell(project, "gate", command, worktree, GATE_TIMEOUT) {
+            let (ok, tail, kind) = match super::env::shell(project, "gate", command, worktree, GATE_TIMEOUT) {
                 Ok(out) => {
                     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
                     let tail = if out.status.success() { last_lines(&text, 30) } else { failure_excerpt(&text) };
                     let missing = not_runnable(out.status.code(), &text);
                     let tail = if missing { format!("no se puede ejecutar: {command}\n{tail}") } else { tail };
+                    let kind = if out.status.success() { "" } else { red_kind(&text) };
                     let ok = match mode {
                         GateMode::Green => out.status.success(),
-                        GateMode::Runs => !missing,
+                        // Order 0 only asks that each command runs — but a
+                        // machine that can't run it, or a check that misuses
+                        // its tools, isn't «running».
+                        GateMode::Runs => !missing && (kind == "" || kind == "codigo"),
                     };
-                    (ok, tail)
+                    (ok, tail, if ok { "" } else { kind })
                 }
-                Err(e) => (false, e),
+                Err(e) => (false, e, "codigo"),
             };
-            GateResult { name: name.clone(), command: command.clone(), ok, tail, rule: None, reds: 0 }
+            GateResult { name: name.clone(), command: command.clone(), ok, tail, rule: None, reds: 0, kind: kind.to_string() }
         })
         .collect()
 }
@@ -1002,10 +1077,30 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                         extra.push_str(&format!("- `{c}`  ({names})\n"));
                     }
                 }
+                let wt = PathBuf::from(&run.worktree);
+                let before = git(&wt, &["rev-parse", "HEAD"], &[]).ok();
                 match run_agent(ctx, &mut run, &a, &order, &brain, &extra, true, None, None)? {
                     Step::Answer(r) => {
                         if let Some(s) = r.get("summary").and_then(Value::as_str) {
                             run.state.summary = Some(s.to_string());
+                        }
+                        // Sent back to fix something and nothing changed: the
+                        // same suite and the same review would say the same.
+                        let after = git(&wt, &["rev-parse", "HEAD"], &[]).ok();
+                        let dirty = git(&wt, &["status", "--porcelain"], &[]).map(|s| !s.trim().is_empty()).unwrap_or(true);
+                        if run.state.feedback.is_some() && before.is_some() && before == after && !dirty {
+                            let said = run.state.summary.clone().unwrap_or_default();
+                            let conn = lock(ctx.db)?;
+                            run.state.history.push(RoundFail { round: run.round, at: Utc::now().to_rfc3339(), kind: "stalled".into(), items: vec![FailItem { name: format!("{} no cambió nada", a.name), detail: said, kind: String::new() }] });
+                            run.status = "failed".into();
+                            run.error = Some(format!("el builder terminó la ronda {} sin cambios: no sabe o no puede arreglarlo", run.round));
+                            run.finished_at = Some(Utc::now().to_rfc3339());
+                            activity(&conn, &run.id, None, "fab", "warn", "ronda sin cambios: se para en vez de repetir la calidad", None)?;
+                            save_run(&conn, &run)?;
+                            drop(conn);
+                            (ctx.notify)(&format!("{} se paró", order.key), "El builder terminó una ronda sin cambios.");
+                            (ctx.changed)();
+                            return Ok(run);
                         }
                         run.state.feedback = None;
                         run.state.gate_ok = false;
@@ -1075,15 +1170,27 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                 finish_step(&conn, &step, if green { "done" } else { "failed" }, Some(&format!("{} de {} en verde", results.iter().filter(|r| r.ok).count(), results.len())), None, 0.0)?;
                 run.state.gate = results.clone();
                 run.state.gate_ok = green;
+                let not_code: Vec<&GateResult> = results.iter().filter(|r| !r.ok && (r.kind == "entorno" || r.kind == "brain")).collect();
                 if green {
                     run.stage = "review".into();
+                } else if !not_code.is_empty() {
+                    // The builder can't fix the machine or the brain: stop
+                    // now, without spending a round, and say whose it is.
+                    let items: Vec<FailItem> = results.iter().filter(|r| !r.ok).map(|r| FailItem { name: r.name.clone(), detail: format!("$ {}\n{}", r.command, r.tail), kind: r.kind.clone() }).collect();
+                    run.state.history.push(RoundFail { round: run.round, at: Utc::now().to_rfc3339(), kind: "gate".into(), items });
+                    let names: Vec<String> = not_code.iter().map(|r| format!("{} ({})", r.name, if r.kind == "entorno" { "entorno" } else { "brain" })).collect();
+                    run.status = "failed".into();
+                    run.error = Some(format!("rojo que no es del código: {}", names.join(", ")));
+                    run.finished_at = Some(Utc::now().to_rfc3339());
+                    activity(&conn, &run.id, Some(&step), "test", "warn", &format!("se para sin gastar rondas: {}", names.join(", ")), None)?;
+                    tell = Some((format!("{} se paró", order.key), format!("Rojo que el builder no puede arreglar: {}", names.join(", "))));
                 } else {
                     let failures: Vec<String> = results.iter().filter(|r| !r.ok).map(|r| format!("✗ {} ({})\n{}", r.name, r.command, r.tail)).collect();
                     let why = if results.is_empty() { "no hay ningún tester activo con comando: sin tests no se aprueba".to_string() } else { failures.join("\n\n") };
                     let items: Vec<FailItem> = if results.is_empty() {
-                        vec![FailItem { name: "sin tests".into(), detail: why.clone() }]
+                        vec![FailItem { name: "sin tests".into(), detail: why.clone(), kind: "codigo".into() }]
                     } else {
-                        results.iter().filter(|r| !r.ok).map(|r| FailItem { name: r.name.clone(), detail: format!("$ {}\n{}", r.command, r.tail) }).collect()
+                        results.iter().filter(|r| !r.ok).map(|r| FailItem { name: r.name.clone(), detail: format!("$ {}\n{}", r.command, r.tail), kind: r.kind.clone() }).collect()
                     };
                     tell = back_to_build(&conn, &mut run, &order, why, "gate", items)?;
                 }
@@ -1174,6 +1281,7 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                         .map(|f| FailItem {
                             name: format!("{} · {}", f.get("rule_id").and_then(Value::as_str).unwrap_or("sin regla"), f.get("severity").and_then(Value::as_str).unwrap_or("")),
                             detail: format!("{}: {}", f.get("file").and_then(Value::as_str).unwrap_or(""), f.get("text").and_then(Value::as_str).unwrap_or("")),
+                            kind: String::new(),
                         })
                         .collect();
                     tell = back_to_build(&conn, &mut run, &order, format!("Hallazgos confirmados de la revisión:\n{}", list.join("\n")), "review", items)?;
@@ -1543,11 +1651,14 @@ pub(crate) mod tests {
     pub(crate) struct Script {
         pub answers: Mutex<HashMap<String, Vec<AgentResult>>>,
         pub calls: Mutex<Vec<(String, Option<String>, String)>>,
+        /// How many more times the builder commits; then it answers without
+        /// changing anything.
+        pub builder_commits: Mutex<usize>,
     }
 
     impl Script {
         pub(crate) fn new() -> Self {
-            Script { answers: Mutex::new(HashMap::new()), calls: Mutex::new(Vec::new()) }
+            Script { answers: Mutex::new(HashMap::new()), calls: Mutex::new(Vec::new()), builder_commits: Mutex::new(usize::MAX) }
         }
         pub(crate) fn on(&self, role: &str, json: Value) {
             self.answers.lock().unwrap().entry(role.into()).or_default().push(AgentResult { outcome: Outcome::Ok, json: Some(json), session_id: Some(format!("s-{role}")), cost_usd: 0.1 });
@@ -1593,7 +1704,13 @@ pub(crate) mod tests {
             let role = role_of(&call.prompt);
             self.calls.lock().unwrap().push((role.clone(), call.resume.clone(), call.model.clone()));
             on(Activity { kind: "read", text: format!("{role} lee el repo") });
-            if role == "builder" {
+            let commits = role == "builder" && {
+                let mut left = self.builder_commits.lock().unwrap();
+                let go = *left > 0;
+                *left = left.saturating_sub(1);
+                go
+            };
+            if commits {
                 let f = call.cwd.join("app.txt");
                 let n = std::fs::read_to_string(&f).unwrap_or_default();
                 std::fs::write(&f, format!("{n}x\n")).unwrap();
@@ -1690,7 +1807,7 @@ pub(crate) mod tests {
             {"rule_id":null,"text":"no se avisa al veterinario","question":"¿Se avisa al veterinario cuando se cancela una cita?"}]}));
         let c = ctx(&w, &s);
         let run = start(&c, "p1", &w.order_id).unwrap();
-        assert!(run.branch.starts_with("feat/vet-2-cancelar-una-cita"));
+        assert!(run.branch.starts_with("feat/VET-2-cancelar-una-cita"));
         let run = advance(&c, &run.id).unwrap();
         assert_eq!(run.status, "merged", "{:?}", run.error);
         assert_eq!(run.round, 1, "one round for SEC-01");
@@ -2000,9 +2117,74 @@ pub(crate) mod tests {
             created_at: String::new(),
             blocked_by: vec![],
         };
-        assert_eq!(branch_name(&o), "feat/12-cancelar-una-cita-delete-citas-id");
+        assert_eq!(branch_name(&o, &[]), "feat/12-cancelar-una-cita-delete-citas-id");
+        // The brain decides the case: POK's v1 asked for `[a-z0-9-]+`, its v2 for `POK-[0-9]+`.
         let pok = Order { key: "POK-1".into(), title: "Inicializar repo".into(), ..o };
-        assert_eq!(branch_name(&pok), "feat/pok-1-inicializar-repo", "GIT-04 wants `[a-z0-9-]`");
+        let rule = |re: &str| brain::Rule { id: "GIT-04".into(), section: "git".into(), level: "must".into(), text: "x".into(), check: Some(format!("git branch --show-current | grep -qE '{re}'")) };
+        assert_eq!(branch_name(&pok, &[]), "feat/POK-1-inicializar-repo", "no rule: the key as written");
+        assert_eq!(branch_name(&pok, &[rule("^(main|(feat|fix|chore)/[a-z0-9-]+)$")]), "feat/pok-1-inicializar-repo");
+        assert_eq!(branch_name(&pok, &[rule("^(main|dev|(feat|fix|chore)/POK-[0-9]+-[a-z0-9-]{1,40})$")]), "feat/POK-1-inicializar-repo");
+    }
+
+    #[test]
+    fn a_machine_that_cant_run_the_suite_stops_the_order_without_spending_rounds() {
+        let w = world("autonomous", "local", "echo 'browserType.launch: Failed to launch the browser process' >&2; exit 1");
+        let s = Script::new();
+        let c = ctx(&w, &s);
+        let run = start(&c, "p1", &w.order_id).unwrap();
+        let run = advance(&c, &run.id).unwrap();
+        assert_eq!((run.status.as_str(), run.round), ("failed", 0), "{:?}", run.error);
+        assert!(run.error.as_deref().unwrap().contains("entorno"));
+        assert_eq!(roles(&s).iter().filter(|r| *r == "builder").count(), 1, "never sent back to the builder");
+        assert_eq!(run.state.history[0].items[0].kind, "entorno");
+    }
+
+    #[test]
+    fn order_zero_isnt_delivered_on_a_machine_that_cant_run_its_checks() {
+        let w = world("autonomous", "local", "echo 'Executable doesn'\\''t exist at /x/firefox' >&2; exit 1");
+        {
+            let conn = w.db.0.lock().unwrap();
+            conn.execute("UPDATE factory_orders SET origin = 'bootstrap' WHERE id = ?1", params![w.order_id]).unwrap();
+        }
+        let s = Script::new();
+        let c = ctx(&w, &s);
+        let run = start(&c, "p1", &w.order_id).unwrap();
+        let run = advance(&c, &run.id).unwrap();
+        assert_eq!(run.status, "failed", "«it runs» isn't enough when the machine can't: {:?}", run.state.gate);
+    }
+
+    #[test]
+    fn a_round_that_changes_nothing_stops_instead_of_repeating_the_quality() {
+        let w = world("autonomous", "local", "false");
+        let s = Script::new();
+        *s.builder_commits.lock().unwrap() = 1;
+        let c = ctx(&w, &s);
+        let run = start(&c, "p1", &w.order_id).unwrap();
+        let run = advance(&c, &run.id).unwrap();
+        assert_eq!((run.status.as_str(), run.round), ("failed", 1), "{:?}", run.error);
+        assert!(run.error.as_deref().unwrap().contains("sin cambios"));
+        assert_eq!(run.state.history.last().unwrap().kind, "stalled");
+        assert_eq!(roles(&s).iter().filter(|r| *r == "tester").count(), 2, "the testers ran once, for the build that changed something");
+        assert!(run.state.feedback.is_some(), "what to fix is kept for a retry");
+    }
+
+    #[test]
+    fn a_red_is_told_apart_by_whose_it_is() {
+        assert_eq!(red_kind("[firefox] browserType.launch: Failed to launch the browser process\n9 failed"), "entorno");
+        assert_eq!(red_kind("Error: browserType.launch: Executable doesn't exist at /x/firefox-1555\nplaywright install"), "entorno");
+        assert_eq!(red_kind("fatal: --quiet is only valid with a single pathname"), "brain");
+        assert_eq!(red_kind("Error: write EPIPE\n  code: 'EPIPE'"), "brain");
+        assert_eq!(red_kind("  ✘ 3 [chromium] › csp.spec.ts › / serves the CSP\n1 failed"), "codigo");
+        assert_eq!(red_kind("ERR_PNPM_NO_SCRIPT Missing script: e2e"), "codigo", "a missing script is the builder's to add");
+    }
+
+    #[test]
+    fn a_resumed_conversation_costs_only_its_new_turn() {
+        let mut seen = HashMap::new();
+        assert_eq!(turn_cost(&mut seen, None, Some("s1"), 1.62), 1.62);
+        assert!((turn_cost(&mut seen, Some("s1"), Some("s1"), 2.56) - 0.94).abs() < 1e-9);
+        assert!((turn_cost(&mut seen, Some("s1"), Some("s1"), 3.02) - 0.46).abs() < 1e-9);
+        assert_eq!(turn_cost(&mut seen, Some("s1"), Some("s2"), 0.5), 0.5, "below what was seen: a fresh conversation");
     }
 
     #[test]
@@ -2033,7 +2215,7 @@ pub(crate) mod tests {
         let run = start(&c, "p1", &w.order_id).unwrap();
         let conn = w.db.0.lock().unwrap();
         let mut run = load_run(&conn, &run.id).unwrap();
-        run.state.gate = red.iter().map(|(n, cmd)| GateResult { name: n.to_string(), command: cmd.to_string(), ok: false, tail: format!("{cmd}: rojo"), rule: None, reds: 4 }).collect();
+        run.state.gate = red.iter().map(|(n, cmd)| GateResult { name: n.to_string(), command: cmd.to_string(), ok: false, tail: format!("{cmd}: rojo"), rule: None, reds: 4, kind: "codigo".into() }).collect();
         run.stage = "gate".into();
         run.round = MAX_ROUNDS + 1;
         run.status = "failed".into();

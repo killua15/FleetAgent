@@ -525,6 +525,8 @@ pub fn run() {
             factory::brain::factory_brain_example,
             factory::brain::factory_read_markdown,
             factory::brain::factory_brain_seal,
+            factory::brain::factory_brain_lint,
+            factory::brain::factory_brain_from_rules,
             factory::brain::factory_brain_get,
             factory::brain::factory_brain_versions,
             factory::brain::factory_brain_export,

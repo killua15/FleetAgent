@@ -9,6 +9,7 @@ pub mod brain;
 pub mod env;
 pub mod limits;
 pub mod line;
+pub mod lint;
 pub mod looping;
 pub mod orders;
 pub mod planner;

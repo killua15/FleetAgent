@@ -1844,3 +1844,77 @@ details[open] > summary.gateHead::before {
 .failConsole > .failActions {
   padding-bottom: 0;
 }
+
+/* ---- the brain: lint, legend, hand edits ---- */
+
+.lint {
+  margin: 0 16px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+
+.lintRow {
+  display: grid;
+  grid-template-columns: 14px 64px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--panel2);
+  min-width: 0;
+}
+
+.legend {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 16px 14px;
+}
+
+.legendGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 6px 16px;
+}
+
+.legendItem {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  font: 400 12px var(--font-ui);
+}
+
+.legendNotes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font: 400 12px/1.5 var(--font-ui);
+  color: var(--mut);
+}
+
+.legendNotes > span > :first-child {
+  margin-right: 8px;
+}
+
+.ruleEditable {
+  grid-template-columns: 64px 70px 1fr auto;
+}
+
+.ruleTools {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+
+.ruleEditable:hover .ruleTools,
+.ruleTools:focus-within {
+  opacity: 1;
+}
+
+.ruleEditing {
+  grid-template-columns: 64px 100px 1fr;
+  align-items: start;
+  background: var(--panel2);
+}

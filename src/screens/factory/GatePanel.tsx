@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { FactoryRun, GateResult } from '../../types/factory';
+import { RED_KIND, type FactoryRun, type GateResult } from '../../types/factory';
 import styles from '../Factory.module.css';
 
 export type CheckAction = 'fix' | 'broken' | 'waive';
@@ -81,6 +81,7 @@ function GateRow({ g, busy, defaultOpen, onCheck }: { g: GateResult; busy: boole
         <span className={styles.bad}>✗</span>
         <span className={styles.lName}>{g.name}</span>
         <span className={`${styles.lSub} ${styles.gateCmd}`}>{g.command}</span>
+        {g.kind && RED_KIND[g.kind] && <span className={styles.chipRed}>{RED_KIND[g.kind]}</span>}
         {g.reds > 1 && <span className={styles.chipAmber}>rojo {g.reds} rondas seguidas</span>}
       </summary>
       <div className={styles.gateBody}>

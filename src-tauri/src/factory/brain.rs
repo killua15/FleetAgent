@@ -14,10 +14,11 @@ use serde::{Deserialize, Serialize};
 
 /// The sections, from the start of a project to production, in the order the
 /// file lists them.
-pub const SECTIONS: [(&str, &str, &str); 11] = [
+pub const SECTIONS: [(&str, &str, &str); 12] = [
     ("prd", "Producto", "PRD"),
     ("arq", "Arquitectura", "ARQ"),
     ("tec", "Tecnologías", "TEC"),
+    ("ent", "Entorno", "ENT"),
     ("cod", "Código", "COD"),
     ("dat", "Datos", "DAT"),
     ("sec", "Seguridad", "SEC"),
@@ -33,11 +34,12 @@ pub const SECTIONS: [(&str, &str, &str); 11] = [
 pub const REQUIRED: [&str; 7] = ["prd", "arq", "tec", "cod", "cal", "git", "rsg"];
 
 /// Heading prefixes (accents folded, lower case) and the section they open.
-const KEYS: [(&str, &str); 13] = [
+const KEYS: [(&str, &str); 14] = [
     ("producto", "prd"),
     ("arquitectura", "arq"),
     ("tecnolog", "tec"),
     ("stack", "tec"),
+    ("entorno", "ent"),
     ("codigo", "cod"),
     ("datos", "dat"),
     ("seguridad", "sec"),
@@ -270,6 +272,7 @@ versión: 1
 ## Producto        (problema, usuarios, alcance y lo que queda fuera, glosario)
 ## Arquitectura    (módulos, capas, patrones obligatorios, lo que no se toca)
 ## Tecnologías     (stack y versiones, librerías permitidas y prohibidas)
+## Entorno         (lo que esta máquina tiene que tener: runtimes, navegadores, servicios; cada uno con un check que lo EJECUTE, p. ej. que cada navegador de Playwright arranque)
 ## Código          (estilo, nombres, errores, cómo se compila y se prueba)
 ## Datos           (modelo, migraciones, compatibilidad)
 ## Seguridad       (secretos, autenticación, datos sensibles)
@@ -284,8 +287,9 @@ Cada regla en una línea:
 - <ID> · DEBE|DEBERÍA · <regla concreta y comprobable>
   check: <comando que la comprueba>   (solo si existe)
 
-IDs con el prefijo de su sección y número: PRD-01, ARQ-01, TEC-01, COD-01, DAT-01, SEC-01, CAL-01, GIT-01, DEP-01, RSG-01, DEC-01.
+IDs con el prefijo de su sección y número: PRD-01, ARQ-01, TEC-01, ENT-01, COD-01, DAT-01, SEC-01, CAL-01, GIT-01, DEP-01, RSG-01, DEC-01.
 Nada vago («código limpio»): si no se puede comprobar, reescríbelo hasta que se pueda.
+Cómo trabaja la Factory de Hangar, que va a ejecutar este brain: cada orden va en su rama feat/<CLAVE>-<slug> (por ejemplo feat/POK-3-buscador) cortada desde dev, se fusiona en dev en local y no hay remoto; cada check se ejecuta con sh -c dentro del worktree de la orden, sin terminal interactiva, y tiene que salir con 0 cuando la regla se cumple. Nada de comparar con main: compara con dev. No cortes un pipe con grep -q (el comando de la izquierda muere con EPIPE): usa grep … > /dev/null. Antes de escribir cada check, EJECÚTALO aquí y comprueba que sale con 0 cuando la regla se cumple y distinto de 0 cuando no.
 No inventes: lo que no hablamos va a «## Pendiente» como pregunta.";
 
 /// The prototype's Citas Vet brain, offered as «usar el ejemplo».
@@ -300,8 +304,9 @@ pub fn session_prompt(project: &str, base: Option<&str>, inbox: &[String]) -> St
     let mut p = format!(
         "Vamos a definir el brain de «{project}»: las reglas con las que una IA lo va a construir de principio a producción sin preguntarme. \
 Lee el repo para no preguntar lo que ya se ve en él. Después recorre conmigo, una a una, estas secciones: \
-Producto, Arquitectura, Tecnologías, Código, Datos, Seguridad, Calidad, Git y entrega, Despliegue, Riesgo y Decisiones. \
+Producto, Arquitectura, Tecnologías, Entorno, Código, Datos, Seguridad, Calidad, Git y entrega, Despliegue, Riesgo y Decisiones. \
 Haz una o dos preguntas cada vez y propón reglas concretas y comprobables, con su comando check: cuando exista. \
+En Entorno comprueba esta máquina de verdad (versiones, que cada navegador de los tests arranque, servicios) y dime lo que falte antes de seguir. \
 No escribas ningún archivo hasta que te pida generar el BRAIN.md."
     );
     if let Some(base) = base {
@@ -392,9 +397,12 @@ pub fn seal(conn: &Connection, root: &Path, project_id: &str, project_name: &str
     }
     conn.execute("UPDATE factory_projects SET brain_version = ?2, updated_at = ?3 WHERE project_id = ?1", params![project_id, next, Utc::now().to_rfc3339()])
         .map_err(|e| e.to_string())?;
-    // Questions this version answered leave the inbox.
-    conn.execute("UPDATE factory_amendments SET status = 'included', included_in = ?2 WHERE project_id = ?1 AND status = 'open' AND ?2 > 1", params![project_id, next])
-        .map_err(|e| e.to_string())?;
+    // Questions this version answered leave the inbox — an amendment
+    // session answers them; editing a rule by hand doesn't.
+    if source != "edit" {
+        conn.execute("UPDATE factory_amendments SET status = 'included', included_in = ?2 WHERE project_id = ?1 AND status = 'open' AND ?2 > 1", params![project_id, next])
+            .map_err(|e| e.to_string())?;
+    }
     Ok(Sealed { version, rules: report.rules, markdown: text })
 }
 
@@ -556,11 +564,58 @@ pub async fn factory_read_markdown(path: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn factory_brain_seal<R: Runtime>(app: AppHandle<R>, project_id: String, markdown: String, source: String) -> Result<Sealed, String> {
     let root = crate::app_data::root(&app)?;
+    // A brain that fails its own lint would be found out by a builder that
+    // can't fix it: it isn't sealed.
+    let findings = factory_brain_lint(app.clone(), project_id.clone(), markdown.clone()).await?;
+    if super::lint::has_errors(&findings) {
+        let first: Vec<String> = findings.iter().filter(|f| f.severity == "error").take(3).map(|f| format!("{} {}", f.rule_id, f.message.lines().next().unwrap_or(""))).collect();
+        return Err(format!("el brain no pasa sus comprobaciones: {}", first.join(" · ")));
+    }
     crate::factory::with_db(app, move |conn| {
         let project = crate::factory::store::get(conn, &project_id)?;
         seal(conn, &root, &project_id, &project.project_name, &markdown, &source)
     })
     .await
+}
+
+/// What's wrong with this markdown as a brain for this project and machine:
+/// its checks' syntax and tools, known traps, the Factory's conventions,
+/// and the «Entorno» checks run here. Without the database lock: the
+/// Entorno checks take their time.
+#[tauri::command]
+pub async fn factory_brain_lint<R: Runtime>(app: AppHandle<R>, project_id: String, markdown: String) -> Result<Vec<super::lint::Finding>, String> {
+    let project = {
+        let id = project_id.clone();
+        crate::factory::with_db(app, move |conn| crate::factory::store::get(conn, &id)).await?
+    };
+    crate::blocking::run_blocking(move || {
+        let rules = parse(&markdown).rules;
+        let key = format!("{}-1", crate::factory::orders::key_prefix(&project.project_name));
+        let mut out = super::lint::lint_static(&rules, &key);
+        out.extend(super::lint::lint_env(&rules, &project_id, Path::new(&project.project_path)));
+        out
+    })
+    .await
+}
+
+/// A brain out of rules edited by hand (✎ and 🗑 in the Brain tab), in its
+/// sealed shape, to lint and seal as the next version.
+#[tauri::command]
+pub async fn factory_brain_from_rules<R: Runtime>(app: AppHandle<R>, project_id: String, rules: Vec<Rule>) -> Result<Report, String> {
+    crate::factory::with_db(app, move |conn| {
+        let current = load(conn, &project_id, None)?.ok_or("todavía no hay un brain sellado")?;
+        let pending = parse(&current.markdown).pending;
+        let slug = frontmatter(&current.markdown, "proyecto").unwrap_or_else(|| "proyecto".into());
+        Ok(parse(&from_rules(&slug, &rules, &pending)))
+    })
+    .await
+}
+
+/// The markdown of edited rules. A rule whose text was emptied goes, like
+/// one taken out of the list; an emptied `check:` just loses its command.
+pub fn from_rules(project: &str, rules: &[Rule], pending: &[String]) -> String {
+    let kept: Vec<Rule> = rules.iter().filter(|r| !r.text.trim().is_empty()).map(|r| Rule { check: r.check.clone().filter(|c| !c.trim().is_empty()), ..r.clone() }).collect();
+    render(project, None, &kept, pending)
 }
 
 #[tauri::command]
@@ -678,7 +733,7 @@ pub(crate) mod tests {
         assert_eq!(r.assigned, vec!["COD-02", "DEP-02"]);
         assert_eq!(r.pending, vec!["¿Zona horaria de las franjas: la de la clínica o UTC?"]);
         assert_eq!(r.sections.len(), 11);
-        assert!(r.missing.is_empty() && r.missing_required.is_empty());
+        assert!(r.missing == vec!["ent".to_string()] && r.missing_required.is_empty(), "the example predates Entorno: {:?}", r.missing);
         assert_eq!(r.checks, 7);
         let arq2 = r.rules.iter().find(|x| x.id == "ARQ-02").unwrap();
         assert_eq!(arq2.check.as_deref(), Some("! grep -rn \"session.query\" app/routers"));
@@ -746,6 +801,29 @@ pub(crate) mod tests {
         let current = load(&c, "p1", None).unwrap().unwrap();
         assert_eq!((current.version.version, current.rules.len()), (2, 23));
         assert_eq!(load(&c, "p1", Some(1)).unwrap().unwrap().version.version, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rules_edited_by_hand_seal_the_next_version_and_leave_the_inbox_alone() {
+        let c = conn();
+        let root = std::env::temp_dir().join(format!("hangar-brain-{}", uuid::Uuid::new_v4().simple()));
+        let v1 = seal(&c, &root, "p1", "Citas Vet", EXAMPLE, "import").unwrap();
+        add_amendment(&c, "p1", "¿Avisar al veterinario?", Some("VET-2"), None).unwrap();
+        let mut rules = v1.rules.clone();
+        let gone = rules.remove(0).id;
+        rules[0].text = "Texto corregido a mano".into();
+        rules[0].level = "should".into();
+        let with_check = rules.iter().position(|r| r.check.is_some()).unwrap();
+        rules[with_check].check = Some("  ".into());
+        let report = parse(&from_rules("citas-vet", &rules, &[]));
+        let v2 = seal(&c, &root, "p1", "Citas Vet", &report.markdown, "edit").unwrap();
+        assert_eq!((v2.version.version, v2.rules.len()), (2, 22));
+        assert!(!v2.rules.iter().any(|r| r.id == gone), "the deleted rule is gone");
+        assert_eq!((v2.rules[0].text.as_str(), v2.rules[0].level.as_str()), ("Texto corregido a mano", "should"));
+        assert!(v2.rules[with_check].check.is_none(), "an emptied check is no check");
+        assert_eq!(amendments(&c, "p1").unwrap()[0].status, "open", "a hand edit answers no question");
+        assert_eq!(load(&c, "p1", Some(1)).unwrap().unwrap().rules.len(), 23, "v1 as it was");
         let _ = std::fs::remove_dir_all(&root);
     }
 

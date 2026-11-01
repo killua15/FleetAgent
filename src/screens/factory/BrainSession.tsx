@@ -10,6 +10,15 @@ import styles from '../Factory.module.css';
  *  component, so going to another step and back finds the same conversation. */
 const sessions = new Map<string, string>();
 
+/** Types a message into the project's open brain session — the amendment
+ *  one first — and says whether there was one. */
+export function sendToBrainSession(projectId: string, text: string): boolean {
+  const id = sessions.get(`${projectId}:amend`) ?? sessions.get(`${projectId}:define`);
+  if (!id) return false;
+  invoke('write_terminal', { id, data: `${text.replace(/\s*\n\s*/g, ' ')}\n` }).catch((e) => toastError(String(e)));
+  return true;
+}
+
 /**
  * «Conversación aquí»: a real Hangar terminal in the project, with the CLI
  * told what the conversation is for. «Generar BRAIN.md» asks it to write the

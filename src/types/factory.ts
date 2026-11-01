@@ -84,6 +84,7 @@ export const BRAIN_SECTIONS: [string, string][] = [
   ['prd', 'Producto'],
   ['arq', 'Arquitectura'],
   ['tec', 'Tecnologías'],
+  ['ent', 'Entorno'],
   ['cod', 'Código'],
   ['dat', 'Datos'],
   ['sec', 'Seguridad'],
@@ -116,6 +117,30 @@ export interface BrainReport {
   checks: number;
   markdown: string;
 }
+
+/** What the brain's own check found before sealing. */
+export interface LintFinding {
+  ruleId: string;
+  /** `error` blocks the seal. */
+  severity: 'error' | 'warn';
+  kind: 'sintaxis' | 'herramienta' | 'trampa' | 'factory' | 'entorno';
+  message: string;
+  fix: string;
+}
+
+export const LINT_KIND: Record<LintFinding['kind'], string> = {
+  sintaxis: 'sintaxis',
+  herramienta: 'falta en la máquina',
+  trampa: 'trampa conocida',
+  factory: 'choca con la Factory',
+  entorno: 'entorno',
+};
+
+/** Whose a red is, as the chip says it. */
+export const RED_KIND: Record<string, string> = {
+  entorno: 'entorno · no es el código',
+  brain: 'brain · el check falla',
+};
 
 export interface BrainVersion {
   version: number;
@@ -277,6 +302,8 @@ export interface GateResult {
   rule?: string | null;
   /** Rounds in a row it has been red. */
   reds: number;
+  /** Whose red it is: the builder's code, the machine, or the check itself. */
+  kind?: 'codigo' | 'entorno' | 'brain' | '';
 }
 
 export interface RunState {
@@ -301,13 +328,15 @@ export interface RunState {
 export interface FailItem {
   name: string;
   detail: string;
+  kind?: 'codigo' | 'entorno' | 'brain' | '';
 }
 
 export interface RoundFail {
   /** The round that failed (0 is the first pass). */
   round: number;
   at: string;
-  kind: 'gate' | 'review';
+  /** `stalled`: the builder finished a round without changing anything. */
+  kind: 'gate' | 'review' | 'stalled';
   items: FailItem[];
 }
 
