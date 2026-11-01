@@ -1918,3 +1918,32 @@ details[open] > summary.gateHead::before {
   align-items: start;
   background: var(--panel2);
 }
+
+/* ---- removing a project ---- */
+
+.danger {
+  color: var(--red);
+}
+
+.removeChoice {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: 400 12.5px/1.5 var(--font-ui);
+}
+
+.removeChoice legend {
+  padding: 0 4px;
+  font-weight: 600;
+}
+
+.removeChoice label {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  cursor: pointer;
+}

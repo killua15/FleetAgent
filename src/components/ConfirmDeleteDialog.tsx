@@ -17,6 +17,7 @@ interface ConfirmDeleteDialogProps {
   title: string;
   description: string;
   confirmLabel?: string;
+  cancelLabel?: string;
   onConfirm: () => void | Promise<void>;
   /** Extra content under the description — an option that changes what the
    * delete takes with it. */
@@ -35,7 +36,7 @@ interface ConfirmDeleteDialogProps {
  * instant Delete is clicked — Radix's default — leaving the click with no
  * visible effect until the op finished or silently failed).
  */
-export function ConfirmDeleteDialog({ trigger, title, description, confirmLabel = 'Delete', onConfirm, children }: ConfirmDeleteDialogProps) {
+export function ConfirmDeleteDialog({ trigger, title, description, confirmLabel = 'Delete', cancelLabel = 'Cancel', onConfirm, children }: ConfirmDeleteDialogProps) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,7 +73,7 @@ export function ConfirmDeleteDialog({ trigger, title, description, confirmLabel 
         {children}
         {error && <p style={{ color: 'var(--red)', font: '400 12px var(--font-mono)', margin: 0 }}>{error}</p>}
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={pending}>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={pending}>{cancelLabel}</AlertDialogCancel>
           <AlertDialogAction variant="destructive" disabled={pending} onClick={handleConfirm}>
             {pending ? <Spinner label={`${confirmLabel}…`} /> : confirmLabel}
           </AlertDialogAction>

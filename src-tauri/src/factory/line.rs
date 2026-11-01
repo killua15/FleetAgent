@@ -1784,7 +1784,7 @@ pub(crate) mod tests {
         World { db: DbConnection(Mutex::new(conn)), repo, order_id, _gate: gate }
     }
 
-    fn ctx<'a>(w: &'a World, runner: &'a dyn Runner) -> Ctx<'a> {
+    pub(crate) fn ctx<'a>(w: &'a World, runner: &'a dyn Runner) -> Ctx<'a> {
         static NOTIFY: fn(&str, &str) = |_, _| {};
         static CHANGED: fn() = || {};
         Ctx { db: &w.db, runner, git_env: crate::factory::setup::tests_identity(), root: None, notify: &NOTIFY, changed: &CHANGED }

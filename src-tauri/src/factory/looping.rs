@@ -741,6 +741,15 @@ fn stop_now<R: Runtime>(app: &AppHandle<R>, conn: &Connection, project_id: &str)
     Ok(())
 }
 
+/// ⏹ before a project leaves the Factory: its processes die and its worker
+/// finds it gone and ends.
+pub(crate) async fn stop_for_removal<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Result<(), String> {
+    let id = project_id.to_string();
+    on_db(app.clone(), move |app, conn| stop_now(app, conn, &id)).await?;
+    set_note(project_id, None);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn factory_stop<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<LoopStatus, String> {
     on_db(app, move |app, conn| {

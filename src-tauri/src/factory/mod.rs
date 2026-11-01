@@ -15,6 +15,7 @@ pub mod orders;
 pub mod planner;
 pub mod prepare;
 pub mod procs;
+pub mod remove;
 pub mod setup;
 pub mod store;
 pub mod team;

@@ -517,6 +517,7 @@ pub fn run() {
             factory::factory_list_projects,
             factory::factory_get_project,
             factory::factory_create_project,
+            factory::remove::factory_remove_project,
             factory::factory_update_project,
             factory::factory_repo_status,
             factory::factory_init_repo,

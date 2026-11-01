@@ -68,6 +68,22 @@ export function Factory() {
     }
   };
 
+  /** A project left the Factory: the next one, or a new one if none is left. */
+  const removed = (projectId: string) => {
+    const rest = projects.filter((p) => p.projectId !== projectId);
+    setProjects(rest);
+    setReconfiguring(false);
+    if (rest.length) {
+      setCreating(false);
+      setSelectedId(rest[0].projectId);
+      setStep(Math.min(5, rest[0].setupStep));
+    } else {
+      setSelectedId(null);
+      setCreating(true);
+      setStep(1);
+    }
+  };
+
   const refresh = async (projectId: string) => {
     try {
       replace(await invoke<FactoryProject>('factory_get_project', { projectId }));
@@ -140,7 +156,7 @@ export function Factory() {
             </div>
           ) : (
             <>
-              <ProjectHeader project={selected} home={home} />
+              <ProjectHeader project={selected} home={home} onRemoved={removed} />
               {selected && selected.setupStep >= 6 && !reconfiguring ? (
                 <Ops
                   key={selected.projectId}
