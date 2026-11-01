@@ -46,7 +46,10 @@ pub fn branch_pattern(rules: &[Rule]) -> Option<regex::Regex> {
 /// (`POK-1`), to try the branch rule on the names the line would make.
 pub fn lint_static(rules: &[Rule], sample_key: &str) -> Vec<Finding> {
     let mut out = Vec::new();
-    let compares_main = regex::Regex::new(r"(?:\b(?:origin/)?main\.\.\.?|\.\.\.?(?:origin/)?main\b|merge-base\s+(?:\S+\s+)?(?:origin/)?main\b)").expect("static regex");
+    // A diff or log range against `main` (`main...HEAD`): the order's branch
+    // comes from `dev`, so it would count everything `dev` has. Asking
+    // whether `main` is in `dev` (`merge-base --is-ancestor main dev`) is fine.
+    let compares_main = regex::Regex::new(r"(?:\b(?:origin/)?main\.\.\.?|\.\.\.?(?:origin/)?main\b)").expect("static regex");
     for r in rules {
         let Some(cmd) = r.check.as_deref() else { continue };
         // Syntax, as the gate's own `sh -c` would read it.
@@ -183,6 +186,7 @@ mod tests {
             rule("GIT-04", "git", "git branch --show-current | grep -qE '^(main|(feat|fix|chore)/[a-z0-9-]+)$'"),
             rule("COD-01", "cod", "echo 'sin cerrar"),
             rule("OK-01", "cod", "git status --porcelain"),
+            rule("GIT-06", "git", "git merge-base --is-ancestor main dev"),
         ];
         let f = lint_static(&rules, "POK-1");
         assert_eq!(kinds(&f, "GIT-02"), vec![("error", "trampa")]);
@@ -191,6 +195,7 @@ mod tests {
         assert!(kinds(&f, "GIT-04").is_empty(), "lowercase keys fit: the line can make `feat/pok-1-…`");
         assert_eq!(kinds(&f, "COD-01"), vec![("error", "sintaxis")]);
         assert!(kinds(&f, "OK-01").is_empty());
+        assert!(kinds(&f, "GIT-06").is_empty(), "main inside dev is no comparison with main");
         assert!(f.iter().any(|x| x.rule_id.is_empty() && x.kind == "entorno"), "no Entorno section: a warning");
 
         let no_feat = vec![rule("GIT-04", "git", "git branch --show-current | grep -qE '^(main|task/[0-9]+)$'")];
