@@ -952,8 +952,14 @@ fn which(bin: &str) -> Option<PathBuf> {
 
 /// Merges `branch` into the local `base`, never pushing. Where `base` is
 /// checked out it merges there (and refuses to touch uncommitted work);
-/// elsewhere it builds the merge commit without a checkout.
-pub fn merge_local(repo: &Path, base: &str, branch: &str, message: &str, env: &[(String, String)]) -> Result<(), String> {
+/// elsewhere it builds the merge commit without a checkout. `false`: the
+/// branch brought nothing new and `base` stays where it was.
+pub fn merge_local(repo: &Path, base: &str, branch: &str, message: &str, env: &[(String, String)]) -> Result<bool, String> {
+    // A branch already in base has nothing to merge, and commit-tree with the
+    // same commit as both parents drops one: a single-parent commit on base.
+    if git(repo, &["merge-base", "--is-ancestor", branch, base], &[]).is_ok() {
+        return Ok(false);
+    }
     let list = git(repo, &["worktree", "list", "--porcelain"], &[])?;
     let mut checked_out: Option<PathBuf> = None;
     let mut current: Option<PathBuf> = None;
@@ -973,7 +979,7 @@ pub fn merge_local(repo: &Path, base: &str, branch: &str, message: &str, env: &[
                 let _ = git(&dir, &["merge", "--abort"], &[]);
                 return Err(format!("conflicto al fusionar en {base}: {e}"));
             }
-            Ok(())
+            Ok(true)
         }
         None => {
             let old = git(repo, &["rev-parse", &format!("refs/heads/{base}")], &[])?.trim().to_string();
@@ -981,7 +987,7 @@ pub fn merge_local(repo: &Path, base: &str, branch: &str, message: &str, env: &[
             let tree = tree.lines().next().unwrap_or("").trim().to_string();
             let commit = git(repo, &["commit-tree", &tree, "-p", base, "-p", branch, "-m", message], env)?.trim().to_string();
             git(repo, &["update-ref", &format!("refs/heads/{base}"), &commit, &old], &[])?;
-            Ok(())
+            Ok(true)
         }
     }
 }
@@ -1519,7 +1525,10 @@ fn deliver(ctx: &Ctx, run: &mut Run, order: &Order, project: &super::store::Fact
             Ok((format!("MR abierta → {base}: {}", made.url), Some((made.url, made.number))))
         })()
     } else {
-        merge_local(Path::new(&project.project_path), &base, &branch, &format!("Merge {title}"), &ctx.git_env).map(|_| (format!("fusionada en {base} local · sin push"), None))
+        merge_local(Path::new(&project.project_path), &base, &branch, &format!("Merge {title}"), &ctx.git_env).map(|merged| {
+            let what = if merged { format!("fusionada en {base} local · sin push") } else { format!("sin commits nuevos: no se fusiona nada en {base}") };
+            (what, None)
+        })
     };
     let result = result.map(|(what, mr)| {
         if let Some((url, number)) = mr {
@@ -2136,6 +2145,31 @@ pub(crate) mod tests {
         git(&w.repo, &["reset", "--hard"], &[]).unwrap();
         merge_local(&w.repo, "dev", "feat/x", "Merge x", &crate::factory::setup::tests_identity()).unwrap();
         assert!(w.repo.join("x.txt").exists());
+    }
+
+    #[test]
+    fn merging_a_branch_without_new_commits_leaves_the_base_untouched() {
+        // An order whose builder made no commits: its branch is still where
+        // dev was. commit-tree would drop the duplicate parent and write a
+        // single-parent «merge» straight onto dev.
+        let w = world("autonomous", "local", "true");
+        git(&w.repo, &["branch", "feat/x", "dev"], &[]).unwrap();
+        let before = git(&w.repo, &["rev-parse", "dev"], &[]).unwrap();
+        assert!(!merge_local(&w.repo, "dev", "feat/x", "Merge x", &crate::factory::setup::tests_identity()).unwrap());
+        assert_eq!(git(&w.repo, &["rev-parse", "dev"], &[]).unwrap(), before);
+    }
+
+    #[test]
+    fn merging_without_a_checkout_makes_a_two_parent_commit() {
+        let w = world("autonomous", "local", "true");
+        git(&w.repo, &["checkout", "-b", "feat/x", "dev"], &[]).unwrap();
+        std::fs::write(w.repo.join("x.txt"), "x").unwrap();
+        git(&w.repo, &["add", "-A"], &[]).unwrap();
+        git(&w.repo, &["commit", "-m", "x"], &crate::factory::setup::tests_identity()).unwrap();
+        git(&w.repo, &["checkout", "main"], &[]).unwrap();
+        assert!(merge_local(&w.repo, "dev", "feat/x", "Merge x", &crate::factory::setup::tests_identity()).unwrap());
+        let parents = git(&w.repo, &["rev-list", "--parents", "-n", "1", "dev"], &[]).unwrap();
+        assert_eq!(parents.split_whitespace().count(), 3, "commit plus two parents: {parents}");
     }
 
     #[test]
