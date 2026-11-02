@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { invoke } from '../../lib/invoke';
 import { toastError, toastSuccess } from '../../components/ErrorOverlay';
-import { BRAIN_SECTIONS, levelLabel, type Amendment, type BrainReport, type BrainRule, type FactoryProject, type SealedBrain } from '../../types/factory';
+import { BRAIN_SECTIONS, levelLabel, type ActiveCheck, type Amendment, type BrainReport, type BrainRule, type FactoryProject, type SealedBrain } from '../../types/factory';
 import { ImportReport } from './BrainImport';
 import { BrainSession } from './BrainSession';
 import styles from '../Factory.module.css';
@@ -52,11 +52,11 @@ export function BrainView({ project, onSealed }: { project: FactoryProject; onSe
     }
   };
 
-  const seal = async () => {
+  const seal = async (active?: ActiveCheck[]) => {
     if (!report) return;
     setSealing(true);
     try {
-      const next = await invoke<SealedBrain>('factory_brain_seal', { projectId: project.projectId, markdown: report.markdown, source: fromEdit ? 'edit' : 'amendment' });
+      const next = await invoke<SealedBrain>('factory_brain_seal', { projectId: project.projectId, markdown: report.markdown, source: fromEdit ? 'edit' : 'amendment', active: active ?? null });
       toastSuccess(`Brain v${next.version} sellado · las órdenes nuevas lo congelan; las que están en curso siguen con la suya`);
       setReport(null);
       setAmending(false);

@@ -82,6 +82,10 @@ pub struct RunState {
     /// `total_cost_usd` on `--resume` is the whole conversation's, so each
     /// turn's own cost is the difference.
     pub session_costs: HashMap<String, f64>,
+    /// The commit the gate last judged. A builder that changes nothing only
+    /// stalls the order when this is still the code: a fix it made in an
+    /// earlier pass, never checked yet, goes to the gate instead.
+    pub checked_head: Option<String>,
 }
 
 /// One trip back to Fabricación: the gate's red checks or the review's
@@ -731,6 +735,65 @@ pub fn not_runnable(code: Option<i32>, output: &str) -> bool {
         || regex::Regex::new(r#"command "[^"]*" not found"#).map(|re| re.is_match(&lower)).unwrap_or(false)
 }
 
+/// The builder saying its tools wouldn't let it touch a file — Claude Code
+/// guards `.npmrc`, `.env` and the like — which no round can get past.
+pub fn blocked_by_tool(said: &str) -> bool {
+    let lower = said.to_lowercase();
+    ["bloquea ese archivo", "archivo por sensible", "archivo sensible", "no tengo permiso", "permiso denegado", "permission denied", "fue denegado", "was denied"].iter().any(|m| lower.contains(m))
+}
+
+/// The brain's checks this project has once seen green on its base: every
+/// later order keeps them green.
+pub fn active_checks(conn: &Connection, project_id: &str) -> Result<Vec<(String, String)>, String> {
+    let mut stmt = conn.prepare("SELECT rule_id, command FROM factory_check_state WHERE project_id = ?1").map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(params![project_id], |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(Result::ok).collect())
+}
+
+/// Marks checks active (the ratchet). `source`: the order that delivered
+/// them green, or `brain` for a dry run before sealing.
+pub fn activate_checks(conn: &Connection, project_id: &str, checks: &[(String, String)], source: &str) -> Result<usize, String> {
+    let now = Utc::now().to_rfc3339();
+    let mut n = 0;
+    for (rule, command) in checks {
+        n += conn
+            .execute(
+                "INSERT OR IGNORE INTO factory_check_state (project_id, rule_id, command, active_since, source) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![project_id, rule, command, now, source],
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(n)
+}
+
+/// The brain checks green in the run's last gate, as (rule, command) — only
+/// where the frozen brain still checks that rule with that command.
+fn delivered_checks(conn: &Connection, run: &Run) -> Result<Vec<(String, String)>, String> {
+    let mut stmt = conn.prepare("SELECT rule_id, check_cmd FROM factory_brain_rules WHERE project_id = ?1 AND version = ?2 AND check_cmd IS NOT NULL").map_err(|e| e.to_string())?;
+    let rules: Vec<(String, String)> = stmt.query_map(params![run.project_id, run.brain_version], |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+    Ok(run
+        .state
+        .gate
+        .iter()
+        .filter(|g| g.ok)
+        .flat_map(|g| g.name.split(", ").filter_map(|n| rules.iter().find(|(id, cmd)| id == n && *cmd == g.command).cloned()).collect::<Vec<_>>())
+        .collect())
+}
+
+/// A finding that can send an order back: blocker or major, citing a DEBE
+/// rule of the frozen brain.
+fn blocks(finding: &Value, brain: &Sealed) -> bool {
+    let severe = matches!(finding.get("severity").and_then(Value::as_str), Some("blocker" | "major"));
+    let rule = finding.get("rule_id").and_then(Value::as_str).unwrap_or("");
+    severe && brain.rules.iter().any(|r| r.id == rule && r.level == "must")
+}
+
+/// A red that only DEBERÍA rules own: a warning, not a block.
+fn only_should(name: &str, brain: &Sealed) -> bool {
+    let parts: Vec<&str> = name.split(", ").collect();
+    parts.iter().all(|n| brain.rules.iter().any(|r| r.id == *n && r.level == "should"))
+}
+
 /// Whose a red command is. The builder can only fix code: a machine that
 /// can't launch a browser, or a check that misuses its own tools, sends it
 /// round after round after something that isn't in the repo. A script or a
@@ -1088,12 +1151,17 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                         // same suite and the same review would say the same.
                         let after = git(&wt, &["rev-parse", "HEAD"], &[]).ok();
                         let dirty = git(&wt, &["status", "--porcelain"], &[]).map(|s| !s.trim().is_empty()).unwrap_or(true);
-                        if run.state.feedback.is_some() && before.is_some() && before == after && !dirty {
+                        let unchecked = after.is_some() && run.state.checked_head != after;
+                        if run.state.feedback.is_some() && before.is_some() && before == after && !dirty && !unchecked {
                             let said = run.state.summary.clone().unwrap_or_default();
                             let conn = lock(ctx.db)?;
-                            run.state.history.push(RoundFail { round: run.round, at: Utc::now().to_rfc3339(), kind: "stalled".into(), items: vec![FailItem { name: format!("{} no cambió nada", a.name), detail: said, kind: String::new() }] });
+                            run.state.history.push(RoundFail { round: run.round, at: Utc::now().to_rfc3339(), kind: "stalled".into(), items: vec![FailItem { name: format!("{} no cambió nada", a.name), detail: said.clone(), kind: String::new() }] });
                             run.status = "failed".into();
-                            run.error = Some(format!("el builder terminó la ronda {} sin cambios: no sabe o no puede arreglarlo", run.round));
+                            run.error = Some(if blocked_by_tool(&said) {
+                                "el builder no puede tocar un archivo protegido: arréglalo tú en una consola y pulsa Reintentar".to_string()
+                            } else {
+                                format!("el builder terminó la ronda {} sin cambios: no sabe o no puede arreglarlo", run.round)
+                            });
                             run.finished_at = Some(Utc::now().to_rfc3339());
                             activity(&conn, &run.id, None, "fab", "warn", "ronda sin cambios: se para en vez de repetir la calidad", None)?;
                             save_run(&conn, &run)?;
@@ -1139,7 +1207,15 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                     let conn = lock(ctx.db)?;
                     let mut stmt = conn.prepare("SELECT DISTINCT rule_id FROM factory_decisions WHERE run_id = ?1 AND rule_id IS NOT NULL").map_err(|e| e.to_string())?;
                     let rows = stmt.query_map(params![run.id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
-                    rows.filter_map(Result::ok).chain(order.rules.iter().cloned()).collect()
+                    let mut cited: std::collections::HashSet<String> = rows.filter_map(Result::ok).chain(order.rules.iter().cloned()).collect();
+                    // The ratchet: what has once been green on the base stays
+                    // green — as long as the brain still checks it the same way.
+                    for (rule, command) in active_checks(&conn, &run.project_id)? {
+                        if brain.rules.iter().any(|r| r.id == rule && r.check.as_deref() == Some(command.as_str())) {
+                            cited.insert(rule);
+                        }
+                    }
+                    cited
                 };
                 let skipped: Vec<String> = run.state.waived.iter().chain(&run.state.broken).cloned().collect();
                 let commands = without_waived(gate_commands(&team, &brain, &cited, bootstrap), &skipped);
@@ -1161,7 +1237,17 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                     let before = run.state.gate.iter().find(|g| g.command == r.command).map(|g| g.reds).unwrap_or(0);
                     r.reds = if r.ok { 0 } else { before + 1 };
                 }
-                let green = !results.is_empty() && results.iter().all(|r| r.ok);
+                run.state.checked_head = git(Path::new(&run.worktree), &["rev-parse", "HEAD"], &[]).ok().map(|h| h.trim().to_string());
+                // DEBERÍA asks, DEBE demands: a red only should-rules own is a
+                // warning in the delivery, never a round.
+                let soft: Vec<String> = results.iter().filter(|r| !r.ok && r.kind == "codigo" && only_should(&r.name, &brain)).map(|r| r.name.clone()).collect();
+                for name in &soft {
+                    let w = format!("{name} (DEBERÍA) en rojo");
+                    if !run.state.warnings.contains(&w) {
+                        run.state.warnings.push(w);
+                    }
+                }
+                let green = !results.is_empty() && results.iter().all(|r| r.ok || soft.contains(&r.name));
                 let conn = lock(ctx.db)?;
                 for r in &results {
                     let rule = brain.rules.iter().any(|x| x.id == r.name).then_some(r.name.as_str());
@@ -1185,12 +1271,12 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                     activity(&conn, &run.id, Some(&step), "test", "warn", &format!("se para sin gastar rondas: {}", names.join(", ")), None)?;
                     tell = Some((format!("{} se paró", order.key), format!("Rojo que el builder no puede arreglar: {}", names.join(", "))));
                 } else {
-                    let failures: Vec<String> = results.iter().filter(|r| !r.ok).map(|r| format!("✗ {} ({})\n{}", r.name, r.command, r.tail)).collect();
+                    let failures: Vec<String> = results.iter().filter(|r| !r.ok && !soft.contains(&r.name)).map(|r| format!("✗ {} ({})\n{}", r.name, r.command, r.tail)).collect();
                     let why = if results.is_empty() { "no hay ningún tester activo con comando: sin tests no se aprueba".to_string() } else { failures.join("\n\n") };
                     let items: Vec<FailItem> = if results.is_empty() {
                         vec![FailItem { name: "sin tests".into(), detail: why.clone(), kind: "codigo".into() }]
                     } else {
-                        results.iter().filter(|r| !r.ok).map(|r| FailItem { name: r.name.clone(), detail: format!("$ {}\n{}", r.command, r.tail), kind: r.kind.clone() }).collect()
+                        results.iter().filter(|r| !r.ok && !soft.contains(&r.name)).map(|r| FailItem { name: r.name.clone(), detail: format!("$ {}\n{}", r.command, r.tail), kind: r.kind.clone() }).collect()
                     };
                     tell = back_to_build(&conn, &mut run, &order, why, "gate", items)?;
                 }
@@ -1229,6 +1315,10 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                         }
                     }
                     let mut extra = format!("\n=== CAMBIOS ({}...HEAD) ===\n{diff}\nUsa `git diff {}...HEAD` para verlos enteros.\n", run.base, run.base);
+                    extra.push_str(&format!(
+                        "\n=== LA PUERTA YA PASÓ EN VERDE SOBRE ESTE CÓDIGO ===\n{}\nNo reportes nada que estos comandos ya comprueban (tipos, lint, formato, tests): están en verde. Revisa solo lo que exige juicio. Un hallazgo bloquea solo si es blocker o major y cita una regla DEBE del brain; lo demás ponlo como minor o en warnings.\n",
+                        run.state.gate.iter().filter(|g| g.ok).map(|g| format!("✓ {} — `{}`", g.name, g.command)).collect::<Vec<_>>().join("\n")
+                    ));
                     if mcp.is_some() {
                         extra.push_str(&format!("\nLa app está abierta en {}: ábrela con la herramienta de Chrome.\n", project.app_url.clone().unwrap_or_default()));
                     }
@@ -1255,7 +1345,26 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                 save_run(&conn, &run)?;
             }
             "verify" => {
-                let findings = run.state.findings.clone();
+                // Only a blocker or major that cites a DEBE rule of this brain
+                // can send the order back; the rest goes in the delivery's
+                // warnings, and what cites no rule to the inbox.
+                let (findings, notes): (Vec<Value>, Vec<Value>) = run.state.findings.clone().into_iter().partition(|f| blocks(f, &brain));
+                if !notes.is_empty() {
+                    let conn = lock(ctx.db)?;
+                    for f in &notes {
+                        let rule = f.get("rule_id").and_then(Value::as_str).filter(|r| !r.trim().is_empty());
+                        let text = f.get("text").and_then(Value::as_str).unwrap_or("");
+                        let file = f.get("file").and_then(Value::as_str).unwrap_or("");
+                        let w = format!("{} {}{}: {text}", f.get("severity").and_then(Value::as_str).unwrap_or("minor"), rule.unwrap_or("sin regla"), if file.is_empty() { String::new() } else { format!(" · {file}") });
+                        if !run.state.warnings.contains(&w) {
+                            run.state.warnings.push(w);
+                        }
+                        if rule.is_none() {
+                            brain::add_amendment(&conn, &run.project_id, text, Some(&order.key), None)?;
+                        }
+                    }
+                    activity(&conn, &run.id, None, "dec", "warn", &format!("{} hallazgo(s) no bloquean: van a los avisos de la entrega", notes.len()), None)?;
+                }
                 let confirmed: Vec<Value> = if findings.is_empty() {
                     Vec::new()
                 } else if let Some(v) = agent("verifier") {
@@ -1428,6 +1537,13 @@ fn deliver(ctx: &Ctx, run: &mut Run, order: &Order, project: &super::store::Fact
             run.stage = "done".into();
             run.finished_at = Some(Utc::now().to_rfc3339());
             save_run(&conn, run)?;
+            // The ratchet: every brain check this order delivered green stays
+            // green from now on.
+            let green = delivered_checks(&conn, run)?;
+            let n = activate_checks(&conn, &run.project_id, &green, &order.key)?;
+            if n > 0 {
+                activity(&conn, &run.id, Some(&step), "ent", "brain", &format!("{n} check(s) del brain pasan a activos: las órdenes siguientes los mantienen en verde"), None)?;
+            }
             drop(conn);
             (ctx.notify)(&format!("{} entregada", order.key), &what);
         }
@@ -2166,6 +2282,126 @@ pub(crate) mod tests {
         assert_eq!(run.state.history.last().unwrap().kind, "stalled");
         assert_eq!(roles(&s).iter().filter(|r| *r == "tester").count(), 2, "the testers ran once, for the build that changed something");
         assert!(run.state.feedback.is_some(), "what to fix is kept for a retry");
+    }
+
+    /// POK-0's loop: a fix the builder made in an earlier pass, never judged,
+    /// isn't «no progress» — it goes to the gate.
+    #[test]
+    fn a_builder_with_nothing_new_to_do_goes_to_the_gate_when_the_code_was_never_checked() {
+        let w = world("autonomous", "local", "test -f fixed.txt");
+        let s = Script::new();
+        *s.builder_commits.lock().unwrap() = 1;
+        let c = ctx(&w, &s);
+        let run = start(&c, "p1", &w.order_id).unwrap();
+        let run = advance(&c, &run.id).unwrap();
+        assert_eq!(run.status, "failed", "round 1 changed nothing on the code the gate judged: it stalls");
+        // The fix lands outside a judged round (an earlier pass, a person in a console).
+        std::fs::write(Path::new(&run.worktree).join("fixed.txt"), "ok").unwrap();
+        git(Path::new(&run.worktree), &["add", "-A"], &[]).unwrap();
+        git(Path::new(&run.worktree), &["commit", "-m", "fix"], &crate::factory::setup::tests_identity()).unwrap();
+        {
+            let conn = w.db.0.lock().unwrap();
+            resolve(&conn, &run.id, "retry", None, None).unwrap();
+        }
+        let run = advance(&c, &run.id).unwrap();
+        assert_eq!(run.status, "merged", "{:?}", run.error);
+    }
+
+    fn set_check(w: &World, rule: &str, cmd: &str, level: &str) {
+        w.db.0.lock().unwrap().execute("UPDATE factory_brain_rules SET check_cmd = ?2, level = ?3 WHERE project_id = 'p1' AND rule_id = ?1", params![rule, cmd, level]).unwrap();
+    }
+
+    fn cite(w: &World, rule: &str) {
+        w.db.0.lock().unwrap().execute("UPDATE factory_orders SET rules = ?2 WHERE id = ?1", params![w.order_id, format!("[\"{rule}\"]")]).unwrap();
+    }
+
+    fn first_rule(w: &World, section: &str) -> String {
+        w.db.0.lock().unwrap().query_row("SELECT rule_id FROM factory_brain_rules WHERE project_id = 'p1' AND section = ?1 ORDER BY position LIMIT 1", params![section], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_check_delivered_green_stays_active_and_a_pending_one_bothers_no_other_order() {
+        let w = world("autonomous", "local", "true");
+        let green = first_rule(&w, "arq");
+        let future = first_rule(&w, "cod");
+        set_check(&w, &green, "true", "must");
+        set_check(&w, &future, "false", "must");
+        cite(&w, &green);
+        let s = Script::new();
+        let c = ctx(&w, &s);
+        let run = start(&c, "p1", &w.order_id).unwrap();
+        let run = advance(&c, &run.id).unwrap();
+        assert_eq!(run.status, "merged", "{:?} — a check no order of this kind cites doesn't block it", run.error);
+        {
+            let conn = w.db.0.lock().unwrap();
+            assert_eq!(active_checks(&conn, "p1").unwrap(), vec![(green.clone(), "true".to_string())]);
+        }
+        // Next order: it doesn't cite `green`, but the ratchet keeps it in its gate.
+        set_check(&w, &green, "false", "must");
+        let conn = w.db.0.lock().unwrap();
+        // The brain checks it differently now: it starts over, not blocking.
+        assert!(!active_checks(&conn, "p1").unwrap().iter().any(|(_, c)| c == "false"));
+        conn.execute("UPDATE factory_brain_rules SET check_cmd = 'true' WHERE rule_id = ?1", params![green]).unwrap();
+        activate_checks(&conn, "p1", &[(green.clone(), "test -f never-there".into())], "brain").unwrap();
+        conn.execute("UPDATE factory_brain_rules SET check_cmd = 'test -f never-there' WHERE rule_id = ?1", params![green]).unwrap();
+        let next = orders::insert(&conn, "p1", &orders::NewOrder { key: "VET-3".into(), title: "Otra".into(), origin: "trd".into(), ..Default::default() }).unwrap();
+        drop(conn);
+        let run = start(&c, "p1", &next).unwrap();
+        let run = advance(&c, &run.id).unwrap();
+        assert_ne!(run.status, "merged", "an active check gone red blocks every order");
+        assert!(run.state.history.iter().any(|h| h.items.iter().any(|i| i.name.contains(&green))));
+    }
+
+    #[test]
+    fn a_should_rule_in_red_warns_without_a_round() {
+        let w = world("autonomous", "local", "true");
+        let rule = first_rule(&w, "arq");
+        set_check(&w, &rule, "false", "should");
+        cite(&w, &rule);
+        let s = Script::new();
+        let c = ctx(&w, &s);
+        let run = start(&c, "p1", &w.order_id).unwrap();
+        let run = advance(&c, &run.id).unwrap();
+        assert_eq!((run.status.as_str(), run.round), ("merged", 0), "{:?}", run.error);
+        assert!(run.state.warnings.iter().any(|w| w.contains(&rule) && w.contains("DEBERÍA")));
+    }
+
+    #[test]
+    fn only_a_major_that_cites_a_must_rule_sends_the_order_back() {
+        let w = world("autonomous", "local", "true");
+        let must = first_rule(&w, "arq");
+        set_check(&w, &must, "true", "must");
+        let s = Script::new();
+        s.on("reviewer_code", json!({"summary":"","warnings":[],"findings":[
+            {"rule_id":null,"severity":"major","file":".npmrc","text":"legacy-peer-deps oculta conflictos"},
+            {"rule_id":must,"severity":"minor","file":"a.ts","text":"nombre poco claro"}],"decisions":[]}));
+        let c = ctx(&w, &s);
+        let run = start(&c, "p1", &w.order_id).unwrap();
+        let run = advance(&c, &run.id).unwrap();
+        assert_eq!((run.status.as_str(), run.round), ("merged", 0), "{:?}", run.error);
+        assert!(!roles(&s).contains(&"verifier".to_string()), "nothing blocking: the verifier isn't asked");
+        assert!(run.state.warnings.iter().any(|w| w.contains("sin regla") && w.contains(".npmrc")));
+        assert!(run.state.warnings.iter().any(|w| w.starts_with("minor") && w.contains(&must)));
+        let conn = w.db.0.lock().unwrap();
+        assert!(brain::amendments(&conn, "p1").unwrap().iter().any(|a| a.question.contains("legacy-peer-deps")), "what cites no rule goes to the inbox");
+        drop(conn);
+
+        let w = world("autonomous", "local", "true");
+        set_check(&w, &must, "true", "must");
+        let s = Script::new();
+        s.on("reviewer_code", json!({"summary":"","warnings":[],"findings":[{"rule_id":must,"severity":"major","file":"a.ts","text":"rompe la capa"}],"decisions":[]}));
+        s.on("verifier", json!({"confirmed":[0],"dismissed":[],"decisions":[]}));
+        let c = ctx(&w, &s);
+        let run = start(&c, "p1", &w.order_id).unwrap();
+        let run = advance(&c, &run.id).unwrap();
+        assert_eq!(run.round, 1, "a major on a DEBE rule goes back once");
+    }
+
+    #[test]
+    fn a_file_the_builder_cant_touch_is_named_for_a_person() {
+        assert!(blocked_by_tool("La herramienta de edición bloquea ese archivo por sensible"));
+        assert!(blocked_by_tool("Permission denied writing .npmrc"));
+        assert!(!blocked_by_tool("He corregido los hallazgos"));
     }
 
     #[test]

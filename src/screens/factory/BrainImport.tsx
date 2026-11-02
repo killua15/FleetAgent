@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '../../lib/invoke';
 import { toastError, toastSuccess } from '../../components/ErrorOverlay';
-import { BRAIN_SECTIONS, LINT_KIND, levelLabel, sectionName, type BrainReport, type BrainRule, type LintFinding } from '../../types/factory';
+import { BRAIN_SECTIONS, LINT_KIND, levelLabel, sectionName, type ActiveCheck, type BrainReport, type BrainRule, type DryRun, type LintFinding } from '../../types/factory';
 import { sendToBrainSession } from './BrainSession';
 import styles from '../Factory.module.css';
 
@@ -58,15 +58,19 @@ export function ImportReport({
   from: string;
   nextVersion: number;
   sealing: boolean;
-  onSeal: () => void;
+  /** With what «Probar el brain» saw green, to seed the ratchet. */
+  onSeal: (active?: ActiveCheck[]) => void;
   onComplete?: () => void;
   /** To run the brain's own checks against this project and machine. */
   projectId?: string;
 }) {
   const [findings, setFindings] = useState<LintFinding[] | null>(null);
+  const [dry, setDry] = useState<DryRun[] | null>(null);
+  const [trying, setTrying] = useState(false);
   const markdown = report?.markdown;
   useEffect(() => {
     setFindings(null);
+    setDry(null);
     if (!projectId || !markdown) return;
     let live = true;
     invoke<LintFinding[]>('factory_brain_lint', { projectId, markdown })
@@ -96,7 +100,19 @@ export function ImportReport({
   const missing = report.missing.map(sectionName);
   const errors = findings?.filter((f) => f.severity === 'error') ?? [];
   const checking = !!projectId && findings === null;
-  const blocked = report.missingRequired.length > 0 || errors.length > 0 || checking;
+  const broken = dry?.filter((d) => d.status === 'roto') ?? [];
+  const blocked = report.missingRequired.length > 0 || errors.length > 0 || checking || broken.length > 0 || trying;
+  const tryIt = async () => {
+    if (!projectId) return;
+    setTrying(true);
+    try {
+      setDry(await invoke<DryRun[]>('factory_brain_dry_run', { projectId, markdown: report.markdown }));
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setTrying(false);
+    }
+  };
   const fixInSession = () => {
     const list = (findings ?? []).map((f) => `${f.ruleId || 'brain'}: ${f.message.split('\n')[0]} (${f.fix})`).join(' · ');
     const sent = sendToBrainSession(projectId!, `Hangar ha comprobado el brain y no se puede sellar así. Corrige esto, ejecuta cada check aquí para comprobarlo y vuelve a generar el BRAIN.md: ${list}`);
@@ -199,16 +215,37 @@ export function ImportReport({
           </div>
         </details>
       )}
+      {dry && <DryRunTable dry={dry} />}
       <BrainMarkdown rules={report.rules} pending={report.pending} highlight={report.assigned} maxHeight={300} />
       <div className={styles.cardActions}>
         <button
           className={styles.btnPrimary}
           disabled={blocked || sealing}
-          title={report.missingRequired.length ? 'Faltan secciones obligatorias' : errors.length ? 'El brain no pasa sus comprobaciones' : checking ? 'Comprobando…' : undefined}
-          onClick={onSeal}
+          title={
+            report.missingRequired.length
+              ? 'Faltan secciones obligatorias'
+              : errors.length
+                ? 'El brain no pasa sus comprobaciones'
+                : broken.length
+                  ? 'Hay checks rotos en la prueba'
+                  : checking || trying
+                    ? 'Comprobando…'
+                    : undefined
+          }
+          onClick={() => onSeal(dry?.filter((d) => d.status === 'activo').map((d) => ({ ruleId: d.ruleId, command: d.command })))}
         >
           {sealing ? 'sellando…' : `✋ Sellar brain v${nextVersion}`}
         </button>
+        {projectId && (
+          <button
+            className={styles.btn}
+            disabled={trying || checking}
+            title="Saca la rama base en una carpeta aparte, instala dependencias y ejecuta cada check: activo, pendiente o roto. Tarda lo que tu suite."
+            onClick={tryIt}
+          >
+            {trying ? 'Probando en el repo…' : dry ? 'Volver a probar en el repo' : 'Probar en el repo'}
+          </button>
+        )}
         {findings && findings.length > 0 && projectId && (
           <button className={styles.btn} title="Le pasa estos hallazgos a la sesión del brain abierta" onClick={fixInSession}>
             Arreglar en la sesión
@@ -221,5 +258,41 @@ export function ImportReport({
         )}
       </div>
     </div>
+  );
+}
+
+/** «Probar el brain»: each check as the line would see it before the first
+ *  order. */
+function DryRunTable({ dry }: { dry: DryRun[] }) {
+  const count = (s: DryRun['status']) => dry.filter((d) => d.status === s).length;
+  const order: DryRun['status'][] = ['roto', 'pendiente', 'activo'];
+  const sorted = [...dry].sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
+  const mark = { activo: ['✓', styles.ok], pendiente: ['⏳', styles.warn], roto: ['✗', styles.bad] } as const;
+  return (
+    <details className={`${styles.acc} ${styles.lint}`} open={count('roto') > 0}>
+      <summary className={styles.accHead}>
+        <span className={styles.sectionLabel}>PRUEBA EN EL REPO</span>
+        <span className={styles.chip}>{count('activo')} activos</span>
+        <span className={styles.chipAmber}>{count('pendiente')} pendientes</span>
+        {count('roto') > 0 && <span className={styles.chipRed}>{count('roto')} rotos · bloquean el sello</span>}
+      </summary>
+      <div className={styles.hint} style={{ padding: '0 16px 8px' }}>
+        Activo: ya pasa en la rama base; desde el sello, ninguna orden puede romperlo. Pendiente: rojo de código; lo construirá la orden que lo lleve. Roto: el check o la máquina
+        fallan; arréglalo antes de sellar.
+      </div>
+      <div className={styles.gateList}>
+        {sorted.map((d) => (
+          <details key={`${d.ruleId}-${d.command}`} className={styles.gateRow}>
+            <summary className={styles.gateHead}>
+              <span className={mark[d.status][1]}>{mark[d.status][0]}</span>
+              <span className={styles.ruleId}>{d.ruleId}</span>
+              <span className={`${styles.lSub} ${styles.gateCmd}`}>{d.command}</span>
+              {d.status === 'roto' && <span className={styles.chipRed}>{d.kind === 'entorno' ? 'entorno' : 'el check'}</span>}
+            </summary>
+            {d.tail && <pre className={`${styles.gateOut} ${styles.accBody}`}>{d.tail}</pre>}
+          </details>
+        ))}
+      </div>
+    </details>
   );
 }

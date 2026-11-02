@@ -160,6 +160,61 @@ pub fn lint_env(rules: &[Rule], project: &str, dir: &Path) -> Vec<Finding> {
         .collect()
 }
 
+/// One check of a brain, run on the project's base before sealing.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DryRun {
+    pub rule_id: String,
+    pub command: String,
+    /// `activo` (green: the ratchet keeps it), `pendiente` (a red of code: an
+    /// order will build it) or `roto` (the machine's or the check's own red:
+    /// it can't be sealed).
+    pub status: &'static str,
+    pub kind: String,
+    pub tail: String,
+}
+
+/// «Probar el brain»: every check, run in a fresh worktree of the base with
+/// its dependencies installed — what the line would see before the first
+/// order. Slow (an install and the whole suite), so only on request.
+pub fn dry_run(project: &str, repo: &Path, base: &str, rules: &[Rule]) -> Result<Vec<DryRun>, String> {
+    let dir = std::env::temp_dir().join(format!("hangar-brain-dry-{}", uuid::Uuid::new_v4().simple()));
+    let wt = dir.to_string_lossy().to_string();
+    let added = std::process::Command::new("git").args(["worktree", "add", "--detach", &wt, base]).current_dir(repo).output().map_err(|e| e.to_string())?;
+    if !added.status.success() {
+        return Err(format!("no se pudo sacar `{base}` para probar: {}", String::from_utf8_lossy(&added.stderr).trim()));
+    }
+    let result = (|| {
+        if let Some(Err(e)) = super::env::install_deps(project, &dir) {
+            return Err(format!("no se pudieron instalar las dependencias de `{base}`: {e}"));
+        }
+        Ok(rules
+            .iter()
+            .filter_map(|r| r.check.as_ref().map(|c| (r, c)))
+            .take_while(|_| !super::procs::stop_requested(project))
+            .map(|(r, cmd)| match super::env::shell(project, "dry-run", cmd, &dir, Duration::from_secs(600)) {
+                Ok(o) => {
+                    let text = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+                    let (status, kind) = if o.status.success() {
+                        ("activo", String::new())
+                    } else {
+                        match super::line::red_kind(&text) {
+                            "codigo" => ("pendiente", "codigo".to_string()),
+                            other => ("roto", other.to_string()),
+                        }
+                    };
+                    let tail = if status == "activo" { String::new() } else { super::line::failure_excerpt(&text) };
+                    DryRun { rule_id: r.id.clone(), command: cmd.clone(), status, kind, tail }
+                }
+                Err(e) => DryRun { rule_id: r.id.clone(), command: cmd.clone(), status: "roto", kind: "entorno".into(), tail: e },
+            })
+            .collect())
+    })();
+    let _ = std::process::Command::new("git").args(["worktree", "remove", "--force", &wt]).current_dir(repo).output();
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
 pub fn has_errors(findings: &[Finding]) -> bool {
     findings.iter().any(|f| f.severity == "error")
 }
@@ -202,6 +257,28 @@ mod tests {
         assert_eq!(kinds(&lint_static(&no_feat, "POK-1"), "GIT-04"), vec![("error", "factory")]);
         let missing = vec![rule("TEC-01", "tec", "definitely-not-a-tool-xyz --version")];
         assert_eq!(kinds(&lint_static(&missing, "POK-1"), "TEC-01"), vec![("error", "herramienta")]);
+    }
+
+    #[test]
+    fn trying_the_brain_tells_active_from_pending_from_broken() {
+        let repo = std::env::temp_dir().join(format!("hangar-dry-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&repo).unwrap();
+        crate::factory::setup::init_repo(&repo, &crate::factory::setup::tests_identity()).unwrap();
+        let rules = vec![
+            rule("ARQ-01", "arq", "git status --porcelain"),
+            rule("CAL-01", "cal", "test -f src/app.ts"),
+            rule("GIT-02", "git", "git check-ignore -q node_modules dist"),
+            rule("CAL-02", "cal", "echo 'browserType.launch: Failed to launch the browser process' >&2; exit 1"),
+        ];
+        let out = dry_run("p-dry-tests", &repo, "dev", &rules).unwrap();
+        let by = |id: &str| out.iter().find(|d| d.rule_id == id).unwrap();
+        assert_eq!(by("ARQ-01").status, "activo");
+        assert_eq!(by("CAL-01").status, "pendiente", "not built yet: an order will");
+        assert_eq!((by("GIT-02").status, by("GIT-02").kind.as_str()), ("roto", "brain"));
+        assert_eq!((by("CAL-02").status, by("CAL-02").kind.as_str()), ("roto", "entorno"));
+        let worktrees = std::process::Command::new("git").args(["worktree", "list"]).current_dir(&repo).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&worktrees.stdout).lines().count(), 1, "the try leaves no worktree behind");
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]

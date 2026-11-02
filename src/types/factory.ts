@@ -128,6 +128,21 @@ export interface LintFinding {
   fix: string;
 }
 
+/** One check of the brain, run on the base before sealing. */
+export interface DryRun {
+  ruleId: string;
+  command: string;
+  /** `activo`: green, the ratchet keeps it · `pendiente`: an order will build it · `roto`: the check or the machine. */
+  status: 'activo' | 'pendiente' | 'roto';
+  kind: string;
+  tail: string;
+}
+
+export interface ActiveCheck {
+  ruleId: string;
+  command: string;
+}
+
 export const LINT_KIND: Record<LintFinding['kind'], string> = {
   sintaxis: 'sintaxis',
   herramienta: 'falta en la máquina',

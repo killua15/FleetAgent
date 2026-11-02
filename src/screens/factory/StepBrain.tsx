@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { invoke } from '../../lib/invoke';
 import { toastError, toastSuccess } from '../../components/ErrorOverlay';
-import type { BrainReport, FactoryProject, SealedBrain } from '../../types/factory';
+import type { ActiveCheck, BrainReport, FactoryProject, SealedBrain } from '../../types/factory';
 import { ImportReport } from './BrainImport';
 import { BrainSession } from './BrainSession';
 import { StepFoot } from './Wizard';
@@ -62,7 +62,7 @@ export function StepBrain({
 
   const useExample = async () => show(await invoke<string>('factory_brain_example'), 'BRAIN.md de ejemplo');
 
-  const seal = async () => {
+  const seal = async (active?: ActiveCheck[]) => {
     if (!report) return;
     setSealing(true);
     try {
@@ -70,6 +70,7 @@ export function StepBrain({
         projectId: project.projectId,
         markdown: report.markdown,
         source: mode === 'chat' ? 'session' : mode === 'guide' ? 'guide' : 'import',
+        active: active ?? null,
       });
       setSealed(next);
       setReport(null);

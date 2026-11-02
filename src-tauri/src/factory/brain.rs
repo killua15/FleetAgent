@@ -562,7 +562,7 @@ pub async fn factory_read_markdown(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn factory_brain_seal<R: Runtime>(app: AppHandle<R>, project_id: String, markdown: String, source: String) -> Result<Sealed, String> {
+pub async fn factory_brain_seal<R: Runtime>(app: AppHandle<R>, project_id: String, markdown: String, source: String, active: Option<Vec<ActiveCheck>>) -> Result<Sealed, String> {
     let root = crate::app_data::root(&app)?;
     // A brain that fails its own lint would be found out by a builder that
     // can't fix it: it isn't sealed.
@@ -573,9 +573,38 @@ pub async fn factory_brain_seal<R: Runtime>(app: AppHandle<R>, project_id: Strin
     }
     crate::factory::with_db(app, move |conn| {
         let project = crate::factory::store::get(conn, &project_id)?;
-        seal(conn, &root, &project_id, &project.project_name, &markdown, &source)
+        let sealed = seal(conn, &root, &project_id, &project.project_name, &markdown, &source)?;
+        // What «Probar el brain» saw green on the base seeds the ratchet.
+        let green: Vec<(String, String)> = active.unwrap_or_default().into_iter().map(|a| (a.rule_id, a.command)).collect();
+        crate::factory::line::activate_checks(conn, &project_id, &green, "brain")?;
+        Ok(sealed)
     })
     .await
+}
+
+/// A check «Probar el brain» saw green, to seed the ratchet at sealing.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveCheck {
+    pub rule_id: String,
+    pub command: String,
+}
+
+/// «Probar el brain»: each check in a fresh worktree of the base, as
+/// active, pending or broken. Without the database lock: it installs and
+/// runs the whole suite.
+#[tauri::command]
+pub async fn factory_brain_dry_run<R: Runtime>(app: AppHandle<R>, project_id: String, markdown: String) -> Result<Vec<super::lint::DryRun>, String> {
+    let project = {
+        let id = project_id.clone();
+        crate::factory::with_db(app, move |conn| crate::factory::store::get(conn, &id)).await?
+    };
+    crate::blocking::run_blocking(move || {
+        let repo = Path::new(&project.project_path);
+        let base = super::setup::repo_status(repo).base_branch.ok_or("el repo no tiene rama base todavía")?;
+        super::lint::dry_run(&project_id, repo, &base, &parse(&markdown).rules)
+    })
+    .await?
 }
 
 /// What's wrong with this markdown as a brain for this project and machine:

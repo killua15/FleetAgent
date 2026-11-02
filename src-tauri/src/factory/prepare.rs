@@ -203,6 +203,21 @@ pub fn prepare(db: &DbConnection, project_id: &str, git_env: &[(String, String)]
     // From here on, without the lock: the filesystem, the login shell, the
     // keychain.
 
+    // The machine, as the brain's «Entorno» says it must be: a red here would
+    // otherwise be found by a builder that can't fix it.
+    if let Some(s) = &sealed {
+        let env_rules: Vec<brain::Rule> = s.rules.iter().filter(|r| r.section == "ent").cloned().collect();
+        if !env_rules.is_empty() {
+            let failing = super::lint::lint_env(&env_rules, project_id, dir);
+            if failing.is_empty() {
+                out.push(check("entorno", "Entorno", "ok", format!("la máquina cumple los {} checks de Entorno", env_rules.iter().filter(|r| r.check.is_some()).count()), None));
+            }
+            for f in failing {
+                out.push(check("entorno", "Entorno", "blocked", format!("{}: {}", f.rule_id, f.message.lines().next().unwrap_or("")), None));
+            }
+        }
+    }
+
     // Every program the gate will call has to exist.
     if let Some(s) = &sealed {
         let mut missing: Vec<String> = line::gate_commands(&planned, s, &Default::default(), true).iter().filter_map(|(_, c)| env::first_program(c)).filter(|p| !p.contains('/') && !env::has_executable(p)).collect();
@@ -316,5 +331,26 @@ mod tests {
         assert_eq!(tools.status, "blocked");
         assert!(tools.detail.contains("definitely-not-installed-xyz"));
         assert!(blocking(&checks).is_err());
+    }
+
+    #[test]
+    fn a_machine_short_of_the_brains_entorno_blocks_play() {
+        use rusqlite::params;
+        let w = line::tests::world("autonomous", "local", "true");
+        {
+            let conn = w.db.0.lock().unwrap();
+            let v: i64 = conn.query_row("SELECT brain_version FROM factory_projects WHERE project_id = 'p1'", [], |r| r.get(0)).unwrap();
+            conn.execute(
+                "INSERT INTO factory_brain_rules (project_id, version, rule_id, section, level, text, check_cmd, position) VALUES ('p1', ?1, 'ENT-01', 'ent', 'must', 'Firefox arranca', ?2, 999)",
+                params![v, "echo 'browserType.launch: Failed to launch the browser process' >&2; exit 1"],
+            )
+            .unwrap();
+        }
+        // `fix` would rebuild the index from the brain's file, without this row.
+        let checks = prepare(&w.db, "p1", &setup::tests_identity(), false).unwrap();
+        let env = checks.iter().find(|c| c.id == "entorno").unwrap();
+        assert_eq!(env.status, "blocked");
+        assert!(env.detail.starts_with("ENT-01"));
+        assert!(blocking(&checks).is_err(), "▶ doesn't start on a machine that can't run the suite");
     }
 }
