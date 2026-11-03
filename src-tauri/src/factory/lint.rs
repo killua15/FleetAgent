@@ -91,6 +91,66 @@ pub fn lint_static(rules: &[Rule], sample_key: &str) -> Vec<Finding> {
             ));
         }
     }
+    // What doesn't belong in a brain: these clash with orders that can't fix them.
+    let feature_test = regex::Regex::new(r"(?:^|[\s/])(?:e2e|tests?|__tests__|spec)/[\w./-]+\.(?:spec|test)\.[jt]sx?|[\w-]+\.(?:spec|test)\.[jt]sx?").expect("static regex");
+    let network = regex::Regex::new(r"\b(?:curl|wget|ping|nc)\b|npm ping|https?://").expect("static regex");
+    let dev_history = regex::Regex::new(r"git (?:log|rev-list|shortlog)\b[^|;&]*\s(?:origin/)?(?:dev|main|master)(?:\s|$|[|;&)])").expect("static regex");
+    let hash = regex::Regex::new(r"\b[0-9a-f]{7,40}\b").expect("static regex");
+    let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for r in rules {
+        let Some(cmd) = r.check.as_deref() else { continue };
+        if r.section != "ent" && network.is_match(cmd) {
+            out.push(finding(r, "error", "trampa", "usa la red fuera de Entorno: la red falla a ratos y ninguna orden la arregla", "Muévelo a «Entorno» o quita el check."));
+        }
+        if feature_test.is_match(cmd) {
+            out.push(finding(r, "warn", "factory", "ejecuta el test de una funcionalidad concreta: es el criterio de su orden, no una ley del brain", "Quítalo del brain: el tester lo escribe en la orden de esa funcionalidad."));
+        }
+        if dev_history.is_match(cmd) && !cmd.contains("..HEAD") {
+            out.push(finding(r, "warn", "factory", "mide la historia de dev/main: ninguna orden puede cambiarla, y bloquearía a todas", "Quita el check, o compruébalo a mano antes de entregar."));
+        }
+        if hash.is_match(cmd) {
+            out.push(finding(r, "warn", "trampa", "lleva un hash: una excepción puntual dentro de una regla se rompe con la siguiente", "Cambia la regla en vez de exceptuar un commit."));
+        }
+        if cmd.contains("git clone") {
+            out.push(finding(r, "warn", "trampa", "clona el repo: lento y frágil para una puerta que corre en cada orden", "Comprueba lo mismo en el worktree."));
+        }
+        let key = cmd.trim().to_string();
+        match seen.get(&key) {
+            Some(first) => out.push(finding(r, "warn", "trampa", format!("repite el mismo comando que {first}: la puerta lo corre dos veces"), "Deja el check en una sola regla.")),
+            None => {
+                seen.insert(key, r.id.clone());
+            }
+        }
+    }
+    let suites: Vec<&Rule> = rules.iter().filter(|r| r.check.as_deref().is_some_and(|c| regex::Regex::new(r"\b(?:npm|pnpm|yarn|bun) (?:run )?(?:verify|build|test)\b").expect("static regex").is_match(c))).collect();
+    if suites.len() > 2 {
+        out.push(Finding {
+            rule_id: suites.iter().map(|r| r.id.as_str()).collect::<Vec<_>>().join(", "),
+            severity: "warn",
+            kind: "trampa",
+            message: format!("{} reglas corren la suite o el build: cada puerta los repite", suites.len()),
+            fix: "La suite es una sola regla de Calidad; quita las demás o deja su check en blanco.".into(),
+        });
+    }
+    let must = rules.iter().filter(|r| r.level == "must").count();
+    if rules.len() >= 20 && must * 10 > rules.len() * 7 {
+        out.push(Finding {
+            rule_id: String::new(),
+            severity: "warn",
+            kind: "factory",
+            message: format!("{must} de {} reglas son DEBE: cualquier detalle bloquea una orden", rules.len()),
+            fix: "Deja DEBE para lo innegociable; el resto, DEBERÍA (avisa sin bloquear).".into(),
+        });
+    }
+    if rules.len() > 70 || rules.iter().filter(|r| r.check.is_some()).count() > 40 {
+        out.push(Finding {
+            rule_id: String::new(),
+            severity: "warn",
+            kind: "factory",
+            message: format!("{} reglas y {} checks: un brain tan grande choca con casi todas las órdenes", rules.len(), rules.iter().filter(|r| r.check.is_some()).count()),
+            fix: "Quédate con las decisiones que valen para todo el proyecto (30–50).".into(),
+        });
+    }
     if let Some(re) = branch_pattern(rules) {
         let candidates = super::line::branch_candidates(sample_key, "titulo de ejemplo");
         if !candidates.iter().any(|b| re.is_match(b)) {
@@ -257,6 +317,23 @@ mod tests {
         assert!(kinds(&f, "GIT-06").is_empty(), "main inside dev is no comparison with main");
         assert_eq!(kinds(&f, "GIT-10"), vec![("error", "factory")], "the brain lives in Hangar, not in the repo");
         assert!(f.iter().any(|x| x.rule_id.is_empty() && x.kind == "entorno"), "no Entorno section: a warning");
+
+        let clashes = vec![
+            rule("DAT-09", "dat", "npx playwright test e2e/favorites.spec.ts"),
+            rule("ENT-06", "ent", "curl -fsS https://pokeapi.co"),
+            rule("SEC-09", "sec", "curl -fsS https://example.com"),
+            rule("GIT-02", "git", "test \"$(git log --first-parent --no-merges --format=%H dev | grep -vx 1fe36b801870d60ff6eee6e4a66f2e89b5f1f9ee | wc -l)\" -le 1"),
+            rule("GIT-03", "git", "! git log --no-merges --format=%s dev..HEAD | grep -vE '^feat'"),
+            rule("CAL-01", "cal", "npm run verify"),
+            rule("CAL-11", "cal", "npm run verify"),
+        ];
+        let f = lint_static(&clashes, "POK-1");
+        assert!(kinds(&f, "DAT-09").contains(&("warn", "factory")), "a feature's test");
+        assert!(kinds(&f, "ENT-06").is_empty(), "the network is Entorno's");
+        assert_eq!(kinds(&f, "SEC-09"), vec![("error", "trampa")], "but nowhere else");
+        assert!(kinds(&f, "GIT-02").contains(&("warn", "factory")) && kinds(&f, "GIT-02").contains(&("warn", "trampa")), "dev's history, and a hash");
+        assert!(kinds(&f, "GIT-03").is_empty(), "the branch's own commits are fine");
+        assert_eq!(kinds(&f, "CAL-11"), vec![("warn", "trampa")], "the same command twice");
 
         let no_feat = vec![rule("GIT-04", "git", "git branch --show-current | grep -qE '^(main|task/[0-9]+)$'")];
         assert_eq!(kinds(&lint_static(&no_feat, "POK-1"), "GIT-04"), vec![("error", "factory")]);

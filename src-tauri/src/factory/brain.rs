@@ -284,11 +284,20 @@ versión: 1
 ## Pendiente       (preguntas que no se resolvieron)
 
 Cada regla en una línea:
-- <ID> · DEBE|DEBERÍA · <regla concreta y comprobable>
-  check: <comando que la comprueba>   (solo si existe)
+- <ID> · DEBE|DEBERÍA · <regla concreta>
+  check: <comando que la comprueba>   (solo si existe uno rápido y local)
 
 IDs con el prefijo de su sección y número: PRD-01, ARQ-01, TEC-01, ENT-01, COD-01, DAT-01, SEC-01, CAL-01, GIT-01, DEP-01, RSG-01, DEC-01.
-Nada vago («código limpio»): si no se puede comprobar, reescríbelo hasta que se pueda.
+Qué es una regla del brain: una DECISIÓN del creador que vale en todo commit desde la orden 0 y para más de una orden. Pocas y estables: mejor 30–50 reglas que 100.
+- Nada vago («código limpio»): concreta, para que un revisor pueda juzgarla. No hace falta que todas tengan check: lo que exige juicio lo revisa un revisor leyendo la regla.
+- DEBE solo para lo innegociable (lo que, si falla, la orden no se entrega). El resto, DEBERÍA: avisa en la entrega sin bloquear.
+- Un check solo si es rápido, local y determinista. NO pongas en el brain:
+  · tests de una funcionalidad concreta (e2e/favoritos.spec.ts…): son criterios de su orden, no leyes;
+  · la red (curl, ping, APIs externas) fuera de Entorno;
+  · la suite completa ni el build más de una vez: la suite es UNA regla de Calidad;
+  · la historia de dev o main (contar sus commits…): ninguna orden la cambia;
+  · hashes, fechas o excepciones puntuales;
+  · comprobaciones sobre BRAIN.md o CLAUDE.md: el brain vive en Hangar, no en el repo.
 Cómo trabaja la Factory de Hangar, que va a ejecutar este brain: cada orden va en su rama feat/<CLAVE>-<slug> (por ejemplo feat/POK-3-buscador) cortada desde dev, se fusiona en dev en local y no hay remoto; cada check se ejecuta con sh -c dentro del worktree de la orden, sin terminal interactiva, y tiene que salir con 0 cuando la regla se cumple. Nada de comparar con main: compara con dev. No cortes un pipe con grep -q (el comando de la izquierda muere con EPIPE): usa grep … > /dev/null. Antes de escribir cada check, EJECÚTALO aquí y comprueba que sale con 0 cuando la regla se cumple y distinto de 0 cuando no.
 No inventes: lo que no hablamos va a «## Pendiente» como pregunta.";
 
@@ -305,7 +314,9 @@ pub fn session_prompt(project: &str, base: Option<&str>, inbox: &[String]) -> St
         "Vamos a definir el brain de «{project}»: las reglas con las que una IA lo va a construir de principio a producción sin preguntarme. \
 Lee el repo para no preguntar lo que ya se ve en él. Después recorre conmigo, una a una, estas secciones: \
 Producto, Arquitectura, Tecnologías, Entorno, Código, Datos, Seguridad, Calidad, Git y entrega, Despliegue, Riesgo y Decisiones. \
-Haz una o dos preguntas cada vez y propón reglas concretas y comprobables, con su comando check: cuando exista. \
+Haz una o dos preguntas cada vez y propón decisiones concretas; yo decido, tú no decides por mí. \
+Una regla es una decisión que vale en todo commit y para más de una orden: no metas tests de funcionalidades concretas, ni red fuera de Entorno, ni la historia de dev/main. \
+Pon check solo si es rápido y local; lo demás lo juzgará un revisor. DEBE solo para lo innegociable, el resto DEBERÍA. \
 En Entorno comprueba esta máquina de verdad (versiones, que cada navegador de los tests arranque, servicios) y dime lo que falte antes de seguir. \
 No escribas ningún archivo hasta que te pida generar el BRAIN.md."
     );
