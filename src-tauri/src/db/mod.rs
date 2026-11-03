@@ -314,6 +314,54 @@ const MIGRATIONS: &[Migration] = &[
         run: knowledge_sources_tables,
         transactional: true,
     },
+    Migration {
+        version: 39,
+        name: "factory_projects",
+        run: factory_projects_table,
+        transactional: true,
+    },
+    Migration {
+        version: 40,
+        name: "factory_brain",
+        run: factory_brain_tables,
+        transactional: true,
+    },
+    Migration {
+        version: 41,
+        name: "factory_agents",
+        run: factory_agents_table,
+        transactional: true,
+    },
+    Migration {
+        version: 42,
+        name: "factory_orders",
+        run: factory_orders_table,
+        transactional: true,
+    },
+    Migration {
+        version: 43,
+        name: "factory_line",
+        run: factory_line_tables,
+        transactional: true,
+    },
+    Migration {
+        version: 44,
+        name: "factory_check_state",
+        run: factory_check_state_table,
+        transactional: true,
+    },
+    Migration {
+        version: 45,
+        name: "factory_brain_draft",
+        run: factory_brain_draft_table,
+        transactional: true,
+    },
+    Migration {
+        version: 46,
+        name: "factory_step_usage",
+        run: factory_step_usage_columns,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -1154,6 +1202,233 @@ fn notifications_core_kinds_only(conn: &Connection) -> Result<(), String> {
 fn knowledge_sources_tables(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(KNOWLEDGE_SOURCES_DDL).map_err(|e| format!("could not create the knowledge source tables: {e}"))
 }
+
+/// The Factory's view of a project: where its tasks come from, how a finished
+/// order is delivered, how far the setup went and whether the loop runs.
+/// One row per Hangar project that joined the Factory.
+fn factory_projects_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(FACTORY_PROJECTS_DDL).map_err(|e| format!("could not create factory_projects: {e}"))
+}
+
+/// The line at work: one run per order (its frozen team and brain, the stage
+/// it's at, why it waits), each agent's step with its times, what it did, and
+/// every decision with the rule it cites.
+fn factory_step_usage_columns(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(FACTORY_STEP_USAGE_DDL).map_err(|e| format!("could not add the step usage columns: {e}"))
+}
+
+/// What each step of the line spent of its account: points of the 5-hour
+/// session and of the week, read after it ended.
+pub(crate) const FACTORY_STEP_USAGE_DDL: &str = "ALTER TABLE factory_steps ADD COLUMN usage_session REAL;
+ALTER TABLE factory_steps ADD COLUMN usage_weekly REAL;";
+
+fn factory_brain_draft_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(FACTORY_DRAFT_DDL).map_err(|e| format!("could not create the brain draft table: {e}"))
+}
+
+/// The creator's decisions as they're being made: what the AI proposed, what
+/// the creator confirmed, the suggestions — the source the next brain version
+/// is rendered from. `based_on` is the version it was last sealed as.
+pub(crate) const FACTORY_DRAFT_DDL: &str = "CREATE TABLE IF NOT EXISTS factory_brain_draft (
+  project_id  TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  items       TEXT NOT NULL,
+  based_on    INTEGER,
+  updated_at  TEXT NOT NULL
+);";
+
+fn factory_check_state_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(FACTORY_CHECKS_DDL).map_err(|e| format!("could not create the check state table: {e}"))
+}
+
+/// The ratchet: a brain check that has once been green on the project's base
+/// is active, and every later order must keep it green. Keyed by rule and
+/// command, so a rule whose check changes in a new brain starts over.
+pub(crate) const FACTORY_CHECKS_DDL: &str = "CREATE TABLE IF NOT EXISTS factory_check_state (
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  rule_id       TEXT NOT NULL,
+  command       TEXT NOT NULL,
+  active_since  TEXT NOT NULL,
+  source        TEXT NOT NULL,
+  PRIMARY KEY (project_id, rule_id, command)
+);";
+
+fn factory_line_tables(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(FACTORY_LINE_DDL).map_err(|e| format!("could not create the line tables: {e}"))
+}
+
+pub(crate) const FACTORY_LINE_DDL: &str = "CREATE TABLE IF NOT EXISTS factory_runs (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  order_id      TEXT NOT NULL REFERENCES factory_orders(id) ON DELETE CASCADE,
+  status        TEXT NOT NULL,
+  stage         TEXT NOT NULL,
+  round         INTEGER NOT NULL DEFAULT 0,
+  team          TEXT NOT NULL,
+  brain_version INTEGER NOT NULL,
+  branch        TEXT NOT NULL,
+  worktree      TEXT NOT NULL,
+  base          TEXT NOT NULL,
+  resume_at     TEXT,
+  mr_url        TEXT,
+  mr_number     INTEGER,
+  cost_usd      REAL NOT NULL DEFAULT 0,
+  error         TEXT,
+  state         TEXT NOT NULL DEFAULT '{}',
+  started_at    TEXT NOT NULL,
+  finished_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS factory_runs_project ON factory_runs(project_id, started_at);
+CREATE TABLE IF NOT EXISTS factory_steps (
+  id          TEXT PRIMARY KEY,
+  run_id      TEXT NOT NULL REFERENCES factory_runs(id) ON DELETE CASCADE,
+  agent_id    TEXT,
+  label       TEXT NOT NULL,
+  model       TEXT NOT NULL DEFAULT '',
+  station     TEXT NOT NULL,
+  status      TEXT NOT NULL,
+  round       INTEGER NOT NULL DEFAULT 0,
+  session_id  TEXT,
+  note        TEXT,
+  cost_usd    REAL NOT NULL DEFAULT 0,
+  started_at  TEXT NOT NULL,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS factory_steps_run ON factory_steps(run_id, started_at);
+CREATE TABLE IF NOT EXISTS factory_activity (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id  TEXT NOT NULL REFERENCES factory_runs(id) ON DELETE CASCADE,
+  step_id TEXT,
+  station TEXT NOT NULL,
+  at      TEXT NOT NULL,
+  kind    TEXT NOT NULL,
+  text    TEXT NOT NULL,
+  rule_id TEXT
+);
+CREATE INDEX IF NOT EXISTS factory_activity_run ON factory_activity(run_id, id);
+CREATE TABLE IF NOT EXISTS factory_decisions (
+  id       TEXT PRIMARY KEY,
+  run_id   TEXT NOT NULL REFERENCES factory_runs(id) ON DELETE CASCADE,
+  step_id  TEXT,
+  station  TEXT NOT NULL,
+  at       TEXT NOT NULL,
+  rule_id  TEXT,
+  text     TEXT NOT NULL
+);";
+
+/// The queue: the project's orders, from its provider, a TRD or by hand,
+/// with their acceptance criteria and dependencies.
+fn factory_orders_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(FACTORY_ORDERS_DDL).map_err(|e| format!("could not create factory_orders: {e}"))
+}
+
+pub(crate) const FACTORY_ORDERS_DDL: &str = "CREATE TABLE IF NOT EXISTS factory_orders (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  key           TEXT NOT NULL,
+  title         TEXT NOT NULL,
+  description   TEXT NOT NULL DEFAULT '',
+  criteria      TEXT NOT NULL DEFAULT '[]',
+  deps          TEXT NOT NULL DEFAULT '[]',
+  position      INTEGER NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'todo',
+  origin        TEXT NOT NULL,
+  ext_id        TEXT,
+  ext_url       TEXT,
+  touches_ui    INTEGER NOT NULL DEFAULT 0,
+  rules         TEXT NOT NULL DEFAULT '[]',
+  brain_version INTEGER,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  UNIQUE (project_id, key)
+);
+CREATE INDEX IF NOT EXISTS factory_orders_queue ON factory_orders(project_id, position);";
+
+/// The team: every agent on the line, with its account, model, the brain
+/// sections it reads and — for testers — the command it runs.
+fn factory_agents_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(FACTORY_AGENTS_DDL).map_err(|e| format!("could not create factory_agents: {e}"))
+}
+
+pub(crate) const FACTORY_AGENTS_DDL: &str = "CREATE TABLE IF NOT EXISTS factory_agents (
+  id             TEXT PRIMARY KEY,
+  project_id     TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  role           TEXT NOT NULL,
+  grp            TEXT NOT NULL,
+  name           TEXT NOT NULL,
+  short          TEXT NOT NULL,
+  duty           TEXT NOT NULL,
+  sections       TEXT NOT NULL DEFAULT '[]',
+  account_id     TEXT,
+  model          TEXT NOT NULL,
+  active         INTEGER NOT NULL DEFAULT 1,
+  required       INTEGER NOT NULL DEFAULT 0,
+  command        TEXT,
+  escalate_model TEXT,
+  note           TEXT,
+  position       INTEGER NOT NULL
+);";
+
+/// The brain: sealed versions (the file lives in app data and never changes),
+/// their rules indexed to cite and count, the amendments inbox, and which
+/// version the project uses now.
+fn factory_brain_tables(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(FACTORY_BRAIN_DDL).map_err(|e| format!("could not create the brain tables: {e}"))
+}
+
+pub(crate) const FACTORY_BRAIN_DDL: &str = "ALTER TABLE factory_projects ADD COLUMN brain_version INTEGER;
+CREATE TABLE IF NOT EXISTS factory_brain_versions (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  version    INTEGER NOT NULL,
+  path       TEXT NOT NULL,
+  sha        TEXT NOT NULL,
+  rule_count INTEGER NOT NULL,
+  source     TEXT NOT NULL,
+  sealed_at  TEXT NOT NULL,
+  PRIMARY KEY (project_id, version)
+);
+CREATE TABLE IF NOT EXISTS factory_brain_rules (
+  project_id TEXT NOT NULL,
+  version    INTEGER NOT NULL,
+  rule_id    TEXT NOT NULL,
+  section    TEXT NOT NULL,
+  level      TEXT NOT NULL,
+  text       TEXT NOT NULL,
+  check_cmd  TEXT,
+  position   INTEGER NOT NULL,
+  PRIMARY KEY (project_id, version, rule_id),
+  FOREIGN KEY (project_id, version) REFERENCES factory_brain_versions(project_id, version) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS factory_amendments (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  question    TEXT NOT NULL,
+  order_key   TEXT,
+  provisional TEXT,
+  status      TEXT NOT NULL DEFAULT 'open',
+  included_in INTEGER,
+  created_at  TEXT NOT NULL
+);";
+
+/// Every Factory migration's DDL, in order — what the Factory's own tests
+/// build their in-memory database from.
+#[cfg(test)]
+pub(crate) const FACTORY_DDLS: &[&str] = &[FACTORY_PROJECTS_DDL, FACTORY_BRAIN_DDL, FACTORY_AGENTS_DDL, FACTORY_ORDERS_DDL, FACTORY_LINE_DDL, FACTORY_CHECKS_DDL, FACTORY_DRAFT_DDL, FACTORY_STEP_USAGE_DDL];
+
+pub(crate) const FACTORY_PROJECTS_DDL: &str = "CREATE TABLE IF NOT EXISTS factory_projects (
+  project_id           TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  provider_kind        TEXT NOT NULL DEFAULT 'none',
+  provider_source_id   TEXT,
+  provider_scope_id    TEXT,
+  provider_scope_label TEXT,
+  delivery             TEXT NOT NULL DEFAULT 'local',
+  mode                 TEXT NOT NULL DEFAULT 'supervised',
+  app_start_cmd        TEXT,
+  app_url              TEXT,
+  setup_step           INTEGER NOT NULL DEFAULT 1,
+  loop_state           TEXT NOT NULL DEFAULT 'stopped',
+  created_at           TEXT NOT NULL,
+  updated_at           TEXT NOT NULL
+);";
 
 pub(crate) const KNOWLEDGE_SOURCES_DDL: &str = "CREATE TABLE IF NOT EXISTS knowledge_sources (
   id             TEXT PRIMARY KEY,

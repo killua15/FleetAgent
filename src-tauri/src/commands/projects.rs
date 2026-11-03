@@ -154,7 +154,12 @@ pub fn set_project_hidden(db: State<DbConnection>, id: String, hidden: bool) -> 
 #[tauri::command]
 pub fn delete_project(db: State<DbConnection>, id: String) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
+    delete_project_rows(&conn, &id)
+}
 
+/// `delete_project` without the command around it: its sessions' isolated
+/// worktrees off the disk, then the row and everything that cascades from it.
+pub(crate) fn delete_project_rows(conn: &rusqlite::Connection, id: &str) -> Result<(), String> {
     let mut stmt = conn
         .prepare(
             "SELECT s.worktree_path, s.worktree_branch, s.worktree_kind, p.path

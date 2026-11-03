@@ -10,6 +10,7 @@ mod commands;
 mod credential_vault;
 mod db;
 mod diagrams;
+mod factory;
 mod forges;
 mod git_identity;
 mod graph;
@@ -52,6 +53,8 @@ use usage_scraper::UsageCache;
 /// transcripts nobody is reading anymore.
 fn shutdown_children(app: &tauri::AppHandle) {
     turn_runner::kill_all_turns(app);
+    // Nothing the Factory started outlives Hangar either.
+    factory::procs::kill_everything();
     process_manager::kill_all(app);
     login_manager::kill_all_logins(app);
     terminals::kill_all(app);
@@ -195,6 +198,11 @@ pub fn run() {
             //
             // The PR screen reads the database these fill, so what they really
             // buy is a screen that paints with no network in its way.
+            // The Factory picks up where it was: a line that was running
+            // before Hangar closed goes on, a limit wait included.
+            factory::env::warm_up();
+            factory::looping::resume_all(app.handle());
+
             let poll_handle = app.handle().clone();
             heartbeat("pr-poll", move || {
                 std::thread::sleep(std::time::Duration::from_secs(300));
@@ -506,6 +514,73 @@ pub fn run() {
             task_sources::list_source_tasks,
             task_sources::cache::list_cached_tasks,
             task_sources::cache::refresh_tasks,
+            factory::factory_list_projects,
+            factory::factory_get_project,
+            factory::factory_create_project,
+            factory::remove::factory_remove_project,
+            factory::factory_update_project,
+            factory::factory_repo_status,
+            factory::factory_init_repo,
+            factory::brain::factory_brain_parse,
+            factory::brain::factory_brain_guide,
+            factory::brain::factory_brain_example,
+            factory::brain::factory_read_markdown,
+            factory::brain::factory_brain_seal,
+            factory::brain::factory_brain_lint,
+            factory::decide::factory_decisions_get,
+            factory::design::factory_design_shots,
+            factory::design::factory_design_refs,
+            factory::design::factory_design_add_refs,
+            factory::design::factory_design_remove_ref,
+            factory::design::factory_design_propose,
+            factory::design::factory_design_cancel,
+            factory::decide::factory_decisions_save,
+            factory::decide::factory_decisions_reset,
+            factory::decide::factory_decisions_propose,
+            factory::decide::factory_decisions_cancel,
+            factory::decide::factory_decisions_render,
+            factory::decide::factory_decisions_sealed,
+            factory::brain::factory_brain_dry_run,
+            factory::brain::factory_brain_from_rules,
+            factory::brain::factory_brain_get,
+            factory::brain::factory_brain_versions,
+            factory::brain::factory_brain_export,
+            factory::brain::factory_brain_session,
+            factory::brain::factory_brain_generate,
+            factory::brain::factory_brain_read_generated,
+            factory::brain::factory_amendments_list,
+            factory::brain::factory_amendment_set_status,
+            factory::team::factory_team_get,
+            factory::team::factory_team_save,
+            factory::team::factory_models,
+            factory::team::factory_team_suggestions,
+            factory::team::factory_team_apply_suggestions,
+            factory::planner::factory_plan_trd,
+            factory::planner::factory_plan_approve,
+            factory::planner::factory_plan_cancel,
+            factory::planner::factory_orders_export,
+            factory::planner::factory_orders_sync,
+            factory::planner::factory_orders_list,
+            factory::planner::factory_orders_reorder,
+            factory::planner::factory_order_add,
+            factory::planner::factory_trd_refine,
+            factory::planner::factory_trd_read,
+            factory::view::factory_live,
+            factory::view::factory_deliveries,
+            factory::looping::factory_loop_status,
+            factory::looping::factory_play,
+            factory::looping::factory_pause,
+            factory::looping::factory_stop,
+            factory::looping::factory_stop_all,
+            factory::looping::factory_run_resolve,
+            factory::looping::factory_run_check,
+            factory::looping::factory_run_console,
+            factory::usage::factory_usage,
+            factory::usage::factory_usage_refresh,
+            factory::looping::factory_start_anyway,
+            factory::looping::factory_order_retry,
+            factory::prepare::factory_prepare,
+            factory::prepare::factory_brain_cleanup_order,
             knowledge_sources::list_knowledge_sources,
             knowledge_sources::save_knowledge_source,
             knowledge_sources::delete_knowledge_source,

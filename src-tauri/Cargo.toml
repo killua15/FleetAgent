@@ -61,6 +61,7 @@ rand = "0.8"
 # `blocking::run_blocking`.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 vt100 = "0.16.2"
+trash = "5"
 
 # Opening Hangar again while it lives in the tray focuses the running one
 # instead of starting a second copy against the same database. Not on macOS:

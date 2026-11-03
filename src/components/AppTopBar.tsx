@@ -6,7 +6,7 @@ import { useNavigation, type ScreenName } from '../nav/NavigationProvider';
 import type { ProjectPrInbox } from '../types/pullRequest';
 import { IconTooltip } from './ui/tooltip';
 import { Spinner } from './Spinner';
-import { AccountsIcon, BellIcon, BranchIcon, CompassIcon, FilesIcon, HomeIcon, MenuIcon, PullRequestIcon, QueueIcon, SettingsIcon, TasksIcon, TerminalIcon, UsageIcon } from './NavIcons';
+import { AccountsIcon, BellIcon, BranchIcon, CompassIcon, FactoryIcon, FilesIcon, HomeIcon, MenuIcon, PullRequestIcon, QueueIcon, SettingsIcon, TasksIcon, TerminalIcon, UsageIcon } from './NavIcons';
 import { UsageModal } from './UsageModal';
 import { NotificationBell, useUnreadNotifications } from './NotificationBell';
 import { registerTopBar, toggleNotifications } from '../lib/notifications';
@@ -137,6 +137,12 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
 
         <span className={styles.navRule} />
 
+        {/* A group of its own: the line runs work end to end on its own,
+         * which is a different kind of thing from the screens you drive. */}
+        <NavItem screen="factory" label="Factory" icon={<FactoryIcon />} />
+
+        <span className={styles.navRule} />
+
         <NavItem screen="git-panel" label="Git" icon={<BranchIcon />} />
         <NavItem screen="files" label="Files" icon={<FilesIcon />} />
         {/* A modal, not a screen: it answers a question and hands you back to
@@ -203,6 +209,9 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => navigate('pr-reviews')}>
             <PullRequestIcon /> PRs{pendingPrComments > 0 && ` (${pendingPrComments})`}
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => navigate('factory')}>
+            <FactoryIcon /> Factory
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => navigate('git-panel')}>
             <BranchIcon /> Git

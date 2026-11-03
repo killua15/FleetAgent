@@ -1,0 +1,568 @@
+import { useEffect, useState } from 'react';
+import { invoke } from '../../lib/invoke';
+import type { Account } from '../../types/account';
+import { brainLabel, pointsLabel, usd, countdown, hhmm, STATION_NAME, type ActivityRow, type DesignShot, type FactoryOrder, type LiveData, type RunState, type Station, type StepRow } from '../../types/factory';
+import { AccountsUsage, useTeamUsage } from './AccountsUsage';
+import { FailurePanel } from './FailurePanel';
+import { GatePanel, type CheckAction } from './GatePanel';
+import { Timeline } from './Timeline';
+import { Preparation } from './Preparation';
+import styles from '../Factory.module.css';
+
+type Big = 'ing' | 'fab' | 'cal' | 'ent';
+const BIG: { id: Big; name: string; stations: Station[] }[] = [
+  { id: 'ing', name: 'Ingeniería', stations: ['ing'] },
+  { id: 'fab', name: 'Fabricación', stations: ['fab'] },
+  { id: 'cal', name: 'Calidad', stations: ['test', 'rev', 'dec'] },
+  { id: 'ent', name: 'Entrega', stations: ['ent'] },
+];
+const BIG_OF: Record<Station, Big> = { ing: 'ing', fab: 'fab', test: 'cal', rev: 'cal', dec: 'cal', ent: 'ent' };
+
+const KIND: Record<ActivityRow['kind'], [string, string]> = {
+  read: ['lee', styles.evRead],
+  cmd: ['cmd', styles.evCmd],
+  edit: ['escribe', styles.evEdit],
+  brain: ['📖 brain', styles.evBrain],
+  warn: ['aviso', styles.evWarn],
+  gate: ['puerta', styles.evCmd],
+  text: ['nota', ''],
+};
+
+/** The only thing in «En vivo» that changes every second, so it's the only
+ *  thing that re-renders every second — not the timeline and the feed. */
+function Countdown({ until }: { until: number }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return <span className={styles.countdown}>{countdown((until - now) / 1000)}</span>;
+}
+
+const mins = (a: string, b: string | null) => Math.max(1, Math.round(((b ? new Date(b).getTime() : Date.now()) - new Date(a).getTime()) / 60_000));
+
+/** A station's state, in the prototype's words. */
+function stationState(steps: StepRow[], later: boolean): { text: string; cls: string } {
+  if (!steps.length) return { text: 'pendiente', cls: '' };
+  if (steps.some((s) => s.status === 'running')) return { text: `▶ ${steps.find((s) => s.status === 'running')!.label}`, cls: styles.stRun };
+  if (steps.some((s) => s.status === 'wait')) return { text: '⏸ en espera · límite', cls: styles.stPaused };
+  if (steps.some((s) => s.status === 'human' && !later)) return { text: '✋ te espera', cls: styles.stPaused };
+  const last = steps[steps.length - 1];
+  if (last.status === 'failed' && !later) return { text: `✗ ${last.note ?? 'falló'}`, cls: styles.stPaused };
+  const minutes = steps.reduce((m, s) => m + (s.finishedAt ? mins(s.startedAt, s.finishedAt) : 0), 0);
+  return { text: `✓ hecho · ${minutes} min`, cls: styles.stDone };
+}
+
+/**
+ * «En vivo»: the order at work. The limit or ✋ banner, the four stations,
+ * the timeline, what each agent did (every decision with its rule), the
+ * quality layers and this order's decisions.
+ */
+/** What the loop is doing, as `factory_loop_status` says. */
+export interface LoopStatus {
+  state: 'stopped' | 'running' | 'paused';
+  working: boolean;
+  note: string | null;
+  wait: 'quota' | 'merges' | 'blocked' | 'verify' | 'prepare' | null;
+}
+
+/** Before any order has run: what the loop is doing instead, in the open. */
+function NotStarted({
+  projectId,
+  loop,
+  failed,
+  onStartAnyway,
+  onRetry,
+  onPlay,
+  onGoStep,
+}: {
+  projectId: string;
+  loop: LoopStatus | null;
+  failed: FactoryOrder[];
+  onStartAnyway: () => void;
+  onRetry: (orderId: string) => void;
+  onPlay: () => void;
+  onGoStep: (step: number) => void;
+}) {
+  // ▶ was refused by the preparation: show it, with what to press.
+  if (loop?.wait === 'prepare') {
+    return <Preparation projectId={projectId} onGoStep={onGoStep} onPlay={onPlay} />;
+  }
+  if (loop?.wait === 'blocked') {
+    return (
+      <div className={styles.bannerRed}>
+        <span>✗</span>
+        <span>
+          <b>{loop.note}</b>
+        </span>
+        <span className={styles.spacer} />
+        {failed.map((o) => (
+          <button key={o.id} className={`${styles.btn} ${styles.sm}`} onClick={() => onRetry(o.id)}>
+            Reintentar {o.key}
+          </button>
+        ))}
+      </div>
+    );
+  }
+  if (loop && loop.state !== 'stopped' && loop.note) {
+    return (
+      <div className={styles.bannerAmber}>
+        <span style={{ fontSize: 15 }}>⏸</span>
+        <span>
+          <b>{loop.note}</b>
+          {loop.wait === 'quota' && <span className={styles.hint}> · vuelve a mirar cada 2 minutos; si llega al límite real, la orden espera sola al reset.</span>}
+        </span>
+        <span className={styles.spacer} />
+        {loop.wait === 'quota' && (
+          <button className={`${styles.btn} ${styles.sm}`} onClick={onStartAnyway}>
+            Empezar igualmente
+          </button>
+        )}
+      </div>
+    );
+  }
+  if (loop && loop.state !== 'stopped') {
+    return (
+      <span className={styles.hint}>
+        <span className={styles.spin} />
+        arrancando con la primera orden de la cola…
+      </span>
+    );
+  }
+  if (loop?.note) {
+    return (
+      <div className={styles.bannerRed}>
+        <span>✗</span>
+        <span>
+          <b>{loop.note}</b>
+        </span>
+        <span className={styles.spacer} />
+        <button className={`${styles.btnPrimary} ${styles.sm}`} onClick={onPlay}>
+          ▶ Preparar y seguir
+        </button>
+      </div>
+    );
+  }
+  return <span className={styles.hint}>Todavía no ha pasado ninguna orden por la línea. Pulsa ▶ Play para empezar con la primera de la cola.</span>;
+}
+
+export function LiveView({
+  live,
+  loop,
+  accounts,
+  onResolve,
+  onCheck,
+  onStartAnyway,
+  failed,
+  onRetry,
+  onPlay,
+  onGoStep,
+  projectId,
+}: {
+  live: LiveData;
+  loop: LoopStatus | null;
+  accounts: Account[];
+  onResolve: (action: string, note?: string, accountId?: string) => void;
+  /** What to do with a red check of the gate. */
+  onCheck: (action: CheckAction, check: string | null, note?: string) => void;
+  onStartAnyway: () => void;
+  /** Failed or stopped orders, to retry from the «blocked» banner. */
+  failed: FactoryOrder[];
+  onRetry: (orderId: string) => void;
+  /** ▶ — which prepares the project first. */
+  onPlay: () => void;
+  /** Opens the wizard at a step, to fix something there. */
+  onGoStep: (step: number) => void;
+  projectId: string;
+}) {
+  const run = live.run;
+  const { usage, setUsage } = useTeamUsage(projectId);
+  const [picked, setPicked] = useState<Big | null>(null);
+  const [note, setNote] = useState('');
+  const [other, setOther] = useState('');
+
+  if (!run || !live.order) {
+    return <NotStarted projectId={projectId} loop={loop} failed={failed} onStartAnyway={onStartAnyway} onRetry={onRetry} onPlay={onPlay} onGoStep={onGoStep} />;
+  }
+
+  const name = (id: string | null | undefined) => accounts.find((a) => a.id === id)?.name ?? '—';
+  const team = run.team.filter((a) => a.active);
+  const current = live.steps[live.steps.length - 1];
+  const auto: Big = current ? BIG_OF[current.station] : 'ing';
+  const sel = picked ?? auto;
+  const reached = new Set(live.steps.map((s) => BIG_OF[s.station]));
+  const order = live.order;
+  const stuckAgent = team.find((a) => a.id === [...live.steps].reverse().find((s) => s.agentId)?.agentId);
+
+  const stationMeta = (b: Big) => {
+    const roles: string[] = { ing: ['spec', 'critic'], fab: ['builder'], cal: [], ent: [] }[b];
+    if (b === 'cal') return `testers ×${team.filter((a) => a.role === 'tester').length} · revisores ×${team.filter((a) => a.role.startsWith('reviewer')).length}`;
+    if (b === 'ent') return run.mrUrl ? 'MR abierta' : run.base;
+    const a = team.find((x) => roles.includes(x.role));
+    if (!a) return '';
+    const u = usage.find((x) => x.accountId === a.accountId);
+    return `${name(a.accountId)} · ${a.model}${u?.session != null ? ` · ${u.session.toFixed(0)} %` : ''}`;
+  };
+  const stationBrain = (b: Big) => {
+    const roles: string[] = { ing: ['spec'], fab: ['builder'], cal: ['tester'], ent: ['approver'] }[b];
+    const a = team.find((x) => roles.includes(x.role));
+    return b === 'cal' ? 'reglas · 1 sección c/u' : a ? brainLabel(a.sections) : '';
+  };
+
+  const feed = live.activity.filter((a) => BIG_OF[a.station] === sel);
+  const redChecks = run.state.gate.filter((g) => !g.ok).length;
+  // A failure the line can explain (rounds that went back, a red gate) gets
+  // its own panel; an agent that crashed just says why in the banner.
+  const explained = run.status === 'failed' && ((run.state.history?.length ?? 0) > 0 || redChecks > 0);
+  const showGate = () => {
+    setPicked('cal');
+    const gate = document.getElementById('factory-gate');
+    // Folded away earlier: unfold it, that's what the link asks for.
+    if (gate instanceof HTMLDetailsElement) gate.open = true;
+    gate?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  const resumeAt = run.resumeAt ? new Date(run.resumeAt).getTime() : null;
+  const testers = team.filter((a) => a.role === 'tester');
+  const reviewers = team.filter((a) => a.role.startsWith('reviewer'));
+  const deciders = team.filter((a) => a.role === 'verifier' || a.role === 'approver');
+  const layerState = (stations: Station[], label?: string) => {
+    const steps = live.steps.filter((s) => stations.includes(s.station) && (!label || s.label === label));
+    if (!steps.length) return 'en cola';
+    if (steps.some((s) => s.status === 'running')) return 'en curso';
+    const last = steps[steps.length - 1];
+    return last.status === 'failed' ? `✗ ${last.note ?? ''}` : last.status === 'done' ? `✓ ${last.note ?? ''}`.trim() : last.status;
+  };
+
+  return (
+    <>
+      {run.status === 'waiting_limit' && resumeAt && (
+        <div className={styles.bannerAmber}>
+          <span style={{ fontSize: 15 }}>⏸</span>
+          <span>
+            <b>Límite de uso de la cuenta «{name(stuckAgent?.accountId)}».</b> {order.key} espera en {STATION_NAME[current?.station ?? 'fab']}, en la misma conversación; no
+            cuenta como fallo.
+          </span>
+          <span className={styles.spacer} />
+          <span>
+            sigue sola a las <b className={styles.mono}>{hhmm(run.resumeAt!)}</b> · <Countdown until={resumeAt} />
+          </span>
+          <select className={styles.select} style={{ maxWidth: 180 }} value={other} onChange={(e) => setOther(e.target.value)}>
+            <option value="">otra cuenta…</option>
+            {accounts
+              .filter((a) => a.id !== stuckAgent?.accountId)
+              .map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+          </select>
+          <button className={`${styles.btn} ${styles.sm}`} disabled={!other} onClick={() => onResolve('other_account', undefined, other)}>
+            Usar otra cuenta
+          </button>
+          <button
+            className={`${styles.btnGhost} ${styles.sm}`}
+            title={`Lo intenta ya en la misma cuenta: si sigue al límite hasta las ${hhmm(run.resumeAt!)}, volverá a esperar`}
+            onClick={() => onResolve('retry')}
+          >
+            Reintentar ahora
+          </button>
+        </div>
+      )}
+
+      {run.status === 'waiting_human' && (
+        <div className={styles.bannerAcc}>
+          <span style={{ fontSize: 15 }}>✋</span>
+          <span style={{ flex: '1 1 320px' }}>
+            <b>{run.state.human}</b>
+            {run.state.humanKind === 'spec_review' && run.state.spec && <span className={styles.hint}> · {String(run.state.spec.summary ?? '')}</span>}
+          </span>
+          {(run.state.humanKind === 'spec_review' || run.state.humanKind === 'diff' || run.state.humanKind === 'approver' || run.state.humanKind === 'design_review' || run.state.humanKind === 'ui_spec') && (
+            <input className={styles.input} style={{ maxWidth: 260 }} placeholder="nota (si la devuelves)" value={note} onChange={(e) => setNote(e.target.value)} />
+          )}
+          {run.state.humanKind === 'spec_review' && (
+            <>
+              <button className={`${styles.btnPrimary} ${styles.sm}`} onClick={() => onResolve('continue')}>
+                Aprobar spec y fabricar
+              </button>
+              <button className={`${styles.btn} ${styles.sm}`} onClick={() => onResolve('reject_spec', note)}>
+                Rehacer la spec
+              </button>
+            </>
+          )}
+          {(run.state.humanKind === 'diff' || run.state.humanKind === 'approver') && (
+            <>
+              <span className={`${styles.hint} ${styles.mono}`}>{run.worktree}</span>
+              <button className={`${styles.btnPrimary} ${styles.sm}`} onClick={() => onResolve('continue')}>
+                Entregar
+              </button>
+              <button className={`${styles.btn} ${styles.sm}`} onClick={() => onResolve('send_back', note)}>
+                Devolver a Fabricación
+              </button>
+            </>
+          )}
+          {run.state.humanKind === 'design_review' && (
+            <>
+              <button className={`${styles.btnPrimary} ${styles.sm}`} title="Estas capturas pasan a ser la referencia visual del proyecto" onClick={() => onResolve('continue')}>
+                Aprobar el diseño
+              </button>
+              <button className={`${styles.btn} ${styles.sm}`} disabled={!note.trim()} title="Escribe qué cambiar (más contraste, menos redondeado…)" onClick={() => onResolve('send_back', note)}>
+                Devolver con la nota
+              </button>
+            </>
+          )}
+          {run.state.humanKind === 'ui_spec' && (
+            <>
+              <button className={`${styles.btnPrimary} ${styles.sm}`} onClick={() => onResolve('continue')}>
+                Aprobar y fabricar
+              </button>
+              <button className={`${styles.btn} ${styles.sm}`} onClick={() => onResolve('redo_design', note)}>
+                Rehacer el diseño
+              </button>
+            </>
+          )}
+          {run.state.humanKind === 'design_review' && <DesignShots runId={run.id} />}
+          {run.state.humanKind === 'ui_spec' && run.state.uiSpec && <UiSpecView spec={run.state.uiSpec} />}
+          {run.state.humanKind === 'credits' && (
+            <>
+              <button className={`${styles.btnPrimary} ${styles.sm}`} onClick={() => onResolve('retry')}>
+                Reintentar
+              </button>
+              <select className={styles.select} style={{ maxWidth: 180 }} value={other} onChange={(e) => setOther(e.target.value)}>
+                <option value="">otra cuenta…</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+              <button className={`${styles.btn} ${styles.sm}`} disabled={!other} onClick={() => onResolve('other_account', undefined, other)}>
+                Usar otra cuenta
+              </button>
+            </>
+          )}
+          {run.state.humanKind === 'brain_change' && (
+            <>
+              <button
+                className={`${styles.btnPrimary} ${styles.sm}`}
+                title="Devuelve esos archivos a como están en la base, con un commit en la rama, y la orden sigue"
+                onClick={() => onResolve('revert_protected')}
+              >
+                Deshacer y seguir
+              </button>
+              <button className={`${styles.btn} ${styles.sm}`} title="Los cambios se quedan en la rama. El brain de Hangar no cambia: para eso, edítalo tú." onClick={() => onResolve('accept_protected')}>
+                Dejar los cambios
+              </button>
+            </>
+          )}
+          {run.state.humanKind === 'merge' && (
+            <button className={`${styles.btnPrimary} ${styles.sm}`} onClick={() => onResolve('retry')}>
+              Reintentar la entrega
+            </button>
+          )}
+        </div>
+      )}
+
+      {run.status === 'failed' && (
+        <div className={styles.bannerRed}>
+          <span>✗</span>
+          <span>
+            <b>{order.key} falló.</b> {run.error}
+            {redChecks > 0 && (
+              <>
+                {' · '}
+                <button className={styles.linkBtn} onClick={showGate}>
+                  {run.state.gate.length - redChecks} de {run.state.gate.length} en verde · ver los {redChecks} en rojo
+                </button>
+              </>
+            )}
+          </span>
+          <span className={styles.spacer} />
+          {run.stage === 'approve' && run.state.gateOk && (
+            <button
+              className={`${styles.btnPrimary} ${styles.sm}`}
+              title="Los tests están en verde y la revisión terminó: la entregas tú en lugar del aprobador"
+              onClick={() => onResolve('skip_approver')}
+            >
+              Entregar sin aprobador
+            </button>
+          )}
+          {!explained && (
+            <button
+              className={`${styles.btn} ${styles.sm}`}
+              title="Vuelve a juzgar con el brain, el equipo y la máquina de ahora: si ya está en verde, sigue; si no, va al builder"
+              onClick={() => onResolve('retry')}
+            >
+              Reintentar donde quedó
+            </button>
+          )}
+        </div>
+      )}
+
+      {explained && <FailurePanel run={run} orderKey={order.key} accounts={accounts} onResolve={onResolve} onCheck={onCheck} />}
+
+      <div className={styles.order}>
+        <span className={styles.orderKey}>{order.key}</span>
+        <span className={styles.orderTitle}>{order.title}</span>
+        <span className={styles.chip}>rama {run.branch}</span>
+        <span className={styles.chip}>desde {run.base}</span>
+        {run.round > 0 && <span className={styles.chipAmber}>ronda {run.round}</span>}
+        <span className={styles.spacer} />
+        <span
+          className={styles.num}
+          title="Lo que lleva gastado esta orden, sumando sus tareas: puntos de uso de cada cuenta (lo que gasta una suscripción) y su equivalente en precio de API"
+        >
+          {(live.usage ?? []).map((u) => `${u.account} ${pointsLabel(u.session, u.weekly)}`).join(' · ')}
+          {(live.usage ?? []).length > 0 && ' · '}
+          {usd(run.costUsd)} equivalentes · {mins(run.startedAt, run.finishedAt)} min
+        </span>
+      </div>
+
+      <AccountsUsage projectId={projectId} usage={usage} onChange={setUsage} />
+
+      <div className={styles.line}>
+        {BIG.map((b, i) => {
+          const steps = live.steps.filter((s) => b.stations.includes(s.station));
+          const later = BIG.slice(i + 1).some((x) => reached.has(x.id));
+          const st = stationState(steps, later);
+          return (
+            <button key={b.id} className={`${styles.station} ${st.cls} ${sel === b.id ? styles.stSel : ''}`} onClick={() => setPicked(b.id)}>
+              <span className={styles.stName}>{b.name}</span>
+              <span className={styles.stState}>{st.text}</span>
+              <span className={styles.stBrain}>brain: {stationBrain(b.id)}</span>
+              <span className={styles.stMeta}>{stationMeta(b.id)}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {(sel === 'cal' || redChecks > 0) && <GatePanel run={run} onCheck={onCheck} />}
+
+      <Timeline live={live} onPickStation={(s) => setPicked(BIG_OF[s])} />
+
+      <div className={styles.split}>
+        <div className={styles.cardFlat}>
+          <div className={styles.cardHead}>
+            <span className={styles.sectionLabel}>ACTIVIDAD · {BIG.find((b) => b.id === sel)?.name.toUpperCase()}</span>
+            <span className={styles.spacer} />
+            <span className={styles.chipAcc}>cada decisión cita su regla</span>
+          </div>
+          <div className={styles.feed}>
+            {feed.length === 0 && <span className={`${styles.hint} ${styles.cardPadCol}`}>Esta estación todavía no ha hecho nada en esta orden.</span>}
+            {feed.map((a) => {
+              const [label, cls] = KIND[a.kind] ?? ['', ''];
+              return (
+                <div key={a.id} className={styles.ev}>
+                  <span className={styles.evAt}>{hhmm(a.at)}</span>
+                  <span className={`${styles.evKind} ${cls}`}>{label}</span>
+                  <span className={styles.evTxt}>
+                    {a.ruleId && <span className={styles.rule}>{a.ruleId}</span>}
+                    {a.text}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div className={styles.col} style={{ gap: 16 }}>
+          <div className={styles.cardFlat}>
+            <div className={styles.cardHead}>
+              <span className={styles.sectionLabel}>CALIDAD · EN CAPAS</span>
+            </div>
+            <div className={styles.layers}>
+              {[
+                [1, `Testers ×${testers.length}`, testers.map((a) => `${a.short} · ${a.model}`).join('  ·  '), layerState(['test'])],
+                [2, '¿Tests en verde? · obligatorio', `${testers.map((a) => a.command).join(' · ')} · sin IA`, layerState(['test'], '¿Suite en verde?')],
+                [3, `Revisores ×${reviewers.length} · en paralelo`, reviewers.map((a) => `${a.short} · ${a.model}`).join('  ·  '), layerState(['rev'])],
+                [4, 'Verificador → Aprobador', deciders.map((a) => `${a.short} · ${a.model}`).join('  ·  '), layerState(['dec'])],
+              ].map(([n, title, sub, state]) => (
+                <div key={n as number} className={styles.layer}>
+                  <span className={`${styles.dimTxt} ${styles.mono}`}>{n}</span>
+                  <div>
+                    <div className={styles.lName}>{title}</div>
+                    <div className={styles.lSub}>{sub}</div>
+                  </div>
+                  <span className={styles.lSub}>{state}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className={styles.cardFlat}>
+            <div className={styles.cardHead}>
+              <span className={styles.sectionLabel}>DECISIONES DE ESTA ORDEN</span>
+            </div>
+            {live.decisions.length === 0 && <span className={`${styles.hint} ${styles.cardPadCol}`}>Ninguna todavía.</span>}
+            {live.decisions.map((d, i) => (
+              <div key={i} className={styles.dec}>
+                <span>
+                  <span className={d.ruleId ? styles.rule : styles.ruleGap}>{d.ruleId ?? 'sin regla'}</span>
+                </span>
+                <span>
+                  {d.text}
+                  {!d.ruleId && (
+                    <>
+                      {' '}
+                      — va a la <b>bandeja de enmiendas</b>.
+                    </>
+                  )}
+                </span>
+              </div>
+            ))}
+          </div>
+          {run.state.warnings.length > 0 && (
+            <div className={styles.cardFlat}>
+              <div className={styles.cardHead}>
+                <span className={styles.sectionLabel}>AVISOS</span>
+              </div>
+              {run.state.warnings.map((w) => (
+                <div key={w} className={styles.dec} style={{ gridTemplateColumns: '1fr' }}>
+                  <span className={styles.warn}>⚠ {w}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+/** The style guide's screenshots, to approve the design system by seeing it. */
+function DesignShots({ runId }: { runId: string }) {
+  const [shots, setShots] = useState<DesignShot[] | null>(null);
+  useEffect(() => {
+    invoke<DesignShot[]>('factory_design_shots', { runId })
+      .then(setShots)
+      .catch(() => setShots([]));
+  }, [runId]);
+  if (!shots) return <span className={styles.hint}>cargando las capturas…</span>;
+  if (!shots.length) return null;
+  return (
+    <div className={styles.shotGrid}>
+      {shots.map((s) => (
+        <figure key={s.label}>
+          <a href={s.dataUrl} target="_blank" rel="noreferrer">
+            <img src={s.dataUrl} alt={s.label} />
+          </a>
+          <figcaption className={styles.lSub}>{s.label}</figcaption>
+        </figure>
+      ))}
+    </div>
+  );
+}
+
+/** The designer's screens, in supervised mode, before they're built. */
+function UiSpecView({ spec }: { spec: NonNullable<RunState['uiSpec']> }) {
+  return (
+    <div className={styles.col} style={{ gap: 6, width: '100%' }}>
+      {spec.summary && <span className={styles.hint}>{spec.summary}</span>}
+      {(spec.screens ?? []).map((sc) => (
+        <div key={sc.name} className={styles.decideRow}>
+          <span className={styles.lName}>{sc.name}</span>
+          <span className={styles.hint}>{sc.layout}</span>
+          <span className={styles.lSub}>componentes: {sc.components.join(', ')} · estados: {sc.states.join(', ')}</span>
+          <span className={styles.lSub}>adaptación: {sc.responsive}</span>
+        </div>
+      ))}
+    </div>
+  );
+}

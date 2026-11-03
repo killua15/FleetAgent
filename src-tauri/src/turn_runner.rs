@@ -164,7 +164,7 @@ fn pid_is_alive(pid: u32) -> bool {
 /// SIGTERM first gives a well-behaved process a chance to catch it and
 /// flush/close files before exiting; a short grace window, then SIGKILL,
 /// guarantees it actually goes down either way.
-fn kill_pid_with_grace(pid: u32) {
+pub(crate) fn kill_pid_with_grace(pid: u32) {
     #[cfg(unix)]
     {
         let _ = Command::new("kill").args(["-TERM", &pid.to_string()]).output();

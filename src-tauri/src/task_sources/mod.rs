@@ -247,7 +247,7 @@ fn one_line(text: &str) -> String {
 /// `info/exclude` lives in the common git directory, applies to every worktree
 /// of the clone, and is never committed, so a brief can't be accidentally
 /// staged into someone's PR.
-fn exclude_hangar_dir_locally(worktree: &Path) {
+pub(crate) fn exclude_hangar_dir_locally(worktree: &Path) {
     let Ok(common) = crate::commands::pull_requests::git_capture(worktree, &["rev-parse", "--git-common-dir"]) else { return };
     let common = if Path::new(&common).is_absolute() { Path::new(&common).to_path_buf() } else { worktree.join(common) };
     let exclude = common.join("info").join("exclude");
@@ -604,6 +604,37 @@ pub async fn list_project_tasks<R: tauri::Runtime>(app: tauri::AppHandle<R>, pro
         Ok(TaskFetch { tasks, errors })
     })
     .await?
+}
+
+/// The open tasks of one source, narrowed to one scope (a ClickUp list, a
+/// GitHub repo) — never the whole workspace. What the Factory reads.
+pub(crate) fn fetch_scope(db: &DbConnection, source_id: &str, scope_id: &str, project_path: &std::path::Path) -> Result<Vec<Task>, String> {
+    let (kind, label): (String, String) = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT kind, label FROM task_sources WHERE id = ?1", params![source_id], |row| Ok((row.get(0)?, row.get(1)?))).map_err(|e| e.to_string())?
+    };
+    let link = TaskSourceLink { source_id: source_id.to_string(), kind: kind.clone(), label, scope_id: Some(scope_id.to_string()), branch_template: None };
+    match kind.as_str() {
+        "clickup" => clickup::fetch(&link, &credential_for(db, source_id)?, &config_for(db, source_id)?),
+        "github" => github::fetch(&link, project_path),
+        other => Err(format!("unknown task source: {other}")),
+    }
+}
+
+/// Creates a task in one source's scope; returns its id and url.
+pub(crate) fn create_in_scope(db: &DbConnection, source_id: &str, scope_id: &str, title: &str, body: &str) -> Result<(String, String), String> {
+    let kind: String = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT kind FROM task_sources WHERE id = ?1", params![source_id], |row| row.get(0)).map_err(|e| e.to_string())?
+    };
+    match kind.as_str() {
+        "clickup" => {
+            let config = config_for(db, source_id)?;
+            clickup::create_task(scope_id, &credential_for(db, source_id)?, config.get("userId").and_then(|i| i.as_i64()), title, body)
+        }
+        "github" => github::create_issue(scope_id, title, body),
+        other => Err(format!("unknown task source: {other}")),
+    }
 }
 
 fn credential_for(db: &DbConnection, source_id: &str) -> Result<String, String> {

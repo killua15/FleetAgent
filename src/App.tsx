@@ -46,6 +46,7 @@ import { TreeColumns } from './screens/TreeColumns';
 import { TreeOutline } from './screens/TreeOutline';
 import { ExecRun } from './screens/ExecRun';
 import { Terminals } from './screens/Terminals';
+import { Factory } from './screens/Factory';
 import { CommandPalette } from './screens/CommandPalette';
 import { Placeholder } from './components/Placeholder';
 import { AppErrorOverlay } from './components/ErrorOverlay';
@@ -151,6 +152,8 @@ function Screens() {
       return <ExecRun />;
     case 'terminals':
       return <Terminals />;
+    case 'factory':
+      return <Factory />;
     case 'command-palette':
       return <CommandPalette />;
     default:

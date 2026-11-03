@@ -1,0 +1,591 @@
+/** Where a Factory project's tasks come from. `none`: they live in Hangar. */
+export type FactoryProvider = 'clickup' | 'github' | 'none';
+/** `local`: merged into the local base branch, never pushed. */
+export type FactoryDelivery = 'mr' | 'local';
+export type FactoryMode = 'supervised' | 'delegated' | 'autonomous';
+export type FactoryLoopState = 'stopped' | 'running' | 'paused';
+
+/** A project that joined the Factory, as `factory::store::FactoryProject`. */
+export interface FactoryProject {
+  projectId: string;
+  projectName: string;
+  projectPath: string;
+  providerKind: FactoryProvider;
+  providerSourceId: string | null;
+  /** A ClickUp list id, or a GitHub `owner/repo`: only this project's tasks. */
+  providerScopeId: string | null;
+  providerScopeLabel: string | null;
+  delivery: FactoryDelivery;
+  mode: FactoryMode;
+  appStartCmd: string | null;
+  appUrl: string | null;
+  /** The wizard step the user is on, 1–5; 6 once ▶ Play was pressed. */
+  setupStep: number;
+  loopState: FactoryLoopState;
+  /** The sealed brain version new orders freeze. */
+  brainVersion: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** What the wizard shows about a folder's repo (`factory::setup::RepoStatus`). */
+export interface RepoStatus {
+  exists: boolean;
+  isRepo: boolean;
+  hasCommits: boolean;
+  remoteUrl: string | null;
+  /** `owner/repo` when the remote is a forge Hangar knows. */
+  forgePath: string | null;
+  forge: 'github' | 'gitlab' | null;
+  branch: string | null;
+  hasMain: boolean;
+  hasDev: boolean;
+  /** What a task branch starts from: `dev` when there is one. */
+  baseBranch: string | null;
+}
+
+export type NewFolder = { kind: 'existing'; path: string } | { kind: 'new'; parent: string; name: string };
+
+export const FACTORY_STEPS = ['Proyecto', 'Equipo', 'Brain', 'Tareas', '▶ Play'] as const;
+
+export const MODE_LABEL: Record<FactoryMode, string> = {
+  supervised: 'Supervisado',
+  delegated: 'Delegado',
+  autonomous: 'Autónomo',
+};
+
+export const MODE_HINT: Record<FactoryMode, string> = {
+  supervised: 'Para en el spec y en el diff: tú apruebas cada orden.',
+  delegated: 'Solo para si el brain (Riesgo) marca riesgo.',
+  autonomous: 'No para nunca: los riesgos quedan anotados y en la MR.',
+};
+
+/** Where the project's tasks come from, in a few words, for the header. */
+export function providerShort(p: FactoryProject): string {
+  if (p.providerKind === 'none') return 'local (Hangar)';
+  const name = p.providerKind === 'clickup' ? 'ClickUp' : 'GitHub';
+  return p.providerScopeLabel ? `${name} «${lastSegment(p.providerScopeLabel)}»` : name;
+}
+
+/** `Space / Folder / List` → `List`. */
+export function lastSegment(path: string): string {
+  const parts = path.split(' / ');
+  return parts[parts.length - 1];
+}
+
+/** `/Users/me/Proyects/x` → `~/Proyects/x`, given the home folder. */
+export function tildePath(path: string, home: string | null): string {
+  return home && path.startsWith(home + '/') ? '~' + path.slice(home.length) : path;
+}
+
+// ---------------------------------------------------------------- brain
+
+export const BRAIN_SECTIONS: [string, string][] = [
+  ['prd', 'Producto'],
+  ['dis', 'Diseño'],
+  ['arq', 'Arquitectura'],
+  ['tec', 'Tecnologías'],
+  ['ent', 'Entorno'],
+  ['cod', 'Código'],
+  ['dat', 'Datos'],
+  ['sec', 'Seguridad'],
+  ['cal', 'Calidad'],
+  ['git', 'Git y entrega'],
+  ['dep', 'Despliegue'],
+  ['rsg', 'Riesgo'],
+  ['dec', 'Decisiones'],
+];
+
+export const sectionName = (key: string): string => BRAIN_SECTIONS.find(([k]) => k === key)?.[1] ?? key;
+
+export interface BrainRule {
+  id: string;
+  section: string;
+  level: 'must' | 'should';
+  text: string;
+  check: string | null;
+}
+
+/** What an import found (`factory::brain::Report`). */
+export interface BrainReport {
+  rules: BrainRule[];
+  pending: string[];
+  assigned: string[];
+  unknown: string[];
+  sections: string[];
+  missing: string[];
+  missingRequired: string[];
+  checks: number;
+  markdown: string;
+}
+
+/** What the brain's own check found before sealing. */
+export interface LintFinding {
+  ruleId: string;
+  /** `error` blocks the seal. */
+  severity: 'error' | 'warn';
+  kind: 'sintaxis' | 'herramienta' | 'trampa' | 'factory' | 'entorno';
+  message: string;
+  fix: string;
+}
+
+/** A fixed field of a section of the brain (`factory::decide::Field`). */
+export interface DecisionField {
+  key: string;
+  section: string;
+  label: string;
+  help: string;
+  kind: 'text' | 'list' | 'number' | 'choice';
+  options: string[];
+  level: 'must' | 'should';
+  /** The Factory writes its check. */
+  guarded: boolean;
+  /** Decided by how the Factory works: shown, not edited. */
+  fixed: string | null;
+}
+
+/** A decision or a suggestion of the draft. */
+export interface DecisionItem {
+  id: string;
+  section: string;
+  /** A template field, or null for a free suggestion. */
+  field: string | null;
+  value: string;
+  level: 'must' | 'should';
+  check: string | null;
+  status: 'proposed' | 'confirmed' | 'rejected';
+  by: 'ai' | 'creator' | 'brain' | 'inbox' | 'factory';
+  why: string | null;
+  ruleId: string | null;
+  /** The check it becomes (computed, read-only). */
+  guard?: string | null;
+}
+
+export interface DecisionsView {
+  fields: DecisionField[];
+  items: DecisionItem[];
+  /** The brain was sealed another way since these decisions. */
+  stale: boolean;
+  basedOn: number | null;
+  brainVersion: number | null;
+}
+
+/** A visual reference the creator added. */
+export interface DesignReference {
+  name: string;
+  dataUrl: string | null;
+}
+
+/** A visual direction the AI proposes (`factory::design::Direction`). */
+export interface DesignDirection {
+  name: string;
+  mood: string;
+  colors: string[];
+  font: string;
+  shape: string;
+  library: string;
+  dark: boolean;
+  previewHtml: string;
+}
+
+/** A screenshot of the style guide, to approve. */
+export interface DesignShot {
+  label: string;
+  dataUrl: string;
+}
+
+/** One check of the brain, run on the base before sealing. */
+export interface DryRun {
+  ruleId: string;
+  command: string;
+  /** `activo`: green, the ratchet keeps it · `pendiente`: an order will build it · `roto`: the check or the machine. */
+  status: 'activo' | 'pendiente' | 'roto';
+  kind: string;
+  tail: string;
+}
+
+export interface ActiveCheck {
+  ruleId: string;
+  command: string;
+}
+
+export const LINT_KIND: Record<LintFinding['kind'], string> = {
+  sintaxis: 'sintaxis',
+  herramienta: 'falta en la máquina',
+  trampa: 'trampa conocida',
+  factory: 'choca con la Factory',
+  entorno: 'entorno',
+};
+
+/** Whose a red is, as the chip says it. */
+export const RED_KIND: Record<string, string> = {
+  entorno: 'entorno · no es el código',
+  brain: 'brain · el check falla',
+};
+
+export interface BrainVersion {
+  version: number;
+  path: string;
+  sha: string;
+  ruleCount: number;
+  source: string;
+  sealedAt: string;
+}
+
+export interface SealedBrain extends BrainVersion {
+  rules: BrainRule[];
+  markdown: string;
+}
+
+export interface Amendment {
+  id: string;
+  question: string;
+  orderKey: string | null;
+  provisional: string | null;
+  status: 'open' | 'included' | 'dismissed';
+  includedIn: number | null;
+  createdAt: string;
+}
+
+export const levelLabel = (level: BrainRule['level']) => (level === 'must' ? 'DEBE' : 'DEBERÍA');
+
+// ---------------------------------------------------------------- team
+
+export interface FactoryAgent {
+  id: string;
+  role: 'spec' | 'critic' | 'builder' | 'tester' | 'reviewer_code' | 'reviewer_security' | 'reviewer_ui' | 'reviewer_ux' | 'verifier' | 'approver';
+  group: string;
+  name: string;
+  short: string;
+  duty: string;
+  sections: string[];
+  accountId: string | null;
+  model: string;
+  active: boolean;
+  required: boolean;
+  command: string | null;
+  escalateModel: string | null;
+  note: string | null;
+  position: number;
+}
+
+export interface TeamCheck {
+  problems: string[];
+  warnings: string[];
+}
+
+export interface TeamView {
+  agents: FactoryAgent[];
+  check: TeamCheck;
+}
+
+export const GROUP_HINT: Record<string, string> = {
+  Ingeniería: 'escriben la spec de cada orden',
+  Fabricación: 'escribe el código',
+  Testers: 'cada uno con su modelo y su comando',
+  Revisores: 'en paralelo, cada uno con su sección del brain',
+  Decisión: 'solo recibe órdenes con los tests en verde',
+};
+
+export const EXTRA_TESTERS = [
+  { name: 'Tester de rendimiento', short: 'rendimiento', duty: 'tiempos de respuesta', command: 'locust --headless -t 1m' },
+  { name: 'Tester de contrato', short: 'contrato', duty: 'la API cumple su OpenAPI', command: 'schemathesis run openapi.json' },
+  { name: 'Tester de mutación', short: 'mutación', duty: '¿los tests detectan fallos?', command: 'mutmut run' },
+];
+
+/** `['cod','arq']` → `código · arquitectura`; empty means the rule cited. */
+export function brainLabel(sections: string[]): string {
+  return sections.length ? sections.map((s) => sectionName(s).toLowerCase()).join(' · ') : 'la regla citada';
+}
+
+// ---------------------------------------------------------------- orders
+
+export type OrderStatus = 'todo' | 'running' | 'waiting_limit' | 'waiting_human' | 'stopped' | 'failed' | 'delivered' | 'merged';
+
+export interface FactoryOrder {
+  id: string;
+  key: string;
+  title: string;
+  description: string;
+  criteria: string[];
+  deps: string[];
+  position: number;
+  status: OrderStatus;
+  origin: 'provider' | 'trd' | 'manual';
+  extId: string | null;
+  extUrl: string | null;
+  touchesUi: boolean;
+  rules: string[];
+  brainVersion: number | null;
+  createdAt: string;
+  blockedBy: string[];
+}
+
+export interface PlannedOrder {
+  title: string;
+  description: string;
+  criteria: string[];
+  deps: number[];
+  trdPart: string;
+  rules: string[];
+  touchesUi: boolean;
+}
+
+export interface TrdPlan {
+  orders: PlannedOrder[];
+  coverage: { part: string; orders: number[]; rules: string[] }[];
+  risks: string[];
+  uncovered: string[];
+}
+
+/** The chip an order shows in the queue: colour class and words. */
+export function orderChip(o: FactoryOrder, isNext: boolean): [string, string] {
+  if (o.status === 'todo') return o.blockedBy.length ? ['red', 'bloqueada'] : isNext ? ['acc', '▶ siguiente'] : ['', 'por hacer'];
+  const map: Record<OrderStatus, [string, string]> = {
+    todo: ['', 'por hacer'],
+    running: ['acc', 'en curso'],
+    waiting_limit: ['amber', 'en espera'],
+    waiting_human: ['amber', '✋ te espera'],
+    stopped: ['', 'parada'],
+    failed: ['red', 'fallida'],
+    delivered: ['teal', 'MR abierta'],
+    merged: ['grn', 'fusionada'],
+  };
+  return map[o.status];
+}
+
+/** Where the project's tasks live, in words, for hints. */
+export function providerWhere(p: FactoryProject): string {
+  if (p.providerKind === 'none') return 'el backlog local de Hangar';
+  if (p.providerKind === 'clickup') return `la lista «${lastSegment(p.providerScopeLabel ?? 'ClickUp')}» de ClickUp`;
+  return `las issues de ${p.providerScopeId ?? 'GitHub'}`;
+}
+
+// ---------------------------------------------------------------- the line
+
+export type Station = 'ing' | 'fab' | 'test' | 'rev' | 'dec' | 'ent';
+
+export const STATION_NAME: Record<Station, string> = {
+  ing: 'Ingeniería',
+  fab: 'Fabricación',
+  test: 'Testers',
+  rev: 'Revisión',
+  dec: 'Decisión',
+  ent: 'Entrega',
+};
+
+export interface GateResult {
+  name: string;
+  command: string;
+  ok: boolean;
+  tail: string;
+  /** The text of the brain rules it checks; null for a tester's command. */
+  rule?: string | null;
+  /** Rounds in a row it has been red. */
+  reds: number;
+  /** Whose red it is: the builder's code, the machine, or the check itself. */
+  kind?: 'codigo' | 'entorno' | 'brain' | '';
+}
+
+export interface RunState {
+  spec: Record<string, unknown> | null;
+  feedback: string | null;
+  findings: Record<string, unknown>[];
+  warnings: string[];
+  escalated: boolean;
+  gateOk: boolean;
+  gate: GateResult[];
+  /** `brain_change`: the order touched the brain's files, which only the creator changes. */
+  /** `design_review`: the design system waits for the creator to see it; `ui_spec`: the screens' design, in supervised mode. */
+  humanKind: 'spec_review' | 'diff' | 'approver' | 'credits' | 'merge' | 'brain_change' | 'design_review' | 'ui_spec' | null;
+  /** The designer's spec of this order's screens. */
+  uiSpec?: { summary?: string; screens?: { name: string; layout: string; components: string[]; states: string[]; responsive: string }[]; copy?: string[] } | null;
+  designApproved?: boolean;
+  human: string | null;
+  summary: string | null;
+  /** Brain checks a person said not to run for this order. */
+  waived: string[];
+  /** Brain checks filed as broken: back when a newer brain is sealed. */
+  broken: string[];
+  /** Why each round went back to Fabricación, oldest first. */
+  history: RoundFail[];
+}
+
+export interface FailItem {
+  name: string;
+  detail: string;
+  kind?: 'codigo' | 'entorno' | 'brain' | '';
+}
+
+export interface RoundFail {
+  /** The round that failed (0 is the first pass). */
+  round: number;
+  at: string;
+  /** `stalled`: the builder finished a round without changing anything. */
+  kind: 'gate' | 'review' | 'stalled';
+  items: FailItem[];
+}
+
+export interface FactoryRun {
+  id: string;
+  projectId: string;
+  orderId: string;
+  status: 'running' | 'waiting_limit' | 'waiting_human' | 'stopped' | 'failed' | 'delivered' | 'merged';
+  stage: string;
+  round: number;
+  team: FactoryAgent[];
+  brainVersion: number;
+  branch: string;
+  worktree: string;
+  base: string;
+  resumeAt: string | null;
+  mrUrl: string | null;
+  costUsd: number;
+  error: string | null;
+  state: RunState;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface StepRow {
+  id: string;
+  runId: string;
+  agentId: string | null;
+  label: string;
+  model: string;
+  station: Station;
+  status: 'running' | 'done' | 'failed' | 'wait' | 'human' | 'skipped' | 'stopped';
+  round: number;
+  note: string | null;
+  costUsd: number;
+  startedAt: string;
+  finishedAt: string | null;
+  /** Points of the 5-hour session / week the step spent (null: not read yet). */
+  usageSession?: number | null;
+  usageWeekly?: number | null;
+}
+
+export interface ActivityRow {
+  id: number;
+  stepId: string | null;
+  station: Station;
+  at: string;
+  kind: 'read' | 'edit' | 'cmd' | 'brain' | 'warn' | 'gate' | 'text';
+  text: string;
+  ruleId: string | null;
+}
+
+export interface DecisionRow {
+  stepId: string | null;
+  station: Station;
+  at: string;
+  ruleId: string | null;
+  text: string;
+}
+
+export interface DayRow {
+  orderKey: string;
+  title: string;
+  status: string;
+  resumeAt: string | null;
+  steps: StepRow[];
+}
+
+export interface LiveData {
+  run: FactoryRun | null;
+  order: FactoryOrder | null;
+  steps: StepRow[];
+  activity: ActivityRow[];
+  decisions: DecisionRow[];
+  today: DayRow[];
+  averages: Partial<Record<Station, number>>;
+  /** What the order in view has spent so far, per account. */
+  usage?: UsageSpent[];
+}
+
+/** What an order spent of one account, in usage points. */
+export interface UsageSpent {
+  account: string;
+  session: number | null;
+  weekly: number | null;
+}
+
+/** «$0,42» — the API-price equivalent of a turn. */
+export const usd = (n: number) => `$${n.toFixed(2).replace('.', ',')}`;
+
+/** «≈ +3 % 5 h · +1 % sem.» */
+export function pointsLabel(session: number | null | undefined, weekly: number | null | undefined): string | null {
+  const parts = [session != null ? `+${session.toFixed(0)} % 5 h` : null, weekly != null ? `+${weekly.toFixed(0)} % sem.` : null].filter(Boolean);
+  return parts.length ? `≈ ${parts.join(' · ')}` : null;
+}
+
+export interface Delivery {
+  runId: string;
+  orderKey: string;
+  title: string;
+  status: FactoryRun['status'];
+  stage: string;
+  mrUrl: string | null;
+  rounds: number;
+  roundRules: string[];
+  rulesCited: number;
+  costUsd: number;
+  startedAt: string;
+  finishedAt: string | null;
+  error: string | null;
+  /** What the order cost each account, in usage points. */
+  usage: UsageSpent[];
+}
+
+/** What Claude Code said about an account's limits with its last turn. */
+export interface RateNote {
+  status: 'allowed' | 'allowed_warning' | 'rejected' | string;
+  window: string | null;
+  resetsAt: string | null;
+}
+
+/** One account of the team, as «En vivo» shows it. */
+export interface AccountUsage {
+  accountId: string;
+  name: string;
+  provider: string;
+  /** % of the 5-hour session and of the week, at the last reading. */
+  session: number | null;
+  weekly: number | null;
+  sampledAt: string | null;
+  note: RateNote | null;
+  resetsAt: string | null;
+}
+
+/** `2026-10-30T13:46:20Z` → `13:46`, local time. */
+export function hhmm(iso: string): string {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** Seconds → `0:13:40`. */
+export function countdown(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
+
+// ---------------------------------------------------------------- preparation
+
+/** One thing the line needs from the project (`factory::prepare::Check`). */
+export interface PrepCheck {
+  id: string;
+  label: string;
+  status: 'ok' | 'fixed' | 'todo' | 'warn' | 'blocked';
+  detail: string;
+  action: 'apply_testers' | 'team' | 'brain' | 'git_identity' | 'tasks' | 'brain_cleanup' | null;
+}
+
+/** A tester whose command the brain says differently. */
+export interface TesterSuggestion {
+  agentId: string;
+  name: string;
+  current: string | null;
+  currentActive: boolean;
+  suggested: string | null;
+  active: boolean;
+}

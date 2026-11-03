@@ -83,6 +83,16 @@ export function QueueIcon() {
   );
 }
 
+/** A sawtooth roof and a chimney — the Factory, not the emoji. */
+export function FactoryIcon() {
+  return (
+    <svg {...base} aria-hidden="true">
+      <path d="M2 13.5V7.5l3.5 2.5V7.5L9 10V4.5h2.5v9z" />
+      <path d="M2 13.5h12M11.5 6.5H14v7" />
+    </svg>
+  );
+}
+
 /** Two branches meeting — a pull request, not a speech bubble. */
 export function PullRequestIcon() {
   return (

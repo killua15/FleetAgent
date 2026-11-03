@@ -35,6 +35,7 @@ export type ScreenName =
   | 'tree-columns'
   | 'tree-outline'
   | 'terminals'
+  | 'factory'
   | 'command-palette';
 
 export interface NavEntry {

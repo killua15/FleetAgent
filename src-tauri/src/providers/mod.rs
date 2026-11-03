@@ -71,8 +71,12 @@ pub fn permission_args(provider: &str, mode: Mode) -> &'static [&'static str] {
         // Codex necesita los dos ejes: sin `--sandbox` seguiría sin poder
         // escribir aunque no pregunte, y "no pregunta pero no puede hacer nada"
         // es la peor combinación posible.
-        (false, Mode::Plan) => &["--ask-for-approval", "untrusted", "--sandbox", "read-only"],
-        (false, Mode::AskEdits) => &["--ask-for-approval", "untrusted"],
+        // Codex 0.166 ya no acepta `untrusted`: solo `on-request` y `never`.
+        // Plan no puede escribir (sandbox de solo lectura), así que no tiene
+        // nada que preguntar; AskEdits arranca igual de cerrado y pide permiso
+        // para salir del sandbox antes de cada escritura.
+        (false, Mode::Plan) => &["--ask-for-approval", "never", "--sandbox", "read-only"],
+        (false, Mode::AskEdits) => &["--ask-for-approval", "on-request", "--sandbox", "read-only"],
         (false, Mode::AutoEdit) => &["--ask-for-approval", "on-request", "--sandbox", "workspace-write"],
         (false, Mode::Yolo) => &["--ask-for-approval", "never", "--sandbox", "danger-full-access"],
     }
@@ -1091,6 +1095,15 @@ mod tests {
         let codex = permission_args("codex", Mode::Yolo);
         assert!(codex.contains(&"--ask-for-approval"), "{codex:?}");
         assert!(!codex.contains(&"--permission-mode"), "la bandera de Claude no existe en Codex: {codex:?}");
+
+        // Codex 0.166 rechaza `untrusted` y la terminal no llega a abrirse:
+        // `invalid value 'untrusted' for '--ask-for-approval'`.
+        for mode in [Mode::Plan, Mode::AskEdits, Mode::AutoEdit, Mode::Yolo] {
+            let args = permission_args("codex", mode);
+            let policy = args.windows(2).find(|w| w[0] == "--ask-for-approval").map(|w| w[1]);
+            assert!(matches!(policy, Some("on-request" | "never")), "{mode:?}: {args:?}");
+        }
+        assert_eq!(permission_args("codex", Mode::Plan), &["--ask-for-approval", "never", "--sandbox", "read-only"]);
     }
 
     /// Mismo cuidado que con los permisos: la bandera de instrucciones de

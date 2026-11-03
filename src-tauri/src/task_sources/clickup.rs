@@ -54,6 +54,31 @@ fn get(url: &str, token: &str) -> Result<serde_json::Value, String> {
     serde_json::from_str(&body).map_err(|e| format!("could not read ClickUp's answer: {e}"))
 }
 
+/// Creates a task in one list, assigned to whoever owns the token, and
+/// returns its id and url. The description is markdown.
+pub fn create_task(list_id: &str, token: &str, user_id: Option<i64>, name: &str, description: &str) -> Result<(String, String), String> {
+    let client = reqwest::blocking::Client::builder().timeout(TIMEOUT).build().map_err(|e| format!("could not start an HTTP client: {e}"))?;
+    let mut body = serde_json::json!({ "name": name, "markdown_description": description });
+    if let Some(id) = user_id {
+        body["assignees"] = serde_json::json!([id]);
+    }
+    let response = client
+        .post(format!("{API}/list/{list_id}/task"))
+        .header("Authorization", token)
+        .json(&body)
+        .send()
+        .map_err(|e| format!("request to ClickUp failed: {e}"))?;
+    let status = response.status();
+    let text = response.text().unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("ClickUp answered {}: {}", status.as_u16(), text.trim()));
+    }
+    let created: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("could not read ClickUp's answer: {e}"))?;
+    let id = created.get("id").and_then(|i| i.as_str()).ok_or("ClickUp created the task but didn't say its id")?.to_string();
+    let url = created.get("url").and_then(|u| u.as_str()).map(str::to_string).unwrap_or_else(|| format!("https://app.clickup.com/t/{id}"));
+    Ok((id, url))
+}
+
 /// Confirms a token works and collects what the fetch will need, so a wrong
 /// token fails at the form where it can be fixed rather than at the panel.
 pub fn verify(token: &str) -> Result<Whoami, String> {
