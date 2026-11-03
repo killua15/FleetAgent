@@ -6,6 +6,7 @@
 
 pub mod agent;
 pub mod brain;
+pub mod decide;
 pub mod env;
 pub mod limits;
 pub mod line;

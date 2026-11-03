@@ -5,6 +5,7 @@ import { toastError, toastSuccess } from '../../components/ErrorOverlay';
 import { BRAIN_SECTIONS, levelLabel, type ActiveCheck, type Amendment, type BrainReport, type BrainRule, type FactoryProject, type SealedBrain } from '../../types/factory';
 import { ImportReport } from './BrainImport';
 import { BrainSession } from './BrainSession';
+import { DecisionsEditor } from './DecisionsEditor';
 import styles from '../Factory.module.css';
 
 const FORMATS: { format: 'brain' | 'agents' | 'claude'; file: string }[] = [
@@ -29,6 +30,8 @@ export function BrainView({ project, onSealed }: { project: FactoryProject; onSe
   const [draft, setDraft] = useState<BrainRule[] | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [fromEdit, setFromEdit] = useState(false);
+  const [deciding, setDeciding] = useState(false);
+  const [fromDecisions, setFromDecisions] = useState(false);
 
   const load = useCallback(() => {
     invoke<SealedBrain | null>('factory_brain_get', { projectId: project.projectId, version: null })
@@ -56,12 +59,15 @@ export function BrainView({ project, onSealed }: { project: FactoryProject; onSe
     if (!report) return;
     setSealing(true);
     try {
-      const next = await invoke<SealedBrain>('factory_brain_seal', { projectId: project.projectId, markdown: report.markdown, source: fromEdit ? 'edit' : 'amendment', active: active ?? null });
+      const next = await invoke<SealedBrain>('factory_brain_seal', { projectId: project.projectId, markdown: report.markdown, source: fromDecisions ? 'decisions' : fromEdit ? 'edit' : 'amendment', active: active ?? null });
+      if (fromDecisions) await invoke('factory_decisions_sealed', { projectId: project.projectId });
       toastSuccess(`Brain v${next.version} sellado · las órdenes nuevas lo congelan; las que están en curso siguen con la suya`);
       setReport(null);
       setAmending(false);
       setDraft(null);
       setFromEdit(false);
+      setFromDecisions(false);
+      setDeciding(false);
       onSealed();
       load();
     } catch (e) {
@@ -116,12 +122,30 @@ export function BrainView({ project, onSealed }: { project: FactoryProject; onSe
             {format === 'brain' ? `Exportar ${file}` : file}
           </button>
         ))}
+        <button className={`${deciding ? styles.btnPrimary : styles.btn} ${styles.sm}`} onClick={() => setDeciding(!deciding)}>
+          {deciding ? 'Cerrar las decisiones' : 'Decisiones'}
+        </button>
         <button className={`${styles.btnPrimary} ${styles.sm}`} onClick={() => setAmending(!amending)}>
           {amending ? 'Cerrar la enmienda' : `Sesión de enmienda → v${brain.version + 1}`}
         </button>
       </div>
 
       <Legend />
+
+      {deciding && (
+        <DecisionsEditor
+          projectId={project.projectId}
+          onReview={(r) => {
+            setReport(r);
+            setFromDecisions(true);
+            setFromEdit(false);
+            setAmending(false);
+          }}
+        />
+      )}
+      {fromDecisions && report && (
+        <ImportReport report={report} from="decisiones" nextVersion={brain.version + 1} sealing={sealing} onSeal={seal} projectId={project.projectId} />
+      )}
 
       {draft && changes > 0 && (
         <div className={styles.bannerAmber}>

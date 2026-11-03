@@ -350,6 +350,12 @@ const MIGRATIONS: &[Migration] = &[
         run: factory_check_state_table,
         transactional: true,
     },
+    Migration {
+        version: 45,
+        name: "factory_brain_draft",
+        run: factory_brain_draft_table,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -1201,6 +1207,20 @@ fn factory_projects_table(conn: &Connection) -> Result<(), String> {
 /// The line at work: one run per order (its frozen team and brain, the stage
 /// it's at, why it waits), each agent's step with its times, what it did, and
 /// every decision with the rule it cites.
+fn factory_brain_draft_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(FACTORY_DRAFT_DDL).map_err(|e| format!("could not create the brain draft table: {e}"))
+}
+
+/// The creator's decisions as they're being made: what the AI proposed, what
+/// the creator confirmed, the suggestions — the source the next brain version
+/// is rendered from. `based_on` is the version it was last sealed as.
+pub(crate) const FACTORY_DRAFT_DDL: &str = "CREATE TABLE IF NOT EXISTS factory_brain_draft (
+  project_id  TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  items       TEXT NOT NULL,
+  based_on    INTEGER,
+  updated_at  TEXT NOT NULL
+);";
+
 fn factory_check_state_table(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(FACTORY_CHECKS_DDL).map_err(|e| format!("could not create the check state table: {e}"))
 }
@@ -1377,7 +1397,7 @@ CREATE TABLE IF NOT EXISTS factory_amendments (
 /// Every Factory migration's DDL, in order — what the Factory's own tests
 /// build their in-memory database from.
 #[cfg(test)]
-pub(crate) const FACTORY_DDLS: &[&str] = &[FACTORY_PROJECTS_DDL, FACTORY_BRAIN_DDL, FACTORY_AGENTS_DDL, FACTORY_ORDERS_DDL, FACTORY_LINE_DDL, FACTORY_CHECKS_DDL];
+pub(crate) const FACTORY_DDLS: &[&str] = &[FACTORY_PROJECTS_DDL, FACTORY_BRAIN_DDL, FACTORY_AGENTS_DDL, FACTORY_ORDERS_DDL, FACTORY_LINE_DDL, FACTORY_CHECKS_DDL, FACTORY_DRAFT_DDL];
 
 pub(crate) const FACTORY_PROJECTS_DDL: &str = "CREATE TABLE IF NOT EXISTS factory_projects (
   project_id           TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,

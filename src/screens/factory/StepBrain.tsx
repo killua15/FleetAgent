@@ -5,10 +5,11 @@ import { toastError, toastSuccess } from '../../components/ErrorOverlay';
 import type { ActiveCheck, BrainReport, FactoryProject, SealedBrain } from '../../types/factory';
 import { ImportReport } from './BrainImport';
 import { BrainSession } from './BrainSession';
+import { DecisionsEditor } from './DecisionsEditor';
 import { StepFoot } from './Wizard';
 import styles from '../Factory.module.css';
 
-type Mode = 'chat' | 'guide' | 'file';
+type Mode = 'decide' | 'chat' | 'guide' | 'file';
 
 /**
  * Step 3 · Brain: three ways to a BRAIN.md — a conversation here, a guide for
@@ -26,7 +27,7 @@ export function StepBrain({
   onBack: () => void;
   onNext: () => void;
 }) {
-  const [mode, setMode] = useState<Mode>('chat');
+  const [mode, setMode] = useState<Mode>('decide');
   const [report, setReport] = useState<BrainReport | null>(null);
   const [from, setFrom] = useState('');
   const [draft, setDraft] = useState<string | null>(null);
@@ -69,9 +70,10 @@ export function StepBrain({
       const next = await invoke<SealedBrain>('factory_brain_seal', {
         projectId: project.projectId,
         markdown: report.markdown,
-        source: mode === 'chat' ? 'session' : mode === 'guide' ? 'guide' : 'import',
+        source: mode === 'decide' ? 'decisions' : mode === 'chat' ? 'session' : mode === 'guide' ? 'guide' : 'import',
         active: active ?? null,
       });
+      if (mode === 'decide') await invoke('factory_decisions_sealed', { projectId: project.projectId });
       setSealed(next);
       setReport(null);
       onSealed(next);
@@ -104,11 +106,14 @@ export function StepBrain({
     <>
       <div className={styles.stepBody}>
         <div className={styles.row}>
-          <span className={styles.lead}>El brain: lo defines en una conversación con la IA y lo sellas</span>
+          <span className={styles.lead}>El brain: las decisiones del proyecto. Tú decides; la IA propone</span>
           <span className={styles.spacer} />
           {sealed && <span className={styles.chipAcc}>📖 v{sealed.version} · sellado</span>}
           <span className={styles.hint}>Empezar desde</span>
           <div className={styles.seg}>
+            <button aria-pressed={mode === 'decide'} onClick={() => setMode('decide')}>
+              Decidir por secciones
+            </button>
             <button aria-pressed={mode === 'chat'} onClick={() => setMode('chat')}>
               Conversación aquí
             </button>
@@ -121,6 +126,18 @@ export function StepBrain({
           </div>
         </div>
 
+        {mode === 'decide' ? (
+          <div className={styles.col} style={{ gap: 16 }}>
+            <DecisionsEditor
+              projectId={project.projectId}
+              onReview={(r) => {
+                setReport(r);
+                setFrom('decisiones');
+              }}
+            />
+            {report && <ImportReport report={report} from={from} nextVersion={nextVersion} sealing={sealing} onSeal={seal} projectId={project.projectId} />}
+          </div>
+        ) : (
         <div className={styles.session}>
           {mode === 'chat' ? (
             <BrainSession projectId={project.projectId} base={draft} onGenerated={(md) => show(md, 'generado en la sesión')} />
@@ -176,6 +193,7 @@ export function StepBrain({
           )}
           <ImportReport report={report} from={from} nextVersion={nextVersion} sealing={sealing} onSeal={seal} projectId={project.projectId} onComplete={report?.missingRequired.length ? completeInChat : undefined} />
         </div>
+        )}
       </div>
       <StepFoot step={3} hint={hint} onBack={onBack} onNext={onNext} nextDisabled={!sealed} />
     </>

@@ -84,7 +84,7 @@ pub fn remove(db: &DbConnection, root: Option<&Path>, project_id: &str, delete_f
     {
         let mut conn = db.0.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
-        for table in ["factory_check_state", "factory_brain_rules", "factory_brain_versions", "factory_amendments", "factory_runs", "factory_orders", "factory_agents", "factory_projects"] {
+        for table in ["factory_brain_draft", "factory_check_state", "factory_brain_rules", "factory_brain_versions", "factory_amendments", "factory_runs", "factory_orders", "factory_agents", "factory_projects"] {
             tx.execute(&format!("DELETE FROM {table} WHERE project_id = ?1"), params![project_id]).map_err(|e| e.to_string())?;
         }
         tx.commit().map_err(|e| e.to_string())?;

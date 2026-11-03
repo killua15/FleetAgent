@@ -154,7 +154,7 @@ pub fn save_plan(conn: &rusqlite::Connection, project_id: &str, prefix: &str, pl
 }
 
 /// The spec agent: who plans and writes specs.
-fn spec_agent(conn: &rusqlite::Connection, project_id: &str) -> Result<(String, String), String> {
+pub(crate) fn spec_agent(conn: &rusqlite::Connection, project_id: &str) -> Result<(String, String), String> {
     let team = super::team::load(conn, project_id)?;
     let spec = team.iter().find(|a| a.role == "spec").ok_or("el equipo no tiene spec writer")?;
     Ok((spec.account_id.clone().ok_or("el spec writer no tiene cuenta")?, spec.model.clone()))

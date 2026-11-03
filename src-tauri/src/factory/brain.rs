@@ -409,8 +409,8 @@ pub fn seal(conn: &Connection, root: &Path, project_id: &str, project_name: &str
     conn.execute("UPDATE factory_projects SET brain_version = ?2, updated_at = ?3 WHERE project_id = ?1", params![project_id, next, Utc::now().to_rfc3339()])
         .map_err(|e| e.to_string())?;
     // Questions this version answered leave the inbox — an amendment
-    // session answers them; editing a rule by hand doesn't.
-    if source != "edit" {
+    // session answers them; a hand edit or the decisions editor doesn't.
+    if source == "amendment" || source == "session" {
         conn.execute("UPDATE factory_amendments SET status = 'included', included_in = ?2 WHERE project_id = ?1 AND status = 'open' AND ?2 > 1", params![project_id, next])
             .map_err(|e| e.to_string())?;
     }

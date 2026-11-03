@@ -1947,3 +1947,72 @@ details[open] > summary.gateHead::before {
   align-items: baseline;
   cursor: pointer;
 }
+
+/* ---- the creator's decisions ---- */
+
+.decide {
+  min-width: 0;
+}
+
+.decideGrid {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 16px;
+  padding: 0 16px 16px;
+  align-items: start;
+}
+
+.decideRow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  min-width: 0;
+}
+
+.decideHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.decideProposal {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px dashed var(--amber);
+  background: color-mix(in srgb, var(--amber) 8%, transparent);
+}
+
+.decideGuard {
+  font: 400 10.5px var(--font-mono);
+  color: var(--teal);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.decideFree {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.decideAdd {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+@media (max-width: 760px) {
+  .decideGrid {
+    grid-template-columns: 1fr;
+  }
+}

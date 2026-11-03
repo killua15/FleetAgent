@@ -128,6 +128,47 @@ export interface LintFinding {
   fix: string;
 }
 
+/** A fixed field of a section of the brain (`factory::decide::Field`). */
+export interface DecisionField {
+  key: string;
+  section: string;
+  label: string;
+  help: string;
+  kind: 'text' | 'list' | 'number' | 'choice';
+  options: string[];
+  level: 'must' | 'should';
+  /** The Factory writes its check. */
+  guarded: boolean;
+  /** Decided by how the Factory works: shown, not edited. */
+  fixed: string | null;
+}
+
+/** A decision or a suggestion of the draft. */
+export interface DecisionItem {
+  id: string;
+  section: string;
+  /** A template field, or null for a free suggestion. */
+  field: string | null;
+  value: string;
+  level: 'must' | 'should';
+  check: string | null;
+  status: 'proposed' | 'confirmed' | 'rejected';
+  by: 'ai' | 'creator' | 'brain' | 'inbox' | 'factory';
+  why: string | null;
+  ruleId: string | null;
+  /** The check it becomes (computed, read-only). */
+  guard?: string | null;
+}
+
+export interface DecisionsView {
+  fields: DecisionField[];
+  items: DecisionItem[];
+  /** The brain was sealed another way since these decisions. */
+  stale: boolean;
+  basedOn: number | null;
+  brainVersion: number | null;
+}
+
 /** One check of the brain, run on the base before sealing. */
 export interface DryRun {
   ruleId: string;
