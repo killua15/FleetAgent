@@ -329,7 +329,8 @@ export interface RunState {
   escalated: boolean;
   gateOk: boolean;
   gate: GateResult[];
-  humanKind: 'spec_review' | 'diff' | 'approver' | 'credits' | 'merge' | null;
+  /** `brain_change`: the order touched the brain's files, which only the creator changes. */
+  humanKind: 'spec_review' | 'diff' | 'approver' | 'credits' | 'merge' | 'brain_change' | null;
   human: string | null;
   summary: string | null;
   /** Brain checks a person said not to run for this order. */
@@ -463,7 +464,7 @@ export interface PrepCheck {
   label: string;
   status: 'ok' | 'fixed' | 'todo' | 'warn' | 'blocked';
   detail: string;
-  action: 'apply_testers' | 'team' | 'brain' | 'git_identity' | 'tasks' | null;
+  action: 'apply_testers' | 'team' | 'brain' | 'git_identity' | 'tasks' | 'brain_cleanup' | null;
 }
 
 /** A tester whose command the brain says differently. */

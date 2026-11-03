@@ -96,6 +96,35 @@ pub fn next(conn: &Connection, project_id: &str) -> Result<Option<Order>, String
 
 /// Order 0: «Preparar el proyecto», first in the queue, for a project whose
 /// repo is still empty. Added once.
+/// The order that takes the brain out of the repo — its `BRAIN.md`, and a
+/// `CLAUDE.md`/`AGENTS.md` that imports it — so agents read the one brain
+/// Hangar holds, not the copy each branch carried. First in the queue; the
+/// only order allowed to touch those files.
+pub fn add_brain_cleanup(conn: &Connection, project_id: &str, prefix: &str, files: &[String]) -> Result<Option<String>, String> {
+    if list(conn, project_id)?.iter().any(|o| o.origin == "brain_cleanup" && o.status != "merged" && o.status != "delivered") {
+        return Ok(None);
+    }
+    let key = next_key(conn, project_id, prefix)?;
+    let id = insert(
+        conn,
+        project_id,
+        &NewOrder {
+            key: key.clone(),
+            title: "Sacar el brain del repo".into(),
+            description: format!(
+                "El brain vive en Hangar y es uno solo. El repo tiene una copia ({}) que cada rama arrastra y los agentes leen, y que no coincide con el brain vigente. Quitarla: borrar BRAIN.md y quitar la importación @BRAIN.md de CLAUDE.md/AGENTS.md, conservando cualquier otra instrucción que tengan. Nada más.",
+                files.join(", ")
+            ),
+            criteria: vec!["BRAIN.md no está en el repo.".into(), "Ningún CLAUDE.md ni AGENTS.md importa @BRAIN.md.".into(), "No cambia nada más.".into()],
+            origin: "brain_cleanup".into(),
+            ..Default::default()
+        },
+    )?;
+    conn.execute("UPDATE factory_orders SET position = (SELECT COALESCE(MIN(position), 0) - 1 FROM factory_orders WHERE project_id = ?1) WHERE id = ?2", params![project_id, id])
+        .map_err(|e| e.to_string())?;
+    Ok(Some(key))
+}
+
 pub fn add_bootstrap(conn: &Connection, project_id: &str, prefix: &str) -> Result<bool, String> {
     if list(conn, project_id)?.iter().any(|o| o.origin == "bootstrap") {
         return Ok(false);

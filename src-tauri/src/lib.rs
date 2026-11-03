@@ -565,6 +565,7 @@ pub fn run() {
             factory::looping::factory_start_anyway,
             factory::looping::factory_order_retry,
             factory::prepare::factory_prepare,
+            factory::prepare::factory_brain_cleanup_order,
             knowledge_sources::list_knowledge_sources,
             knowledge_sources::save_knowledge_source,
             knowledge_sources::delete_knowledge_source,

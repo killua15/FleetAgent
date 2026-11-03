@@ -66,6 +66,14 @@ export function Preparation({
       } catch (e) {
         toastError(String(e));
       }
+    } else if (action === 'brain_cleanup') {
+      try {
+        const key = await invoke<string | null>('factory_brain_cleanup_order', { projectId });
+        toastSuccess(key ? `${key} «Sacar el brain del repo» va primera en la cola` : 'El repo ya no lleva copia del brain');
+        run(false);
+      } catch (e) {
+        toastError(String(e));
+      }
     } else if (action === 'team') onGoStep(2);
     else if (action === 'brain') onGoStep(3);
     else if (action === 'tasks') onGoStep(4);
@@ -78,6 +86,7 @@ export function Preparation({
     brain: 'Ir a Brain',
     tasks: 'Ir a Tareas',
     git_identity: 'Configurar',
+    brain_cleanup: 'Crear la orden',
   };
 
   const pending = checks?.some((c) => c.status === 'todo');

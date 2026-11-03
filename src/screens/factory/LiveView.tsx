@@ -313,6 +313,20 @@ export function LiveView({
               </button>
             </>
           )}
+          {run.state.humanKind === 'brain_change' && (
+            <>
+              <button
+                className={`${styles.btnPrimary} ${styles.sm}`}
+                title="Devuelve esos archivos a como están en la base, con un commit en la rama, y la orden sigue"
+                onClick={() => onResolve('revert_protected')}
+              >
+                Deshacer y seguir
+              </button>
+              <button className={`${styles.btn} ${styles.sm}`} title="Los cambios se quedan en la rama. El brain de Hangar no cambia: para eso, edítalo tú." onClick={() => onResolve('accept_protected')}>
+                Dejar los cambios
+              </button>
+            </>
+          )}
           {run.state.humanKind === 'merge' && (
             <button className={`${styles.btnPrimary} ${styles.sm}`} onClick={() => onResolve('retry')}>
               Reintentar la entrega
@@ -348,7 +362,7 @@ export function LiveView({
           {!explained && (
             <button
               className={`${styles.btn} ${styles.sm}`}
-              title="Sigue en la misma etapa con el equipo tal como está ahora en Equipo"
+              title="Vuelve a juzgar con el brain, el equipo y la máquina de ahora: si ya está en verde, sigue; si no, va al builder"
               onClick={() => onResolve('retry')}
             >
               Reintentar donde quedó

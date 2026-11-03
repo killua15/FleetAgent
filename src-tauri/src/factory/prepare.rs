@@ -203,6 +203,29 @@ pub fn prepare(db: &DbConnection, project_id: &str, git_env: &[(String, String)]
     // From here on, without the lock: the filesystem, the login shell, the
     // keychain.
 
+    // One brain: a copy in the repo is read by every agent and carried by
+    // every branch, and it isn't the one Hangar holds.
+    if setup::repo_status(dir).has_commits {
+        let in_repo = brain_in_repo(dir);
+        if !in_repo.is_empty() {
+            let queued = {
+                let conn = db.0.lock().map_err(|e| e.to_string())?;
+                orders::list(&conn, project_id)?.iter().any(|o| o.origin == "brain_cleanup" && o.status != "merged" && o.status != "delivered")
+            };
+            out.push(check(
+                "brain_repo",
+                "Brain en el repo",
+                "warn",
+                if queued {
+                    format!("{} · ya hay una orden en la cola para sacarlo", in_repo.join(", "))
+                } else {
+                    format!("{}: los agentes leen esa copia y no el brain de Hangar. Crea la orden que la saca.", in_repo.join(", "))
+                },
+                (!queued).then_some("brain_cleanup"),
+            ));
+        }
+    }
+
     // The machine, as the brain's «Entorno» says it must be: a red here would
     // otherwise be found by a builder that can't fix it.
     if let Some(s) = &sealed {
@@ -254,6 +277,47 @@ pub fn prepare(db: &DbConnection, project_id: &str, git_env: &[(String, String)]
 
     out.extend(queue_checks);
     Ok(out)
+}
+
+/// The brain's copies on the base branch: a versioned `BRAIN.md`, and any
+/// `CLAUDE.md`/`AGENTS.md` that imports it.
+pub fn brain_in_repo(dir: &Path) -> Vec<String> {
+    let base = setup::repo_status(dir).base_branch.unwrap_or_else(|| "HEAD".into());
+    let Ok(out) = std::process::Command::new("git").args(["ls-tree", "-r", "--name-only", &base]).current_dir(dir).output() else { return Vec::new() };
+    let files = String::from_utf8_lossy(&out.stdout).to_string();
+    let mut found = Vec::new();
+    for f in files.lines() {
+        let name = f.rsplit('/').next().unwrap_or(f).to_uppercase();
+        if name == "BRAIN.MD" {
+            found.push(f.to_string());
+        } else if name == "CLAUDE.MD" || name == "AGENTS.MD" {
+            let text = std::process::Command::new("git").args(["show", &format!("{base}:{f}")]).current_dir(dir).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+            if text.contains("@BRAIN.md") {
+                found.push(format!("{f} (importa @BRAIN.md)"));
+            }
+        }
+    }
+    found
+}
+
+/// «Sacar el brain del repo» from the preparation.
+#[tauri::command]
+pub async fn factory_brain_cleanup_order<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<Option<String>, String> {
+    crate::blocking::run_blocking(move || {
+        let db = app.state::<DbConnection>();
+        let dir = {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            super::store::get(&conn, &project_id)?.project_path
+        };
+        let files = brain_in_repo(Path::new(&dir));
+        if files.is_empty() {
+            return Ok(None);
+        }
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let name = super::store::get(&conn, &project_id)?.project_name;
+        orders::add_brain_cleanup(&conn, &project_id, &orders::key_prefix(&name), &files)
+    })
+    .await?
 }
 
 /// The blocking problems, in one sentence each, or `Ok`.
@@ -331,6 +395,33 @@ mod tests {
         assert_eq!(tools.status, "blocked");
         assert!(tools.detail.contains("definitely-not-installed-xyz"));
         assert!(blocking(&checks).is_err());
+    }
+
+    #[test]
+    fn a_brain_copy_in_the_repo_is_found_and_an_order_takes_it_out_first() {
+        let w = line::tests::world("autonomous", "local", "true");
+        let git = |args: &[&str]| std::process::Command::new("git").args(args).current_dir(&w.repo).output().unwrap();
+        git(&["checkout", "-q", "dev"]);
+        std::fs::write(w.repo.join("BRAIN.md"), "## Git\n- K8 · DEBE · x\n").unwrap();
+        std::fs::write(w.repo.join("CLAUDE.md"), "@BRAIN.md\n").unwrap();
+        git(&["add", "-A"]);
+        let id = setup::tests_identity();
+        let mut c = std::process::Command::new("git");
+        c.args(["commit", "-q", "-m", "brain"]).current_dir(&w.repo);
+        for (k, v) in &id {
+            c.env(k, v);
+        }
+        c.output().unwrap();
+        let found = brain_in_repo(&w.repo);
+        assert_eq!(found, vec!["BRAIN.md".to_string(), "CLAUDE.md (importa @BRAIN.md)".to_string()]);
+        let checks = prepare(&w.db, "p1", &id, false).unwrap();
+        let c = checks.iter().find(|c| c.id == "brain_repo").unwrap();
+        assert_eq!((c.status, c.action), ("warn", Some("brain_cleanup")));
+        let conn = w.db.0.lock().unwrap();
+        let key = orders::add_brain_cleanup(&conn, "p1", "VET", &found).unwrap().unwrap();
+        let first = orders::list(&conn, "p1").unwrap().into_iter().min_by_key(|o| o.position).unwrap();
+        assert_eq!((first.key, first.origin.as_str()), (key, "brain_cleanup"));
+        assert!(orders::add_brain_cleanup(&conn, "p1", "VET", &found).unwrap().is_none(), "one at a time");
     }
 
     #[test]

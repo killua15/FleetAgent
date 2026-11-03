@@ -78,6 +78,9 @@ pub fn lint_static(rules: &[Rule], sample_key: &str) -> Vec<Finding> {
         if compares_main.is_match(cmd) {
             out.push(finding(r, "error", "factory", format!("compara con `main`, pero la Factory corta cada orden desde `{BASE}`: nunca pasará"), format!("Compara con `{BASE}` (`{BASE}...HEAD`).")));
         }
+        if cmd.contains("BRAIN.md") {
+            out.push(finding(r, "error", "factory", "comprueba el BRAIN.md del repo, pero el brain vive en Hangar y es uno solo: el repo no debe llevar copia", "Quita esta regla o su check."));
+        }
         if quiet_grep_after_a_talker(cmd) {
             out.push(finding(
                 r,
@@ -242,6 +245,7 @@ mod tests {
             rule("COD-01", "cod", "echo 'sin cerrar"),
             rule("OK-01", "cod", "git status --porcelain"),
             rule("GIT-06", "git", "git merge-base --is-ancestor main dev"),
+            rule("GIT-10", "git", r#"test "$(cat CLAUDE.md)" = "@BRAIN.md""#),
         ];
         let f = lint_static(&rules, "POK-1");
         assert_eq!(kinds(&f, "GIT-02"), vec![("error", "trampa")]);
@@ -251,6 +255,7 @@ mod tests {
         assert_eq!(kinds(&f, "COD-01"), vec![("error", "sintaxis")]);
         assert!(kinds(&f, "OK-01").is_empty());
         assert!(kinds(&f, "GIT-06").is_empty(), "main inside dev is no comparison with main");
+        assert_eq!(kinds(&f, "GIT-10"), vec![("error", "factory")], "the brain lives in Hangar, not in the repo");
         assert!(f.iter().any(|x| x.rule_id.is_empty() && x.kind == "entorno"), "no Entorno section: a warning");
 
         let no_feat = vec![rule("GIT-04", "git", "git branch --show-current | grep -qE '^(main|task/[0-9]+)$'")];

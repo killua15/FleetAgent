@@ -793,6 +793,7 @@ pub fn retry_order(conn: &Connection, order_id: &str) -> Result<(), String> {
     match last.and_then(|id| line::load_run(conn, &id).ok()).filter(|r| matches!(r.status.as_str(), "failed" | "stopped") && !r.team.is_empty()) {
         Some(mut run) => {
             line::refresh_for_retry(conn, &mut run)?;
+            line::retry_from_gate(&mut run);
             run.round = 0;
             run.state.escalated = false;
             run.error = None;
