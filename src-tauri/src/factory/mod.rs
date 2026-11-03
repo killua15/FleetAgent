@@ -20,6 +20,7 @@ pub mod remove;
 pub mod setup;
 pub mod store;
 pub mod team;
+pub mod usage;
 pub mod view;
 
 use std::path::Path;

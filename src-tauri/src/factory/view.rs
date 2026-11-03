@@ -185,6 +185,17 @@ pub struct Delivery {
     pub started_at: String,
     pub finished_at: Option<String>,
     pub error: Option<String>,
+    /// What the order cost each account of its team, in usage points.
+    pub usage: Vec<UsageSpent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSpent {
+    pub account: String,
+    /// Points of the 5-hour session; `None` if unknown or it renewed.
+    pub session: Option<f64>,
+    pub weekly: Option<f64>,
 }
 
 pub fn deliveries(conn: &Connection, project_id: &str) -> Result<Vec<Delivery>, String> {
@@ -195,7 +206,21 @@ pub fn deliveries(conn: &Connection, project_id: &str) -> Result<Vec<Delivery>, 
         let cited: i64 = conn.query_row("SELECT COUNT(DISTINCT rule_id) FROM factory_decisions WHERE run_id = ?1 AND rule_id IS NOT NULL", params![r.id], |x| x.get(0)).map_err(|e| e.to_string())?;
         let mut stmt = conn.prepare("SELECT DISTINCT rule_id FROM factory_activity WHERE run_id = ?1 AND station = 'dec' AND kind = 'warn' AND rule_id IS NOT NULL").map_err(|e| e.to_string())?;
         let round_rules = stmt.query_map(params![r.id], |x| x.get(0)).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+        let usage = r
+            .state
+            .usage
+            .iter()
+            .filter_map(|(id, spent)| {
+                let (session, weekly) = spent.delta();
+                (session.is_some() || weekly.is_some()).then(|| UsageSpent {
+                    account: conn.query_row("SELECT name FROM accounts WHERE id = ?1", params![id], |x| x.get(0)).unwrap_or_else(|_| id.clone()),
+                    session,
+                    weekly,
+                })
+            })
+            .collect();
         out.push(Delivery {
+            usage,
             run_id: r.id,
             order_key: o.key,
             title: o.title,

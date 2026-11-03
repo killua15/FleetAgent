@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { Account } from '../../types/account';
 import { brainLabel, countdown, hhmm, STATION_NAME, type ActivityRow, type FactoryOrder, type LiveData, type Station, type StepRow } from '../../types/factory';
+import { AccountsUsage, useTeamUsage } from './AccountsUsage';
 import { FailurePanel } from './FailurePanel';
 import { GatePanel, type CheckAction } from './GatePanel';
 import { Timeline } from './Timeline';
@@ -174,6 +175,7 @@ export function LiveView({
   projectId: string;
 }) {
   const run = live.run;
+  const { usage, setUsage } = useTeamUsage(projectId);
   const [picked, setPicked] = useState<Big | null>(null);
   const [note, setNote] = useState('');
   const [other, setOther] = useState('');
@@ -196,7 +198,9 @@ export function LiveView({
     if (b === 'cal') return `testers ×${team.filter((a) => a.role === 'tester').length} · revisores ×${team.filter((a) => a.role.startsWith('reviewer')).length}`;
     if (b === 'ent') return run.mrUrl ? 'MR abierta' : run.base;
     const a = team.find((x) => roles.includes(x.role));
-    return a ? `${name(a.accountId)} · ${a.model}` : '';
+    if (!a) return '';
+    const u = usage.find((x) => x.accountId === a.accountId);
+    return `${name(a.accountId)} · ${a.model}${u?.session != null ? ` · ${u.session.toFixed(0)} %` : ''}`;
   };
   const stationBrain = (b: Big) => {
     const roles: string[] = { ing: ['spec'], fab: ['builder'], cal: ['tester'], ent: ['approver'] }[b];
@@ -384,6 +388,8 @@ export function LiveView({
           ${run.costUsd.toFixed(2)} hasta ahora · {mins(run.startedAt, run.finishedAt)} min
         </span>
       </div>
+
+      <AccountsUsage projectId={projectId} usage={usage} onChange={setUsage} />
 
       <div className={styles.line}>
         {BIG.map((b, i) => {

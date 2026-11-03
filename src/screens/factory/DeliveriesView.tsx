@@ -25,6 +25,7 @@ export function DeliveriesView({ deliveries }: { deliveries: Delivery[] }) {
         <span>Rondas</span>
         <span>Reglas citadas</span>
         <span>Coste</span>
+        <span>Uso</span>
       </div>
       {deliveries.map((d) => {
         const [cls, label] = STATUS[d.status];
@@ -52,6 +53,11 @@ export function DeliveriesView({ deliveries }: { deliveries: Delivery[] }) {
             <span className={styles.num}>{d.rounds ? `${d.rounds}${d.roundRules.length ? ` (${d.roundRules.join(', ')})` : ''}` : '—'}</span>
             <span className={styles.num}>{d.rulesCited}</span>
             <span className={styles.num}>${d.costUsd.toFixed(2)}</span>
+            <span className={styles.hint} title="Puntos de uso que gastó la orden en cada cuenta, entre la lectura al empezar y la de al terminar. Aproximado: cuenta también lo usado a la vez en terminales.">
+              {d.usage.length
+                ? d.usage.map((u) => `${u.account} ${[u.session != null ? `+${u.session.toFixed(0)} % 5 h` : null, u.weekly != null ? `+${u.weekly.toFixed(0)} % sem.` : null].filter(Boolean).join(' · ')}`).join(' · ')
+                : '—'}
+            </span>
           </div>
         );
       })}

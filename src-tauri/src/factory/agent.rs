@@ -403,6 +403,11 @@ impl Runner for CliRunner {
                 if let Some(id) = event.get("session_id").and_then(Value::as_str) {
                     session_id = Some(id.to_string());
                 }
+                // Claude Code's word on the account's limits, with every turn.
+                if let Some(note) = super::usage::parse_rate_limit(&event) {
+                    super::usage::note_rate_limit(&call.account_id, note);
+                    continue;
+                }
                 for a in claude_activity(&event) {
                     on(a);
                 }

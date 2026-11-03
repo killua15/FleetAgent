@@ -1397,7 +1397,7 @@
 .dRow,
 .dHead {
   display: grid;
-  grid-template-columns: 64px 1fr 110px 110px 90px 80px;
+  grid-template-columns: 64px 1fr 110px 110px 90px 80px minmax(120px, 0.8fr);
   gap: 12px;
   align-items: center;
   padding: 10px 16px;
@@ -2015,4 +2015,56 @@ details[open] > summary.gateHead::before {
   .decideGrid {
     grid-template-columns: 1fr;
   }
+}
+
+/* ---- the team's accounts' usage ---- */
+
+.usageStrip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.usageCard {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 190px;
+  flex: 1 1 190px;
+  max-width: 320px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+}
+
+.usageCard.usageWarn {
+  border-color: var(--amber);
+}
+
+.usageCard.usageBad {
+  border-color: var(--red);
+}
+
+.usageBar {
+  height: 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--dim) 25%, transparent);
+  overflow: hidden;
+}
+
+.usageBar > span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--grn);
+}
+
+.usageBar > span.usageHigh {
+  background: var(--amber);
+}
+
+.usageBar > span.usageFull {
+  background: var(--red);
 }

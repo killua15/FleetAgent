@@ -483,6 +483,28 @@ export interface Delivery {
   startedAt: string;
   finishedAt: string | null;
   error: string | null;
+  /** What the order cost each account, in usage points. */
+  usage: { account: string; session: number | null; weekly: number | null }[];
+}
+
+/** What Claude Code said about an account's limits with its last turn. */
+export interface RateNote {
+  status: 'allowed' | 'allowed_warning' | 'rejected' | string;
+  window: string | null;
+  resetsAt: string | null;
+}
+
+/** One account of the team, as «En vivo» shows it. */
+export interface AccountUsage {
+  accountId: string;
+  name: string;
+  provider: string;
+  /** % of the 5-hour session and of the week, at the last reading. */
+  session: number | null;
+  weekly: number | null;
+  sampledAt: string | null;
+  note: RateNote | null;
+  resetsAt: string | null;
 }
 
 /** `2026-10-30T13:46:20Z` → `13:46`, local time. */

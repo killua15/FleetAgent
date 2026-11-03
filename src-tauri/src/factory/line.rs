@@ -98,6 +98,9 @@ pub struct RunState {
     pub protected_ok: bool,
     /// A person asked to take this order's changes to the brain's files back.
     pub revert_protected: bool,
+    /// Account → its usage when the order started and when it ended: what
+    /// the order cost it.
+    pub usage: HashMap<String, super::usage::Spent>,
 }
 
 /// One trip back to Fabricación: the gate's red checks or the review's
@@ -423,10 +426,28 @@ pub fn start(ctx: &Ctx, project_id: &str, order_id: &str) -> Result<Run, String>
         finished_at: None,
     };
     let conn = lock(ctx.db)?;
+    // Each account's usage as the order starts: what it costs is read
+    // against this when it ends.
+    let mut run = run;
+    for account in super::usage::team_accounts(&run.team) {
+        let before = super::usage::snapshot(&conn, &account);
+        run.state.usage.insert(account, super::usage::Spent { before, after: None });
+    }
     conn.execute(
         "INSERT INTO factory_runs (id, project_id, order_id, status, stage, round, team, brain_version, branch, worktree, base, state, started_at)
-         VALUES (?1, ?2, ?3, 'running', 'spec', 0, ?4, ?5, ?6, ?7, ?8, '{}', ?9)",
-        params![run.id, run.project_id, run.order_id, serde_json::to_string(&run.team).unwrap_or_default(), brain_version, run.branch, run.worktree, run.base, run.started_at],
+         VALUES (?1, ?2, ?3, 'running', 'spec', 0, ?4, ?5, ?6, ?7, ?8, ?10, ?9)",
+        params![
+            run.id,
+            run.project_id,
+            run.order_id,
+            serde_json::to_string(&run.team).unwrap_or_default(),
+            brain_version,
+            run.branch,
+            run.worktree,
+            run.base,
+            run.started_at,
+            serde_json::to_string(&run.state).unwrap_or_else(|_| "{}".into())
+        ],
     )
     .map_err(|e| e.to_string())?;
     orders::freeze_brain(&conn, order_id, brain_version)?;
@@ -611,6 +632,8 @@ fn run_agent(ctx: &Ctx, run: &mut Run, agent: &Agent, order: &Order, brain: &Sea
             changed();
         })
     };
+    // The account just spent: read its usage again (at most every few minutes).
+    super::usage::turn_done(&run.project_id, &account);
     let mut result = result;
     result.cost_usd = turn_cost(&mut run.state.session_costs, call.resume.as_deref(), result.session_id.as_deref(), result.cost_usd);
     run.cost_usd += result.cost_usd;

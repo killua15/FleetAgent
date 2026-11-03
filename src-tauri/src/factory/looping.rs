@@ -68,6 +68,14 @@ pub const MAX_START_PCT: f64 = 95.0;
 /// Whether the account can start an order now, per Hangar's quota samples;
 /// `Err` says why not. An account never sampled has room.
 pub fn room(conn: &Connection, account_id: &str, root: Option<&std::path::Path>) -> Result<(), String> {
+    // Claude Code refused the last turn on this account: until it renews,
+    // nothing starts on it — whatever the last reading said.
+    if let Some(note) = super::usage::rate_note(account_id).filter(|n| n.status == "rejected") {
+        if let Some(at) = note.resets_at.filter(|at| *at > chrono::Utc::now()) {
+            let name: String = conn.query_row("SELECT name FROM accounts WHERE id = ?1", params![account_id], |r| r.get(0)).unwrap_or_else(|_| account_id.to_string());
+            return Err(format!("«{name}» llegó al límite · se renueva a las {}", at.with_timezone(&chrono::Local).format("%H:%M")));
+        }
+    }
     let Ok(quotas) = crate::quota::account_quotas(conn) else { return Ok(()) };
     let Some(q) = quotas.iter().find(|q| q.account_id == account_id) else { return Ok(()) };
     let reset = root
@@ -163,6 +171,11 @@ const EMIT_EVERY: Duration = Duration::from_millis(500);
 /// and each event a round of reads in the live view. A burst becomes one
 /// event now and one at the end of the window, so the last change always
 /// arrives.
+/// `emit` for the rest of the Factory.
+pub(crate) fn emit_changed<R: Runtime>(app: &AppHandle<R>, project_id: &str) {
+    emit(app, project_id);
+}
+
 fn emit<R: Runtime>(app: &AppHandle<R>, project_id: &str) {
     let now = std::time::Instant::now();
     let send_now = {
@@ -561,6 +574,7 @@ fn drive<R: Runtime>(app: &AppHandle<R>, project_id: &str, run_id: &str) {
     let notify_fn = |t: &str, b: &str| notify(app, t, b);
     let changed_fn = || emit(app, project_id);
     let ctx = Ctx { db: &db, runner: &runner, git_env: parts.git_env.clone(), root: parts.root.clone(), notify: &notify_fn, changed: &changed_fn };
+    let ended = |db: &DbConnection| db.0.lock().ok().and_then(|c| line::load_run(&c, run_id).ok()).is_some_and(|r| matches!(r.status.as_str(), "merged" | "delivered" | "failed" | "stopped"));
     if let Err(e) = line::advance(&ctx, run_id) {
         set_note(project_id, Some(&e));
         if let Ok(conn) = db.0.lock() {
@@ -572,6 +586,10 @@ fn drive<R: Runtime>(app: &AppHandle<R>, project_id: &str, run_id: &str) {
             }
         }
         notify(app, "Una orden falló", &e);
+    }
+    // The order ended: read its accounts again and write what it cost.
+    if ended(&db) {
+        super::usage::after_order(app, project_id, run_id);
     }
     emit(app, project_id);
 }
@@ -612,6 +630,7 @@ fn ensure_worker<R: Runtime>(app: &AppHandle<R>, project_id: &str) {
 
 /// Picks up, after Hangar restarts, every project whose line was running.
 pub fn resume_all<R: Runtime>(app: &AppHandle<R>) {
+    super::usage::install(app);
     let projects: Vec<String> = {
         let db = app.state::<DbConnection>();
         let Ok(conn) = db.0.lock() else { return };
