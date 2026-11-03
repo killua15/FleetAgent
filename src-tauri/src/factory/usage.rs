@@ -1,13 +1,11 @@
 //! The team's accounts' usage, kept current while the line works. Hangar's
 //! own poller only reads accounts with a terminal open and only after turns
 //! it recorded itself, so an account the Factory drives headless would show
-//! whatever it last read. Here the line says when a turn ended, and the
-//! account is read again — at most every few minutes per account while an
-//! order runs, and always when the order ends.
+//! whatever it last read. Here the line says when each task ended, its
+//! account is read again, and what the task spent is written into its step.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{params, Connection};
@@ -16,9 +14,6 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::db::DbConnection;
-
-/// How often a turn may trigger a read of the same account.
-pub const TURN_EVERY: Duration = Duration::from_secs(3 * 60);
 
 /// What Claude Code said about the account's limits with its last turn
 /// (`rate_limit_event`): free, on every turn, but without a percentage.
@@ -33,10 +28,28 @@ pub struct RateNote {
 }
 
 static NOTES: Mutex<Option<HashMap<String, RateNote>>> = Mutex::new(None);
-static LAST_READ: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
-/// Reads the accounts given, for a project, forced or not. Installed by the
-/// app; absent in tests, where turns end without reading anything.
-type Hook = Box<dyn Fn(String, Vec<String>, bool) + Send + Sync>;
+/// One lock per account: its reads go one after another, never two hidden
+/// `claude` at once for the same account.
+static ACCOUNT_LOCKS: Mutex<Option<HashMap<String, Arc<Mutex<()>>>>> = Mutex::new(None);
+
+/// A task that just ended, to read its account after and write what it spent.
+#[derive(Debug, Clone)]
+pub struct TaskDone {
+    pub project_id: String,
+    pub run_id: String,
+    pub step_id: String,
+    pub account_id: String,
+    /// The agent, as the activity names it.
+    pub label: String,
+    /// Its account's reading when the task started.
+    pub before: Snapshot,
+    /// Its turn's cost, in API-price dollars.
+    pub cost_usd: f64,
+}
+
+/// Runs a task's read. Installed by the app; absent in tests, where tasks
+/// end without reading anything.
+type Hook = Box<dyn Fn(TaskDone) + Send + Sync>;
 static HOOK: OnceLock<Hook> = OnceLock::new();
 
 /// One `rate_limit_event` line of Claude Code's stream-json, if it is one.
@@ -62,40 +75,77 @@ pub fn rate_note(account_id: &str) -> Option<RateNote> {
     NOTES.lock().ok().and_then(|g| g.as_ref().and_then(|m| m.get(account_id).cloned()))
 }
 
-/// Whether a turn may read this account now, and if so, marks it read.
-pub fn due(account_id: &str, now: Instant, every: Duration) -> bool {
-    let Ok(mut g) = LAST_READ.lock() else { return false };
-    let map = g.get_or_insert_with(HashMap::new);
-    if map.get(account_id).is_some_and(|t| now.duration_since(*t) < every) {
-        return false;
-    }
-    map.insert(account_id.to_string(), now);
-    true
+/// Runs `f` holding the account's own lock: reads of one account queue up.
+pub fn serial<T>(account_id: &str, f: impl FnOnce() -> T) -> T {
+    let lock = ACCOUNT_LOCKS.lock().map(|mut g| g.get_or_insert_with(HashMap::new).entry(account_id.to_string()).or_default().clone()).ok();
+    let _held = lock.as_ref().map(|l| l.lock().unwrap_or_else(|e| e.into_inner()));
+    f()
 }
 
-/// The line, when an agent's turn ended: read that account, unless it was
-/// read moments ago.
-pub fn turn_done(project_id: &str, account_id: &str) {
+/// The line, when a task ended: read its account again — every task, every
+/// time — and write what the task spent.
+pub fn turn_done(task: TaskDone) {
     if let Some(hook) = HOOK.get() {
-        if due(account_id, Instant::now(), TURN_EVERY) {
-            hook(project_id.to_string(), vec![account_id.to_string()], true);
-        }
+        hook(task);
     }
 }
 
-/// Wires the reads to the app: each one on its own thread, the database
-/// locked only to record, and the live view told.
+/// Wires the reads to the app: each task's on its own thread, one account's
+/// in order, the database locked only to record, and the live view told.
 pub fn install<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
-    let _ = HOOK.set(Box::new(move |project, accounts, force| {
+    let _ = HOOK.set(Box::new(move |task| {
         let app = app.clone();
         std::thread::spawn(move || {
-            for account in &accounts {
-                read(&app, account, force);
+            serial(&task.account_id, || read(&app, &task.account_id, true));
+            if let Some(db) = app.try_state::<DbConnection>() {
+                if let Ok(conn) = db.0.lock() {
+                    let after = snapshot(&conn, &task.account_id);
+                    let _ = record_task(&conn, &task, &after);
+                }
             }
-            super::looping::emit_changed(&app, &project);
+            super::looping::emit_changed(&app, &task.project_id);
         });
     }));
+}
+
+/// What a task spent, from its account's reading before and after: `None`
+/// for a window with no new reading, or one that renewed in between.
+pub fn task_spent(before: &Snapshot, after: &Snapshot) -> (Option<f64>, Option<f64>) {
+    let fresh = matches!((&before.at, &after.at), (Some(b), Some(a)) if a > b) || (before.at.is_none() && after.at.is_some());
+    if !fresh {
+        return (None, None);
+    }
+    Spent { before: before.clone(), after: Some(after.clone()) }.delta()
+}
+
+/// «≈ +3 % de la sesión de 5 h · +1 % de la semana · $0,42 equivalentes».
+pub fn spent_words(session: Option<f64>, weekly: Option<f64>, cost_usd: f64) -> String {
+    let mut parts = Vec::new();
+    if let Some(s) = session {
+        parts.push(format!("≈ +{s:.0} % de la sesión de 5 h"));
+    }
+    if let Some(w) = weekly {
+        parts.push(format!("{}+{w:.0} % de la semana", if parts.is_empty() { "≈ " } else { "" }));
+    }
+    if parts.is_empty() {
+        parts.push("uso sin lectura nueva".into());
+    }
+    parts.push(format!("${:.2} equivalentes", cost_usd).replace('.', ","));
+    parts.join(" · ")
+}
+
+/// Writes what a task spent into its step and its activity.
+pub fn record_task(conn: &Connection, task: &TaskDone, after: &Snapshot) -> Result<(), String> {
+    let (session, weekly) = task_spent(&task.before, after);
+    conn.execute("UPDATE factory_steps SET usage_session = ?2, usage_weekly = ?3 WHERE id = ?1", params![task.step_id, session, weekly]).map_err(|e| e.to_string())?;
+    let station: String = conn.query_row("SELECT station FROM factory_steps WHERE id = ?1", params![task.step_id], |r| r.get(0)).unwrap_or_else(|_| "fab".into());
+    conn.execute(
+        "INSERT INTO factory_activity (run_id, step_id, station, at, kind, text, rule_id) VALUES (?1, ?2, ?3, ?4, 'cmd', ?5, NULL)",
+        params![task.run_id, task.step_id, station, Utc::now().to_rfc3339(), format!("{} gastó {}", task.label, spent_words(session, weekly, task.cost_usd))],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Reads one account's quota and records it — `/usage` for Claude, the
@@ -289,13 +339,39 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_reads_an_account_at_most_every_few_minutes() {
-        let t0 = Instant::now();
+    fn one_accounts_reads_go_one_after_another() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let at_once = Arc::new(AtomicUsize::new(0));
+        let most = Arc::new(AtomicUsize::new(0));
         let acc = format!("acc-{}", uuid::Uuid::new_v4());
-        assert!(due(&acc, t0, TURN_EVERY));
-        assert!(!due(&acc, t0 + Duration::from_secs(60), TURN_EVERY), "a minute later: not again");
-        assert!(due(&acc, t0 + TURN_EVERY + Duration::from_secs(1), TURN_EVERY));
-        assert!(due("another", t0, TURN_EVERY), "per account");
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let (at_once, most, acc) = (at_once.clone(), most.clone(), acc.clone());
+                std::thread::spawn(move || {
+                    serial(&acc, || {
+                        let n = at_once.fetch_add(1, Ordering::SeqCst) + 1;
+                        most.fetch_max(n, Ordering::SeqCst);
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        at_once.fetch_sub(1, Ordering::SeqCst);
+                    })
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(most.load(Ordering::SeqCst), 1, "never two reads of one account at once");
+    }
+
+    #[test]
+    fn a_task_spends_after_minus_before_only_with_a_new_reading() {
+        let s = |session, weekly, at: &str| Snapshot { session, weekly, at: Some(at.into()) };
+        let before = s(Some(40.0), Some(10.0), "2026-11-03T10:00:00Z");
+        assert_eq!(task_spent(&before, &s(Some(43.0), Some(11.0), "2026-11-03T10:05:00Z")), (Some(3.0), Some(1.0)));
+        assert_eq!(task_spent(&before, &before), (None, None), "/usage failed: the same reading");
+        assert_eq!(task_spent(&before, &s(Some(2.0), Some(11.0), "2026-11-03T10:05:00Z")), (None, Some(1.0)), "the 5-hour window renewed");
+        assert_eq!(spent_words(Some(3.0), Some(1.0), 0.42), "≈ +3 % de la sesión de 5 h · +1 % de la semana · $0,42 equivalentes");
+        assert_eq!(spent_words(None, None, 0.0), "uso sin lectura nueva · $0,00 equivalentes");
     }
 
     fn samples(conn: &Connection) {
@@ -342,6 +418,42 @@ mod tests {
         assert!(crate::factory::looping::room(&conn, "acc-refused", None).unwrap_err().contains("llegó al límite"));
         note_rate_limit("acc-refused", RateNote { status: "allowed".into(), window: None, resets_at: None });
         assert!(crate::factory::looping::room(&conn, "acc-refused", None).is_ok());
+    }
+
+    #[test]
+    fn each_task_writes_what_it_spent_and_the_order_adds_them_up() {
+        use crate::factory::line::{self, tests::*};
+        let w = world("autonomous", "local", "true");
+        let s = Script::new();
+        let c = ctx(&w, &s);
+        let run = line::start(&c, "p1", &w.order_id).unwrap();
+        let run = line::advance(&c, &run.id).unwrap();
+        let conn = w.db.0.lock().unwrap();
+        let steps: Vec<(String, String)> = {
+            let mut st = conn.prepare("SELECT id, label FROM factory_steps WHERE run_id = ?1 AND agent_id IS NOT NULL ORDER BY started_at").unwrap();
+            st.query_map(params![run.id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().filter_map(Result::ok).collect()
+        };
+        assert!(steps.len() >= 3);
+        let at = |m: u32| Some(format!("2026-11-03T10:{m:02}:00Z"));
+        for (i, (step, label)) in steps.iter().take(2).enumerate() {
+            let task = TaskDone {
+                project_id: "p1".into(),
+                run_id: run.id.clone(),
+                step_id: step.clone(),
+                account_id: "work".into(),
+                label: label.clone(),
+                before: Snapshot { session: Some(40.0 + i as f64 * 3.0), weekly: Some(10.0), at: at(i as u32) },
+                cost_usd: 0.42,
+            };
+            let after = Snapshot { session: Some(43.0 + i as f64 * 3.0), weekly: Some(10.0 + (i as f64)), at: at(i as u32 + 1) };
+            record_task(&conn, &task, &after).unwrap();
+        }
+        let said: String = conn.query_row("SELECT text FROM factory_activity WHERE step_id = ?1 AND text LIKE '%gastó%'", params![steps[0].0], |r| r.get(0)).unwrap();
+        assert_eq!(said, format!("{} gastó ≈ +3 % de la sesión de 5 h · +0 % de la semana · $0,42 equivalentes", steps[0].1));
+        let run = line::load_run(&conn, &run.id).unwrap();
+        let total = crate::factory::view::order_usage(&conn, &run).unwrap();
+        assert_eq!(total.len(), 1);
+        assert_eq!((total[0].session, total[0].weekly), (Some(6.0), Some(1.0)), "the order is the sum of its tasks");
     }
 
     #[test]

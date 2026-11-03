@@ -1,4 +1,4 @@
-import type { LiveData, Station, StepRow } from '../types/factory';
+import { pointsLabel, usd, type LiveData, type Station, type StepRow } from '../types/factory';
 
 /** A stretch of a row: done, running now, waiting for a limit, waiting for a
  *  person, or still to come (estimated). */
@@ -9,6 +9,8 @@ export interface TlBar {
   station: Station;
   stepId?: string;
   title: string;
+  /** What the step spent, for the tooltip: «≈ +3 % 5 h · $0,42». */
+  spent?: string;
 }
 
 /** A diamond: a decision with its rule, a gap in the brain, a round back. */
@@ -65,7 +67,9 @@ function stepBars(s: StepRow, now: number, resumeAt: number | null, title: strin
   if (s.status === 'running') return [{ ...base, from: start, to: now, kind: 'run' }];
   if (s.status === 'skipped') return [];
   if (s.status === 'human') return [{ ...base, from: end, to: Math.max(end + MIN, now), kind: 'human' }];
-  const bars: TlBar[] = [{ ...base, from: start, to: Math.max(end, start + 20_000), kind: 'done' }];
+  const points = pointsLabel(s.usageSession, s.usageWeekly);
+  const spent = points || s.costUsd > 0 ? [points, s.costUsd > 0 ? `${usd(s.costUsd)} equivalentes` : null].filter(Boolean).join(' · ') : undefined;
+  const bars: TlBar[] = [{ ...base, from: start, to: Math.max(end, start + 20_000), kind: 'done', spent }];
   if (s.status === 'wait' && resumeAt) bars.push({ ...base, from: end, to: Math.max(resumeAt, end), kind: 'wait' });
   return bars;
 }

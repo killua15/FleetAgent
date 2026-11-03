@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Account } from '../../types/account';
-import { brainLabel, countdown, hhmm, STATION_NAME, type ActivityRow, type FactoryOrder, type LiveData, type Station, type StepRow } from '../../types/factory';
+import { brainLabel, pointsLabel, usd, countdown, hhmm, STATION_NAME, type ActivityRow, type FactoryOrder, type LiveData, type Station, type StepRow } from '../../types/factory';
 import { AccountsUsage, useTeamUsage } from './AccountsUsage';
 import { FailurePanel } from './FailurePanel';
 import { GatePanel, type CheckAction } from './GatePanel';
@@ -384,8 +384,13 @@ export function LiveView({
         <span className={styles.chip}>desde {run.base}</span>
         {run.round > 0 && <span className={styles.chipAmber}>ronda {run.round}</span>}
         <span className={styles.spacer} />
-        <span className={styles.num}>
-          ${run.costUsd.toFixed(2)} hasta ahora · {mins(run.startedAt, run.finishedAt)} min
+        <span
+          className={styles.num}
+          title="Lo que lleva gastado esta orden, sumando sus tareas: puntos de uso de cada cuenta (lo que gasta una suscripción) y su equivalente en precio de API"
+        >
+          {(live.usage ?? []).map((u) => `${u.account} ${pointsLabel(u.session, u.weekly)}`).join(' · ')}
+          {(live.usage ?? []).length > 0 && ' · '}
+          {usd(run.costUsd)} equivalentes · {mins(run.startedAt, run.finishedAt)} min
         </span>
       </div>
 

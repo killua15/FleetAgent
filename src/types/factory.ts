@@ -431,6 +431,9 @@ export interface StepRow {
   costUsd: number;
   startedAt: string;
   finishedAt: string | null;
+  /** Points of the 5-hour session / week the step spent (null: not read yet). */
+  usageSession?: number | null;
+  usageWeekly?: number | null;
 }
 
 export interface ActivityRow {
@@ -467,6 +470,24 @@ export interface LiveData {
   decisions: DecisionRow[];
   today: DayRow[];
   averages: Partial<Record<Station, number>>;
+  /** What the order in view has spent so far, per account. */
+  usage?: UsageSpent[];
+}
+
+/** What an order spent of one account, in usage points. */
+export interface UsageSpent {
+  account: string;
+  session: number | null;
+  weekly: number | null;
+}
+
+/** «$0,42» — the API-price equivalent of a turn. */
+export const usd = (n: number) => `$${n.toFixed(2).replace('.', ',')}`;
+
+/** «≈ +3 % 5 h · +1 % sem.» */
+export function pointsLabel(session: number | null | undefined, weekly: number | null | undefined): string | null {
+  const parts = [session != null ? `+${session.toFixed(0)} % 5 h` : null, weekly != null ? `+${weekly.toFixed(0)} % sem.` : null].filter(Boolean);
+  return parts.length ? `≈ ${parts.join(' · ')}` : null;
 }
 
 export interface Delivery {
@@ -484,7 +505,7 @@ export interface Delivery {
   finishedAt: string | null;
   error: string | null;
   /** What the order cost each account, in usage points. */
-  usage: { account: string; session: number | null; weekly: number | null }[];
+  usage: UsageSpent[];
 }
 
 /** What Claude Code said about an account's limits with its last turn. */

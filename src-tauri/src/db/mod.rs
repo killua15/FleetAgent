@@ -356,6 +356,12 @@ const MIGRATIONS: &[Migration] = &[
         run: factory_brain_draft_table,
         transactional: true,
     },
+    Migration {
+        version: 46,
+        name: "factory_step_usage",
+        run: factory_step_usage_columns,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -1207,6 +1213,15 @@ fn factory_projects_table(conn: &Connection) -> Result<(), String> {
 /// The line at work: one run per order (its frozen team and brain, the stage
 /// it's at, why it waits), each agent's step with its times, what it did, and
 /// every decision with the rule it cites.
+fn factory_step_usage_columns(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(FACTORY_STEP_USAGE_DDL).map_err(|e| format!("could not add the step usage columns: {e}"))
+}
+
+/// What each step of the line spent of its account: points of the 5-hour
+/// session and of the week, read after it ended.
+pub(crate) const FACTORY_STEP_USAGE_DDL: &str = "ALTER TABLE factory_steps ADD COLUMN usage_session REAL;
+ALTER TABLE factory_steps ADD COLUMN usage_weekly REAL;";
+
 fn factory_brain_draft_table(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(FACTORY_DRAFT_DDL).map_err(|e| format!("could not create the brain draft table: {e}"))
 }
@@ -1397,7 +1412,7 @@ CREATE TABLE IF NOT EXISTS factory_amendments (
 /// Every Factory migration's DDL, in order — what the Factory's own tests
 /// build their in-memory database from.
 #[cfg(test)]
-pub(crate) const FACTORY_DDLS: &[&str] = &[FACTORY_PROJECTS_DDL, FACTORY_BRAIN_DDL, FACTORY_AGENTS_DDL, FACTORY_ORDERS_DDL, FACTORY_LINE_DDL, FACTORY_CHECKS_DDL, FACTORY_DRAFT_DDL];
+pub(crate) const FACTORY_DDLS: &[&str] = &[FACTORY_PROJECTS_DDL, FACTORY_BRAIN_DDL, FACTORY_AGENTS_DDL, FACTORY_ORDERS_DDL, FACTORY_LINE_DDL, FACTORY_CHECKS_DDL, FACTORY_DRAFT_DDL, FACTORY_STEP_USAGE_DDL];
 
 pub(crate) const FACTORY_PROJECTS_DDL: &str = "CREATE TABLE IF NOT EXISTS factory_projects (
   project_id           TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,

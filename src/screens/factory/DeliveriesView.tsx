@@ -1,5 +1,5 @@
 import { openUrl } from '@tauri-apps/plugin-opener';
-import type { Delivery } from '../../types/factory';
+import { pointsLabel, usd, type Delivery } from '../../types/factory';
 import styles from '../Factory.module.css';
 
 const STATUS: Record<Delivery['status'], [string, string]> = {
@@ -24,8 +24,8 @@ export function DeliveriesView({ deliveries }: { deliveries: Delivery[] }) {
         <span>Estado</span>
         <span>Rondas</span>
         <span>Reglas citadas</span>
-        <span>Coste</span>
-        <span>Uso</span>
+        <span title="Equivalente en precio de API. Con una suscripción no se cobra: lo que se gasta es el uso.">Coste (equiv.)</span>
+        <span title="Puntos de uso que gastó la orden en cada cuenta: la suma de lo que se leyó al terminar cada tarea">Uso</span>
       </div>
       {deliveries.map((d) => {
         const [cls, label] = STATUS[d.status];
@@ -52,11 +52,9 @@ export function DeliveriesView({ deliveries }: { deliveries: Delivery[] }) {
             </span>
             <span className={styles.num}>{d.rounds ? `${d.rounds}${d.roundRules.length ? ` (${d.roundRules.join(', ')})` : ''}` : '—'}</span>
             <span className={styles.num}>{d.rulesCited}</span>
-            <span className={styles.num}>${d.costUsd.toFixed(2)}</span>
+            <span className={styles.num}>{usd(d.costUsd)}</span>
             <span className={styles.hint} title="Puntos de uso que gastó la orden en cada cuenta, entre la lectura al empezar y la de al terminar. Aproximado: cuenta también lo usado a la vez en terminales.">
-              {d.usage.length
-                ? d.usage.map((u) => `${u.account} ${[u.session != null ? `+${u.session.toFixed(0)} % 5 h` : null, u.weekly != null ? `+${u.weekly.toFixed(0)} % sem.` : null].filter(Boolean).join(' · ')}`).join(' · ')
-                : '—'}
+              {d.usage.length ? d.usage.map((u) => `${u.account} ${pointsLabel(u.session, u.weekly) ?? ''}`).join(' · ') : '—'}
             </span>
           </div>
         );

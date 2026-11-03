@@ -598,9 +598,11 @@ fn run_agent(ctx: &Ctx, run: &mut Run, agent: &Agent, order: &Order, brain: &Sea
         }
     }
     let resume = run.state.sessions.get(&agent.id).cloned().filter(|_| !run.state.accounts.contains_key(&agent.id) || run.state.sessions.contains_key(&format!("{}@{account}", agent.id)));
-    let step_id = {
+    let (step_id, usage_before) = {
         let conn = lock(ctx.db)?;
-        start_step(&conn, run, Some(&agent.id), label.unwrap_or(&agent.name), &model, st)?
+        // The account's reading as the task starts: what it spends is read
+        // against this when it ends.
+        (start_step(&conn, run, Some(&agent.id), label.unwrap_or(&agent.name), &model, st)?, super::usage::snapshot(&conn, &account))
     };
     (ctx.changed)();
     let mut text = prompt(agent, order, brain, &run.base, extra);
@@ -632,10 +634,18 @@ fn run_agent(ctx: &Ctx, run: &mut Run, agent: &Agent, order: &Order, brain: &Sea
             changed();
         })
     };
-    // The account just spent: read its usage again (at most every few minutes).
-    super::usage::turn_done(&run.project_id, &account);
     let mut result = result;
     result.cost_usd = turn_cost(&mut run.state.session_costs, call.resume.as_deref(), result.session_id.as_deref(), result.cost_usd);
+    // The task ended: read its account again, and write what it spent.
+    super::usage::turn_done(super::usage::TaskDone {
+        project_id: run.project_id.clone(),
+        run_id: run.id.clone(),
+        step_id: step_id.clone(),
+        account_id: account.clone(),
+        label: label.unwrap_or(&agent.name).to_string(),
+        before: usage_before,
+        cost_usd: result.cost_usd,
+    });
     run.cost_usd += result.cost_usd;
     if let Some(id) = &result.session_id {
         run.state.sessions.insert(agent.id.clone(), id.clone());

@@ -55,7 +55,7 @@ export function AccountsUsage({ projectId, usage, onChange }: { projectId: strin
     <div className={styles.cardFlat}>
       <div className={styles.cardHead}>
         <span className={styles.sectionLabel}>CUENTAS DEL EQUIPO</span>
-        <span className={styles.hint}>se actualiza al terminar cada paso (como mucho cada 3 min por cuenta) y al acabar cada orden</span>
+        <span className={styles.hint}>se actualiza al terminar cada tarea y al acabar cada orden</span>
         <span className={styles.spacer} />
         <button className={`${styles.btnGhost} ${styles.sm}`} disabled={reading} title="Lee el uso de todas las cuentas ahora (unos segundos por cuenta de Claude)" onClick={refresh}>
           {reading ? 'leyendo…' : '↻ Leer ahora'}

@@ -29,6 +29,10 @@ pub struct StepRow {
     pub cost_usd: f64,
     pub started_at: String,
     pub finished_at: Option<String>,
+    /// What the step spent of its account: points of the 5-hour session and
+    /// of the week (`None`: not read yet, or no new reading).
+    pub usage_session: Option<f64>,
+    pub usage_weekly: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -76,11 +80,13 @@ pub struct Live {
     /// Station → average seconds a step took, from finished orders: what the
     /// timeline estimates the rest with.
     pub averages: HashMap<String, f64>,
+    /// What the order in view has spent so far, per account.
+    pub usage: Vec<UsageSpent>,
 }
 
 fn steps_of(conn: &Connection, run_id: &str) -> Result<Vec<StepRow>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, run_id, agent_id, label, model, station, status, round, note, cost_usd, started_at, finished_at FROM factory_steps WHERE run_id = ?1 ORDER BY started_at")
+        .prepare("SELECT id, run_id, agent_id, label, model, station, status, round, note, cost_usd, started_at, finished_at, usage_session, usage_weekly FROM factory_steps WHERE run_id = ?1 ORDER BY started_at")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![run_id], |r| {
@@ -97,6 +103,8 @@ fn steps_of(conn: &Connection, run_id: &str) -> Result<Vec<StepRow>, String> {
                 cost_usd: r.get(9)?,
                 started_at: r.get(10)?,
                 finished_at: r.get(11)?,
+                usage_session: r.get(12)?,
+                usage_weekly: r.get(13)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -165,7 +173,11 @@ pub fn live(conn: &Connection, project_id: &str) -> Result<Live, String> {
         today.push(DayRow { order_key: o.key.clone(), title: o.title.clone(), status: r.status.clone(), resume_at: r.resume_at.clone(), steps: steps_of(conn, &r.id)? });
     }
     today.reverse();
-    Ok(Live { run, order, steps, activity, decisions, today, averages: averages(conn, project_id)? })
+    let usage = match &run {
+        Some(r) => order_usage(conn, r)?,
+        None => Vec::new(),
+    };
+    Ok(Live { run, order, steps, activity, decisions, today, averages: averages(conn, project_id)?, usage })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -198,6 +210,40 @@ pub struct UsageSpent {
     pub weekly: Option<f64>,
 }
 
+/// What an order spent of each account: the sum of its tasks — what the
+/// line read after each one — or, for an order from before tasks were
+/// read, its accounts' usage before and after.
+pub fn order_usage(conn: &Connection, run: &line::Run) -> Result<Vec<UsageSpent>, String> {
+    let account_of = |agent: &str| run.state.accounts.get(agent).cloned().or_else(|| run.team.iter().find(|a| a.id == agent).and_then(|a| a.account_id.clone()));
+    let mut stmt = conn.prepare("SELECT agent_id, usage_session, usage_weekly FROM factory_steps WHERE run_id = ?1 AND agent_id IS NOT NULL").map_err(|e| e.to_string())?;
+    let rows: Vec<(String, Option<f64>, Option<f64>)> = stmt.query_map(params![run.id], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?))).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+    let mut by: std::collections::BTreeMap<String, (Option<f64>, Option<f64>)> = std::collections::BTreeMap::new();
+    for (agent, s, w) in rows {
+        let Some(acc) = account_of(&agent) else { continue };
+        let e = by.entry(acc).or_default();
+        if let Some(s) = s {
+            e.0 = Some(e.0.unwrap_or(0.0) + s);
+        }
+        if let Some(w) = w {
+            e.1 = Some(e.1.unwrap_or(0.0) + w);
+        }
+    }
+    let name = |id: &str| conn.query_row("SELECT name FROM accounts WHERE id = ?1", params![id], |x| x.get(0)).unwrap_or_else(|_| id.to_string());
+    let summed: Vec<UsageSpent> = by.into_iter().filter(|(_, (s, w))| s.is_some() || w.is_some()).map(|(id, (session, weekly))| UsageSpent { account: name(&id), session, weekly }).collect();
+    if !summed.is_empty() {
+        return Ok(summed);
+    }
+    Ok(run
+        .state
+        .usage
+        .iter()
+        .filter_map(|(id, spent)| {
+            let (session, weekly) = spent.delta();
+            (session.is_some() || weekly.is_some()).then(|| UsageSpent { account: name(id), session, weekly })
+        })
+        .collect())
+}
+
 pub fn deliveries(conn: &Connection, project_id: &str) -> Result<Vec<Delivery>, String> {
     let by_id = orders_by_id(conn, project_id)?;
     let mut out = Vec::new();
@@ -206,19 +252,7 @@ pub fn deliveries(conn: &Connection, project_id: &str) -> Result<Vec<Delivery>, 
         let cited: i64 = conn.query_row("SELECT COUNT(DISTINCT rule_id) FROM factory_decisions WHERE run_id = ?1 AND rule_id IS NOT NULL", params![r.id], |x| x.get(0)).map_err(|e| e.to_string())?;
         let mut stmt = conn.prepare("SELECT DISTINCT rule_id FROM factory_activity WHERE run_id = ?1 AND station = 'dec' AND kind = 'warn' AND rule_id IS NOT NULL").map_err(|e| e.to_string())?;
         let round_rules = stmt.query_map(params![r.id], |x| x.get(0)).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
-        let usage = r
-            .state
-            .usage
-            .iter()
-            .filter_map(|(id, spent)| {
-                let (session, weekly) = spent.delta();
-                (session.is_some() || weekly.is_some()).then(|| UsageSpent {
-                    account: conn.query_row("SELECT name FROM accounts WHERE id = ?1", params![id], |x| x.get(0)).unwrap_or_else(|_| id.clone()),
-                    session,
-                    weekly,
-                })
-            })
-            .collect();
+        let usage = order_usage(conn, &r)?;
         out.push(Delivery {
             usage,
             run_id: r.id,

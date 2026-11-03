@@ -80,7 +80,7 @@ export function Timeline({ live, onPickStation }: { live: LiveData; onPickStatio
                     key={k}
                     className={BAR[b.kind]}
                     style={{ left: `${pct(model, b.from)}%`, width: `${Math.max(0.6, pct(model, b.to) - pct(model, b.from))}%`, ['--c' as string]: COLOR[b.station] }}
-                    title={`${b.title} · ${fmt(b.from)}–${fmt(b.to)} · ${STATE[b.kind]}`}
+                    title={`${b.title} · ${fmt(b.from)}–${fmt(b.to)} · ${STATE[b.kind]}${b.spent ? ` · gastó ${b.spent}` : ''}`}
                     onClick={() => onPickStation(b.station)}
                   />
                 ))}
