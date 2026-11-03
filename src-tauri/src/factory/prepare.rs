@@ -187,6 +187,18 @@ pub fn prepare(db: &DbConnection, project_id: &str, git_env: &[(String, String)]
                 queue_checks.push(check("bootstrap", "Orden 0", "todo", format!("el repo está vacío: al preparar se añade {prefix}-0 «Preparar el proyecto»"), None));
             }
         }
+        // A brain that decides a design: the design system is built before
+        // any screen, and the creator approves it by seeing it.
+        if sealed.as_ref().is_some_and(|s| super::design::has_ui(&s.rules)) && !orders::list(&conn, project_id)?.iter().any(|o| o.origin == "design_system") {
+            let prefix = orders::key_prefix(&project.project_name);
+            if fix {
+                if let Some(key) = orders::add_design_system(&conn, project_id, &prefix)? {
+                    queue_checks.push(check("design_system", "Sistema de diseño", "fixed", format!("{key} «Sistema de diseño» va tras la orden 0: tokens, componentes y la guía /design, que apruebas tú"), None));
+                }
+            } else {
+                queue_checks.push(check("design_system", "Sistema de diseño", "todo", "el brain decide un diseño: al preparar se añade la orden que construye el sistema y la guía /design", None));
+            }
+        }
         let todo = orders::list(&conn, project_id)?.iter().filter(|o| o.status == "todo").count();
         if todo == 0 && line::active_run(&conn, project_id)?.is_none() {
             queue_checks.push(check(
@@ -422,6 +434,28 @@ mod tests {
         let first = orders::list(&conn, "p1").unwrap().into_iter().min_by_key(|o| o.position).unwrap();
         assert_eq!((first.key, first.origin.as_str()), (key, "brain_cleanup"));
         assert!(orders::add_brain_cleanup(&conn, "p1", "VET", &found).unwrap().is_none(), "one at a time");
+    }
+
+    #[test]
+    fn a_brain_that_decides_a_design_gets_its_design_system_order_after_order_zero() {
+        let w = line::tests::world("autonomous", "local", "true");
+        {
+            let conn = w.db.0.lock().unwrap();
+            orders::add_bootstrap(&conn, "p1", "VET").unwrap();
+            let mut rules = brain::load(&conn, "p1", None).unwrap().unwrap().rules;
+            rules.push(brain::Rule { id: "DIS-01".into(), section: "dis".into(), level: "must".into(), text: "Tipo de app: web".into(), check: None });
+            let md = brain::from_rules("citas-vet", &rules, &[]);
+            brain::seal(&conn, &w.repo.with_extension("appdata"), "p1", "Citas Vet", &md, "edit").unwrap();
+        }
+        let checks = prepare(&w.db, "p1", &setup::tests_identity(), true).unwrap();
+        assert!(checks.iter().any(|c| c.id == "design_system" && c.status == "fixed"), "{checks:?}");
+        let conn = w.db.0.lock().unwrap();
+        let mut queue = orders::list(&conn, "p1").unwrap();
+        queue.sort_by_key(|o| o.position);
+        assert_eq!(queue.iter().map(|o| o.origin.as_str()).take(2).collect::<Vec<_>>(), vec!["bootstrap", "design_system"]);
+        assert!(queue[1].touches_ui);
+        drop(conn);
+        assert!(!prepare(&w.db, "p1", &setup::tests_identity(), true).unwrap().iter().any(|c| c.id == "design_system"), "once");
     }
 
     #[test]

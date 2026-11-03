@@ -125,6 +125,46 @@ pub fn add_brain_cleanup(conn: &Connection, project_id: &str, prefix: &str, file
     Ok(Some(key))
 }
 
+/// The order that builds the design system before any screen: the tokens,
+/// the base components and their states, and a living style guide at
+/// `/design` that the creator approves by seeing it. Right after order 0.
+pub fn add_design_system(conn: &Connection, project_id: &str, prefix: &str) -> Result<Option<String>, String> {
+    if list(conn, project_id)?.iter().any(|o| o.origin == "design_system") {
+        return Ok(None);
+    }
+    let key = next_key(conn, project_id, prefix)?;
+    let id = insert(
+        conn,
+        project_id,
+        &NewOrder {
+            key: key.clone(),
+            title: "Sistema de diseño".into(),
+            description: "Antes de cualquier pantalla: el sistema visual que decide la sección Diseño del brain, construido una vez y visible en una guía de estilo viva. Ninguna funcionalidad del producto.".into(),
+            criteria: vec![
+                "Los colores, la tipografía y la forma de la sección Diseño viven en el archivo de tokens decidido, y la app los usa.".into(),
+                "Componentes base con la librería decidida: botón, campo, tarjeta, layout y cabecera, cada uno con sus estados (normal, vacío, cargando, error, deshabilitado).".into(),
+                "Existe la ruta /design: la guía de estilo con colores, tipografía, forma y todos los componentes con sus estados — también en modo oscuro si se decidió.".into(),
+                "Se ve bien a 390 px y a 1280 px de ancho.".into(),
+                "Un test de capturas de /design (p. ej. Playwright toHaveScreenshot, con las capturas de referencia versionadas), para que un cambio visual no pase inadvertido.".into(),
+            ],
+            origin: "design_system".into(),
+            touches_ui: true,
+            ..Default::default()
+        },
+    )?;
+    // Right after order 0, before everything else.
+    let boot: Option<i64> = conn
+        .query_row("SELECT MAX(position) FROM factory_orders WHERE project_id = ?1 AND origin = 'bootstrap'", params![project_id], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    conn.execute("UPDATE factory_orders SET position = position + 1 WHERE project_id = ?1 AND origin != 'bootstrap' AND id != ?2", params![project_id, id]).map_err(|e| e.to_string())?;
+    let at = match boot {
+        Some(b) => b + 1,
+        None => conn.query_row("SELECT COALESCE(MIN(position), 1) - 1 FROM factory_orders WHERE project_id = ?1 AND id != ?2", params![project_id, id], |r| r.get(0)).map_err(|e| e.to_string())?,
+    };
+    conn.execute("UPDATE factory_orders SET position = ?2 WHERE id = ?1", params![id, at]).map_err(|e| e.to_string())?;
+    Ok(Some(key))
+}
+
 pub fn add_bootstrap(conn: &Connection, project_id: &str, prefix: &str) -> Result<bool, String> {
     if list(conn, project_id)?.iter().any(|o| o.origin == "bootstrap") {
         return Ok(false);

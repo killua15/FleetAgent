@@ -82,6 +82,7 @@ export function tildePath(path: string, home: string | null): string {
 
 export const BRAIN_SECTIONS: [string, string][] = [
   ['prd', 'Producto'],
+  ['dis', 'Diseño'],
   ['arq', 'Arquitectura'],
   ['tec', 'Tecnologías'],
   ['ent', 'Entorno'],
@@ -167,6 +168,30 @@ export interface DecisionsView {
   stale: boolean;
   basedOn: number | null;
   brainVersion: number | null;
+}
+
+/** A visual reference the creator added. */
+export interface DesignReference {
+  name: string;
+  dataUrl: string | null;
+}
+
+/** A visual direction the AI proposes (`factory::design::Direction`). */
+export interface DesignDirection {
+  name: string;
+  mood: string;
+  colors: string[];
+  font: string;
+  shape: string;
+  library: string;
+  dark: boolean;
+  previewHtml: string;
+}
+
+/** A screenshot of the style guide, to approve. */
+export interface DesignShot {
+  label: string;
+  dataUrl: string;
 }
 
 /** One check of the brain, run on the base before sealing. */
@@ -371,7 +396,11 @@ export interface RunState {
   gateOk: boolean;
   gate: GateResult[];
   /** `brain_change`: the order touched the brain's files, which only the creator changes. */
-  humanKind: 'spec_review' | 'diff' | 'approver' | 'credits' | 'merge' | 'brain_change' | null;
+  /** `design_review`: the design system waits for the creator to see it; `ui_spec`: the screens' design, in supervised mode. */
+  humanKind: 'spec_review' | 'diff' | 'approver' | 'credits' | 'merge' | 'brain_change' | 'design_review' | 'ui_spec' | null;
+  /** The designer's spec of this order's screens. */
+  uiSpec?: { summary?: string; screens?: { name: string; layout: string; components: string[]; states: string[]; responsive: string }[]; copy?: string[] } | null;
+  designApproved?: boolean;
   human: string | null;
   summary: string | null;
   /** Brain checks a person said not to run for this order. */

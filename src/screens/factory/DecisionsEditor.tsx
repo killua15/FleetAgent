@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '../../lib/invoke';
 import { toastError, toastSuccess } from '../../components/ErrorOverlay';
-import { BRAIN_SECTIONS, type BrainReport, type DecisionField, type DecisionItem, type DecisionsView } from '../../types/factory';
+import { BRAIN_SECTIONS, type BrainReport, type DecisionField, type DecisionItem, type DecisionsView, type DesignDirection } from '../../types/factory';
+import { DesignExtras } from './DesignExtras';
 import styles from '../Factory.module.css';
 
 const BY: Record<DecisionItem['by'], string> = {
@@ -84,6 +85,25 @@ export function DecisionsEditor({ projectId, onReview }: { projectId: string; on
     }
   };
 
+  /** «Elegir esta»: a direction's values become the creator's decisions. */
+  const pickDirection = (d: DesignDirection) => {
+    const values: Record<string, string> = {
+      'dis.estilo': d.mood,
+      'dis.colores': d.colors.join('\n'),
+      'dis.tipografia': d.font,
+      'dis.forma': d.shape,
+      'dis.libreria': d.library,
+      'dis.oscuro': d.dark ? 'sí' : 'no',
+    };
+    let next = items.filter((i) => !(i.field && i.field in values && i.status !== 'rejected'));
+    for (const [field, value] of Object.entries(values)) {
+      const def = view.fields.find((f) => f.key === field);
+      if (!def || !value) continue;
+      next = [...next, { id: newId(), section: 'dis', field, value, level: def.level, check: null, status: 'confirmed', by: 'creator', why: `de la dirección «${d.name}»`, ruleId: items.find((i) => i.field === field)?.ruleId ?? null }];
+    }
+    persist(next);
+  };
+
   const confirmed = items.filter((i) => i.status === 'confirmed');
   const proposed = items.filter((i) => i.status === 'proposed');
   const checks = confirmed.filter((i) => i.guard).length;
@@ -141,6 +161,7 @@ export function DecisionsEditor({ projectId, onReview }: { projectId: string; on
           })}
         </nav>
         <div className={styles.col} style={{ gap: 10, minWidth: 0 }}>
+          {section === 'dis' && <DesignExtras projectId={projectId} onPick={pickDirection} />}
           {fields.map((f) => (
             <FieldRow key={f.key} def={f} items={items.filter((i) => i.field === f.key)} onUpdate={update} onRemove={remove} onAdd={add} />
           ))}

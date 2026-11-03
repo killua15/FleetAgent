@@ -36,7 +36,7 @@ const GATE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 /// The station a stage belongs to, as the live view groups them.
 pub fn station(stage: &str) -> &'static str {
     match stage {
-        "spec" | "critic" | "spec_review" => "ing",
+        "spec" | "critic" | "spec_review" | "design" => "ing",
         "build" => "fab",
         "test" | "gate" => "test",
         "review" => "rev",
@@ -101,6 +101,13 @@ pub struct RunState {
     /// Account → its usage when the order started and when it ended: what
     /// the order cost it.
     pub usage: HashMap<String, super::usage::Spent>,
+    /// The designer's interface spec for this order: what the builder builds
+    /// and the UI reviewer reviews against.
+    pub ui_spec: Option<Value>,
+    /// The style guide's screenshots shown to the creator: (label, file).
+    pub design_shots: Vec<(String, String)>,
+    /// The creator approved the design system's look.
+    pub design_approved: bool,
 }
 
 /// One trip back to Fabricación: the gate's red checks or the review's
@@ -512,6 +519,11 @@ pub fn role_schema(role: &str) -> Value {
             &["summary", "steps", "files", "tests", "risk", "risk_reason"],
         ),
         "critic" => schema(json!({ "ok": {"type":"boolean"}, "issues": strings, "revised_summary": {"type":"string"} }), &["ok", "issues", "revised_summary"]),
+        "designer" => schema(
+            json!({ "summary": {"type":"string"}, "screens": {"type":"array","items":{"type":"object","required":["name","layout","components","states","responsive"],"properties":{
+                "name": {"type":"string"}, "layout": {"type":"string"}, "components": strings, "states": strings, "responsive": {"type":"string"} }}}, "copy": strings }),
+            &["summary", "screens", "copy"],
+        ),
         "builder" | "tester" => schema(json!({ "summary": {"type":"string"}, "tests": strings }), &["summary", "tests"]),
         "verifier" => schema(
             json!({ "confirmed": {"type":"array","items":{"type":"integer"}}, "dismissed": {"type":"array","items":{"type":"object","required":["index","reason"],"properties":{"index":{"type":"integer"},"reason":{"type":"string"}}}} }),
@@ -531,6 +543,7 @@ fn job(role: &str) -> &'static str {
     match role {
         "spec" => "Escribe la spec de esta orden: qué se cambia y dónde (archivos), los pasos, y qué test cubre cada criterio de aceptación. Marca risk=true si el brain (Riesgo) obliga a parar y preguntar. No escribas código.",
         "critic" => "Revisa la spec contra el brain. Si rompe una regla, ok=false, lista los problemas y da en revised_summary la spec corregida. Si no, ok=true.",
+        "designer" => "Diseña las pantallas de esta orden antes de que se construyan, con la sección Diseño del brain, la guía /design y las referencias: por pantalla, su distribución, qué componentes del sistema usa, todos sus estados (vacío, cargando, error, éxito) y cómo se adapta de 390 px a 1280 px; y los textos exactos. Concreto y con criterio visual: jerarquía, espaciado, contraste. Nada genérico. No escribas código.",
         "builder" => "Implementa la spec en este worktree, en commits pequeños (git add + git commit) con mensajes en inglés. No escribas los tests de aceptación: lo hacen los testers. Si hay fallos o hallazgos que corregir, corrígelos.",
         "tester" => "Escribe los tests que te tocan para cubrir cada criterio de aceptación (cada criterio → al menos un test), ejecútalos con tu comando y haz commit de los tests. No cambies el código de producción.",
         "reviewer_code" => "Revisa el diff de la rama contra la base: errores, legibilidad y las reglas de tus secciones. Solo hallazgos reales, cada uno con la regla que rompe.",
@@ -779,6 +792,30 @@ pub fn not_runnable(code: Option<i32>, output: &str) -> bool {
         || lower.contains("missing script")
         || lower.contains("cannot find module")
         || regex::Regex::new(r#"command "[^"]*" not found"#).map(|re| re.is_match(&lower)).unwrap_or(false)
+}
+
+/// Screenshots of the style guide (`/design`) in the order's worktree, in
+/// every size and theme, with the app started as the UI reviewers start it.
+fn design_shots(ctx: &Ctx, run: &Run, project: &super::store::FactoryProject) -> Result<Vec<(String, PathBuf)>, String> {
+    let root = ctx.root.as_deref().ok_or("sin carpeta de datos")?;
+    let url = project.app_url.as_deref().filter(|u| !u.trim().is_empty()).ok_or("el proyecto no tiene URL de la app (paso Proyecto)")?;
+    let _app = open_app(&run.project_id, Path::new(&run.worktree), project.app_start_cmd.as_deref(), Some(url))?;
+    let dir = super::design::design_dir(root, &run.project_id).join("revision").join(&run.id);
+    super::design::capture(&run.project_id, &format!("{}/design", url.trim_end_matches('/')), &dir)
+}
+
+/// The creator approved the design system: its screenshots become the
+/// project's visual reference, which designer and UI reviewer look at.
+pub fn keep_approved_design(root: &Path, run: &Run) {
+    let to = super::design::approved_dir(root, &run.project_id);
+    let _ = std::fs::remove_dir_all(&to);
+    let _ = std::fs::create_dir_all(&to);
+    for (_, path) in &run.state.design_shots {
+        let from = Path::new(path);
+        if let Some(name) = from.file_name() {
+            let _ = std::fs::copy(from, to.join(name));
+        }
+    }
 }
 
 /// Moves the run onto the brain sealed now, if it's newer. Checks filed as
@@ -1160,6 +1197,10 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
     // Order 0 sets the project up: no testers, and a gate that only asks
     // every command to run.
     let bootstrap = order.origin == "bootstrap";
+    // An order that touches the interface is designed before it's built —
+    // when the team has a designer on.
+    let designs = order.touches_ui && !bootstrap && agent("designer").is_some();
+    let after_spec = if designs { "design" } else { "build" };
     // A notification a stage decides on while it holds the database lock,
     // sent after it lets go.
     let mut tell: Option<(String, String)> = None;
@@ -1236,7 +1277,7 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                     run.status = "waiting_human".into();
                     run.state.human_kind = Some("spec_review".into());
                     run.state.human = Some(format!("Revisa la spec de {}: {reason}", order.key));
-                    run.stage = "build".into();
+                    run.stage = after_spec.into();
                     save_run(&conn, &run)?;
                     drop(conn);
                     (ctx.notify)(&format!("✋ {} te espera", order.key), "Revisa la spec antes de fabricar.");
@@ -1245,12 +1286,54 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                 }
                 let step = start_step(&conn, &run, None, "✋ Spec", "", "ing")?;
                 finish_step(&conn, &step, "skipped", Some(&format!("saltada · modo {}", if project.mode == "delegated" { "delegado, sin riesgo" } else { "autónomo" })), None, 0.0)?;
+                run.stage = after_spec.into();
+                save_run(&conn, &run)?;
+            }
+            "design" => {
+                let Some(d) = agent("designer") else {
+                    run.stage = "build".into();
+                    continue;
+                };
+                let assets = ctx.root.as_deref().map(|r| super::design::stage_assets(r, &run.project_id, Path::new(&run.worktree))).unwrap_or_default();
+                let mut extra = format!("\n=== SPEC ===\n{}\n", run.state.spec.clone().unwrap_or_default());
+                extra.push_str(&super::design::assets_prompt(&assets));
+                if order.origin != "design_system" {
+                    extra.push_str("\nLa guía de estilo viva está en la ruta /design del proyecto: usa sus componentes y tokens; no inventes otros.\n");
+                }
+                if let Some(n) = run.state.note.take() {
+                    extra.push_str(&format!("\nNota de una persona: {n}\n"));
+                }
+                match run_agent(ctx, &mut run, &d, &order, &brain, &extra, false, None, None)? {
+                    Step::Answer(spec) => run.state.ui_spec = Some(spec),
+                    Step::Halted => return Ok(run),
+                }
                 run.stage = "build".into();
+                let conn = lock(ctx.db)?;
+                if project.mode == "supervised" {
+                    let step = start_step(&conn, &run, None, "✋ Diseño", "", "ing")?;
+                    finish_step(&conn, &step, "human", Some("modo supervisado: apruebas el diseño de las pantallas"), None, 0.0)?;
+                    run.status = "waiting_human".into();
+                    run.state.human_kind = Some("ui_spec".into());
+                    run.state.human = Some(format!("Revisa el diseño de las pantallas de {} antes de fabricar.", order.key));
+                    save_run(&conn, &run)?;
+                    drop(conn);
+                    (ctx.notify)(&format!("✋ {} te espera", order.key), "Revisa el diseño de las pantallas.");
+                    (ctx.changed)();
+                    return Ok(run);
+                }
                 save_run(&conn, &run)?;
             }
             "build" => {
                 let a = agent("builder").ok_or("el equipo no tiene builder")?;
                 let mut extra = format!("\n=== SPEC ===\n{}\n", run.state.spec.clone().unwrap_or_default());
+                if order.touches_ui {
+                    let assets = ctx.root.as_deref().map(|r| super::design::stage_assets(r, &run.project_id, Path::new(&run.worktree))).unwrap_or_default();
+                    if let Some(ui) = &run.state.ui_spec {
+                        extra.push_str(&format!("\n=== DISEÑO DE LAS PANTALLAS (del diseñador: constrúyelo así) ===\n{ui}\n"));
+                    }
+                    extra.push_str(&super::design::assets_prompt(&assets));
+                    extra.push_str("\nInterfaz: solo los tokens y la librería de la sección Diseño; cada pantalla con sus estados (vacío, cargando, error) y bien a 390 px y a 1280 px. Que se vea terminada, no un esqueleto.\n");
+                }
                 if let Some(fb) = &run.state.feedback {
                     extra.push_str(&format!("\n=== QUÉ CORREGIR (ronda {}) ===\n{fb}\n", run.round));
                 }
@@ -1496,6 +1579,14 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                     if mcp.is_some() {
                         extra.push_str(&format!("\nLa app está abierta en {}: ábrela con la herramienta de Chrome.\n", project.app_url.clone().unwrap_or_default()));
                     }
+                    if r.role == "reviewer_ui" {
+                        let assets = ctx.root.as_deref().map(|root| super::design::stage_assets(root, &run.project_id, Path::new(&run.worktree))).unwrap_or_default();
+                        extra.push_str(&super::design::assets_prompt(&assets));
+                        if let Some(ui) = &run.state.ui_spec {
+                            extra.push_str(&format!("\n=== DISEÑO DE LAS PANTALLAS (del diseñador) ===\n{ui}\n"));
+                        }
+                        extra.push_str("\nCompara lo construido con la sección Diseño, la guía /design, las capturas aprobadas y el diseño de arriba. Mira cada pantalla a 390 px y a 1280 px de ancho. Un hallazgo cita su regla DIS; bloquea solo lo grave (blocker/major) contra una DEBE.\n");
+                    }
                     match run_agent(ctx, &mut run, r, &order, &brain, &extra, false, mcp, None)? {
                         Step::Answer(ans) => {
                             for f in ans.get("findings").and_then(Value::as_array).cloned().unwrap_or_default() {
@@ -1581,6 +1672,32 @@ pub fn advance(ctx: &Ctx, run_id: &str) -> Result<Run, String> {
                 if !run.state.gate_ok {
                     run.stage = "gate".into();
                     continue;
+                }
+                // The design system is approved by the creator seeing it —
+                // in every mode: it's the look of everything after.
+                if order.origin == "design_system" && run.state.design_approved {
+                    if let Some(root) = ctx.root.as_deref() {
+                        keep_approved_design(root, &run);
+                    }
+                }
+                if order.origin == "design_system" && !run.state.design_approved {
+                    let shots = design_shots(ctx, &run, &project);
+                    let conn = lock(ctx.db)?;
+                    let (why, shots) = match shots {
+                        Ok(s) => ("Mira la guía /design y apruébala, o devuélvela con una nota (más contraste, menos redondeado…).".to_string(), s),
+                        Err(e) => (format!("No pude hacer las capturas ({e}): abre /design tú (consola o navegador) y apruébala, o devuélvela con una nota."), Vec::new()),
+                    };
+                    run.state.design_shots = shots.into_iter().map(|(l, p)| (l, p.to_string_lossy().to_string())).collect();
+                    let step = start_step(&conn, &run, None, "✋ Diseño", "", "dec")?;
+                    finish_step(&conn, &step, "human", Some(&why), None, 0.0)?;
+                    run.status = "waiting_human".into();
+                    run.state.human_kind = Some("design_review".into());
+                    run.state.human = Some(format!("El sistema de diseño de {} está listo. {why}", order.key));
+                    save_run(&conn, &run)?;
+                    drop(conn);
+                    (ctx.notify)(&format!("✋ {}: aprueba el diseño", order.key), "El sistema de diseño está listo para que lo veas.");
+                    (ctx.changed)();
+                    return Ok(run);
                 }
                 // Without an approver the spec's risk flag stands in for its
                 // «ask»: delegated mode still stops on a risky order.
@@ -1744,7 +1861,11 @@ pub fn resolve(conn: &Connection, run_id: &str, action: &str, note: Option<Strin
     let note = note.filter(|n| !n.trim().is_empty());
     match action {
         // Go on from where it is: ✋ approved, credits topped up, merge retried.
-        "continue" | "retry" => {}
+        "continue" | "retry" => {
+            if run.state.human_kind.as_deref() == Some("design_review") && action == "continue" {
+                run.state.design_approved = true;
+            }
+        }
         "reject_spec" => {
             run.stage = "spec".into();
             run.state.note = note.clone();
@@ -1769,6 +1890,12 @@ pub fn resolve(conn: &Connection, run_id: &str, action: &str, note: Option<Strin
             let account = account_id.ok_or("elige la cuenta")?;
             let agent = current_agent(conn, &run)?;
             run.state.accounts.insert(agent, account);
+        }
+        // ✋ Diseño de pantallas: hacerlo otra vez, con la nota.
+        "redo_design" => {
+            run.stage = "design".into();
+            run.state.note = note.clone();
+            run.state.ui_spec = None;
         }
         // ✋ Brain: the order touched the creator's files.
         "accept_protected" => run.state.protected_ok = true,
@@ -1974,6 +2101,7 @@ pub(crate) mod tests {
         for (role, marker) in [
             ("spec", "Escribe la spec"),
             ("critic", "Revisa la spec contra"),
+            ("designer", "Diseña las pantallas de esta orden"),
             ("builder", "Implementa la spec"),
             ("tester", "Escribe los tests"),
             ("reviewer_code", "Revisa el diff de la rama"),
@@ -2688,6 +2816,66 @@ pub(crate) mod tests {
         let r = run_gate("p-flaky", &dir, &[("ENT-06".into(), cmd.into())], GateMode::Green);
         assert!(r[0].ok, "the second go passed: {:?}", r[0]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn set_origin(w: &World, origin: &str, ui: bool) {
+        w.db.0.lock().unwrap().execute("UPDATE factory_orders SET origin = ?2, touches_ui = ?3 WHERE id = ?1", params![w.order_id, origin, ui]).unwrap();
+    }
+
+    #[test]
+    fn an_order_that_touches_the_interface_is_designed_before_it_is_built() {
+        let w = world("autonomous", "local", "true");
+        set_origin(&w, "trd", true);
+        let s = Script::new();
+        s.on("designer", json!({"summary":"lista en rejilla","screens":[{"name":"Lista","layout":"rejilla 2/4 columnas","components":["Card"],"states":["vacío","cargando","error"],"responsive":"2 columnas a 390 px"}],"copy":["Sin resultados"],"decisions":[]}));
+        let c = ctx(&w, &s);
+        let run = start(&c, "p1", &w.order_id).unwrap();
+        let run = advance(&c, &run.id).unwrap();
+        assert_eq!(run.status, "merged", "{:?}", run.error);
+        let r = roles(&s);
+        let (d, b) = (r.iter().position(|x| x == "designer").unwrap(), r.iter().position(|x| x == "builder").unwrap());
+        assert!(d < b, "the designer goes before the builder: {r:?}");
+        assert_eq!(run.state.ui_spec.as_ref().unwrap()["screens"][0]["name"], "Lista");
+
+        // Without a designer on, or an order that doesn't touch the interface: no design step.
+        let w = world("autonomous", "local", "true");
+        set_origin(&w, "trd", true);
+        {
+            let conn = w.db.0.lock().unwrap();
+            let mut team = crate::factory::team::load(&conn, "p1").unwrap();
+            team.iter_mut().find(|a| a.role == "designer").unwrap().active = false;
+            crate::factory::team::save(&conn, "p1", &team).unwrap();
+        }
+        let s = Script::new();
+        let c = ctx(&w, &s);
+        let run = start(&c, "p1", &w.order_id).unwrap();
+        assert_eq!(advance(&c, &run.id).unwrap().status, "merged");
+        assert!(!roles(&s).contains(&"designer".to_string()));
+    }
+
+    #[test]
+    fn the_design_system_waits_for_the_creator_to_see_it_even_in_autonomous_mode() {
+        let w = world("autonomous", "local", "true");
+        set_origin(&w, "design_system", true);
+        let s = Script::new();
+        let c = ctx(&w, &s);
+        let run = start(&c, "p1", &w.order_id).unwrap();
+        let run = advance(&c, &run.id).unwrap();
+        assert_eq!((run.status.as_str(), run.state.human_kind.as_deref()), ("waiting_human", Some("design_review")));
+        assert!(run.state.human.as_deref().unwrap().contains("/design"));
+        {
+            let conn = w.db.0.lock().unwrap();
+            resolve(&conn, &run.id, "send_back", Some("más contraste".into()), None).unwrap();
+        }
+        let run = advance(&c, &run.id).unwrap();
+        assert_eq!(run.state.human_kind.as_deref(), Some("design_review"), "sent back, rebuilt, and shown again");
+        {
+            let conn = w.db.0.lock().unwrap();
+            resolve(&conn, &run.id, "continue", None, None).unwrap();
+        }
+        let run = advance(&c, &run.id).unwrap();
+        assert_eq!(run.status, "merged", "{:?}", run.error);
+        assert!(run.state.design_approved);
     }
 
     #[test]

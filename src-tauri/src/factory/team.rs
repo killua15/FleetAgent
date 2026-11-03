@@ -35,7 +35,7 @@ pub struct Agent {
     pub position: i64,
 }
 
-pub const ROLES: [&str; 10] = ["spec", "critic", "builder", "tester", "reviewer_code", "reviewer_security", "reviewer_ui", "reviewer_ux", "verifier", "approver"];
+pub const ROLES: [&str; 11] = ["spec", "critic", "designer", "builder", "tester", "reviewer_code", "reviewer_security", "reviewer_ui", "reviewer_ux", "verifier", "approver"];
 
 /// The prototype's team. `slot` says which account it gets: `work` is the
 /// first Claude account, `personal` the second (or the first again), `other`
@@ -55,16 +55,17 @@ struct Seed {
     note: Option<&'static str>,
 }
 
-const SEEDS: [Seed; 12] = [
+const SEEDS: [Seed; 13] = [
     Seed { role: "spec", group: "Ingeniería", name: "Spec writer", short: "spec", duty: "TRD + TDD + rama", sections: &["arq", "prd", "rsg"], slot: "work", model: "opus", active: true, command: None, escalate: None, note: None },
     Seed { role: "critic", group: "Ingeniería", name: "Crítico R0", short: "crítico", duty: "reescribe si rompe una regla", sections: &["prd", "arq"], slot: "personal", model: "haiku", active: true, command: None, escalate: None, note: None },
+    Seed { role: "designer", group: "Ingeniería", name: "Diseñador", short: "diseño", duty: "pantallas, estados y adaptación", sections: &["prd", "dis"], slot: "work", model: "opus", active: true, command: None, escalate: None, note: Some("solo si toca la interfaz") },
     Seed { role: "builder", group: "Fabricación", name: "Builder", short: "builder", duty: "commits en su worktree", sections: &["cod", "tec", "git"], slot: "work", model: "sonnet", active: true, command: None, escalate: Some("opus"), note: None },
     Seed { role: "tester", group: "Testers", name: "Tester unitario", short: "unitario", duty: "cada criterio → un test", sections: &["cal"], slot: "work", model: "sonnet", active: true, command: Some("pytest -q"), escalate: None, note: None },
     Seed { role: "tester", group: "Testers", name: "Tester de integración", short: "integración", duty: "API + base de datos", sections: &["cal", "dat"], slot: "work", model: "sonnet", active: true, command: Some("pytest -m integration"), escalate: None, note: None },
     Seed { role: "tester", group: "Testers", name: "Tester E2E", short: "e2e", duty: "flujos completos", sections: &["cal"], slot: "personal", model: "sonnet", active: false, command: Some("npx playwright test"), escalate: None, note: Some("cuando haya interfaz") },
     Seed { role: "reviewer_code", group: "Revisores", name: "Revisor de código", short: "código", duty: "errores, legibilidad", sections: &["cod", "arq"], slot: "work", model: "opus", active: true, command: None, escalate: None, note: None },
     Seed { role: "reviewer_security", group: "Revisores", name: "Seguridad", short: "seguridad", duty: "entradas, secretos, auth", sections: &["sec"], slot: "work", model: "opus", active: true, command: None, escalate: None, note: None },
-    Seed { role: "reviewer_ui", group: "Revisores", name: "Revisor UI", short: "UI", duty: "capturas vs diseño", sections: &["prd", "cod"], slot: "personal", model: "sonnet", active: true, command: None, escalate: None, note: Some("solo si toca la interfaz") },
+    Seed { role: "reviewer_ui", group: "Revisores", name: "Revisor UI", short: "UI", duty: "capturas vs diseño", sections: &["prd", "dis", "cod"], slot: "personal", model: "sonnet", active: true, command: None, escalate: None, note: Some("solo si toca la interfaz") },
     Seed { role: "reviewer_ux", group: "Revisores", name: "Revisor UX", short: "UX", duty: "flujos y textos", sections: &["prd"], slot: "personal", model: "sonnet", active: true, command: None, escalate: None, note: Some("solo si toca la interfaz") },
     Seed { role: "verifier", group: "Decisión", name: "Verificador", short: "verificador", duty: "¿el hallazgo es real?", sections: &[], slot: "personal", model: "haiku", active: true, command: None, escalate: None, note: None },
     Seed { role: "approver", group: "Decisión", name: "Aprobador", short: "aprobador", duty: "ship o te pregunta", sections: &["rsg", "git"], slot: "other", model: "gpt-5", active: true, command: None, escalate: None, note: Some("otra familia de modelo") },
@@ -222,8 +223,19 @@ pub fn load(conn: &Connection, project_id: &str) -> Result<Vec<Agent>, String> {
                FROM factory_agents WHERE project_id = ?1 ORDER BY position",
         )
         .map_err(|e| e.to_string())?;
-    let team: Vec<Agent> = stmt.query_map(params![project_id], from_row).map_err(|e| e.to_string())?.collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+    let mut team: Vec<Agent> = stmt.query_map(params![project_id], from_row).map_err(|e| e.to_string())?.collect::<Result<_, _>>().map_err(|e| e.to_string())?;
     if !team.is_empty() {
+        // A team saved before a role existed gets it, from the seed: the
+        // designer came after the first projects.
+        let missing: Vec<Agent> = default_team(conn)?.into_iter().filter(|a| a.role == "designer" && !team.iter().any(|t| t.role == a.role)).collect();
+        if !missing.is_empty() {
+            let at = team.iter().position(|a| a.role == "builder").unwrap_or(team.len());
+            for (i, a) in missing.into_iter().enumerate() {
+                team.insert(at + i, a);
+            }
+            save(conn, project_id, &team)?;
+            return load(conn, project_id);
+        }
         return Ok(team);
     }
     let seeded = default_team(conn)?;
@@ -481,7 +493,7 @@ pub(crate) mod tests {
     fn the_default_team_is_the_prototypes_on_real_accounts() {
         let c = conn_with_accounts(&[("work", "claude"), ("personal", "claude"), ("cx", "codex")]);
         let team = load(&c, "p1").unwrap();
-        assert_eq!(team.len(), 12);
+        assert_eq!(team.len(), 13);
         let by = |name: &str| team.iter().find(|a| a.name == name).unwrap();
         assert_eq!((by("Spec writer").account_id.as_deref(), by("Spec writer").model.as_str()), (Some("work"), "opus"));
         assert_eq!(by("Crítico R0").account_id.as_deref(), Some("personal"));

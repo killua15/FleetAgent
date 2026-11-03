@@ -300,6 +300,7 @@ function RuleEditor({ rule, onSave, onCancel }: { rule: BrainRule; onSave: (rule
 
 const LEGEND_SECTIONS: [string, string, string][] = [
   ['PRD', 'Producto', 'problema, usuarios, alcance, glosario'],
+  ['DIS', 'Diseño', 'cómo se ve: estilo, colores, tipografía, componentes, referencias'],
   ['ARQ', 'Arquitectura', 'módulos, capas, lo que no se toca'],
   ['TEC', 'Tecnologías', 'stack, versiones, librerías permitidas'],
   ['ENT', 'Entorno', 'lo que esta máquina tiene que tener: runtimes, navegadores, servicios'],

@@ -14,8 +14,9 @@ use serde::{Deserialize, Serialize};
 
 /// The sections, from the start of a project to production, in the order the
 /// file lists them.
-pub const SECTIONS: [(&str, &str, &str); 12] = [
+pub const SECTIONS: [(&str, &str, &str); 13] = [
     ("prd", "Producto", "PRD"),
+    ("dis", "Diseño", "DIS"),
     ("arq", "Arquitectura", "ARQ"),
     ("tec", "Tecnologías", "TEC"),
     ("ent", "Entorno", "ENT"),
@@ -34,8 +35,9 @@ pub const SECTIONS: [(&str, &str, &str); 12] = [
 pub const REQUIRED: [&str; 7] = ["prd", "arq", "tec", "cod", "cal", "git", "rsg"];
 
 /// Heading prefixes (accents folded, lower case) and the section they open.
-const KEYS: [(&str, &str); 14] = [
+const KEYS: [(&str, &str); 15] = [
     ("producto", "prd"),
+    ("diseno", "dis"),
     ("arquitectura", "arq"),
     ("tecnolog", "tec"),
     ("stack", "tec"),
@@ -270,6 +272,7 @@ versión: 1
 ---
 
 ## Producto        (problema, usuarios, alcance y lo que queda fuera, glosario)
+## Diseño          (tipo de app, estilo, referencias, librería de componentes, colores, tipografía, radios, modo oscuro, accesibilidad, móvil primero)
 ## Arquitectura    (módulos, capas, patrones obligatorios, lo que no se toca)
 ## Tecnologías     (stack y versiones, librerías permitidas y prohibidas)
 ## Entorno         (lo que esta máquina tiene que tener: runtimes, navegadores, servicios; cada uno con un check que lo EJECUTE, p. ej. que cada navegador de Playwright arranque)
@@ -287,7 +290,7 @@ Cada regla en una línea:
 - <ID> · DEBE|DEBERÍA · <regla concreta>
   check: <comando que la comprueba>   (solo si existe uno rápido y local)
 
-IDs con el prefijo de su sección y número: PRD-01, ARQ-01, TEC-01, ENT-01, COD-01, DAT-01, SEC-01, CAL-01, GIT-01, DEP-01, RSG-01, DEC-01.
+IDs con el prefijo de su sección y número: PRD-01, DIS-01, ARQ-01, TEC-01, ENT-01, COD-01, DAT-01, SEC-01, CAL-01, GIT-01, DEP-01, RSG-01, DEC-01.
 Qué es una regla del brain: una DECISIÓN del creador que vale en todo commit desde la orden 0 y para más de una orden. Pocas y estables: mejor 30–50 reglas que 100.
 - Nada vago («código limpio»): concreta, para que un revisor pueda juzgarla. No hace falta que todas tengan check: lo que exige juicio lo revisa un revisor leyendo la regla.
 - DEBE solo para lo innegociable (lo que, si falla, la orden no se entrega). El resto, DEBERÍA: avisa en la entrega sin bloquear.
@@ -313,7 +316,7 @@ pub fn session_prompt(project: &str, base: Option<&str>, inbox: &[String]) -> St
     let mut p = format!(
         "Vamos a definir el brain de «{project}»: las reglas con las que una IA lo va a construir de principio a producción sin preguntarme. \
 Lee el repo para no preguntar lo que ya se ve en él. Después recorre conmigo, una a una, estas secciones: \
-Producto, Arquitectura, Tecnologías, Entorno, Código, Datos, Seguridad, Calidad, Git y entrega, Despliegue, Riesgo y Decisiones. \
+Producto, Diseño (si tiene interfaz: estilo, colores, tipografía, componentes), Arquitectura, Tecnologías, Entorno, Código, Datos, Seguridad, Calidad, Git y entrega, Despliegue, Riesgo y Decisiones. \
 Haz una o dos preguntas cada vez y propón decisiones concretas; yo decido, tú no decides por mí. \
 Una regla es una decisión que vale en todo commit y para más de una orden: no metas tests de funcionalidades concretas, ni red fuera de Entorno, ni la historia de dev/main. \
 Pon check solo si es rápido y local; lo demás lo juzgará un revisor. DEBE solo para lo innegociable, el resto DEBERÍA. \
@@ -773,7 +776,7 @@ pub(crate) mod tests {
         assert_eq!(r.assigned, vec!["COD-02", "DEP-02"]);
         assert_eq!(r.pending, vec!["¿Zona horaria de las franjas: la de la clínica o UTC?"]);
         assert_eq!(r.sections.len(), 11);
-        assert!(r.missing == vec!["ent".to_string()] && r.missing_required.is_empty(), "the example predates Entorno: {:?}", r.missing);
+        assert!(r.missing == vec!["dis".to_string(), "ent".to_string()] && r.missing_required.is_empty(), "the example predates Diseño and Entorno: {:?}", r.missing);
         assert_eq!(r.checks, 7);
         let arq2 = r.rules.iter().find(|x| x.id == "ARQ-02").unwrap();
         assert_eq!(arq2.check.as_deref(), Some("! grep -rn \"session.query\" app/routers"));

@@ -43,6 +43,11 @@ const fn f(key: &'static str, section: &'static str, label: &'static str, help: 
 const MANAGERS: &[&str] = &["npm", "pnpm", "yarn", "bun", "uv", "poetry", "pip", "cargo", "go"];
 const LANGS: &[&str] = &["inglés", "español"];
 const COMMITS: &[&str] = &["convencionales (feat:, fix:…)", "libres"];
+const KINDS: &[&str] = &["web", "móvil", "escritorio", "sin interfaz"];
+const YES_NO: &[&str] = &["sí", "no"];
+const A11Y: &[&str] = &["WCAG AA", "sin requisito"];
+const FIRST: &[&str] = &["móvil primero", "escritorio primero"];
+const LOOSE: &[&str] = &["prohibidos", "permitidos"];
 
 /// The fields, section by section, in the order the brain lists them.
 pub fn template() -> Vec<Field> {
@@ -52,6 +57,18 @@ pub fn template() -> Vec<Field> {
         f("prd.entra", "prd", "Qué entra", "Lo que el sistema hace. Una cosa por línea.", "list", "must", false),
         f("prd.no_entra", "prd", "Qué NO entra", "Lo que la IA no debe construir aunque parezca útil. Una por línea.", "list", "must", false),
         f("prd.glosario", "prd", "Glosario", "Término: significado. Uno por línea.", "list", "should", false),
+        Field { options: KINDS, ..f("dis.tipo", "dis", "Tipo de app", "Qué interfaz tiene. «sin interfaz» apaga el diseño.", "choice", "must", false) },
+        f("dis.estilo", "dis", "Estilo", "En palabras: «sobrio, mucho aire, tipografía grande, nada de degradados».", "text", "must", false),
+        f("dis.referencias", "dis", "Referencias", "URLs de webs o apps que te gusten, una por línea. Las imágenes se añaden abajo.", "list", "should", false),
+        f("dis.libreria", "dis", "Librería de componentes", "shadcn/ui, MUI, Mantine… o Material 3 / Cupertino en móvil.", "text", "must", false),
+        f("dis.tokens", "dis", "Archivo de tokens o tema", "Donde viven colores, tipografía, radios y espaciado (src/styles/tokens.css, tailwind.config.ts…).", "text", "must", true),
+        f("dis.colores", "dis", "Colores", "«nombre #hex», uno por línea: primario, acento, fondo, superficie, texto…", "list", "must", false),
+        f("dis.tipografia", "dis", "Tipografía", "Familia y escala: «Inter; títulos 32/24/20, texto 16».", "text", "should", false),
+        f("dis.forma", "dis", "Forma", "Radios, espaciado y sombras: «radio 12px, espaciado de 4 en 4, sombras suaves».", "text", "should", false),
+        Field { options: YES_NO, ..f("dis.oscuro", "dis", "Modo oscuro", "", "choice", "should", false) },
+        Field { options: A11Y, ..f("dis.accesibilidad", "dis", "Accesibilidad", "", "choice", "must", false) },
+        Field { options: FIRST, ..f("dis.adaptable", "dis", "Pantallas", "Para qué tamaño se diseña primero.", "choice", "should", false) },
+        Field { options: LOOSE, ..f("dis.colores_sueltos", "dis", "Colores fuera de los tokens", "«prohibidos»: ningún #hex ni rgb() en el código salvo en el archivo de tokens.", "choice", "should", true) },
         f("arq.capas", "arq", "Módulos y capas", "Cada módulo o capa y para qué es. Uno por línea.", "list", "must", false),
         f("arq.carpetas", "arq", "Carpetas fijas", "Carpetas que deben existir (src/api, src/components…). Una por línea.", "list", "must", true),
         f("arq.imports", "arq", "Importaciones prohibidas", "«origen → destino»: lo que una carpeta no puede importar (src/components → src/api). Una por línea.", "list", "must", true),
@@ -268,6 +285,7 @@ pub fn guard(field: &str, value: &str, manager: Option<&str>) -> Option<String> 
             Some("! git log --no-merges --format=%s dev..HEAD | grep -vE '^(feat|fix|test|chore|refactor|docs|build|style|perf|ci|revert)(\\([^)]+\\))?!?: .+' > /dev/null".into())
         }
         "cal.suite" => (!value.is_empty()).then(|| value.to_string()),
+        "dis.tokens" => (!value.is_empty() && !value.contains('\'')).then(|| format!("test -f {}", quote(value))),
         "rsg.tamano" => {
             let n: u32 = value.parse().ok()?;
             Some(format!(
@@ -276,6 +294,25 @@ pub fn guard(field: &str, value: &str, manager: Option<&str>) -> Option<String> 
         }
         _ => None,
     }
+}
+
+/// A colour written outside the design tokens: `#abc`, `#aabbcc`, `rgb(`…
+/// in the code under `src`, tests and the tokens file left out.
+pub fn loose_colours_guard(tokens: &str) -> String {
+    format!(
+        "! git ls-files src | grep -E '\\.(tsx?|jsx?|vue|svelte|css|scss|dart)$' | grep -vE '(\\.test\\.|\\.spec\\.|/test/|/__tests__/)' | grep -vxF {} | xargs grep -nE '#[0-9a-fA-F]{{3,8}}([^0-9a-zA-Z_-]|$)|rgba?\\(' 2>/dev/null | grep . > /dev/null",
+        quote(tokens)
+    )
+}
+
+/// The check of a field, with what other decisions it depends on: the
+/// package manager, the tokens file.
+pub fn guard_in(items: &[Item], field: &str, value: &str) -> Option<String> {
+    if field == "dis.colores_sueltos" {
+        let tokens = items.iter().find(|i| i.field.as_deref() == Some("dis.tokens") && i.status == "confirmed").map(|i| i.value.trim().to_string()).filter(|t| !t.is_empty())?;
+        return (value.trim() == "prohibidos").then(|| loose_colours_guard(&tokens));
+    }
+    guard(field, value, manager_of(items).as_deref())
 }
 
 /// The value a fixed field always has.
@@ -341,7 +378,6 @@ pub fn assign_ids(items: &mut Vec<Item>) {
 /// The confirmed decisions as brain rules, fixed fields included.
 pub fn render_rules(items: &[Item]) -> Vec<Rule> {
     let defs = template();
-    let manager = manager_of(items);
     let mut rules = Vec::new();
     for def in &defs {
         let item = items.iter().find(|i| i.field.as_deref() == Some(def.key) && i.status == "confirmed");
@@ -351,7 +387,7 @@ pub fn render_rules(items: &[Item]) -> Vec<Rule> {
         let Some(value) = effective_value(def, item).filter(|v| !v.trim().is_empty()) else { continue };
         let Some(id) = item.and_then(|i| i.rule_id.clone()) else { continue };
         let shown = if def.kind == "list" { lines(&value).join("; ") } else { value.clone() };
-        let check = if def.guarded { guard(def.key, &value, manager.as_deref()) } else { None };
+        let check = if def.guarded { guard_in(items, def.key, &value) } else { None };
         rules.push(Rule { id, section: def.section.into(), level: item.map(|i| i.level.clone()).unwrap_or_else(|| def.level.into()), text: format!("{}: {shown}", def.label), check });
     }
     for i in items.iter().filter(|i| i.field.is_none() && i.status == "confirmed" && !i.value.trim().is_empty()) {
@@ -425,12 +461,12 @@ pub fn view(conn: &Connection, project_id: &str) -> Result<DraftView, String> {
         assign_ids(&mut items);
         save_draft(conn, project_id, &items, based_on)?;
     }
-    let manager = manager_of(&items);
+    let all = items.clone();
     let items = items
         .into_iter()
         .map(|i| {
             let guard = match i.field.as_deref() {
-                Some(k) if template().iter().any(|d| d.key == k && d.guarded) => guard(k, &i.value, manager.as_deref()),
+                Some(k) if template().iter().any(|d| d.key == k && d.guarded) => guard_in(&all, k, &i.value),
                 Some(_) => None,
                 None => i.check.clone(),
             };
@@ -672,11 +708,14 @@ mod tests {
             confirmed("cal.suite", "npm run verify"),
             confirmed("rsg.tamano", "600"),
             confirmed("prd.que", "Una Pokédex"),
+            confirmed("dis.tipo", "web"),
+            confirmed("dis.tokens", "src/styles/tokens.css"),
+            confirmed("dis.colores_sueltos", "prohibidos"),
         ];
         assign_ids(&mut items);
         let rules = render_rules(&items);
         let with_check: Vec<&Rule> = rules.iter().filter(|r| r.check.is_some()).collect();
-        assert_eq!(with_check.len(), 13, "{:?}", rules.iter().map(|r| (&r.id, &r.check)).collect::<Vec<_>>());
+        assert_eq!(with_check.len(), 15, "{:?}", rules.iter().map(|r| (&r.id, &r.check)).collect::<Vec<_>>());
         let errors: Vec<_> = super::super::lint::lint_static(&rules, "POK-1").into_iter().filter(|f| f.severity == "error").collect();
         assert!(errors.is_empty(), "{errors:?}");
         // The branch rule the Factory writes accepts the branches it makes.
@@ -701,6 +740,18 @@ mod tests {
         assert!(run(guard("arq.carpetas", "src/components", None).unwrap()));
         assert!(!run(guard("arq.carpetas", "src/hooks", None).unwrap()));
         assert!(!run(guard("tec.gestor", "pnpm", None).unwrap()), "no pnpm-lock.yaml");
+        // Colours outside the tokens: the tokens file may have them, a component may not.
+        std::fs::create_dir_all(dir.join("src/styles")).unwrap();
+        std::fs::write(dir.join("src/styles/tokens.css"), ":root { --primary: #4F46E5; }\n").unwrap();
+        std::fs::write(dir.join("src/components/Card.tsx"), "export const Card = () => <div className=\"bg-primary\" />\n").unwrap();
+        let git = |args: &[&str]| std::process::Command::new("git").args(args).current_dir(&dir).output().unwrap();
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        let loose = loose_colours_guard("src/styles/tokens.css");
+        assert!(run(loose.clone()), "only the tokens file has colours");
+        std::fs::write(dir.join("src/components/Card.tsx"), "export const Card = () => <div style={{ color: '#ff0044' }} />\n").unwrap();
+        assert!(!run(loose), "a colour written in a component");
+        assert!(run(guard("dis.tokens", "src/styles/tokens.css", None).unwrap()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

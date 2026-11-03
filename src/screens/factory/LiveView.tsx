@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
+import { invoke } from '../../lib/invoke';
 import type { Account } from '../../types/account';
-import { brainLabel, pointsLabel, usd, countdown, hhmm, STATION_NAME, type ActivityRow, type FactoryOrder, type LiveData, type Station, type StepRow } from '../../types/factory';
+import { brainLabel, pointsLabel, usd, countdown, hhmm, STATION_NAME, type ActivityRow, type DesignShot, type FactoryOrder, type LiveData, type RunState, type Station, type StepRow } from '../../types/factory';
 import { AccountsUsage, useTeamUsage } from './AccountsUsage';
 import { FailurePanel } from './FailurePanel';
 import { GatePanel, type CheckAction } from './GatePanel';
@@ -275,7 +276,7 @@ export function LiveView({
             <b>{run.state.human}</b>
             {run.state.humanKind === 'spec_review' && run.state.spec && <span className={styles.hint}> · {String(run.state.spec.summary ?? '')}</span>}
           </span>
-          {(run.state.humanKind === 'spec_review' || run.state.humanKind === 'diff' || run.state.humanKind === 'approver') && (
+          {(run.state.humanKind === 'spec_review' || run.state.humanKind === 'diff' || run.state.humanKind === 'approver' || run.state.humanKind === 'design_review' || run.state.humanKind === 'ui_spec') && (
             <input className={styles.input} style={{ maxWidth: 260 }} placeholder="nota (si la devuelves)" value={note} onChange={(e) => setNote(e.target.value)} />
           )}
           {run.state.humanKind === 'spec_review' && (
@@ -299,6 +300,28 @@ export function LiveView({
               </button>
             </>
           )}
+          {run.state.humanKind === 'design_review' && (
+            <>
+              <button className={`${styles.btnPrimary} ${styles.sm}`} title="Estas capturas pasan a ser la referencia visual del proyecto" onClick={() => onResolve('continue')}>
+                Aprobar el diseño
+              </button>
+              <button className={`${styles.btn} ${styles.sm}`} disabled={!note.trim()} title="Escribe qué cambiar (más contraste, menos redondeado…)" onClick={() => onResolve('send_back', note)}>
+                Devolver con la nota
+              </button>
+            </>
+          )}
+          {run.state.humanKind === 'ui_spec' && (
+            <>
+              <button className={`${styles.btnPrimary} ${styles.sm}`} onClick={() => onResolve('continue')}>
+                Aprobar y fabricar
+              </button>
+              <button className={`${styles.btn} ${styles.sm}`} onClick={() => onResolve('redo_design', note)}>
+                Rehacer el diseño
+              </button>
+            </>
+          )}
+          {run.state.humanKind === 'design_review' && <DesignShots runId={run.id} />}
+          {run.state.humanKind === 'ui_spec' && run.state.uiSpec && <UiSpecView spec={run.state.uiSpec} />}
           {run.state.humanKind === 'credits' && (
             <>
               <button className={`${styles.btnPrimary} ${styles.sm}`} onClick={() => onResolve('retry')}>
@@ -500,5 +523,46 @@ export function LiveView({
         </div>
       </div>
     </>
+  );
+}
+
+/** The style guide's screenshots, to approve the design system by seeing it. */
+function DesignShots({ runId }: { runId: string }) {
+  const [shots, setShots] = useState<DesignShot[] | null>(null);
+  useEffect(() => {
+    invoke<DesignShot[]>('factory_design_shots', { runId })
+      .then(setShots)
+      .catch(() => setShots([]));
+  }, [runId]);
+  if (!shots) return <span className={styles.hint}>cargando las capturas…</span>;
+  if (!shots.length) return null;
+  return (
+    <div className={styles.shotGrid}>
+      {shots.map((s) => (
+        <figure key={s.label}>
+          <a href={s.dataUrl} target="_blank" rel="noreferrer">
+            <img src={s.dataUrl} alt={s.label} />
+          </a>
+          <figcaption className={styles.lSub}>{s.label}</figcaption>
+        </figure>
+      ))}
+    </div>
+  );
+}
+
+/** The designer's screens, in supervised mode, before they're built. */
+function UiSpecView({ spec }: { spec: NonNullable<RunState['uiSpec']> }) {
+  return (
+    <div className={styles.col} style={{ gap: 6, width: '100%' }}>
+      {spec.summary && <span className={styles.hint}>{spec.summary}</span>}
+      {(spec.screens ?? []).map((sc) => (
+        <div key={sc.name} className={styles.decideRow}>
+          <span className={styles.lName}>{sc.name}</span>
+          <span className={styles.hint}>{sc.layout}</span>
+          <span className={styles.lSub}>componentes: {sc.components.join(', ')} · estados: {sc.states.join(', ')}</span>
+          <span className={styles.lSub}>adaptación: {sc.responsive}</span>
+        </div>
+      ))}
+    </div>
   );
 }
