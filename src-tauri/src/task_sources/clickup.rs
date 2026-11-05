@@ -256,9 +256,9 @@ fn fetch_pages(base: &str, token: &str, assignee: Option<i64>, source_id: &str) 
 /// The key and the title a task should show, given its raw name.
 ///
 /// Teams that don't pay for ClickUp's custom ids put the key in the title
-/// instead — `[TMS-task-09] Signal catalog` — and it's the name everyone
+/// instead — `[API-task-09] Signal catalog` — and it's the name everyone
 /// actually says. Without this the branch would be
-/// `CU-86ajhva8z-tms-task-09-signal-catalog`: the hash nobody recognises,
+/// `CU-86abcd123-api-task-09-signal-catalog`: the hash nobody recognises,
 /// followed by the key repeated inside the slug.
 ///
 /// The prefix is *removed* from the title on purpose: it's shown as the key
@@ -267,7 +267,7 @@ pub(crate) fn key_from_title(name: &str) -> Option<(String, String)> {
     let trimmed = name.trim_start();
     let inner = trimmed.strip_prefix('[')?.split_once(']')?;
     let key = inner.0.trim();
-    // What separates a key from a label is a number: `TMS-task-09` and `DEV-42`
+    // What separates a key from a label is a number: `API-task-09` and `DEV-42`
     // identify one task, `[URGENTE]` and `[BUG]` classify many. Taking a label
     // as the key would give every urgent task the same branch name.
     if key.is_empty() || key.len() > 24 || key.contains(' ') || !key.chars().any(|c| c.is_ascii_digit()) {
@@ -376,16 +376,16 @@ mod tests {
     }
 
     /// Real boards that don't pay for custom ids put the key in the title.
-    /// Taken from an actual workspace: `[TMS-task-09] Signal catalog (seed +
-    /// endpoint)` must branch as `TMS-task-09-signal-catalog…`, not as
-    /// `CU-86ajhva8z-tms-task-09-signal-catalog…`.
+    /// Taken from an actual workspace: `[API-task-09] Signal catalog (seed +
+    /// endpoint)` must branch as `API-task-09-signal-catalog…`, not as
+    /// `CU-86abcd123-api-task-09-signal-catalog…`.
     #[test]
     fn a_key_written_into_the_title_wins_over_the_hash() {
         let parsed = parse_tasks(
-            &body(r#"{"tasks": [{"id": "86ajhva8z", "custom_id": null, "name": "[TMS-task-09] Signal catalog (seed + endpoint)", "url": "u", "status": {"status": "verificar"}}]}"#),
+            &body(r#"{"tasks": [{"id": "86abcd123", "custom_id": null, "name": "[API-task-09] Signal catalog (seed + endpoint)", "url": "u", "status": {"status": "verificar"}}]}"#),
             "src1",
         );
-        assert_eq!(parsed[0].key, "TMS-task-09");
+        assert_eq!(parsed[0].key, "API-task-09");
         assert_eq!(parsed[0].title, "Signal catalog (seed + endpoint)", "the prefix moves to the key rather than being repeated in the branch");
     }
 

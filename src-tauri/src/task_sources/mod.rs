@@ -483,7 +483,7 @@ pub struct TaskFetch {
 
 /// Everything one account has assigned to you, with no project in the picture.
 ///
-/// The board is chosen by account first — "Technomar's ClickUp", "the other
+/// The board is chosen by account first — "Acme's ClickUp", "the other
 /// org's GitHub" — because that's the question you can answer without looking:
 /// which of your boards am I working from. Which repo the worktree lands in is
 /// a later decision, and belongs next to the button that cuts it.

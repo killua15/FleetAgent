@@ -42,7 +42,7 @@ type PaneId = (typeof PANES)[number]['id'];
 
 const THEME_OPTS: Theme[] = ['dark', 'light', 'glass', 'system'];
 
-/** `/Users/killua/.claude-work` → `~/.claude-work`. macOS-only, like the rest
+/** `/Users/me/.claude-work` → `~/.claude-work`. macOS-only, like the rest
  * of Hangar — the home prefix is the same on every row, so it's noise. */
 function abbreviateHome(path: string): string {
   return path.replace(/^\/Users\/[^/]+/, '~');

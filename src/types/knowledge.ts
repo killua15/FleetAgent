@@ -37,7 +37,7 @@ export const KNOWLEDGE_SOURCE_META: Record<
 > = {
   outline: {
     name: 'Outline',
-    summary: 'A team wiki, cloud (getoutline.com) or self-hosted — e.g. docs.technomar.com.br. Outline ships its own MCP server, so nothing else is installed.',
+    summary: 'A team wiki, cloud (getoutline.com) or self-hosted — e.g. docs.example.com. Outline ships its own MCP server, so nothing else is installed.',
     steps: [
       'In Outline: Settings → API & Apps → New API key. Give it read and write access — with read only, agents can search but not write.',
       'Here: name it, paste the address you open Outline at (…/mcp or …/api work too) and the key.',

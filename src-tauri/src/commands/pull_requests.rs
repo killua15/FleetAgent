@@ -1931,10 +1931,10 @@ mod tests {
     /// unreachable for five minutes, and that says nothing about the repos.
     #[test]
     fn a_network_failure_never_benches_a_repo() {
-        let real = r#"glab api projects/apps%2Fgmdss/merge_requests?state=opened failed: ERROR Get "https://git.technolabs.com.br/api/v4/projects/apps%2Fgmdss/merge_requests": dial tcp 3.12.233.101:443: i/o timeout."#;
+        let real = r#"glab api projects/apps%2Fradio/merge_requests?state=opened failed: ERROR Get "https://git.acme-corp.dev/api/v4/projects/apps%2Fradio/merge_requests": dial tcp 3.12.233.101:443: i/o timeout."#;
         assert!(is_transient(real));
         assert!(is_transient("glab api user: timed out after 30s — check your network connection"));
-        assert!(!is_transient("gh: Could not resolve to a Repository with the name 'WPLANNING/wplanning-app-mobile'."));
+        assert!(!is_transient("gh: Could not resolve to a Repository with the name 'ACME/mobile-app'."));
 
         let path = format!("bench-test/{}", Uuid::new_v4());
         for _ in 0..BENCH_AFTER_FAILURES * 2 {

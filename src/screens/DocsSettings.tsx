@@ -134,7 +134,7 @@ export function DocsSettings() {
               <span className={shared.hint}>{meta.hint}</span>
               <HowItIntegrates kind={form.kind} />
               <div className={shared.formRow}>
-                <input className={shared.input} placeholder="name it — e.g. Technomar docs" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} />
+                <input className={shared.input} placeholder="name it — e.g. Team docs" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} />
                 <input
                   className={shared.input}
                   placeholder={meta.urlPlaceholder}

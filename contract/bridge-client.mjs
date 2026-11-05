@@ -34,10 +34,27 @@ import { homedir } from 'node:os';
 // Con alias: este fichero ya tiene su propio `join`, el que se une al canal.
 import { dirname, join as joinPath } from 'node:path';
 
-// Los mismos que la app de escritorio. La clave publicable es pública por
-// diseño; lo que protege el contenido es el cifrado, no ella.
-const SUPABASE_URL = 'https://yqrvofogmyqdqufyxlfk.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_CTwAWQ70NlE0dEzTpv2zhQ_M0k9SbiQ';
+// Los mismos que la app de escritorio: del entorno, o del `.env.local` del repo
+// (ver `.env.example`). La clave publicable es pública por diseño; lo que
+// protege el contenido es el cifrado, no ella.
+function supabaseConfig() {
+  const local = {};
+  const file = joinPath(dirname(new URL(import.meta.url).pathname), '..', '.env.local');
+  if (existsSync(file)) {
+    for (const line of readFileSync(file, 'utf8').split('\n')) {
+      const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.*?)\s*$/);
+      if (m) local[m[1]] = m[2];
+    }
+  }
+  const url = process.env.VITE_SUPABASE_URL || local.VITE_SUPABASE_URL;
+  const key = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || local.VITE_SUPABASE_PUBLISHABLE_KEY;
+  if (!url || !key) {
+    console.error('Falta el proyecto de Supabase: pon VITE_SUPABASE_URL y VITE_SUPABASE_PUBLISHABLE_KEY en .env.local (ver .env.example).');
+    process.exit(1);
+  }
+  return { url, key };
+}
+const { url: SUPABASE_URL, key: SUPABASE_KEY } = supabaseConfig();
 const PROTOCOL_VERSION = 1;
 
 // El mismo puerto que usa Hangar para su login, porque es el que está

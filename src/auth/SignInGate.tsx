@@ -38,6 +38,22 @@ export function SignInGate({ children }: { children: ReactNode }) {
 
   if (access === 'ready') return <>{children}</>;
 
+  if (access === 'unconfigured') {
+    return (
+      <Shell>
+        <div className={styles.heading}>
+          <span className={styles.wordmark}>No backend configured</span>
+          <span className={styles.blurb}>
+            This build of Hangar has no Supabase project to sign in against. Copy{' '}
+            <code>.env.example</code> to <code>.env.local</code>, set <code>VITE_SUPABASE_URL</code> and{' '}
+            <code>VITE_SUPABASE_PUBLISHABLE_KEY</code> to your own project, and build again.
+          </span>
+        </div>
+        <span className={styles.footNote}>See “Backend (Supabase)” in the README for what the project needs.</span>
+      </Shell>
+    );
+  }
+
   if (access === 'checking') {
     return (
       <Shell>

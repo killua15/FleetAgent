@@ -39,7 +39,7 @@ pub(crate) struct AgentMcp {
     pub env: Vec<(String, String)>,
 }
 
-/// `technomar-docs` → `HANGAR_MCP_TECHNOMAR_DOCS_TOKEN`.
+/// `team-docs` → `HANGAR_MCP_TEAM_DOCS_TOKEN`.
 pub(crate) fn token_env_name(server: &str) -> String {
     let upper: String = server.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' }).collect();
     format!("HANGAR_MCP_{upper}_TOKEN")
@@ -132,7 +132,7 @@ mod tests {
     use super::*;
 
     fn wiki(token: Option<&str>) -> AgentServer {
-        AgentServer { name: "technomar-docs".into(), url: "https://docs.technomar.com.br/mcp".into(), token: token.map(str::to_string) }
+        AgentServer { name: "team-docs".into(), url: "https://docs.example.com/mcp".into(), token: token.map(str::to_string) }
     }
 
     /// A project with only a graph gets exactly the file it always got.
@@ -148,15 +148,15 @@ mod tests {
     #[test]
     fn a_wiki_is_an_http_server_whose_token_stays_out_of_the_file() {
         let (remote, env) = remote_servers(&[wiki(Some("ol_api_secret"))]);
-        assert_eq!(env, vec![("HANGAR_MCP_TECHNOMAR_DOCS_TOKEN".to_string(), "ol_api_secret".to_string())]);
+        assert_eq!(env, vec![("HANGAR_MCP_TEAM_DOCS_TOKEN".to_string(), "ol_api_secret".to_string())]);
 
         let json = config_json(None, &remote).unwrap();
         assert!(!json.contains("ol_api_secret"), "{json}");
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        let entry = &parsed["mcpServers"]["technomar-docs"];
+        let entry = &parsed["mcpServers"]["team-docs"];
         assert_eq!(entry["type"], "http");
-        assert_eq!(entry["url"], "https://docs.technomar.com.br/mcp");
-        assert_eq!(entry["headers"]["Authorization"], "Bearer ${HANGAR_MCP_TECHNOMAR_DOCS_TOKEN}");
+        assert_eq!(entry["url"], "https://docs.example.com/mcp");
+        assert_eq!(entry["headers"]["Authorization"], "Bearer ${HANGAR_MCP_TEAM_DOCS_TOKEN}");
     }
 
     #[test]
@@ -164,8 +164,8 @@ mod tests {
         let (remote, env) = remote_servers(&[wiki(None)]);
         assert!(env.is_empty());
         let parsed: serde_json::Value = serde_json::from_str(&config_json(None, &remote).unwrap()).unwrap();
-        assert!(parsed["mcpServers"]["technomar-docs"].get("headers").is_none());
-        assert_eq!(codex_args(&remote), vec!["-c", "mcp_servers.technomar-docs.url=\"https://docs.technomar.com.br/mcp\""]);
+        assert!(parsed["mcpServers"]["team-docs"].get("headers").is_none());
+        assert_eq!(codex_args(&remote), vec!["-c", "mcp_servers.team-docs.url=\"https://docs.example.com/mcp\""]);
     }
 
     #[test]
@@ -176,9 +176,9 @@ mod tests {
             args,
             vec![
                 "-c",
-                "mcp_servers.technomar-docs.url=\"https://docs.technomar.com.br/mcp\"",
+                "mcp_servers.team-docs.url=\"https://docs.example.com/mcp\"",
                 "-c",
-                "mcp_servers.technomar-docs.bearer_token_env_var=\"HANGAR_MCP_TECHNOMAR_DOCS_TOKEN\"",
+                "mcp_servers.team-docs.bearer_token_env_var=\"HANGAR_MCP_TEAM_DOCS_TOKEN\"",
             ]
         );
         assert!(!args.join(" ").contains("ol_api_secret"));

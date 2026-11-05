@@ -28,7 +28,7 @@ export function TaskBoard() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [projectId, setProjectId] = useState('');
   // Every source configured in Settings, not only the ones this project narrows
-  // down. They're the tabs: one account per board — Technomar's ClickUp, the
+  // down. They're the tabs: one account per board — Acme's ClickUp, the
   // other org's GitHub — and each keeps its own credential.
   const [sources, setSources] = useState<TaskSource[]>([]);
   const [board, setBoard] = useState<TaskFetch | null>(null);

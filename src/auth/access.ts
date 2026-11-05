@@ -7,8 +7,9 @@
  * makes it testable without a session, a network, or a webview.
  */
 
-/** `checking` is the state on mount, before the refresh has come back. */
-export type Access = 'checking' | 'signed-out' | 'pending' | 'ready' | 'grace-expired';
+/** `checking` is the state on mount, before the refresh has come back.
+ * `unconfigured`: this build has no Supabase project to sign in against. */
+export type Access = 'checking' | 'signed-out' | 'pending' | 'ready' | 'grace-expired' | 'unconfigured';
 
 export interface AccessInput {
   /** A live session — the refresh succeeded, or one was already in memory. */

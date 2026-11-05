@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { invoke } from './invoke';
-import { supabase, SUPABASE_PUBLISHABLE_KEY } from './supabase';
+import { supabase, supabaseConfigured, SUPABASE_PUBLISHABLE_KEY } from './supabase';
 
 /**
  * The headers every update request carries: the tester's own Supabase session,
@@ -24,6 +24,8 @@ export function updateHeaders(token: string): Record<string, string> {
  * can't tell who's asking.
  */
 export async function checkForUpdate(): Promise<Update | null> {
+  // No project means no update channel: nothing to ask, and no session to ask with.
+  if (!supabaseConfigured) return null;
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
   if (!token) return null;

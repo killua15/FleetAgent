@@ -472,7 +472,7 @@ fn pr_host_checks_table(conn: &Connection) -> Result<(), String> {
 ///
 /// The only identifier that means the same thing on two machines: `accounts.id`
 /// is a UUID minted per install, and `name` is whatever the user typed there —
-/// "David Personal 1" here, something else on the other Mac. Neither can join
+/// "Demo Personal 1" here, something else on the other Mac. Neither can join
 /// "the same subscription" across installs, which is what a per-profile usage
 /// report needs.
 ///

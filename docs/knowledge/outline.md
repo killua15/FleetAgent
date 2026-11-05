@@ -1,6 +1,6 @@
 # Outline como fuente de conocimiento
 
-Outline (getoutline.com, o autoalojado como **docs.technomar.com.br**) trae **su propio servidor
+Outline (getoutline.com, o autoalojado como **docs.example.com**) trae **su propio servidor
 MCP** en `<dirección>/mcp`. Hangar no instala nada: verifica la key y le pasa ese servidor a los
 agentes.
 
@@ -9,7 +9,7 @@ agentes.
 - **Autenticación de la ruta `/mcp`:** acepta MCP-OAuth, OAuth y **API key personal**
   (`server/routes/mcp/index.ts` en outline/outline). Por eso una sola key sirve para Hangar y para
   cualquier CLI.
-- **Login web de docs.technomar.com.br:** Microsoft (Azure) y Passkeys. La key se crea después de
+- **Login web de docs.example.com:** Microsoft (Azure) y Passkeys. La key se crea después de
   entrar.
 
 ## Cómo se integra
@@ -18,8 +18,8 @@ agentes.
    - Con lectura y escritura, los agentes pueden buscar y también escribir documentos y comentarios.
    - Con solo lectura, solo buscan y leen.
 2. **Conectar.** En Hangar: **Settings → Docs → Outline → + Connect**.
-   - **Nombre:** sale como nombre del servidor MCP para los agentes, por ejemplo `technomar-docs`.
-   - **Dirección:** `https://docs.technomar.com.br`. Si pegas `…/mcp` o `…/api`, se normaliza.
+   - **Nombre:** sale como nombre del servidor MCP para los agentes, por ejemplo `team-docs`.
+   - **Dirección:** `https://docs.example.com`. Si pegas `…/mcp` o `…/api`, se normaliza.
    - **API key:** la que acabas de crear.
 3. **Verificación.**
    - Hangar llama a `POST /api/auth.info`. Un 401 significa key inválida; un 404, una dirección que
@@ -28,7 +28,7 @@ agentes.
    - Guarda la key en el Keychain de macOS.
 4. **Alcance.** Para todos los proyectos o solo algunos.
 5. **Agentes.** Cada terminal o sesión que se abra después recibe el servidor
-   `https://docs.technomar.com.br/mcp`, con la key en el entorno del proceso (ver
+   `https://docs.example.com/mcp`, con la key en el entorno del proceso (ver
    [README](README.md)).
 
 ## Qué reciben los agentes

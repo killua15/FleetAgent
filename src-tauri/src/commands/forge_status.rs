@@ -517,7 +517,7 @@ mod tests {
     use super::*;
 
     fn projects() -> Vec<ForgeInstanceProject> {
-        vec![ForgeInstanceProject { id: "p1".into(), name: "TMS-server".into() }]
+        vec![ForgeInstanceProject { id: "p1".into(), name: "api-server".into() }]
     }
 
     /// Undeclared — what every host is until the user says otherwise, and the
@@ -533,23 +533,23 @@ mod tests {
 
     /// The live case, and the reason the SSH probe is worth two seconds.
     ///
-    /// `git.technolabs.com.br` is a real GitLab on a vanity domain whose SSH key
+    /// `git.acme-corp.dev` is a real GitLab on a vanity domain whose SSH key
     /// works — measured: `git ls-remote` lists branches, and the instance greets
-    /// you as `@dsalinas`. Telling that user "Hangar can't tell what this host
+    /// you as `@dev`. Telling that user "Hangar can't tell what this host
     /// is" would be false, and telling them nothing at all is what left two
     /// projects silently missing. The row has to say the one true thing: git
     /// works, the API is what needs a token.
     #[test]
     fn a_vanity_gitlab_reached_over_ssh_explains_why_git_works_and_mrs_dont() {
-        let status = guessed("git.technolabs.com.br", gitlab_ssh(Some("dsalinas")));
+        let status = guessed("git.acme-corp.dev", gitlab_ssh(Some("dev")));
 
         assert_eq!(status.forge.as_deref(), Some("gitlab"), "the SSH greeting places it, with no token involved");
-        assert_eq!(status.viewer_login.as_deref(), Some("dsalinas"), "and it is who you are there, without any API call");
+        assert_eq!(status.viewer_login.as_deref(), Some("dev"), "and it is who you are there, without any API call");
         assert!(!status.authenticated, "but placing it is not the same as being able to call the API");
         let reason = status.reason.expect("it has to explain itself");
-        assert!(reason.contains("@dsalinas"), "the identity the instance itself reported: {reason}");
+        assert!(reason.contains("@dev"), "the identity the instance itself reported: {reason}");
         assert!(reason.contains("token"), "and the thing that's actually missing: {reason}");
-        assert_eq!(status.login_command.as_deref(), Some("glab auth login --hostname git.technolabs.com.br"));
+        assert_eq!(status.login_command.as_deref(), Some("glab auth login --hostname git.acme-corp.dev"));
     }
 
     /// A self-hosted instance is authenticated per host, so the command has to
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn a_git_only_instance_asks_for_nothing() {
         let declaration = Declaration { kind: DeclaredKind::GitOnly, scheme: "https".into(), label: "Gitea de casa".into() };
-        let status = status_from("52.188.59.199:3000".into(), projects(), Placement::GitOnly, Some(declaration));
+        let status = status_from("203.0.113.10:3000".into(), projects(), Placement::GitOnly, Some(declaration));
 
         assert!(status.git_only);
         assert_eq!(status.forge, None, "git-only means no adapter, which is not the same as an unknown one");
@@ -596,10 +596,10 @@ mod tests {
     fn a_row_says_whether_it_was_declared_or_guessed() {
         assert!(!guessed("gitlab.acme.com", gitlab_ssh(None)).declared);
 
-        let declaration = Declaration { kind: DeclaredKind::Gitlab, scheme: "https".into(), label: "Technolabs".into() };
-        let declared = status_from("git.technolabs.com.br".into(), projects(), gitlab_ssh(None), Some(declaration));
+        let declaration = Declaration { kind: DeclaredKind::Gitlab, scheme: "https".into(), label: "Acme Corp".into() };
+        let declared = status_from("git.acme-corp.dev".into(), projects(), gitlab_ssh(None), Some(declaration));
         assert!(declared.declared);
-        assert_eq!(declared.label, "Technolabs");
+        assert_eq!(declared.label, "Acme Corp");
     }
 
     /// Every unusable instance names a next step, and every usable one has
@@ -610,9 +610,9 @@ mod tests {
         let placements = [
             Placement::Github { authed: true, viewer: Some("killua15".into()) },
             Placement::Github { authed: false, viewer: None },
-            Placement::Gitlab { authed: true, ssh_user: None, viewer: Some("dsalinas".into()) },
+            Placement::Gitlab { authed: true, ssh_user: None, viewer: Some("dev".into()) },
             gitlab_ssh(None),
-            gitlab_ssh(Some("dsalinas")),
+            gitlab_ssh(Some("dev")),
             Placement::Unknown,
         ];
         for placement in placements {
@@ -663,17 +663,17 @@ mod tests {
 
     /// Two projects on the same self-hosted instance produce **one** group
     /// carrying both — not two, which is what makes the login probes cost once
-    /// per instance instead of once per project. The live case: `tms-server` and
-    /// `simulation-server` both sit on `git.technolabs.com.br`.
+    /// per instance instead of once per project. The live case: `api-server` and
+    /// `simulation-server` both sit on `git.acme-corp.dev`.
     #[test]
     fn projects_sharing_an_instance_are_grouped_once() {
-        let a = repo_with_origin("a", "git@git.technolabs.com.br:tms-3.0/TMS-server.git");
-        let b = repo_with_origin("b", "git@git.technolabs.com.br:tms-3.0/TMS-simulation-server.git");
+        let a = repo_with_origin("a", "git@git.acme-corp.dev:platform/api-server.git");
+        let b = repo_with_origin("b", "git@git.acme-corp.dev:platform/simulation-server.git");
 
-        let grouped = group_by_host(vec![row("p1", "tms-server", &a), row("p2", "simulation-server", &b)]);
+        let grouped = group_by_host(vec![row("p1", "api-server", &a), row("p2", "simulation-server", &b)]);
 
         assert_eq!(grouped.len(), 1, "one group per instance: {grouped:?}");
-        assert_eq!(grouped[0].0, "git.technolabs.com.br");
+        assert_eq!(grouped[0].0, "git.acme-corp.dev");
         assert_eq!(grouped[0].1.len(), 2, "both projects hang off it: {:?}", grouped[0].1);
 
         std::fs::remove_dir_all(&a).ok();

@@ -105,7 +105,7 @@
   spec.
 - Comparar con `usage_meter`: tokens y turnos, si terminó con tests en verde, y cuántas veces hubo que
   intervenir.
-- Con eso se decide si se extiende a Simulation-Server-Tms-server, TMS-dspnor-gateway y gmdss.
+- Con eso se decide si se extiende al resto de repos del equipo.
 
 ## Acceptance criteria
 

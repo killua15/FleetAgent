@@ -19,7 +19,7 @@ function isWizardConfigDir(path: string): boolean {
   return path.includes('/pending-logins/');
 }
 
-/** `/Users/killua/.claude-work` → `~/.claude-work`. The home prefix is the
+/** `/Users/me/.claude-work` → `~/.claude-work`. The home prefix is the
  * same on every row, so it's pure noise in a list; the full path stays in the
  * row's tooltip. macOS-only, like the rest of Hangar. */
 function abbreviateHome(path: string): string {

@@ -14,6 +14,8 @@
 # `.github/workflows/release.yml`, which stays around, manual only, for the day
 # another platform is needed.
 #
+# Which Supabase project to publish to comes from .env.local (VITE_SUPABASE_URL,
+# VITE_SUPABASE_PUBLISHABLE_KEY — public values, see .env.example).
 # Secrets come from the macOS Keychain only, never the repo or an .env file:
 #   security add-generic-password -a hangar -s hangar-supabase-service-role -w <key>
 #   security add-generic-password -a hangar -s hangar-signing-password -w <pw>   # only if the key has one
@@ -56,12 +58,19 @@ SERVICE_KEY="$(security find-generic-password -s hangar-supabase-service-role -w
   || die "no Supabase service key in the Keychain (service 'hangar-supabase-service-role') — see the header of this script"
 SIGNING_PASSWORD="$(security find-generic-password -s hangar-signing-password -w 2>/dev/null || true)"
 
-# The endpoint the app itself checks is the one to publish next to.
-SUPABASE_URL="$(python3 -c '
-import json
-url = json.load(open("src-tauri/tauri.conf.json"))["plugins"]["updater"]["endpoints"][0]
-print(url.split("/functions/")[0])')"
-[[ "$SUPABASE_URL" == https://*.supabase.co ]] || die "couldn't read the Supabase URL from tauri.conf.json (got '$SUPABASE_URL')"
+# The Supabase project this build signs in against is the one to publish to,
+# and the one its updater asks. It isn't in the repository (see .env.example):
+# it comes from the environment or from .env.local, the same file Vite reads.
+env_value() {
+  [ -f .env.local ] && sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" .env.local | tail -1
+}
+SUPABASE_URL="${VITE_SUPABASE_URL:-$(env_value VITE_SUPABASE_URL)}"
+SUPABASE_URL="${SUPABASE_URL%/}"
+[[ "$SUPABASE_URL" == https://*.supabase.co ]] || die "no Supabase project URL — set VITE_SUPABASE_URL in .env.local (got '$SUPABASE_URL')"
+[ -n "${VITE_SUPABASE_PUBLISHABLE_KEY:-$(env_value VITE_SUPABASE_PUBLISHABLE_KEY)}" ] || die "no Supabase publishable key — set VITE_SUPABASE_PUBLISHABLE_KEY in .env.local"
+# tauri.conf.json ships with no update endpoint, so a fork's build never asks
+# this project for updates; the release build gets it here.
+UPDATER_CONFIG="{\"plugins\":{\"updater\":{\"endpoints\":[\"$SUPABASE_URL/functions/v1/updates?target={{target}}&arch={{arch}}&current_version={{current_version}}\"]}}}"
 
 [ "$(git rev-parse --abbrev-ref HEAD)" = "main" ] || die "releases are cut from main"
 [ -z "$(git status --porcelain)" ] || die "the working tree has changes — commit or stash them first"
@@ -122,7 +131,7 @@ step "Building and signing"
 BUILD_STARTED="$(date +%s)"
 TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY")" \
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$SIGNING_PASSWORD" \
-  npm run tauri build -- --bundles app
+  npm run tauri build -- --bundles app --config "$UPDATER_CONFIG"
 
 BUNDLE="src-tauri/target/release/bundle/macos"
 ARTIFACT="$BUNDLE/Hangar.app.tar.gz"
