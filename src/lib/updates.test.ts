@@ -6,6 +6,7 @@ const invoke = vi.fn();
 vi.mock('@tauri-apps/plugin-updater', () => ({ check: (...args: unknown[]) => check(...args) }));
 vi.mock('./supabase', () => ({
   SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test',
+  supabaseConfigured: true,
   supabase: { auth: { getSession: () => getSession() } },
 }));
 vi.mock('./invoke', () => ({ invoke: (...args: unknown[]) => invoke(...args) }));

@@ -136,6 +136,10 @@ jobs:
           # Gatekeeper is paid once at the first install, not on every fix.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # The Supabase project the app signs in against — not in the repo
+          # (see `.env.example`); Vite reads these at build time.
+          VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
         with:
           # `matrix.extraArgs` carries the macOS-only signing override. On those
           # runners it is `--config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'`:
@@ -147,7 +151,9 @@ jobs:
           # `--config` overrides just the one field for this invocation —
           # `-` is codesign's own ad-hoc signing, no certificate needed —
           # without touching the committed config a local build still uses.
-          args: --target ${{ matrix.target }} ${{ matrix.extraArgs }}
+          # The second `--config` gives the build its update endpoint, which
+          # `tauri.conf.json` leaves empty so a fork never asks this project.
+          args: --target ${{ matrix.target }} ${{ matrix.extraArgs }} --config '{"plugins":{"updater":{"endpoints":["${{ secrets.SUPABASE_URL }}/functions/v1/updates?target={{target}}&arch={{arch}}&current_version={{current_version}}"]}}}'
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}-dev', github.run_number) }}
           releaseName: Hangar ${{ github.ref_type == 'tag' && github.ref_name || 'dev build' }}
           releaseBody: |

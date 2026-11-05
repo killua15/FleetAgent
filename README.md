@@ -78,6 +78,7 @@ Requires Node 22+, a stable Rust toolchain, and the `claude` CLI on PATH for any
 runs an agent.
 
 ```sh
+cp .env.example .env.local   # then fill in your Supabase project — see below
 npm install
 npm run tauri dev      # run the app
 npm run build          # typecheck + build the frontend
@@ -85,6 +86,31 @@ cd src-tauri && cargo test
 ```
 
 Tests marked `#[ignore]` spawn the real `claude` CLI — run them with `cargo test -- --ignored`.
+
+### Backend (Supabase)
+
+Hangar signs people in, syncs usage totals and checks for updates against a Supabase project, and
+the repository doesn't name one: each build brings its own. Put its URL and publishable key in
+`.env.local` (git-ignored; Supabase → Project Settings → API):
+
+```sh
+VITE_SUPABASE_URL=https://<your-ref>.supabase.co
+VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+```
+
+Both are public by design — row-level security protects the data, not the key. Without them the
+app builds and starts, but stops at a "No backend configured" screen.
+
+The project needs Google sign-in enabled, with `http://127.0.0.1:47823` (the fixed loopback port in `src-tauri/src/auth.rs`) as a redirect URL, and the
+tables the client reads: `profiles` (with an `approved` flag the gate checks), `subscriptions`,
+`machines`, `usage_daily`, `team_accounts` and `account_leases` (plus the `acquire_account_lease` /
+`release_account_lease` functions), all with row-level security. `supabase/` holds the update
+channel: the `app_releases` migration and the `updates` Edge Function.
+
+Updates: `tauri.conf.json` ships with no update endpoint, so a build never asks anyone's project for
+updates by accident. `npm run release` reads the project from `.env.local` and gives the release
+build its endpoint (`<project>/functions/v1/updates`); it also needs the project's service-role key
+and the updater signing key — see the header of `scripts/release.sh`.
 
 ### Building for Windows from a Mac
 

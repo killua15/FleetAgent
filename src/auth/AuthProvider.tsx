@@ -3,7 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { getVersion } from '@tauri-apps/api/app';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { invoke } from '../lib/invoke';
-import { supabase, type Entitlement } from '../lib/supabase';
+import { supabase, supabaseConfigured, type Entitlement } from '../lib/supabase';
 import { resolveAccess, type Access } from './access';
 
 interface AuthContextValue {
@@ -44,7 +44,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
-  const [access, setAccess] = useState<Access>('checking');
+  const [access, setAccess] = useState<Access>(supabaseConfigured ? 'checking' : 'unconfigured');
   const [signingIn, setSigningIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -148,12 +148,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [loadEntitlement, recordPresence]);
 
   useEffect(() => {
-    void check();
+    // Without a project there is nothing to ask, and every request would be a
+    // timeout against an address nothing listens on.
+    if (supabaseConfigured) void check();
   }, [check]);
 
   // A rotated refresh token has to reach the keychain, or the next launch tries
   // to reuse one Supabase has already retired.
   useEffect(() => {
+    if (!supabaseConfigured) return;
     const { data } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session?.refresh_token) invoke('store_refresh_token', { token: session.refresh_token }).catch(() => {});
     });
@@ -212,6 +215,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const recheck = useCallback(async () => {
+    if (!supabaseConfigured) return;
     setAccess('checking');
     setError(null);
     await check();

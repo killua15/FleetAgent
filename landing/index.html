@@ -338,7 +338,7 @@
     <h1 data-i18n-html="h1"></h1>
     <p class="lede" data-i18n="lede"></p>
     <div class="ctaRow">
-      <a class="btnA" href="mailto:dsalinas@technomar.com.br?subject=Hangar%20beta" data-i18n="ctaBtn"></a>
+      <a class="btnA" data-contact href="#" data-i18n="ctaBtn"></a>
       <a class="btnB" href="#pillars" data-i18n="ctaSee"></a>
     </div>
     <span class="ctaSub" data-i18n="ctaSub"></span>
@@ -560,7 +560,7 @@
     <h3 data-i18n="ctaT"></h3>
     <p data-i18n="ctaB"></p>
     <div class="ctaRow">
-      <a class="btnA" href="mailto:dsalinas@technomar.com.br?subject=Hangar%20beta" data-i18n="ctaBtn"></a>
+      <a class="btnA" data-contact href="#" data-i18n="ctaBtn"></a>
     </div>
     <span class="ctaNote" data-i18n="ctaNote"></span>
   </div>
@@ -575,6 +575,10 @@
 </div>
 
 <script>
+  // Where "ask for access" writes to. Set it to your own address before publishing
+  // this page — the repository ships with a placeholder, not anyone's real inbox.
+  const CONTACT_EMAIL = 'you@example.com';
+  for (const a of document.querySelectorAll('[data-contact]')) a.href = `mailto:${CONTACT_EMAIL}?subject=Hangar%20beta`;
   // Las dos versiones juntas, clave por clave: es la única disposición en la que
   // quien edita una ve la otra y no la deja atrás.
   const T = {
