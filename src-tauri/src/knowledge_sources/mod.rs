@@ -45,7 +45,7 @@ pub struct KnowledgeSourceView {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AgentServer {
     /// The MCP server's name — what an agent's tools are prefixed with, so a
-    /// readable one (`technomar-docs`) beats an id.
+    /// readable one (`team-docs`) beats an id.
     pub name: String,
     pub url: String,
     pub token: Option<String>,
@@ -58,7 +58,7 @@ fn mcp_url_for(kind: &str, base_url: &str) -> String {
     }
 }
 
-/// `Technomar docs` → `technomar-docs`. Only what every CLI accepts in a server
+/// `Team docs` → `team-docs`. Only what every CLI accepts in a server
 /// name, since this one string is also a TOML key for Codex.
 pub(crate) fn slug(label: &str) -> String {
     let mut out = String::new();
@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn a_label_becomes_a_name_every_cli_accepts() {
-        assert_eq!(slug("Technomar docs"), "technomar-docs");
+        assert_eq!(slug("Team docs"), "team-docs");
         assert_eq!(slug("  Wiki (prod) — 2 "), "wiki-prod-2");
         assert_eq!(slug("¡¿!"), "wiki");
     }

@@ -60,7 +60,7 @@ fn post(base: &str, method: &str, token: &str, body: serde_json::Value) -> Resul
 }
 
 /// Confirms the key works, and says whose it is — so the settings row can read
-/// "you on Technomar" rather than "a token".
+/// "you on Acme" rather than "a token".
 pub fn verify(base: &str, token: &str) -> Result<Whoami, String> {
     parse_auth_info(&post(base, "auth.info", token, serde_json::json!({}))?)
 }
@@ -92,11 +92,11 @@ mod tests {
     #[test]
     fn auth_info_names_the_user_and_the_workspace() {
         let json = serde_json::json!({
-            "data": { "user": { "id": "u1", "name": "David" }, "team": { "id": "t1", "name": "Technomar" } },
+            "data": { "user": { "id": "u1", "name": "David" }, "team": { "id": "t1", "name": "Acme" } },
             "ok": true
         });
         let who = parse_auth_info(&json).unwrap();
-        assert_eq!((who.user.as_str(), who.team.as_str()), ("David", "Technomar"));
+        assert_eq!((who.user.as_str(), who.team.as_str()), ("David", "Acme"));
         assert!(parse_auth_info(&serde_json::json!({ "ok": true })).is_err());
     }
 }

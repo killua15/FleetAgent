@@ -937,7 +937,7 @@ mod tests {
         let w = line::tests::world("autonomous", "local", "true");
         let conn = w.db.0.lock().unwrap();
         conn.execute_batch(
-            "ALTER TABLE accounts ADD COLUMN name TEXT DEFAULT 'David Personal 1';
+            "ALTER TABLE accounts ADD COLUMN name TEXT DEFAULT 'Demo Personal 1';
              ALTER TABLE accounts ADD COLUMN status TEXT DEFAULT 'healthy';
              ALTER TABLE accounts ADD COLUMN scope TEXT DEFAULT 'personal';
              CREATE TABLE account_usage_samples (id TEXT PRIMARY KEY, account_id TEXT, session_pct REAL, weekly_pct REAL, context_pct REAL, sampled_at TEXT);",

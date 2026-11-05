@@ -88,8 +88,8 @@ imposible, y no hay que adivinar nada.
 
 donde `<slug>` es la ruta con las barras convertidas en guiones. Como el uuid lo asigna Hangar, la
 comprobación es "existe este fichero concreto", no "coge el más nuevo del directorio" — lo cual
-importa porque **el slug es lossy**: `/private/tmp/claude-501/-Users-killua-…` se aplana a
-`-private-tmp-claude-501--Users-killua-…`, así que una carpeta con guiones y una ruta con barras
+importa porque **el slug es lossy**: `/private/tmp/claude-501/-Users-me-…` se aplana a
+`-private-tmp-claude-501--Users-me-…`, así que una carpeta con guiones y una ruta con barras
 colisionan.
 
 **Regla**: si el fichero no existe, arrancar limpio con un uuid nuevo. Nunca reutilizar un id cuyo

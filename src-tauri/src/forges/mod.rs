@@ -624,7 +624,7 @@ mod tests {
     /// login state is worse than no test.
     #[test]
     fn parse_host_from_url_answers_for_hosts_no_adapter_claims() {
-        assert_eq!(parse_host_from_url("git@git.acme.com:tms-3.0/TMS-server.git").as_deref(), Some("git.acme.com"));
+        assert_eq!(parse_host_from_url("git@git.acme.com:platform/api-server.git").as_deref(), Some("git.acme.com"));
         assert_eq!(parse_host_from_url("https://github.com/killua15/Hangar.git").as_deref(), Some("github.com"));
         assert_eq!(parse_host_from_url("ssh://git@gitlab.acme.com:2222/group/sub/proj.git").as_deref(), Some("gitlab.acme.com"), "the port is transport, not identity");
         assert_eq!(parse_host_from_url("not a url"), None);
@@ -642,8 +642,8 @@ mod tests {
     #[test]
     fn a_port_belongs_to_the_instance_over_http_and_to_the_transport_over_ssh() {
         // The live case: a forge on a bare IP and a non-default port.
-        let http = parse_host_from_url("http://52.188.59.199:3000/WPLANNING/wplanning-app-mobile.git");
-        assert_eq!(http.as_deref(), Some("52.188.59.199:3000"), "an http port is part of the instance");
+        let http = parse_host_from_url("http://203.0.113.10:3000/ACME/mobile-app.git");
+        assert_eq!(http.as_deref(), Some("203.0.113.10:3000"), "an http port is part of the instance");
         assert_eq!(parse_host_from_url("https://gitlab.acme.com:8443/g/p").as_deref(), Some("gitlab.acme.com:8443"));
 
         // Same server, reached over ssh: no port in the identity.
@@ -712,8 +712,8 @@ mod tests {
     /// forever, to fail identically each time.
     #[test]
     fn a_git_only_declaration_stops_the_probing() {
-        with_declarations(&[("52.188.59.199:3000", DeclaredKind::GitOnly)], || {
-            assert_eq!(Forge::for_host("52.188.59.199:3000"), None);
+        with_declarations(&[("203.0.113.10:3000", DeclaredKind::GitOnly)], || {
+            assert_eq!(Forge::for_host("203.0.113.10:3000"), None);
         });
     }
 

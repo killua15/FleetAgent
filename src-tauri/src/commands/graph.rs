@@ -1316,7 +1316,7 @@ mod tests {
 [graphify extract] chunk 3/4 failed: Credit balance is too low
 error: all semantic chunks failed for backend 'claude-cli' (312 uncached files) - see per-chunk errors above.
 ";
-        let detail = member_failure_detail("tms-server", Path::new("/r/tms"), "", stderr);
+        let detail = member_failure_detail("api-server", Path::new("/r/api"), "", stderr);
 
         assert!(detail.contains("all semantic chunks failed"), "el veredicto sigue: {detail}");
         assert!(detail.contains("Credit balance is too low"), "y la causa, que es lo que faltaba: {detail}");

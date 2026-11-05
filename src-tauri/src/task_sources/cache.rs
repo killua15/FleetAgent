@@ -212,11 +212,11 @@ mod tests {
         let found = changes(&before, &after);
         assert_eq!(found, vec![TaskChange::Moved { task: &after[1], from: Some("open".to_string()) }, TaskChange::New(&after[2])]);
 
-        let lines = change_lines("s", "Technomar", &found);
-        assert_eq!(lines[0].0, "Task moved · Technomar");
+        let lines = change_lines("s", "Acme", &found);
+        assert_eq!(lines[0].0, "Task moved · Acme");
         assert_eq!(lines[0].1, "K-2 Task 2: open → verificar");
         assert_eq!(lines[0].2, "s:2");
-        assert_eq!(lines[1].0, "New task · Technomar");
+        assert_eq!(lines[1].0, "New task · Acme");
     }
 
     #[test]

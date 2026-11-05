@@ -701,7 +701,7 @@ fn shell_path(value: &str) -> String {
 /// `CLAUDE_CONFIG_DIR=<dir>` prefix and all, the same shape used by hand:
 ///
 /// ```text
-/// CLAUDE_CONFIG_DIR=/Users/killua/.claude-David claude
+/// CLAUDE_CONFIG_DIR=/Users/me/.claude-David claude
 /// ```
 ///
 /// The inline prefix rather than an exported variable is the point: the
@@ -2977,9 +2977,9 @@ mod digest_tests {
     fn the_digest_line_names_one_or_counts_many() {
         assert!(digest_line(&[]).is_none());
 
-        let (title, body, target) = digest_line(&[("a".into(), "tms-server".into())]).unwrap();
+        let (title, body, target) = digest_line(&[("a".into(), "api-server".into())]).unwrap();
         assert_eq!(title, "Agent waiting");
-        assert!(body.starts_with("tms-server"));
+        assert!(body.starts_with("api-server"));
         assert_eq!(target.unwrap().id.as_deref(), Some("a"));
 
         let many: Vec<(String, String)> = (0..10).map(|i| (i.to_string(), format!("p{i}"))).collect();
@@ -3173,12 +3173,12 @@ mod tests {
     fn the_command_line_is_the_one_typed_by_hand() {
         // `claude` is installed on a dev machine but not on CI, so bail rather
         // than assert on the machine.
-        let Ok(start) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None, None) else { return };
-        assert_eq!(start, "CLAUDE_CONFIG_DIR=/Users/killua/.claude-David claude");
+        let Ok(start) = account_command_line(&account("sub", "/Users/me/.claude-David"), InitCommand::Start, None, None) else { return };
+        assert_eq!(start, "CLAUDE_CONFIG_DIR=/Users/me/.claude-David claude");
         assert!(!start.ends_with('\n'), "the newline is added when it's typed, so the same string can be displayed");
 
-        let login = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Login, None, None).unwrap();
-        assert_eq!(login, "CLAUDE_CONFIG_DIR=/Users/killua/.claude-David claude auth login --claudeai");
+        let login = account_command_line(&account("sub", "/Users/me/.claude-David"), InitCommand::Login, None, None).unwrap();
+        assert_eq!(login, "CLAUDE_CONFIG_DIR=/Users/me/.claude-David claude auth login --claudeai");
     }
 
     /// An absolute path here would be correct but wrong: it isn't what the
@@ -3186,7 +3186,7 @@ mod tests {
     /// theirs. The login shell's own PATH is what resolves it.
     #[test]
     fn the_command_uses_the_bare_binary_name_not_an_absolute_path() {
-        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None, None) else { return };
+        let Ok(command) = account_command_line(&account("sub", "/Users/me/.claude-David"), InitCommand::Start, None, None) else { return };
         let binary = command.rsplit(' ').next().unwrap();
         assert_eq!(binary, "claude", "the binary token must be the bare name, not a resolved path: {command}");
     }
@@ -3195,12 +3195,12 @@ mod tests {
     /// individually re-runnable.
     #[test]
     fn the_script_changes_directory_before_running_the_command() {
-        let Ok(script) = terminal_script("/Users/killua/Proyects/WinRadar", &account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None, None) else {
+        let Ok(script) = terminal_script("/Users/me/Proyects/WinRadar", &account("sub", "/Users/me/.claude-David"), InitCommand::Start, None, None) else {
             return;
         };
         assert_eq!(
             script,
-            "cd /Users/killua/Proyects/WinRadar\nCLAUDE_CONFIG_DIR=/Users/killua/.claude-David claude"
+            "cd /Users/me/Proyects/WinRadar\nCLAUDE_CONFIG_DIR=/Users/me/.claude-David claude"
         );
     }
 
@@ -3209,20 +3209,20 @@ mod tests {
     /// copying the conversation to another account.
     #[test]
     fn start_with_a_session_uuid_pins_it_on_the_command() {
-        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, Some("11111111-2222-3333-4444-555555555555"), None) else {
+        let Ok(command) = account_command_line(&account("sub", "/Users/me/.claude-David"), InitCommand::Start, Some("11111111-2222-3333-4444-555555555555"), None) else {
             return;
         };
-        assert_eq!(command, "CLAUDE_CONFIG_DIR=/Users/killua/.claude-David claude --session-id 11111111-2222-3333-4444-555555555555");
+        assert_eq!(command, "CLAUDE_CONFIG_DIR=/Users/me/.claude-David claude --session-id 11111111-2222-3333-4444-555555555555");
     }
 
     /// Resume re-attaches the CLI to a known conversation id (verified against
     /// the real CLI: `--resume <uuid>` reads and continues that transcript).
     #[test]
     fn resume_reattaches_to_a_known_session_id() {
-        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Resume, Some("11111111-2222-3333-4444-555555555555"), None) else {
+        let Ok(command) = account_command_line(&account("sub", "/Users/me/.claude-David"), InitCommand::Resume, Some("11111111-2222-3333-4444-555555555555"), None) else {
             return;
         };
-        assert_eq!(command, "CLAUDE_CONFIG_DIR=/Users/killua/.claude-David claude --resume 11111111-2222-3333-4444-555555555555");
+        assert_eq!(command, "CLAUDE_CONFIG_DIR=/Users/me/.claude-David claude --resume 11111111-2222-3333-4444-555555555555");
     }
 
     /// Resume with no id is a programming error, not a silent fresh start —
@@ -3230,24 +3230,24 @@ mod tests {
     /// conversation the caller meant to reopen.
     #[test]
     fn resume_without_a_session_id_is_an_error() {
-        assert!(account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Resume, None, None).is_err());
+        assert!(account_command_line(&account("sub", "/Users/me/.claude-David"), InitCommand::Resume, None, None).is_err());
     }
 
     /// Start without a uuid stays the plain command — this is what the account
     /// list shows as the example, where a per-terminal id would be noise.
     #[test]
     fn start_without_a_uuid_is_the_plain_command() {
-        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None, None) else {
+        let Ok(command) = account_command_line(&account("sub", "/Users/me/.claude-David"), InitCommand::Start, None, None) else {
             return;
         };
-        assert_eq!(command, "CLAUDE_CONFIG_DIR=/Users/killua/.claude-David claude");
+        assert_eq!(command, "CLAUDE_CONFIG_DIR=/Users/me/.claude-David claude");
     }
 
     /// A worktree path with a space has to survive as one argument, or `cd`
     /// would take only the first word and the CLI would run in the wrong tree.
     #[test]
     fn a_working_directory_with_a_space_is_quoted_in_the_cd() {
-        let Ok(script) = terminal_script("/Users/me/My Projects/app", &account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None, None) else {
+        let Ok(script) = terminal_script("/Users/me/My Projects/app", &account("sub", "/Users/me/.claude-David"), InitCommand::Start, None, None) else {
             return;
         };
         assert!(script.starts_with("cd '/Users/me/My Projects/app'\n"), "got: {script}");
@@ -3258,17 +3258,17 @@ mod tests {
     /// working on it. The quoting must survive the spaces a real prompt has.
     #[test]
     fn a_start_prompt_becomes_a_quoted_argument_to_claude() {
-        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None, Some("PR review feedback: fix the typo")) else {
+        let Ok(command) = account_command_line(&account("sub", "/Users/me/.claude-David"), InitCommand::Start, None, Some("PR review feedback: fix the typo")) else {
             return;
         };
-        assert_eq!(command, "CLAUDE_CONFIG_DIR=/Users/killua/.claude-David claude 'PR review feedback: fix the typo'");
+        assert_eq!(command, "CLAUDE_CONFIG_DIR=/Users/me/.claude-David claude 'PR review feedback: fix the typo'");
     }
 
     /// A prompt that itself contains a single quote must stay one argument —
     /// review comments routinely have apostrophes.
     #[test]
     fn a_prompt_with_an_apostrophe_is_escaped() {
-        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None, Some("don't break this")) else {
+        let Ok(command) = account_command_line(&account("sub", "/Users/me/.claude-David"), InitCommand::Start, None, Some("don't break this")) else {
             return;
         };
         assert!(command.ends_with(r#"claude 'don'\''t break this'"#), "got: {command}");
@@ -3278,10 +3278,10 @@ mod tests {
     /// not `claude ''`.
     #[test]
     fn a_blank_prompt_is_ignored() {
-        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Start, None, Some("   ")) else {
+        let Ok(command) = account_command_line(&account("sub", "/Users/me/.claude-David"), InitCommand::Start, None, Some("   ")) else {
             return;
         };
-        assert_eq!(command, "CLAUDE_CONFIG_DIR=/Users/killua/.claude-David claude");
+        assert_eq!(command, "CLAUDE_CONFIG_DIR=/Users/me/.claude-David claude");
     }
 
     /// Codex can't be told which session to start, but it can be told which to
@@ -3330,7 +3330,7 @@ mod tests {
     /// headless — así que el desplegable prometía algo que el proceso ignoraba.
     #[test]
     fn el_modo_global_llega_a_la_linea_de_comandos() {
-        let claude = account("sub", "/Users/killua/.claude-David");
+        let claude = account("sub", "/Users/me/.claude-David");
         let Ok(line) = account_command_line_with_mode(&claude, InitCommand::Start, None, None, Some(crate::providers::Mode::Yolo)) else {
             return; // sin el CLI instalado no hay forma que comprobar
         };
@@ -3341,7 +3341,7 @@ mod tests {
     /// cambiar cómo se abre una terminal por el hecho de existir.
     #[test]
     fn sin_modo_la_linea_no_cambia() {
-        let claude = account("sub", "/Users/killua/.claude-David");
+        let claude = account("sub", "/Users/me/.claude-David");
         let Ok(with_none) = account_command_line_with_mode(&claude, InitCommand::Start, None, None, None) else { return };
         let plain = account_command_line(&claude, InitCommand::Start, None, None).unwrap();
         assert_eq!(with_none, plain);
@@ -3352,7 +3352,7 @@ mod tests {
     /// --permission-mode …` no es un comando válido.
     #[test]
     fn un_login_no_lleva_modo() {
-        let claude = account("sub", "/Users/killua/.claude-David");
+        let claude = account("sub", "/Users/me/.claude-David");
         let Ok(line) = account_command_line_with_mode(&claude, InitCommand::Login, None, None, Some(crate::providers::Mode::Yolo)) else { return };
         assert!(!line.contains("--permission-mode"), "got: {line}");
     }
@@ -3360,7 +3360,7 @@ mod tests {
     /// A login command never takes a prompt — there's no session to seed yet.
     #[test]
     fn a_login_ignores_any_prompt() {
-        let Ok(command) = account_command_line(&account("sub", "/Users/killua/.claude-David"), InitCommand::Login, None, Some("ignored")) else {
+        let Ok(command) = account_command_line(&account("sub", "/Users/me/.claude-David"), InitCommand::Login, None, Some("ignored")) else {
             return;
         };
         assert!(!command.contains("ignored"), "got: {command}");
@@ -3380,7 +3380,7 @@ mod tests {
     /// noisier than what they'd type themselves.
     #[test]
     fn shell_quote_only_quotes_when_necessary() {
-        assert_eq!(shell_quote("/Users/killua/.claude-David"), "/Users/killua/.claude-David");
+        assert_eq!(shell_quote("/Users/me/.claude-David"), "/Users/me/.claude-David");
         assert_eq!(shell_quote("/Applications/My Tools/claude"), "'/Applications/My Tools/claude'");
         assert_eq!(shell_quote("/weird/it's/claude"), r"'/weird/it'\''s/claude'");
         assert_eq!(shell_quote(""), "''", "an empty value still has to occupy an argument");
@@ -3701,8 +3701,8 @@ mod tests {
     #[test]
     fn la_wiki_llega_a_claude_y_a_codex_sin_el_token_en_la_linea() {
         let (remote, env) = crate::agent_mcp::remote_servers(&[crate::knowledge_sources::AgentServer {
-            name: "technomar-docs".into(),
-            url: "https://docs.technomar.com.br/mcp".into(),
+            name: "team-docs".into(),
+            url: "https://docs.example.com/mcp".into(),
             token: Some("ol_api_secret".into()),
         }]);
         let mcp = crate::agent_mcp::AgentMcp { config: Some("/tmp/hangar/agent-mcp/p1.json".into()), remote, env };
@@ -3729,7 +3729,7 @@ mod tests {
         };
         if crate::providers::is_provider_available("codex") {
             let line = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, None, Some(&mcp), &[], &[], None).unwrap();
-            assert!(line.contains("mcp_servers.technomar-docs.url="), "got: {line}");
+            assert!(line.contains("mcp_servers.team-docs.url="), "got: {line}");
             assert!(line.contains("bearer_token_env_var="), "got: {line}");
             assert!(!line.contains("ol_api_secret"), "el token no va en la línea: {line}");
             assert!(!line.contains("--mcp-config"), "got: {line}");
@@ -4576,7 +4576,7 @@ mod tests {
     /// installed, like the other command-line tests.
     #[test]
     fn an_opencode_terminal_in_plan_mode_starts_without_the_agent_flag() {
-        let opencode = AccountForTerminal { provider: "opencode".to_string(), ..account("sub", "/Users/killua/.opencode-test") };
+        let opencode = AccountForTerminal { provider: "opencode".to_string(), ..account("sub", "/Users/me/.opencode-test") };
         let context = TerminalContext {
             mode_env: crate::providers::permission_env("opencode", crate::providers::Mode::Plan, Some(std::path::Path::new("/data/opencode/plan.json"))),
             ..TerminalContext::default()
@@ -4596,7 +4596,7 @@ mod tests {
     /// installed, like the other command-line tests.
     #[test]
     fn the_auto_continue_settings_ride_on_claude_sessions_only() {
-        let claude = account("sub", "/Users/killua/.claude-David");
+        let claude = account("sub", "/Users/me/.claude-David");
         let file = std::path::Path::new("/data/terminals/t1.settings.json");
         let Ok(start) = account_command_line_full(&claude, InitCommand::Start, Some("u1"), None, None, None, None, None, &[], &[], Some(file)) else { return };
         assert!(start.contains(" --settings /data/terminals/t1.settings.json"), "got: {start}");
@@ -4605,7 +4605,7 @@ mod tests {
         let login = account_command_line_full(&claude, InitCommand::Login, None, None, None, None, None, None, &[], &[], Some(file)).unwrap();
         assert!(!login.contains("--settings"), "a login waits for nothing: {login}");
 
-        let codex = AccountForTerminal { provider: "codex".to_string(), ..account("sub", "/Users/killua/.codex-test") };
+        let codex = AccountForTerminal { provider: "codex".to_string(), ..account("sub", "/Users/me/.codex-test") };
         if let Ok(line) = account_command_line_full(&codex, InitCommand::Start, None, None, None, None, None, None, &[], &[], Some(file)) {
             assert!(!line.contains("--settings"), "not Codex's flag: {line}");
         }

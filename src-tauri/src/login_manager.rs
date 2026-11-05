@@ -53,7 +53,7 @@ pub struct AuthStatus {
     /// Both come straight from `claude auth status --json`, which has always
     /// returned them — they were simply discarded. They're what makes a list
     /// of config directories readable: `~/.claude-work` means nothing on its
-    /// own, `dsalinas@technomar.com.br · team` identifies the account.
+    /// own, `dev@example.com · team` identifies the account.
     /// `None` when the CLI omits them (a team login without a bound email).
     pub email: Option<String>,
     pub subscription_type: Option<String>,
@@ -669,10 +669,10 @@ mod tests {
     fn a_new_login_dir_is_a_home_dotdir_named_after_the_account() {
         let home = std::env::temp_dir().join(format!("hangar-test-login-home-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&home).unwrap();
-        let dir = account_dir_under(home.to_str().unwrap(), "David Personal 1").unwrap();
+        let dir = account_dir_under(home.to_str().unwrap(), "Demo Personal 1").unwrap();
 
         assert_eq!(dir.parent().unwrap(), home, "must live directly under home, not some nested accounts/ folder");
-        assert_eq!(dir.file_name().unwrap().to_string_lossy(), ".david-personal-1", "the folder must be a dot-dir named after the slugified account");
+        assert_eq!(dir.file_name().unwrap().to_string_lossy(), ".demo-personal-1", "the folder must be a dot-dir named after the slugified account");
 
         let _ = std::fs::remove_dir_all(&home);
     }

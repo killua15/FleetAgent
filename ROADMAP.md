@@ -180,8 +180,8 @@ En `+ New terminal`, tras elegir la cuenta, en el paso "¿dónde debería correr
 
 ```
 RECENT PROJECTS
-  Fleet-Agent        /Users/killua/Proyects/Fleet-Agent
-  propkit            /Users/killua/Proyects/propkit
+  Fleet-Agent        /Users/me/Proyects/Fleet-Agent
+  propkit            /Users/me/Proyects/propkit
   ⑃ Nuevo worktree…     ← esto es lo nuevo
   📁 Explore another folder…
 ```
@@ -247,7 +247,7 @@ Escribes un prompt una vez, eliges cuántas ramas quieres y con qué cuentas, y 
 ```
 PROMPT   arregla el redondeo de la facturación y añade tests
 
-  ⑃ fan/redondeo-1   →  David Personal 1     ● trabajando
+  ⑃ fan/redondeo-1   →  Claude · Personal    ● trabajando
   ⑃ fan/redondeo-2   →  Cuenta de trabajo    ● trabajando
   ⑃ fan/redondeo-3   →  Personal 2           ✓ terminado   +84 −12  3 ficheros
 
@@ -365,7 +365,7 @@ configuración. Habilita la Fase 6, que es algo que el usuario quiere.
 
 ## Las tres piezas
 
-**1. El proyecto de Supabase** — ya existe (`yqrvofogmyqdqufyxlfk`, ca-central-1, ACTIVE_HEALTHY) y
+**1. El proyecto de Supabase** — ya existe (ca-central-1) y
 está **vacío**: 0 tablas, 0 edge functions.
 
 - Habilitar el provider de Google. Requiere un OAuth client en Google Cloud Console: **eso lo tiene
@@ -410,7 +410,7 @@ políticas y todo el histórico de uso están ahí.
 
 ## El problema central no es el sync: es la identidad del proyecto
 
-Hoy `projects.path` es absoluto (`/Users/killua/Proyects/Fleet-Agent`). En otra máquina eso no existe.
+Hoy `projects.path` es absoluto (`/Users/me/Proyects/Fleet-Agent`). En otra máquina eso no existe.
 La clave portable es el **remote de git**, que ya detectamos con `detect_repo_owner_and_name`.
 
 - `projects.remote_url` → **identidad que sincroniza**
