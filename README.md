@@ -17,6 +17,37 @@ have provider specs and would run, but Hangar can't check their login state yet,
 two of their accounts apart. Both the account wizard and the terminal picker mark them "not
 supported yet" instead of letting you get halfway in.
 
+## Screenshots
+
+Taken with demo data — two sample projects and three accounts that don't belong to anyone.
+
+**A grid of real agent terminals**, each in its own worktree and under its own account — Claude Code
+and Codex side by side, with what each one is doing and whether it's waiting for you.
+
+![Four agent terminals in a grid, each on its own worktree and account](docs/screenshots/terminal-grid.png)
+
+**The Factory** takes an order from the queue through spec, build, tests, review and delivery. Every
+station shows which part of the project's brain it reads, which account it spends, and how much.
+
+![The Factory working on an order: team accounts, the four stations, the test gate and the timeline](docs/screenshots/factory-live.png)
+
+**The brain** is the project's rules, sealed and versioned. Rules with a check become part of the test
+gate; questions no rule answers wait in the amendments inbox for you to decide.
+
+![The project brain: rules by section, their checks, and the amendments inbox](docs/screenshots/factory-brain.png)
+
+**Usage per account**, in the unit it's billed in: 5-hour and weekly quota for subscriptions, plus
+where the spend went by project, account, machine or model.
+
+![Quota per account and spend per project](docs/screenshots/usage.png)
+
+**What each worktree changed**, uncommitted and committed, read-only — and **PR review comments**,
+sent straight back to the terminal that wrote the code.
+
+![The changes of a worktree against main](docs/screenshots/git-changes.png)
+
+![Open pull requests with new review comments](docs/screenshots/pr-inbox.png)
+
 ## What it does
 
 - **A grid of real terminals** — one PTY each (up to six), spawned through your login shell so they
