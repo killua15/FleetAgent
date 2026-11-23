@@ -2,7 +2,7 @@ use crate::commands::sessions::{cleanup_worktree_rows, WorktreeCleanupRow};
 use crate::credential_vault;
 use crate::db::DbConnection;
 use crate::login_manager;
-use crate::models::{Account, ModelOption, NewAccount};
+use crate::models::{Account, AccountUpdate, ModelOption, NewAccount};
 use crate::providers;
 use chrono::Utc;
 use rusqlite::params;
@@ -28,6 +28,7 @@ pub(crate) fn row_to_account(row: &rusqlite::Row) -> rusqlite::Result<Account> {
         updated_at: row.get("updated_at")?,
         base_url: row.get("base_url")?,
         default_model: row.get("default_model")?,
+        config_dir_owned: row.get::<_, Option<i64>>("config_dir_owned")?.map(|v| v != 0),
     })
 }
 
@@ -71,11 +72,134 @@ fn endpoint_for_new_account(account: &NewAccount) -> Result<(Option<String>, Opt
         return Err("a custom endpoint account is always billed by key".to_string());
     }
     let raw = account.base_url.as_deref().filter(|u| !u.trim().is_empty()).ok_or_else(|| "a custom endpoint account needs the endpoint address".to_string())?;
-    let model = account.default_model.as_deref().map(str::trim).filter(|m| !m.is_empty()).map(str::to_string);
+    let model = normalize_model(account.default_model.as_deref())?;
+    Ok((Some(normalize_endpoint_url(raw, account.allow_insecure_http)?), model))
+}
+
+/// The model a `custom` account asks for: trimmed, `None` when empty (the
+/// endpoint's own default), and refused with spaces — it lands in an env var
+/// the CLI passes on as a single model name.
+fn normalize_model(raw: Option<&str>) -> Result<Option<String>, String> {
+    let model = raw.map(str::trim).filter(|m| !m.is_empty()).map(str::to_string);
     if model.as_deref().is_some_and(|m| m.chars().any(char::is_whitespace)) {
         return Err("a model name can't contain spaces".to_string());
     }
-    Ok((Some(normalize_endpoint_url(raw, account.allow_insecure_http)?), model))
+    Ok(model)
+}
+
+/// The account as it stands, plus what an edit would change it to.
+struct CurrentAccount {
+    provider: String,
+    billing: String,
+    name: String,
+    scope: String,
+    monthly_cap: Option<f64>,
+    base_url: Option<String>,
+    default_model: Option<String>,
+}
+
+/// The validated columns an `AccountUpdate` writes, or why it can't be applied.
+/// Pure so the rules are testable without a keychain: nothing is stored until
+/// every field has passed.
+#[derive(Debug, PartialEq)]
+struct ResolvedUpdate {
+    name: String,
+    scope: String,
+    monthly_cap: Option<f64>,
+    base_url: Option<String>,
+    default_model: Option<String>,
+    secret: Option<String>,
+}
+
+fn resolve_update(current: CurrentAccount, update: &AccountUpdate, other_names: &[String]) -> Result<ResolvedUpdate, String> {
+    let name = match update.name.as_deref().map(str::trim) {
+        Some("") => return Err("the account needs a name".to_string()),
+        Some(n) => n.to_string(),
+        None => current.name,
+    };
+    if other_names.iter().any(|o| o.trim().eq_ignore_ascii_case(&name)) {
+        return Err(format!("another account is already called {name}"));
+    }
+    let scope = match update.scope.as_deref() {
+        Some(s @ ("personal" | "work")) => s.to_string(),
+        Some(other) => return Err(format!("{other} isn't a scope — use personal or work")),
+        None => current.scope,
+    };
+    let monthly_cap = if update.clear_monthly_cap {
+        None
+    } else {
+        match update.monthly_cap {
+            Some(cap) if !cap.is_finite() || cap < 0.0 => return Err("the monthly cap has to be a positive amount".to_string()),
+            Some(cap) => Some(cap),
+            None => current.monthly_cap,
+        }
+    };
+
+    let touches_endpoint = update.base_url.is_some() || update.default_model.is_some();
+    if touches_endpoint && current.provider != "custom" {
+        return Err("only a custom endpoint account has an endpoint to change".to_string());
+    }
+    let base_url = match update.base_url.as_deref() {
+        Some(raw) if raw.trim().is_empty() => return Err("a custom endpoint account needs the endpoint address".to_string()),
+        Some(raw) => Some(normalize_endpoint_url(raw, update.allow_insecure_http)?),
+        None => current.base_url,
+    };
+    let default_model = match update.default_model.as_deref() {
+        Some(raw) => normalize_model(Some(raw))?,
+        None => current.default_model,
+    };
+
+    let secret = update.secret.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    if secret.is_some() && current.billing != "key" {
+        return Err("this account signs in with a subscription — it has no API key to replace".to_string());
+    }
+
+    Ok(ResolvedUpdate { name, scope, monthly_cap, base_url, default_model, secret })
+}
+
+/// Edits an account in place, keeping its sessions and history — the reason
+/// this exists instead of delete-and-recreate. Running terminals keep the
+/// environment they started with; the next one reads the new values.
+///
+/// The name is display only: the config dir keeps its path, since a Claude
+/// login in the keychain is keyed by that exact path.
+#[tauri::command]
+pub fn update_account(db: State<DbConnection>, id: String, update: AccountUpdate) -> Result<Account, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let current = conn
+        .query_row(
+            "SELECT provider, billing, name, scope, monthly_cap, base_url, default_model FROM accounts WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(CurrentAccount {
+                    provider: row.get(0)?,
+                    billing: row.get(1)?,
+                    name: row.get(2)?,
+                    scope: row.get(3)?,
+                    monthly_cap: row.get(4)?,
+                    base_url: row.get(5)?,
+                    default_model: row.get(6)?,
+                })
+            },
+        )
+        .map_err(|e| format!("account lookup failed: {e}"))?;
+    let other_names: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT name FROM accounts WHERE id != ?1").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![id], |row| row.get(0)).map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+    };
+    let resolved = resolve_update(current, &update, &other_names)?;
+
+    if let Some(secret) = &resolved.secret {
+        credential_vault::store(&id, secret)?;
+    }
+    conn.execute(
+        "UPDATE accounts SET name = ?2, scope = ?3, monthly_cap = ?4, base_url = ?5, default_model = ?6, updated_at = ?7 WHERE id = ?1",
+        params![id, resolved.name, resolved.scope, resolved.monthly_cap, resolved.base_url, resolved.default_model, Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| e.to_string())?;
+    log::info!("account {id} edited");
+    conn.query_row("SELECT * FROM accounts WHERE id = ?1", params![id], row_to_account).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -294,6 +418,9 @@ pub fn create_account(
         credential_vault::store(&id, secret)?;
     }
 
+    // Adopted directories are the user's; only one Hangar made is Hangar's to
+    // erase when the account goes.
+    let config_dir_owned = account.config_dir_path.as_deref().is_none_or(|p| p.trim().is_empty());
     let config_dir_path = if let Some(existing) = account.config_dir_path.as_deref().filter(|p| !p.trim().is_empty()) {
         // Adopting a directory the user already logged into by hand. Used
         // as-is for the same reason a pending-login dir is (see below): the
@@ -339,8 +466,8 @@ pub fn create_account(
     let now = Utc::now().to_rfc3339();
 
     conn.execute(
-        "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, monthly_cap, status, created_at, updated_at, base_url, default_model)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?1, ?8, 'healthy', ?9, ?9, ?10, ?11)",
+        "INSERT INTO accounts (id, provider, billing, name, scope, plan_label, config_dir_path, credential_ref, monthly_cap, status, created_at, updated_at, base_url, default_model, config_dir_owned)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?1, ?8, 'healthy', ?9, ?9, ?10, ?11, ?12)",
         params![
             id,
             account.provider,
@@ -353,6 +480,7 @@ pub fn create_account(
             now,
             base_url,
             default_model,
+            config_dir_owned,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -528,7 +656,7 @@ pub async fn set_account_config_dir<R: Runtime>(app: AppHandle<R>, id: String, c
 
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         conn.execute(
-            "UPDATE accounts SET config_dir_path = ?2, updated_at = ?3 WHERE id = ?1",
+            "UPDATE accounts SET config_dir_path = ?2, config_dir_owned = 0, updated_at = ?3 WHERE id = ?1",
             params![id, config_dir_path, Utc::now().to_rfc3339()],
         )
         .map_err(|e| e.to_string())?;
@@ -811,8 +939,13 @@ pub async fn recheck_account_login(app: AppHandle, id: String) -> Result<bool, S
     .await?
 }
 
+/// Removes the account, its key and the worktrees of its sessions. Its config
+/// dir — the login and the CLI's own history — is signed out and erased only
+/// when `remove_config_dir` is set: an adopted `~/.claude-work` belongs to the
+/// user, and erasing it would take a login they still use elsewhere.
 #[tauri::command]
-pub async fn delete_account(app: AppHandle, id: String) -> Result<(), String> {
+pub async fn delete_account(app: AppHandle, id: String, remove_config_dir: Option<bool>) -> Result<(), String> {
+    let remove_config_dir = remove_config_dir.unwrap_or(false);
     crate::blocking::run_blocking(move || {
         let db = app.state::<DbConnection>();
         let conn = db.0.lock().map_err(|e| e.to_string())?;
@@ -847,7 +980,7 @@ pub async fn delete_account(app: AppHandle, id: String) -> Result<(), String> {
         }
         drop(conn);
 
-        if let Some(dir) = &config_dir_path {
+        if let Some(dir) = config_dir_path.as_ref().filter(|_| remove_config_dir) {
             // Best-effort real sign-out before wiping the dir — ignore failures
             // (e.g. already logged out, or dir already gone) since we delete the
             // directory unconditionally right after.
@@ -895,6 +1028,79 @@ mod tests {
         for refused in ["ftp://example.com", "openrouter.ai/api", "http://", "http://exa mple.com"] {
             assert!(normalize_endpoint_url(refused, true).is_err(), "{refused} must be refused even with the risk accepted");
         }
+    }
+
+    fn current(provider: &str, billing: &str) -> CurrentAccount {
+        CurrentAccount {
+            provider: provider.to_string(),
+            billing: billing.to_string(),
+            name: "Local GLM".to_string(),
+            scope: "personal".to_string(),
+            monthly_cap: Some(50.0),
+            base_url: (provider == "custom").then(|| "http://192.168.1.50:4000".to_string()),
+            default_model: (provider == "custom").then(|| "glm-4.6".to_string()),
+        }
+    }
+
+    /// An empty update changes nothing — the dialog sends every field, and a
+    /// save with no edits must not clear the model or the cap.
+    #[test]
+    fn an_empty_update_keeps_everything() {
+        let resolved = resolve_update(current("custom", "key"), &AccountUpdate::default(), &[]).unwrap();
+        assert_eq!(
+            resolved,
+            ResolvedUpdate {
+                name: "Local GLM".to_string(),
+                scope: "personal".to_string(),
+                monthly_cap: Some(50.0),
+                base_url: Some("http://192.168.1.50:4000".to_string()),
+                default_model: Some("glm-4.6".to_string()),
+                secret: None,
+            }
+        );
+    }
+
+    /// Repointing a custom endpoint follows the creation rules, including the
+    /// plain-http opt-in, and an empty model goes back to the endpoint's default.
+    #[test]
+    fn a_custom_endpoint_can_be_repointed_under_the_creation_rules() {
+        let to = |url: &str, insecure: bool| AccountUpdate { base_url: Some(url.to_string()), allow_insecure_http: insecure, ..Default::default() };
+        assert!(resolve_update(current("custom", "key"), &to("http://192.168.1.60:4000", false), &[]).is_err());
+        let ok = resolve_update(current("custom", "key"), &to("http://192.168.1.60:4000/", true), &[]).unwrap();
+        assert_eq!(ok.base_url.as_deref(), Some("http://192.168.1.60:4000"));
+        assert!(resolve_update(current("custom", "key"), &to("  ", true), &[]).is_err(), "an endpoint account can't lose its address");
+        let cleared = AccountUpdate { default_model: Some(" ".to_string()), ..Default::default() };
+        assert_eq!(resolve_update(current("custom", "key"), &cleared, &[]).unwrap().default_model, None);
+        let spaced = AccountUpdate { default_model: Some("two words".to_string()), ..Default::default() };
+        assert!(resolve_update(current("custom", "key"), &spaced, &[]).is_err());
+    }
+
+    /// The fields that don't fit the account are refused, not silently dropped:
+    /// an endpoint on a real Claude login would redirect it, and a key on a
+    /// subscription would never be used.
+    #[test]
+    fn an_update_only_touches_what_the_account_has() {
+        let endpoint = AccountUpdate { base_url: Some("https://openrouter.ai/api".to_string()), ..Default::default() };
+        assert!(resolve_update(current("claude", "sub"), &endpoint, &[]).is_err());
+        let key = AccountUpdate { secret: Some("sk-new".to_string()), ..Default::default() };
+        assert!(resolve_update(current("claude", "sub"), &key, &[]).is_err());
+        assert_eq!(resolve_update(current("claude", "key"), &key, &[]).unwrap().secret.as_deref(), Some("sk-new"));
+        let blank_key = AccountUpdate { secret: Some("  ".to_string()), ..Default::default() };
+        assert_eq!(resolve_update(current("claude", "sub"), &blank_key, &[]).unwrap().secret, None, "an empty key field keeps the stored one");
+    }
+
+    #[test]
+    fn names_scopes_and_caps_are_checked() {
+        let rename = |n: &str| AccountUpdate { name: Some(n.to_string()), ..Default::default() };
+        assert!(resolve_update(current("claude", "sub"), &rename("  "), &[]).is_err());
+        assert!(resolve_update(current("claude", "sub"), &rename("work"), &["Work".to_string()]).is_err(), "names are unique ignoring case");
+        assert_eq!(resolve_update(current("claude", "sub"), &rename(" Work 2 "), &["Work".to_string()]).unwrap().name, "Work 2");
+        let scope = AccountUpdate { scope: Some("team".to_string()), ..Default::default() };
+        assert!(resolve_update(current("claude", "sub"), &scope, &[]).is_err());
+        let clear = AccountUpdate { clear_monthly_cap: true, monthly_cap: Some(10.0), ..Default::default() };
+        assert_eq!(resolve_update(current("claude", "sub"), &clear, &[]).unwrap().monthly_cap, None);
+        let negative = AccountUpdate { monthly_cap: Some(-1.0), ..Default::default() };
+        assert!(resolve_update(current("claude", "sub"), &negative, &[]).is_err());
     }
 
     /// Only a custom account carries an endpoint. Anything else that arrives

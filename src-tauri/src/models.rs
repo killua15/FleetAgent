@@ -20,6 +20,10 @@ pub struct Account {
     pub base_url: Option<String>,
     /// The model a `custom` account asks its endpoint for, when set.
     pub default_model: Option<String>,
+    /// Whether Hangar created `config_dir_path` (`Some(true)`) or adopted a
+    /// directory the user already had (`Some(false)`). `None` for accounts
+    /// created before this was recorded.
+    pub config_dir_owned: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -105,6 +109,27 @@ pub struct NewAccount {
     /// endpoint that isn't on this machine. Not stored: the saved URL alone
     /// tells whether an account runs unencrypted.
     #[serde(default)]
+    pub allow_insecure_http: bool,
+}
+
+/// Changes to an existing account. Every field is optional: `None` keeps the
+/// current value. Provider, billing and the config dir are not here — the
+/// first two make it a different account, and the dir has its own command.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AccountUpdate {
+    pub name: Option<String>,
+    pub scope: Option<String>,
+    pub monthly_cap: Option<f64>,
+    /// Removes the monthly cap; wins over `monthly_cap`.
+    pub clear_monthly_cap: bool,
+    /// A replacement API key. Empty or missing keeps the stored one.
+    pub secret: Option<String>,
+    /// `custom` only.
+    pub base_url: Option<String>,
+    /// `custom` only. An empty string clears it (the endpoint's default).
+    pub default_model: Option<String>,
+    /// Same opt-in as on creation, for a remote plain-http `base_url`.
     pub allow_insecure_http: bool,
 }
 

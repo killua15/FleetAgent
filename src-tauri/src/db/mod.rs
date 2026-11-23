@@ -362,6 +362,12 @@ const MIGRATIONS: &[Migration] = &[
         run: factory_step_usage_columns,
         transactional: true,
     },
+    Migration {
+        version: 47,
+        name: "account_config_dir_owned",
+        run: account_config_dir_owned_column,
+        transactional: true,
+    },
 ];
 
 /// Whether `table` already has a column named `column`.
@@ -1213,6 +1219,17 @@ fn factory_projects_table(conn: &Connection) -> Result<(), String> {
 /// The line at work: one run per order (its frozen team and brain, the stage
 /// it's at, why it waits), each agent's step with its times, what it did, and
 /// every decision with the rule it cites.
+/// Whether Hangar created an account's config dir (1) or adopted one the user
+/// already had (0). NULL for accounts older than this column: unknown, so
+/// deleting such an account leaves its directory alone unless asked.
+fn account_config_dir_owned_column(conn: &Connection) -> Result<(), String> {
+    if has_column(conn, "accounts", "config_dir_owned")? {
+        return Ok(());
+    }
+    conn.execute_batch("ALTER TABLE accounts ADD COLUMN config_dir_owned INTEGER;")
+        .map_err(|e| format!("could not add accounts.config_dir_owned: {e}"))
+}
+
 fn factory_step_usage_columns(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(FACTORY_STEP_USAGE_DDL).map_err(|e| format!("could not add the step usage columns: {e}"))
 }
