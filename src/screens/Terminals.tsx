@@ -13,7 +13,7 @@ import { IconTooltip } from '../components/ui/tooltip';
 import { BaseBranchPicker, useBaseBranch } from '../components/BaseBranchPicker';
 import { useNavigation } from '../nav/NavigationProvider';
 import { autoGridColumns, shouldWarnAboutPanels } from '../lib/gridLayout';
-import { endpointHost, formatHoursLeft, providerMeta, type Account, type AccountAuth, type AccountNeedsLogin, type FanOutProjection } from '../types/account';
+import { endpointHost, isInsecureRemoteEndpoint, formatHoursLeft, providerMeta, type Account, type AccountAuth, type AccountNeedsLogin, type FanOutProjection } from '../types/account';
 import type { Project, Session } from '../types/session';
 import { TERMINAL_STATE_META, type AutoContinueStatus, type FanOutBranch, type InitCommand, type SuggestedAccount, type TerminalActivity, type TerminalInfo, type TerminalTarget } from '../types/terminal';
 import { formatResumeAt } from '../lib/autoContinue';
@@ -769,9 +769,14 @@ export function Terminals() {
                     {(() => {
                       const baseUrl = accounts.find((a) => a.id === t.accountId)?.baseUrl;
                       if (!baseUrl) return null;
+                      const insecure = isInsecureRemoteEndpoint(baseUrl);
                       return (
-                        <span className={styles.endpointBadge} title={`This terminal sends its prompts and code to ${baseUrl}, not to Anthropic`}>
-                          ⇄ {endpointHost(baseUrl)}
+                        <span
+                          className={styles.endpointBadge}
+                          title={`This terminal sends its prompts and code to ${baseUrl}, not to Anthropic${insecure ? ' — over an unencrypted connection' : ''}`}
+                        >
+                          {insecure ? '⚠ http · ' : '⇄ '}
+                          {endpointHost(baseUrl)}
                         </span>
                       );
                     })()}

@@ -370,6 +370,30 @@
   color: var(--acc);
 }
 
+/* Plain http to another machine: amber, the app's "worth knowing before you
+   carry on" colour, with the opt-in right under the reason for it. */
+.insecureWarning {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--amberD);
+  color: var(--amber);
+  font: 400 11px var(--font-ui);
+  line-height: 1.6;
+}
+
+.insecureCheck {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--txt);
+  font: 500 11.5px var(--font-ui);
+  cursor: pointer;
+}
+
 .footer {
   display: flex;
   align-items: center;
