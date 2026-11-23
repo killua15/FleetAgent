@@ -101,6 +101,11 @@ pub struct NewAccount {
     pub base_url: Option<String>,
     #[serde(default)]
     pub default_model: Option<String>,
+    /// The user ticked "connect without encryption" for a plain `http://`
+    /// endpoint that isn't on this machine. Not stored: the saved URL alone
+    /// tells whether an account runs unencrypted.
+    #[serde(default)]
+    pub allow_insecure_http: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

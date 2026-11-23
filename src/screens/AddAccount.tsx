@@ -4,10 +4,11 @@ import { listen } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useNavigation } from '../nav/NavigationProvider';
 import { extractUrl, stripAnsi } from '../lib/ansi';
-import { ENDPOINT_PRESETS, endpointHost, KEY_ONLY_PROVIDERS, LOGIN_EXPECTS_CODE, PROVIDER_META, type Billing, type DiscoveredLogin, type NewAccount, type Provider, type Scope } from '../types/account';
+import { ENDPOINT_PRESETS, endpointHost, isInsecureRemoteEndpoint, KEY_ONLY_PROVIDERS, LOGIN_EXPECTS_CODE, PROVIDER_META, type Billing, type DiscoveredLogin, type NewAccount, type Provider, type Scope } from '../types/account';
 import type { ApiKeyCheck, AuthStatus, LoginOutputEvent, LoginSession, ProviderAvailability } from '../types/login';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { Checkbox } from '../components/ui/checkbox';
 import { Spinner } from '../components/Spinner';
 import { Label } from '../components/ui/label';
 import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group';
@@ -80,10 +81,17 @@ export function AddAccount() {
   const [baseUrl, setBaseUrl] = useState('');
   const [defaultModel, setDefaultModel] = useState('');
   const isCustom = provider === 'custom';
+  /** Ticked "connect without encryption" for a plain http endpoint on another
+   * machine (e.g. the user's own LAN server without a certificate). */
+  const [allowInsecure, setAllowInsecure] = useState(false);
+  const insecureRemote = isInsecureRemoteEndpoint(baseUrl);
   /** Same rule Rust enforces on save (`normalize_endpoint_url`), checked here
    * so the wizard doesn't let someone reach the last step with an address that
-   * will be refused there. Plain http only for this machine. */
-  const endpointOk = /^(https:\/\/[^\s/]+|http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?)(\/\S*)?$/.test(baseUrl.trim());
+   * will be refused there. Plain http for this machine, or anywhere once the
+   * risk has been accepted. */
+  const endpointOk =
+    /^(https:\/\/[^\s/]+|http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?)(\/\S*)?$/.test(baseUrl.trim()) ||
+    (insecureRemote && allowInsecure && /^http:\/\/[^\s/]+(\/\S*)?$/.test(baseUrl.trim()));
 
   const prov = PROVIDER_META[provider];
 
@@ -297,6 +305,7 @@ export function AddAccount() {
       monthlyCap: monthlyCap ? Number(monthlyCap.replace(/[^0-9.]/g, '')) : undefined,
       baseUrl: isCustom ? baseUrl.trim() : undefined,
       defaultModel: isCustom && defaultModel.trim() ? defaultModel.trim() : undefined,
+      allowInsecureHttp: isCustom && insecureRemote && allowInsecure ? true : undefined,
     };
     try {
       await invoke('create_account', { account });
@@ -591,13 +600,32 @@ export function AddAccount() {
                 <Input
                   className={styles.input}
                   value={baseUrl}
-                  onChange={(e) => setBaseUrl(e.target.value)}
+                  onChange={(e) => {
+                    setBaseUrl(e.target.value);
+                    // Accepting the risk is for one address, not whatever is typed next.
+                    if (!isInsecureRemoteEndpoint(e.target.value)) setAllowInsecure(false);
+                  }}
                   placeholder="https://…"
                 />
                 {baseUrl.trim() !== '' && !endpointOk && (
                   <span style={{ color: 'var(--red)', font: '500 11px var(--font-mono)' }}>
-                    Use an https:// address — http:// only works for an endpoint on this machine.
+                    {insecureRemote
+                      ? 'This http:// endpoint is not encrypted — tick the box below to connect anyway, or use https://.'
+                      : 'Use an https:// address, or http:// for an endpoint on this machine.'}
                   </span>
+                )}
+                {insecureRemote && (
+                  <div className={styles.insecureWarning}>
+                    <span>
+                      ⚠ This endpoint doesn’t use encryption (http://). Your API key, your prompts and the code the agent
+                      reads will travel in plain text over the network — anyone on it can read or alter them. Only use it
+                      with a server you own on a network you trust.
+                    </span>
+                    <label className={styles.insecureCheck}>
+                      <Checkbox checked={allowInsecure} onCheckedChange={(checked) => setAllowInsecure(checked === true)} />
+                      I understand the risk and want to connect without encryption
+                    </label>
+                  </div>
                 )}
               </div>
               <div className={styles.field}>

@@ -67,6 +67,9 @@ export interface NewAccount {
   /** Required for a `custom` account; ignored for any other provider. */
   baseUrl?: string;
   defaultModel?: string;
+  /** The user accepted sending this account's traffic over plain http to a
+   * host that isn't this machine. Rust refuses such an endpoint without it. */
+  allowInsecureHttp?: boolean;
 }
 
 /** A Claude Code config directory already logged in on this machine that no
@@ -179,6 +182,16 @@ export function endpointHost(baseUrl: string): string {
   const rest = baseUrl.includes('://') ? baseUrl.slice(baseUrl.indexOf('://') + 3) : baseUrl;
   const host = rest.split(/[/?#]/)[0].split('@').pop() ?? '';
   return host || baseUrl;
+}
+
+/** A plain `http://` endpoint on another machine: its key, prompts and code
+ * travel unencrypted. Loopback is exempt — that traffic never leaves the box. */
+export function isInsecureRemoteEndpoint(baseUrl: string): boolean {
+  const url = baseUrl.trim();
+  if (!/^http:\/\//i.test(url)) return false;
+  const host = endpointHost(url);
+  const hostname = host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : host.split(':')[0];
+  return !['localhost', '127.0.0.1', '[::1]'].includes(hostname.toLowerCase());
 }
 
 /** How a provider this build has never heard of gets drawn. The same tokens

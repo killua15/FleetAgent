@@ -34,11 +34,13 @@ pub(crate) fn row_to_account(row: &rusqlite::Row) -> rusqlite::Result<Account> {
 /// The endpoint a `custom` account will be pointed at, cleaned up, or why it
 /// can't be used.
 ///
-/// Plain `http` is only accepted for this machine: that is a local gateway,
-/// and anywhere else it would send the key and the project's code in the clear.
+/// Plain `http` is accepted for this machine (a local gateway) and, only when
+/// the user explicitly accepted the risk (`allow_insecure_http`), for any other
+/// host — e.g. their own server on the LAN without a certificate. Anywhere else
+/// it would send the key and the project's code in the clear unasked.
 /// A trailing slash is dropped because Claude Code appends `/v1/messages`
 /// itself and some gateways answer 404 to the doubled one.
-pub(crate) fn normalize_endpoint_url(raw: &str) -> Result<String, String> {
+pub(crate) fn normalize_endpoint_url(raw: &str, allow_insecure_http: bool) -> Result<String, String> {
     let url = raw.trim().trim_end_matches('/');
     let (scheme, rest) = url.split_once("://").ok_or_else(|| "the endpoint needs to start with https:// (or http:// for one on this machine)".to_string())?;
     let host = rest.split(['/', '?', '#']).next().unwrap_or("");
@@ -53,7 +55,8 @@ pub(crate) fn normalize_endpoint_url(raw: &str) -> Result<String, String> {
     match scheme {
         "https" => Ok(url.to_string()),
         "http" if matches!(hostname, "localhost" | "127.0.0.1" | "::1") => Ok(url.to_string()),
-        "http" => Err("an http:// endpoint is only allowed on this machine — use https:// for a remote one".to_string()),
+        "http" if allow_insecure_http => Ok(url.to_string()),
+        "http" => Err("an http:// endpoint is only allowed on this machine — use https:// for a remote one, or tick \"Connect without encryption\"".to_string()),
         other => Err(format!("{other}:// isn't supported for an endpoint — use https://")),
     }
 }
@@ -72,7 +75,7 @@ fn endpoint_for_new_account(account: &NewAccount) -> Result<(Option<String>, Opt
     if model.as_deref().is_some_and(|m| m.chars().any(char::is_whitespace)) {
         return Err("a model name can't contain spaces".to_string());
     }
-    Ok((Some(normalize_endpoint_url(raw)?), model))
+    Ok((Some(normalize_endpoint_url(raw, account.allow_insecure_http)?), model))
 }
 
 #[tauri::command]
@@ -873,12 +876,24 @@ mod tests {
     /// http would carry the key and the code in the clear.
     #[test]
     fn an_endpoint_must_be_https_unless_it_is_this_machine() {
-        assert_eq!(normalize_endpoint_url(" https://openrouter.ai/api/ ").unwrap(), "https://openrouter.ai/api");
-        assert_eq!(normalize_endpoint_url("http://localhost:3001").unwrap(), "http://localhost:3001");
-        assert_eq!(normalize_endpoint_url("http://127.0.0.1:4000/").unwrap(), "http://127.0.0.1:4000");
-        assert_eq!(normalize_endpoint_url("http://[::1]:4000").unwrap(), "http://[::1]:4000");
+        assert_eq!(normalize_endpoint_url(" https://openrouter.ai/api/ ", false).unwrap(), "https://openrouter.ai/api");
+        assert_eq!(normalize_endpoint_url("http://localhost:3001", false).unwrap(), "http://localhost:3001");
+        assert_eq!(normalize_endpoint_url("http://127.0.0.1:4000/", false).unwrap(), "http://127.0.0.1:4000");
+        assert_eq!(normalize_endpoint_url("http://[::1]:4000", false).unwrap(), "http://[::1]:4000");
         for refused in ["http://api.example.com", "http://localhost.evil.com", "http://user@evil.com", "ftp://example.com", "openrouter.ai/api", "https://", "https://exa mple.com"] {
-            assert!(normalize_endpoint_url(refused).is_err(), "{refused} must be refused");
+            assert!(normalize_endpoint_url(refused, false).is_err(), "{refused} must be refused");
+        }
+    }
+
+    /// Ticking "connect without encryption" opens plain http to any host, and
+    /// nothing else: a broken address or another scheme is still refused.
+    #[test]
+    fn an_accepted_risk_allows_remote_http_and_nothing_more() {
+        assert_eq!(normalize_endpoint_url("http://192.168.1.50:4000/", true).unwrap(), "http://192.168.1.50:4000");
+        assert_eq!(normalize_endpoint_url("http://my-server.local:3001/anthropic", true).unwrap(), "http://my-server.local:3001/anthropic");
+        assert!(normalize_endpoint_url("http://192.168.1.50:4000", false).is_err());
+        for refused in ["ftp://example.com", "openrouter.ai/api", "http://", "http://exa mple.com"] {
+            assert!(normalize_endpoint_url(refused, true).is_err(), "{refused} must be refused even with the risk accepted");
         }
     }
 
@@ -898,6 +913,7 @@ mod tests {
             monthly_cap: None,
             base_url: base_url.map(str::to_string),
             default_model: model.map(str::to_string),
+            allow_insecure_http: false,
         };
         assert_eq!(endpoint_for_new_account(&new("claude", "sub", Some("https://evil.example"), Some("m"))).unwrap(), (None, None));
         assert_eq!(
@@ -908,6 +924,12 @@ mod tests {
         assert!(endpoint_for_new_account(&new("custom", "key", None, None)).is_err(), "no address, no account");
         assert!(endpoint_for_new_account(&new("custom", "sub", Some("https://openrouter.ai/api"), None)).is_err());
         assert!(endpoint_for_new_account(&new("custom", "key", Some("https://openrouter.ai/api"), Some("two words"))).is_err());
+        let lan = new("custom", "key", Some("http://192.168.1.50:4000"), None);
+        assert!(endpoint_for_new_account(&lan).is_err(), "remote http needs the risk accepted");
+        assert_eq!(
+            endpoint_for_new_account(&NewAccount { allow_insecure_http: true, ..lan }).unwrap().0,
+            Some("http://192.168.1.50:4000".to_string())
+        );
     }
 
     /// Adoption is offered for the Claude family and nobody else, and the
