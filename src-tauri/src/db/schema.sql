@@ -37,7 +37,11 @@ CREATE TABLE IF NOT EXISTS accounts (
   -- (`ANTHROPIC_MODEL`) when the endpoint does not serve Claude's own names.
   -- Not secrets — the key stays in the keychain like every other account's.
   base_url         TEXT,
-  default_model    TEXT
+  default_model    TEXT,
+  -- 1 when Hangar created `config_dir_path`, 0 when it adopted a directory the
+  -- user already had (`~/.claude-work`). NULL: an account older than the
+  -- column, unknown. Deleting the account only erases a directory on request.
+  config_dir_owned INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS projects (

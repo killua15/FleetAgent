@@ -5,7 +5,8 @@ import { providerMeta, type Account } from '../types/account';
 import type { AuthStatus } from '../types/login';
 import type { TerminalInfo } from '../types/terminal';
 import { Button } from '../components/ui/button';
-import { ConfirmDeleteDialog } from '../components/ConfirmDeleteDialog';
+import { DeleteAccountDialog } from '../components/DeleteAccountDialog';
+import { EditAccountDialog } from '../components/EditAccountDialog';
 import { PickConfigDirDialog } from '../components/PickConfigDirDialog';
 import { Spinner } from '../components/Spinner';
 import styles from './AccountList.module.css';
@@ -72,11 +73,11 @@ export function AccountList() {
     }
   };
 
-  const handleConfirmDelete = async (acc: Account) => {
+  const handleConfirmDelete = async (acc: Account, removeConfigDir: boolean) => {
     setError(null);
     setDeletingId(acc.id);
     try {
-      await invoke('delete_account', { id: acc.id });
+      await invoke('delete_account', { id: acc.id, removeConfigDir });
       await load();
     } catch (e) {
       setError(String(e));
@@ -170,15 +171,24 @@ export function AccountList() {
                   {relogginId === acc.id ? 'opening…' : 'sign in again'}
                 </Button>
               )}
-              <ConfirmDeleteDialog
+              <EditAccountDialog
+                trigger={
+                  <Button variant="outline" className={styles.deleteBtn} title="Edit name, scope, cap, API key or endpoint">
+                    edit
+                  </Button>
+                }
+                account={acc}
+                otherNames={accounts.filter((a) => a.id !== acc.id).map((a) => a.name)}
+                onSaved={() => load()}
+              />
+              <DeleteAccountDialog
                 trigger={
                   <Button variant="outline" className={styles.deleteBtn} disabled={deletingId === acc.id}>
                     {deletingId === acc.id ? 'deleting…' : 'delete'}
                   </Button>
                 }
-                title={`Delete ${acc.name}?`}
-                description="This removes the account and its credentials from Hangar. This cannot be undone."
-                onConfirm={() => handleConfirmDelete(acc)}
+                account={acc}
+                onConfirm={(removeConfigDir) => handleConfirmDelete(acc, removeConfigDir)}
               />
             </div>
           );

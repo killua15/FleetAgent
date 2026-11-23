@@ -21,6 +21,24 @@ export interface Account {
   baseUrl: string | null;
   /** The model a `custom` account asks its endpoint for, when set. */
   defaultModel: string | null;
+  /** Whether Hangar created `configDirPath` (true) or adopted one the user
+   * already had (false). `null` for accounts older than this field. */
+  configDirOwned: boolean | null;
+}
+
+/** Changes for `update_account`. Omitted fields keep their value. */
+export interface AccountUpdate {
+  name?: string;
+  scope?: Scope;
+  monthlyCap?: number;
+  clearMonthlyCap?: boolean;
+  /** A replacement API key; empty keeps the stored one. */
+  secret?: string;
+  /** `custom` accounts only. */
+  baseUrl?: string;
+  /** `custom` accounts only; empty goes back to the endpoint's default. */
+  defaultModel?: string;
+  allowInsecureHttp?: boolean;
 }
 
 /** Login state for one account, from the batch `list_account_auth` command.
@@ -182,6 +200,25 @@ export function endpointHost(baseUrl: string): string {
   const rest = baseUrl.includes('://') ? baseUrl.slice(baseUrl.indexOf('://') + 3) : baseUrl;
   const host = rest.split(/[/?#]/)[0].split('@').pop() ?? '';
   return host || baseUrl;
+}
+
+/** Whether a custom endpoint address can be saved — the rule Rust enforces in
+ * `normalize_endpoint_url`, mirrored so a form can't submit something that
+ * will be refused. https anywhere, http on this machine, and http elsewhere
+ * only once the user accepted the risk. */
+export function endpointIsValid(baseUrl: string, allowInsecure: boolean): boolean {
+  const url = baseUrl.trim();
+  if (/^(https:\/\/[^\s/]+|http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?)(\/\S*)?$/.test(url)) return true;
+  return isInsecureRemoteEndpoint(url) && allowInsecure && /^http:\/\/[^\s/]+(\/\S*)?$/.test(url);
+}
+
+/** Whether deleting an account should also erase its config dir, by default.
+ * Only a directory Hangar made: an adopted `~/.claude-work` holds a login the
+ * user may still use outside Hangar. Unknown (older accounts) counts as theirs,
+ * except the wizard's own `pending-logins/<uuid>` folders. */
+export function shouldRemoveConfigDirByDefault(account: Pick<Account, 'configDirOwned' | 'configDirPath'>): boolean {
+  if (account.configDirOwned !== null && account.configDirOwned !== undefined) return account.configDirOwned;
+  return account.configDirPath.includes('/pending-logins/');
 }
 
 /** A plain `http://` endpoint on another machine: its key, prompts and code

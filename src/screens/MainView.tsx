@@ -3,6 +3,7 @@ import { invoke } from '../lib/invoke';
 import { listen } from '@tauri-apps/api/event';
 import { AppTopBar } from '../components/AppTopBar';
 import { ConfirmDeleteDialog } from '../components/ConfirmDeleteDialog';
+import { DeleteAccountDialog } from '../components/DeleteAccountDialog';
 import { CreateSubsessionDialog } from '../components/CreateSubsessionDialog';
 import { ProjectPicker } from '../components/ProjectPicker';
 import { Badge } from '../components/ui/badge';
@@ -103,11 +104,11 @@ export function MainView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modules.usage, accounts, sessions]);
 
-  const handleDeleteAccount = async (acc: Account) => {
+  const handleDeleteAccount = async (acc: Account, removeConfigDir: boolean) => {
     setDeleteError(null);
     setDeletingAccountId(acc.id);
     try {
-      await invoke('delete_account', { id: acc.id });
+      await invoke('delete_account', { id: acc.id, removeConfigDir });
       await loadAll();
     } catch (e) {
       setDeleteError(String(e));
@@ -309,7 +310,7 @@ export function MainView() {
                     >
                       {acc.scope}
                     </span>
-                    <ConfirmDeleteDialog
+                    <DeleteAccountDialog
                       trigger={
                         <Button
                           variant="ghost"
@@ -321,9 +322,8 @@ export function MainView() {
                           {deletingAccountId === acc.id ? '…' : '×'}
                         </Button>
                       }
-                      title={`Delete ${acc.name}?`}
-                      description="This removes the account and its credentials from Hangar. This cannot be undone."
-                      onConfirm={() => handleDeleteAccount(acc)}
+                      account={acc}
+                      onConfirm={(removeConfigDir) => handleDeleteAccount(acc, removeConfigDir)}
                     />
                   </div>
                   {modules.usage && <AccountUsageRow acc={acc} usage={accountUsage[acc.id]} />}

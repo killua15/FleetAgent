@@ -4,11 +4,11 @@ import { listen } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useNavigation } from '../nav/NavigationProvider';
 import { extractUrl, stripAnsi } from '../lib/ansi';
-import { ENDPOINT_PRESETS, endpointHost, isInsecureRemoteEndpoint, KEY_ONLY_PROVIDERS, LOGIN_EXPECTS_CODE, PROVIDER_META, type Billing, type DiscoveredLogin, type NewAccount, type Provider, type Scope } from '../types/account';
+import { endpointIsValid, isInsecureRemoteEndpoint, KEY_ONLY_PROVIDERS, LOGIN_EXPECTS_CODE, PROVIDER_META, type Billing, type DiscoveredLogin, type NewAccount, type Provider, type Scope } from '../types/account';
 import type { ApiKeyCheck, AuthStatus, LoginOutputEvent, LoginSession, ProviderAvailability } from '../types/login';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
-import { Checkbox } from '../components/ui/checkbox';
+import { EndpointFields, type EndpointValue } from '../components/EndpointFields';
 import { Spinner } from '../components/Spinner';
 import { Label } from '../components/ui/label';
 import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group';
@@ -78,20 +78,13 @@ export function AddAccount() {
   const [checkingKey, setCheckingKey] = useState(false);
 
   // --- custom endpoint state ---
-  const [baseUrl, setBaseUrl] = useState('');
-  const [defaultModel, setDefaultModel] = useState('');
+  const [endpoint, setEndpoint] = useState<EndpointValue>({ baseUrl: '', defaultModel: '', allowInsecure: false });
+  const { baseUrl, defaultModel, allowInsecure } = endpoint;
   const isCustom = provider === 'custom';
-  /** Ticked "connect without encryption" for a plain http endpoint on another
-   * machine (e.g. the user's own LAN server without a certificate). */
-  const [allowInsecure, setAllowInsecure] = useState(false);
   const insecureRemote = isInsecureRemoteEndpoint(baseUrl);
-  /** Same rule Rust enforces on save (`normalize_endpoint_url`), checked here
-   * so the wizard doesn't let someone reach the last step with an address that
-   * will be refused there. Plain http for this machine, or anywhere once the
-   * risk has been accepted. */
-  const endpointOk =
-    /^(https:\/\/[^\s/]+|http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?)(\/\S*)?$/.test(baseUrl.trim()) ||
-    (insecureRemote && allowInsecure && /^http:\/\/[^\s/]+(\/\S*)?$/.test(baseUrl.trim()));
+  /** Checked here so the wizard doesn't let someone reach the last step with
+   * an address Rust will refuse there. */
+  const endpointOk = endpointIsValid(baseUrl, allowInsecure);
 
   const prov = PROVIDER_META[provider];
 
@@ -583,67 +576,7 @@ export function AddAccount() {
           {step === 3 && billing === 'key' && isCustom && (
             <>
               <span className={styles.hint}>Where should Claude Code send its requests?</span>
-              <div className={styles.field}>
-                <Label className={styles.label}>ENDPOINT</Label>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  {ENDPOINT_PRESETS.map((preset) => (
-                    <Button
-                      key={preset.label}
-                      variant={baseUrl.trim() === preset.baseUrl ? 'secondary' : 'outline'}
-                      size="sm"
-                      onClick={() => setBaseUrl(preset.baseUrl)}
-                    >
-                      {preset.label}
-                    </Button>
-                  ))}
-                </div>
-                <Input
-                  className={styles.input}
-                  value={baseUrl}
-                  onChange={(e) => {
-                    setBaseUrl(e.target.value);
-                    // Accepting the risk is for one address, not whatever is typed next.
-                    if (!isInsecureRemoteEndpoint(e.target.value)) setAllowInsecure(false);
-                  }}
-                  placeholder="https://…"
-                />
-                {baseUrl.trim() !== '' && !endpointOk && (
-                  <span style={{ color: 'var(--red)', font: '500 11px var(--font-mono)' }}>
-                    {insecureRemote
-                      ? 'This http:// endpoint is not encrypted — tick the box below to connect anyway, or use https://.'
-                      : 'Use an https:// address, or http:// for an endpoint on this machine.'}
-                  </span>
-                )}
-                {insecureRemote && (
-                  <div className={styles.insecureWarning}>
-                    <span>
-                      ⚠ This endpoint doesn’t use encryption (http://). Your API key, your prompts and the code the agent
-                      reads will travel in plain text over the network — anyone on it can read or alter them. Only use it
-                      with a server you own on a network you trust.
-                    </span>
-                    <label className={styles.insecureCheck}>
-                      <Checkbox checked={allowInsecure} onCheckedChange={(checked) => setAllowInsecure(checked === true)} />
-                      I understand the risk and want to connect without encryption
-                    </label>
-                  </div>
-                )}
-              </div>
-              <div className={styles.field}>
-                <Label className={styles.label}>MODEL (OPTIONAL)</Label>
-                <Input
-                  className={styles.input}
-                  value={defaultModel}
-                  onChange={(e) => setDefaultModel(e.target.value)}
-                  placeholder="leave empty to use the endpoint's default"
-                />
-              </div>
-              {endpointOk && (
-                <div className={styles.note}>
-                  Every terminal on this account sends its prompts and the code it reads to{' '}
-                  <span className={styles.noteAccent}>{endpointHost(baseUrl.trim())}</span>, under that provider’s
-                  terms — not Anthropic’s.
-                </div>
-              )}
+              <EndpointFields value={endpoint} onChange={setEndpoint} />
             </>
           )}
 

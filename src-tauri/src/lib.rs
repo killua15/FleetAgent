@@ -338,6 +338,7 @@ pub fn run() {
             commands::accounts::list_discoverable_logins,
             commands::accounts::set_account_config_dir,
             commands::accounts::delete_account,
+            commands::accounts::update_account,
             commands::accounts::list_provider_models,
             commands::projects::list_projects,
             commands::projects::create_project,
