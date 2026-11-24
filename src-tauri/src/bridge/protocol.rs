@@ -32,6 +32,16 @@ pub struct Envelope {
     pub nonce: String,
     /// Base64 del texto cifrado. El claro es JSON.
     pub payload: String,
+    /// Sender's `machine_id`, only between the user's own machines. Its
+    /// presence is what selects the peer key instead of the phone's: the
+    /// receiver needs to know whose key opens the payload before opening it.
+    /// Absent for the phone, which keeps working unchanged (additive field).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// Recipient's `machine_id`. Several machines may listen on one channel, and
+    /// this lets each ignore what is not for it without trying to decrypt it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -65,6 +75,11 @@ pub struct Hello {
     pub commands: Vec<String>,
     #[serde(default)]
     pub machine_name: Option<String>,
+    /// Only in a reply to another machine: whether this one accepts remote
+    /// control right now. `false` still greets, so the other side can say
+    /// "turned off over there" instead of "offline".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_access: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -148,6 +163,7 @@ mod tests {
             device: "teléfono".into(),
             commands: vec![],
             machine_name: Some("MacBook".into()),
+            remote_access: None,
         };
         let json = serde_json::to_value(&hello).unwrap();
         assert_eq!(json["machineName"], "MacBook");
@@ -171,6 +187,19 @@ mod tests {
         let raw = r#"{"v":1,"id":"01J","kind":"invoke","nonce":"AA","payload":"BB","futuro":42}"#;
         let envelope: Envelope = serde_json::from_str(raw).expect("los campos desconocidos se ignoran");
         assert_eq!(envelope.kind, Kind::Invoke);
+    }
+
+    /// The phone's envelopes carry neither `from` nor `to`, and must serialize
+    /// exactly as before, or an older app would see fields it never asked for.
+    #[test]
+    fn routing_fields_stay_off_the_wire_when_absent() {
+        let envelope = Envelope { v: 1, id: "01J".into(), kind: Kind::Event, nonce: "AA".into(), payload: "BB".into(), from: None, to: None };
+        let json = serde_json::to_value(&envelope).unwrap();
+        assert!(json.get("from").is_none() && json.get("to").is_none());
+
+        let routed: Envelope = serde_json::from_str(r#"{"v":1,"id":"01J","kind":"invoke","nonce":"AA","payload":"BB","from":"a","to":"b"}"#).unwrap();
+        assert_eq!(routed.from.as_deref(), Some("a"));
+        assert_eq!(routed.to.as_deref(), Some("b"));
     }
 
     /// Y un `invoke` sin `args` es válido: la mitad de los comandos no llevan.

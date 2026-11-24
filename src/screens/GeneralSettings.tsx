@@ -413,6 +413,10 @@ export function GeneralSettings() {
             <span className={styles.sectionLabel}>TELÉFONO</span>
             <PhoneRow />
           </section>
+          <section className={styles.section}>
+            <span className={styles.sectionLabel}>ACCESO DESDE MIS OTRAS MÁQUINAS</span>
+            <RemoteAccessRow />
+          </section>
           </Pane>
 
           <Pane id="machine" active={pane}>
@@ -843,6 +847,60 @@ function PhoneRow() {
       )}
 
       {pairing && isPro && <PairPhoneDialog onClose={() => setPairing(false)} onPaired={load} />}
+    </div>
+  );
+}
+
+/**
+ * Whether the account's other machines may drive this one, live terminal
+ * included. Off by default and only switched on here, in front of this
+ * machine: the trust root is the account (`bridge/peers.rs`), so whoever gets
+ * into it gets a shell on every machine that has this on. Same Pro gate as the
+ * phone; turning it off always works, plan or not.
+ */
+function RemoteAccessRow() {
+  const { entitlement } = useAuth();
+  const isPro = entitlement != null && entitlement.plan !== 'free';
+  const [identity, setIdentity] = useState<{ remoteAccess: boolean; fingerprint: string } | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    invoke<{ remoteAccess: boolean; fingerprint: string }>('bridge_machine_identity').then(setIdentity).catch(() => {});
+  }, []);
+
+  const toggle = async (enabled: boolean) => {
+    setSaving(true);
+    try {
+      const remoteAccess = await invoke<boolean>('set_remote_access', { enabled });
+      setIdentity((prev) => (prev ? { ...prev, remoteAccess } : prev));
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const on = identity?.remoteAccess ?? false;
+  return (
+    <div className={styles.notifList}>
+      <label className={styles.notifRow}>
+        <Checkbox checked={on} onCheckedChange={(v) => toggle(v === true)} disabled={saving || !identity || (!on && !isPro)} />
+        <span className={styles.notifInfo}>
+          <span className={styles.notifLabel}>Permitir que mis otras máquinas controlen esta</span>
+          <span className={styles.notifDescription}>
+            Desde otra máquina con tu misma cuenta se podrán ver estas terminales en vivo, escribir en ellas y lanzar trabajo. Sin código ni QR: basta con
+            la cuenta. Por eso, <strong>quien entre en tu cuenta tendrá una shell en esta máquina</strong>. Actívalo solo en las máquinas que quieras
+            manejar a distancia.
+          </span>
+        </span>
+      </label>
+      {identity && (
+        <span className={styles.updateHint}>
+          Huella de esta máquina: <code>{identity.fingerprint}</code>. Debe coincidir con la que muestra la otra máquina en Machines; si no coincide, no
+          la uses.
+          {!isPro && !on && ' Controlar máquinas a distancia es una función Pro.'}
+        </span>
+      )}
     </div>
   );
 }

@@ -43,6 +43,72 @@ impl SharedKey {
     }
 }
 
+/// This machine's long-lived X25519 identity, used to talk to the user's other
+/// machines without a QR.
+///
+/// The phone still gets its key out of band (§7). Between machines of the same
+/// account the public halves travel through `public.machines`, so the trust
+/// root is the Supabase account — see the "Máquinas propias" decision in
+/// `MOBILE_BRIDGE_TRD.md` §12. Like `SharedKey`, it does not implement `Debug`.
+#[derive(Clone)]
+pub struct MachineSecret([u8; KEY_BYTES]);
+
+impl MachineSecret {
+    pub fn generate() -> Self {
+        let mut key = [0u8; KEY_BYTES];
+        rand::thread_rng().fill_bytes(&mut key);
+        Self(key)
+    }
+
+    pub fn from_base64(encoded: &str) -> Result<Self, String> {
+        let raw = base64::engine::general_purpose::STANDARD.decode(encoded.trim()).map_err(|e| format!("clave ilegible: {e}"))?;
+        let key: [u8; KEY_BYTES] = raw.try_into().map_err(|_| format!("la clave debe tener {KEY_BYTES} bytes"))?;
+        Ok(Self(key))
+    }
+
+    pub fn to_base64(&self) -> String {
+        base64::engine::general_purpose::STANDARD.encode(self.0)
+    }
+
+    /// The half that is published in `machines.public_key`.
+    pub fn public_key(&self) -> String {
+        let secret = x25519_dalek::StaticSecret::from(self.0);
+        let public = x25519_dalek::PublicKey::from(&secret);
+        base64::engine::general_purpose::STANDARD.encode(public.as_bytes())
+    }
+}
+
+/// The symmetric key two machines share, derived from one's secret and the
+/// other's public key. Both sides get the same bytes.
+///
+/// Byte-for-byte libsodium's `crypto_box_beforenm`: HSalsa20 over the raw
+/// X25519 output with a zero input block. Never the raw X25519 output itself,
+/// which is not uniformly random and must not be used as a key directly.
+pub fn derive_peer_key(secret: &MachineSecret, peer_public_b64: &str) -> Result<SharedKey, String> {
+    let raw = base64::engine::general_purpose::STANDARD.decode(peer_public_b64.trim()).map_err(|_| "clave pública ilegible".to_string())?;
+    let public: [u8; KEY_BYTES] = raw.try_into().map_err(|_| format!("la clave pública debe tener {KEY_BYTES} bytes"))?;
+
+    let shared = x25519_dalek::StaticSecret::from(secret.0).diffie_hellman(&x25519_dalek::PublicKey::from(public));
+    // An all-zero result means the peer sent a low-order point: refusing it is
+    // what libsodium does too, instead of handing back a key anyone can guess.
+    if shared.as_bytes().iter().all(|b| *b == 0) {
+        return Err("clave pública no válida".to_string());
+    }
+
+    let key = salsa20::hsalsa::<salsa20::cipher::consts::U10>(shared.as_bytes().into(), &[0u8; 16].into());
+    Ok(SharedKey(key.into()))
+}
+
+/// What a person compares on both screens to know Supabase handed out the
+/// right public key: the first 8 bytes of its SHA-256, as hex pairs.
+pub fn fingerprint(public_b64: &str) -> String {
+    use sha2::Digest;
+    // Over the raw key, not its text: two encodings of one key are one key.
+    let raw = base64::engine::general_purpose::STANDARD.decode(public_b64.trim()).unwrap_or_else(|_| public_b64.trim().as_bytes().to_vec());
+    let digest = sha2::Sha256::digest(&raw);
+    digest[..8].iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":")
+}
+
 /// Cifra, devolviendo `(nonce, texto cifrado)` en base64.
 ///
 /// El nonce es **aleatorio en cada mensaje**. Nunca un contador ni derivado del
@@ -210,6 +276,72 @@ mod tests {
             .expect("lo que cifra Dart tiene que abrirlo Rust, o el móvil no hablará con el escritorio");
 
         assert_eq!(String::from_utf8(plaintext).unwrap(), fixture["plaintext"].as_str().unwrap());
+    }
+
+    /// Both machines must land on the same key, or neither can read the other.
+    #[test]
+    fn two_machines_derive_the_same_key() {
+        let a = MachineSecret::generate();
+        let b = MachineSecret::generate();
+        let ab = derive_peer_key(&a, &b.public_key()).unwrap();
+        let ba = derive_peer_key(&b, &a.public_key()).unwrap();
+
+        let (nonce, ciphertext) = seal(&ab, b"ls -la").unwrap();
+        assert_eq!(open(&ba, &nonce, &ciphertext).unwrap(), b"ls -la");
+    }
+
+    /// A third machine of the same account cannot read a conversation between
+    /// the other two.
+    #[test]
+    fn a_third_machine_cannot_read_the_pair() {
+        let a = MachineSecret::generate();
+        let b = MachineSecret::generate();
+        let c = MachineSecret::generate();
+        let (nonce, ciphertext) = seal(&derive_peer_key(&a, &b.public_key()).unwrap(), b"x").unwrap();
+        assert!(open(&derive_peer_key(&c, &b.public_key()).unwrap(), &nonce, &ciphertext).is_err());
+    }
+
+    /// The all-zero point would give a key anyone can compute.
+    #[test]
+    fn a_low_order_public_key_is_refused() {
+        let zero = base64::engine::general_purpose::STANDARD.encode([0u8; KEY_BYTES]);
+        assert!(derive_peer_key(&MachineSecret::generate(), &zero).is_err());
+    }
+
+    #[test]
+    fn the_fingerprint_is_stable_and_short() {
+        let key = MachineSecret::generate().public_key();
+        assert_eq!(fingerprint(&key), fingerprint(&key));
+        assert_eq!(fingerprint(&key).len(), 8 * 3 - 1);
+        assert_ne!(fingerprint(&key), fingerprint(&MachineSecret::generate().public_key()));
+    }
+
+    /// The derivation must match libsodium's `crypto_box_beforenm`, or a
+    /// machine running another client could never talk to this one.
+    /// `contract/interop.test.ts` checks the same fixture with libsodium-wrappers.
+    #[test]
+    fn the_peer_key_matches_the_committed_fixture() {
+        let a = MachineSecret::from_base64("YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=").unwrap();
+        let b = MachineSecret::from_base64("YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI=").unwrap();
+        let shared = derive_peer_key(&a, &b.public_key()).unwrap().to_base64();
+        let path = fixture_path("peer-key-rust.json");
+
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            let fixture: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(fixture["shared"].as_str().unwrap(), shared, "the X25519 derivation changed");
+            assert_eq!(fixture["publicA"].as_str().unwrap(), a.public_key());
+            return;
+        }
+
+        let fixture = serde_json::json!({
+            "_comment": "Written once by Rust and committed. libsodium crypto_box_beforenm(publicB, secretA) must equal `shared`. Do not regenerate: see crypto.rs.",
+            "secretA": a.to_base64(),
+            "publicA": a.public_key(),
+            "secretB": b.to_base64(),
+            "publicB": b.public_key(),
+            "shared": shared,
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&fixture).unwrap()).unwrap();
     }
 
     /// La clave va en el QR como texto: tiene que sobrevivir el viaje.

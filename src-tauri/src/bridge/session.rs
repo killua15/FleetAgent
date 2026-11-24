@@ -190,7 +190,8 @@ pub fn paired_device(db: &DbConnection) -> Option<PairedDevice> {
             Ok(PairedDevice {
                 id: row.get(0)?,
                 name: row.get(1)?,
-                level: serde_json::from_value(serde_json::Value::String(level)).unwrap_or(Level::Watch),
+                // Never above `Launch` for a phone, whatever the row says.
+                level: serde_json::from_value(serde_json::Value::String(level)).unwrap_or(Level::Watch).min(Level::Launch),
                 paired_at: row.get(3)?,
                 last_seen_at: row.get(4)?,
             })

@@ -1,0 +1,171 @@
+.screen {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.list {
+  flex: none;
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 14px;
+  border-right: 1px solid var(--line);
+  overflow: auto;
+}
+
+.listHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sectionLabel {
+  font: 600 9.5px var(--font-mono);
+  letter-spacing: 0.16em;
+  color: var(--dim);
+}
+
+.hint {
+  font: 400 11px var(--font-ui);
+  color: var(--mut);
+  line-height: 1.5;
+}
+
+.error {
+  font: 400 11px var(--font-ui);
+  color: var(--red);
+  line-height: 1.5;
+}
+
+.machine,
+.machineActive {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--txt);
+  text-align: left;
+  cursor: pointer;
+}
+
+.machineActive {
+  border-color: var(--acc);
+}
+
+.machine:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.machineName {
+  font: 600 12px var(--font-ui);
+}
+
+.machineMeta {
+  font: 400 10px var(--font-mono);
+  color: var(--dim);
+}
+
+.detail {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 20px;
+}
+
+.detailInner {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.detailHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.detailName {
+  font: 600 14px var(--font-ui);
+  color: var(--txt);
+}
+
+.linkState {
+  font: 400 10px var(--font-mono);
+  color: var(--dim);
+}
+
+.linkState[data-state='online'] {
+  color: var(--grn);
+}
+
+.linkState[data-state='disabled'],
+.linkState[data-state='unreachable'] {
+  color: var(--amber);
+}
+
+.terminals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.terminal,
+.terminalActive {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 320px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--txt);
+  cursor: pointer;
+}
+
+.terminalActive {
+  border-color: var(--acc);
+}
+
+.terminalTitle {
+  font: 400 11.5px var(--font-ui);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+/* The remote PTY keeps the other machine's size, so the pane may be larger than
+ * the space here: scroll rather than squeeze. */
+.pane {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}

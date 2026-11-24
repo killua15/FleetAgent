@@ -60,6 +60,11 @@ pub fn bridge_begin_pairing<R: Runtime>(
     db: tauri::State<DbConnection>,
     level: Level,
 ) -> Result<PairingOffer, String> {
+    // A phone tops out at `Launch`: `Machine` is the raw terminal, reserved for
+    // the user's own machines. Refused rather than clamped, so a UI bug shows.
+    if level > Level::Launch {
+        return Err("un teléfono no puede emparejarse con nivel machine".to_string());
+    }
     let key = SharedKey::generate();
     let offer = PairingOffer {
         machine_id: session::machine_id(&db)?,

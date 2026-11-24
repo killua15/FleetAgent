@@ -131,6 +131,8 @@ export function Terminals() {
   // Qué terminal está mirando el teléfono. Un agente dirigido desde otro sitio
   // no puede parecer igual que uno que nadie está tocando.
   const [phone, setPhone] = useState<{ terminalId: string | null; device: string | null }>({ terminalId: null, device: null });
+  // Which of the account's other machines are showing each terminal, by name.
+  const [remoteViewers, setRemoteViewers] = useState<Record<string, string[]>>({});
   // Remembered across launches: whether the sidebar is worth its 260px is a
   // standing preference, not a per-session mood.
   const [sidebarOpen, setSidebarOpen] = useState(() => window.localStorage.getItem('hangar.sidebar') !== 'closed');
@@ -160,6 +162,16 @@ export function Terminals() {
       .then(setPhone)
       .catch(() => {});
     const unlisten = listen<{ terminalId: string | null; device: string | null }>('bridge-selection', (event) => setPhone(event.payload));
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, []);
+
+  useEffect(() => {
+    invoke<Record<string, string[]>>('list_remote_viewers')
+      .then(setRemoteViewers)
+      .catch(() => {});
+    const unlisten = listen<Record<string, string[]>>('remote-viewers', (event) => setRemoteViewers(event.payload));
     return () => {
       unlisten.then((f) => f());
     };
@@ -800,6 +812,11 @@ export function Terminals() {
                         {phone.device ?? 'teléfono'}
                       </span>
                     )}
+                    {(remoteViewers[t.id] ?? []).map((name) => (
+                      <span key={name} className={styles.phoneBadge} title={`${name} está viendo y puede escribir en esta terminal`}>
+                        {name}
+                      </span>
+                    ))}
                     <span className={styles.spacer} />
                     <Button
                       variant="outline"

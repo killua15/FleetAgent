@@ -1,6 +1,7 @@
 import { invoke } from '../lib/invoke';
 import { supabase } from '../lib/supabase';
 import type { RealtimeChannel } from '@supabase/supabase-js';
+import { syncMachines } from './machines';
 
 /** El sobre. Nada más viaja en claro — ver `MOBILE_BRIDGE_TRD.md` §4. */
 export interface Envelope {
@@ -9,13 +10,22 @@ export interface Envelope {
   kind: 'hello' | 'invoke' | 'result' | 'error' | 'event';
   nonce: string;
   payload: string;
+  /** Only between the account's own machines — see `bridge/peers.rs`. */
+  from?: string;
+  to?: string;
 }
 
 /** Lo que Rust dice que hay que hacer con un mensaje entrante. */
 type Decision =
-  | { action: 'invoke'; id: string; name: string; args: unknown }
+  | { action: 'invoke'; id: string; name: string; args: unknown; peer?: string }
   | { action: 'reply'; envelope: Envelope }
-  | { action: 'ignore' };
+  | { action: 'ignore' }
+  | { action: 'refreshPeers' };
+
+/** At most one re-read of the account's machines this often, however many
+ * unknown senders knock: an unknown sender must not make this machine hammer
+ * Supabase. */
+const PEER_REFRESH_COOLDOWN_MS = 10_000;
 
 /** Los eventos de Hangar que el móvil recibe.
  *
@@ -31,6 +41,10 @@ const FORWARDED_EVENTS = [
   'permission-request',
   'pr-comments-found',
   'queue-updated',
+  // Raw PTY bytes. Rust addresses each one to the machine that attached that
+  // terminal and never to the phone (`bridge_event`), so listing it here does
+  // not widen what the phone gets.
+  'remote-terminal-output',
 ] as const;
 
 /**
@@ -50,6 +64,11 @@ const FORWARDED_EVENTS = [
  */
 export class Bridge {
   private channel: RealtimeChannel | null = null;
+  private lastPeerRefresh = 0;
+  /** Outgoing events, one after another. The listeners below are async, and
+   * without this two terminal-output slices sealed concurrently could be
+   * published in the wrong order and garble the remote screen. */
+  private outbox: Promise<void> = Promise.resolve();
   private unlisteners: Array<() => void> = [];
 
   async start(machineId: string): Promise<void> {
@@ -109,7 +128,7 @@ export class Bridge {
   }
 
   /** Un mensaje entrante, de principio a fin. */
-  private async handle(envelope: Envelope): Promise<void> {
+  private async handle(envelope: Envelope, retried = false): Promise<void> {
     let decision: Decision;
     try {
       decision = await invoke<Decision>('bridge_receive', { envelope });
@@ -120,6 +139,19 @@ export class Bridge {
       return;
     }
 
+    if (decision.action === 'refreshPeers') {
+      // A machine this one has no key for: maybe it only just published it.
+      // Re-read once (rate-limited) and try again; still unknown means ignored.
+      if (retried || Date.now() - this.lastPeerRefresh < PEER_REFRESH_COOLDOWN_MS) return;
+      this.lastPeerRefresh = Date.now();
+      try {
+        await syncMachines();
+      } catch {
+        return;
+      }
+      await this.handle(envelope, true);
+      return;
+    }
     if (decision.action === 'ignore') return;
     if (decision.action === 'reply') {
       await this.publish(decision.envelope);
@@ -131,10 +163,10 @@ export class Bridge {
     // añadiendo una línea a `allowlist.json`**, sin tocar este fichero.
     try {
       const data = await invoke<unknown>(decision.name, (decision.args ?? {}) as Record<string, unknown>);
-      await this.publish(await invoke<Envelope>('bridge_reply', { id: decision.id, ok: true, data }));
+      await this.publish(await invoke<Envelope>('bridge_reply', { id: decision.id, ok: true, data, peer: decision.peer ?? null }));
     } catch (e) {
       // El error del comando es lo único útil que hay: viaja tal cual.
-      await this.publish(await invoke<Envelope>('bridge_reply', { id: decision.id, ok: false, data: String(e) }));
+      await this.publish(await invoke<Envelope>('bridge_reply', { id: decision.id, ok: false, data: String(e), peer: decision.peer ?? null }));
     }
   }
 
@@ -143,9 +175,15 @@ export class Bridge {
     const { listen } = await import('@tauri-apps/api/event');
 
     for (const name of FORWARDED_EVENTS) {
-      const unlisten = await listen(name, async (event) => {
-        const envelope = await invoke<Envelope | null>('bridge_event', { name, data: event.payload });
-        if (envelope) await this.publish(envelope);
+      const unlisten = await listen(name, (event) => {
+        // One envelope per recipient (the phone, each connected machine), each
+        // sealed with its own key — and in the order the events happened.
+        this.outbox = this.outbox
+          .then(async () => {
+            const envelopes = await invoke<Envelope[]>('bridge_event', { name, data: event.payload });
+            for (const envelope of envelopes) await this.publish(envelope);
+          })
+          .catch(() => {});
       });
       this.unlisteners.push(unlisten);
     }
