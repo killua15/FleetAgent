@@ -855,12 +855,10 @@ function PhoneRow() {
  * Whether the account's other machines may drive this one, live terminal
  * included. Off by default and only switched on here, in front of this
  * machine: the trust root is the account (`bridge/peers.rs`), so whoever gets
- * into it gets a shell on every machine that has this on. Same Pro gate as the
- * phone; turning it off always works, plan or not.
+ * into it gets a shell on every machine that has this on. Free on every plan,
+ * unlike the phone: these are the user's own machines.
  */
 function RemoteAccessRow() {
-  const { entitlement } = useAuth();
-  const isPro = entitlement != null && entitlement.plan !== 'free';
   const [identity, setIdentity] = useState<{ remoteAccess: boolean; fingerprint: string } | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -884,7 +882,7 @@ function RemoteAccessRow() {
   return (
     <div className={styles.notifList}>
       <label className={styles.notifRow}>
-        <Checkbox checked={on} onCheckedChange={(v) => toggle(v === true)} disabled={saving || !identity || (!on && !isPro)} />
+        <Checkbox checked={on} onCheckedChange={(v) => toggle(v === true)} disabled={saving || !identity} />
         <span className={styles.notifInfo}>
           <span className={styles.notifLabel}>Permitir que mis otras máquinas controlen esta</span>
           <span className={styles.notifDescription}>
@@ -898,7 +896,6 @@ function RemoteAccessRow() {
         <span className={styles.updateHint}>
           Huella de esta máquina: <code>{identity.fingerprint}</code>. Debe coincidir con la que muestra la otra máquina en Machines; si no coincide, no
           la uses.
-          {!isPro && !on && ' Controlar máquinas a distancia es una función Pro.'}
         </span>
       )}
     </div>
