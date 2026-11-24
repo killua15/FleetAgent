@@ -121,7 +121,9 @@ export class RemoteMachine {
     const answer = new Promise<unknown>((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error('la otra máquina no respondió (¿dormida o sin Hangar abierto?)'));
+        // Its own code: the screen explains the usual cause (remote access off
+        // there, so nothing listens) instead of guessing from this text.
+        reject(new RemoteError('TIMEOUT', 'la otra máquina no respondió'));
       }, CALL_TIMEOUT_MS);
       this.pending.set(id, { resolve, reject, timer });
     });
