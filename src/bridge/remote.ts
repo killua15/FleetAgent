@@ -2,6 +2,7 @@ import type { RealtimeChannel } from '@supabase/supabase-js';
 import { invoke } from '../lib/invoke';
 import { supabase } from '../lib/supabase';
 import type { Envelope } from './pump';
+import { subscribeWithRetry } from './channel';
 
 /** What `remote_open` hands back once Rust has opened an envelope. */
 interface Opened {
@@ -61,22 +62,16 @@ export class RemoteMachine {
 
   async connect(): Promise<RemoteHello> {
     if (!this.channel) {
-      const channel = supabase.channel(`hangar:${this.peerId}`, { config: { private: true, broadcast: { self: false } } });
-      channel.on('broadcast', { event: 'msg' }, ({ payload }) => {
-        this.inbox = this.inbox.then(() => this.receive(payload as Envelope)).catch(() => {});
-      });
-      await new Promise<void>((resolve, reject) => {
-        channel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') resolve();
-          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-            reject(new Error(`no se pudo abrir el canal de la otra máquina: ${status}`));
-          }
-        });
-      }).catch(async (e) => {
-        await supabase.removeChannel(channel);
-        throw e;
-      });
-      this.channel = channel;
+      this.channel = await subscribeWithRetry(
+        () => {
+          const channel = supabase.channel(`hangar:${this.peerId}`, { config: { private: true, broadcast: { self: false } } });
+          channel.on('broadcast', { event: 'msg' }, ({ payload }) => {
+            this.inbox = this.inbox.then(() => this.receive(payload as Envelope)).catch(() => {});
+          });
+          return channel;
+        },
+        { label: 'no se pudo abrir el canal de la otra máquina' },
+      );
       this.heartbeat = window.setInterval(() => void this.greet().catch(() => {}), HEARTBEAT_MS);
     }
     return this.greet();

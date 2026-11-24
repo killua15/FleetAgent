@@ -2,6 +2,7 @@ import { invoke } from '../lib/invoke';
 import { supabase } from '../lib/supabase';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { syncMachines } from './machines';
+import { subscribeWithRetry } from './channel';
 
 /** El sobre. Nada más viaja en claro — ver `MOBILE_BRIDGE_TRD.md` §4. */
 export interface Envelope {
@@ -78,44 +79,22 @@ export class Bridge {
     // `realtime.messages` antes de dejar entrar. Sin esto el canal es público y
     // RLS se salta entero: cualquiera que averiguase el `machine_id` podría
     // suscribirse. El cifrado protege el contenido; esto protege el acceso.
-    this.channel = supabase.channel(`hangar:${machineId}`, { config: { private: true, broadcast: { self: false } } });
-
-    this.channel.on('broadcast', { event: 'msg' }, ({ payload }) => {
-      void this.handle(payload as Envelope);
-    });
-
-    try {
-      await this.subscribed(this.channel);
-    } catch (e) {
-      // Sin esto queda un canal medio abierto registrado en el cliente, y el
-      // siguiente intento chocaría contra su propio tema.
-      await this.stop();
-      throw e;
-    }
+    // Espera a estar suscrito de verdad, reintentando un join fallido: un
+    // broadcast que llega antes **se pierde y no se reintenta** (es justo el
+    // hueco del emparejamiento), y un Realtime que se despierta rechaza los
+    // primeros joins. Cada intento fallido se retira del cliente, para que el
+    // siguiente no choque contra su propio tema.
+    this.channel = await subscribeWithRetry(
+      () => {
+        const channel = supabase.channel(`hangar:${machineId}`, { config: { private: true, broadcast: { self: false } } });
+        channel.on('broadcast', { event: 'msg' }, ({ payload }) => {
+          void this.handle(payload as Envelope);
+        });
+        return channel;
+      },
+      { label: 'el canal del puente no se pudo abrir' },
+    );
     await this.forwardEvents();
-  }
-
-  /**
-   * Espera a estar suscrito de verdad.
-   *
-   * `subscribe()` devuelve el canal, no una promesa: hacerle `await` seguía
-   * adelante al instante y `start()` resolvía con el canal todavía abriéndose.
-   * Un broadcast que llega en ese hueco **se pierde y no se reintenta**, y es
-   * justo el hueco del emparejamiento — el QR aparece en pantalla y el teléfono
-   * saluda enseguida.
-   *
-   * Fallar también importa: un canal que no llegó a abrirse tiene que ser un
-   * error, no un puente que se cree encendido y no recibe nada.
-   */
-  private subscribed(channel: RealtimeChannel): Promise<void> {
-    return new Promise((resolve, reject) => {
-      channel.subscribe((status) => {
-        if (status === 'SUBSCRIBED') resolve();
-        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-          reject(new Error(`el canal del puente no se pudo abrir: ${status}`));
-        }
-      });
-    });
   }
 
   async stop(): Promise<void> {

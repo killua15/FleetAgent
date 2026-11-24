@@ -8,6 +8,9 @@ import { registerThisMachine, syncMachines } from './machines';
 /** How often a host re-reads the account's machines, so a machine added later
  * (or a key that changed) is known without restarting. */
 const PEER_REFRESH_MS = 60_000;
+/** First wait before retrying a bridge that failed to start; doubles up to the max. */
+const RETRY_START_MS = 15_000;
+const RETRY_MAX_MS = 60_000;
 
 interface BridgeStatus {
   machineId: string;
@@ -49,11 +52,24 @@ export function useBridge(): void {
     // pegados (aceptar emparejamiento manda dos). En cadena, para que no haya
     // dos transiciones a medias peleándose por `bridge.current`.
     let settling: Promise<void> = Promise.resolve();
+    // A bridge that failed to start is retried on its own, with backoff: the
+    // channel can be refused for a while (Realtime waking up, no network), and
+    // a machine whose bridge gave up once used to stay deaf until restarted.
+    let retryTimer: number | null = null;
+    let retryDelay = RETRY_START_MS;
+    const clearRetry = () => {
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      retryTimer = null;
+    };
     const settle = () => {
       settling = settling
         .then(async () => {
           const { pairing, device, remoteAccess, session } = reasons.current;
           const wanted = !cancelled && session && (pairing || device || remoteAccess);
+          if (!wanted) {
+            clearRetry();
+            retryDelay = RETRY_START_MS;
+          }
           if (wanted === Boolean(bridge.current)) return;
 
           if (wanted) {
@@ -66,6 +82,8 @@ export function useBridge(): void {
             const pump = new Bridge();
             await pump.start(status.machineId);
             bridge.current = pump;
+            clearRetry();
+            retryDelay = RETRY_START_MS;
           } else {
             const pump = bridge.current;
             bridge.current = null;
@@ -77,7 +95,16 @@ export function useBridge(): void {
         // esto hizo que "sin sesión de Supabase" y "el puente funciona" se
         // vieran exactamente igual, y diagnosticarlo costó mirar la base de
         // datos del servidor.
-        .catch((e) => console.warn('[puente] no se pudo abrir el canal:', e));
+        .catch((e) => {
+          console.warn('[puente] no se pudo abrir el canal:', e);
+          if (cancelled || retryTimer !== null) return;
+          console.warn(`[puente] reintento en ${retryDelay / 1000} s`);
+          retryTimer = window.setTimeout(() => {
+            retryTimer = null;
+            settle();
+          }, retryDelay);
+          retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
+        });
     };
 
     // La sesión, ahora y cuando cambie. `setAuth` también en cada refresco: el
@@ -139,6 +166,7 @@ export function useBridge(): void {
 
     return () => {
       cancelled = true;
+      clearRetry();
       window.clearInterval(refresh);
       auth.data.subscription.unsubscribe();
       for (const subscription of subscriptions) void subscription.then((off) => off());

@@ -108,6 +108,8 @@ function MachineDetail({ machine }: { machine: MachineRow }) {
   const [terminals, setTerminals] = useState<TerminalInfo[]>([]);
   const [activity, setActivity] = useState<Record<string, TerminalActivity>>({});
   const [open, setOpen] = useState<string | null>(null);
+  /** Bumped by "retry" to run the connection again. */
+  const [attempt, setAttempt] = useState(0);
 
   const refresh = async (target: RemoteMachine) => {
     const [list, states] = await Promise.all([
@@ -147,7 +149,7 @@ function MachineDetail({ machine }: { machine: MachineRow }) {
       cancelled = true;
       for (const off of offs) off();
     };
-  }, [remote]);
+  }, [remote, attempt]);
 
   const transport = useMemo(() => remoteTransport(remote), [remote]);
 
@@ -165,6 +167,11 @@ function MachineDetail({ machine }: { machine: MachineRow }) {
         {link.state === 'online' && (
           <Button size="sm" variant="ghost" onClick={() => void refresh(remote).catch(() => {})}>
             refresh
+          </Button>
+        )}
+        {(link.state === 'unreachable' || link.state === 'disabled') && (
+          <Button size="sm" variant="ghost" onClick={() => setAttempt((n) => n + 1)}>
+            retry
           </Button>
         )}
       </div>
