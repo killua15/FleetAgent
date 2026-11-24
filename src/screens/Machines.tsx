@@ -7,13 +7,14 @@ import { remoteTransport } from '../components/terminalTransport';
 import { registerThisMachine, syncMachines, type MachineIdentity, type MachineRow } from '../bridge/machines';
 import { closeRemoteMachine, remoteMachine, RemoteError, type RemoteMachine } from '../bridge/remote';
 import { TERMINAL_STATE_META, type TerminalActivity, type TerminalInfo } from '../types/terminal';
+import { useNavigation } from '../nav/NavigationProvider';
 import styles from './Machines.module.css';
 
 type Link =
   | { state: 'connecting' }
   | { state: 'online' }
   | { state: 'disabled' }
-  | { state: 'unreachable'; message: string };
+  | { state: 'unreachable'; message: string; timedOut?: boolean };
 
 /**
  * The account's other machines, and their terminals, from this one.
@@ -25,6 +26,7 @@ type Link =
  * Free on every plan: these are the user's own machines (TRD §12.14).
  */
 export function Machines() {
+  const { navigate } = useNavigation();
   const [self, setSelf] = useState<MachineIdentity | null>(null);
   const [machines, setMachines] = useState<MachineRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -92,6 +94,16 @@ export function Machines() {
               Esta máquina: <strong>{self.machineName}</strong> · <code>{self.fingerprint}</code>
             </span>
           )}
+          {/* Without it this machine doesn't listen at all, and the others only
+              see a timeout — so say it here, where the switch is one click away. */}
+          {self && !self.remoteAccess && (
+            <div className={styles.selfWarning}>
+              <span>Esta máquina no acepta control remoto: las otras no podrán abrirla.</span>
+              <Button size="sm" variant="outline" onClick={() => navigate('general-settings', { pane: 'phone' })}>
+                Activarlo en Ajustes
+              </Button>
+            </div>
+          )}
         </aside>
 
         <main className={styles.detail}>
@@ -136,6 +148,10 @@ function MachineDetail({ machine }: { machine: MachineRow }) {
       })
       .catch((e) => {
         if (cancelled) return;
+        if (e instanceof RemoteError && e.code === 'TIMEOUT') {
+          setLink({ state: 'unreachable', message: '', timedOut: true });
+          return;
+        }
         const message = e instanceof RemoteError ? `${e.code}: ${e.message}` : String(e instanceof Error ? e.message : e);
         setLink({ state: 'unreachable', message });
       });
@@ -183,7 +199,14 @@ function MachineDetail({ machine }: { machine: MachineRow }) {
       )}
       {link.state === 'unreachable' && (
         <span className={styles.hint}>
-          {link.message}. Comprueba que esté despierta, con Hangar abierto, la misma cuenta y el acceso remoto activado.
+          {link.timedOut ? (
+            <>
+              No contesta. Lo más habitual: en esa máquina no está activado «Permitir que mis otras máquinas controlen esta» (Ajustes → Teléfono); sin eso
+              no escucha. Si lo está, comprueba que esté despierta y con Hangar abierto, y pulsa retry.
+            </>
+          ) : (
+            <>{link.message}. Comprueba que esté despierta, con Hangar abierto, la misma cuenta y el acceso remoto activado.</>
+          )}
         </span>
       )}
 

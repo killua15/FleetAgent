@@ -22,6 +22,7 @@ import type { Account } from '../types/account';
 import type { AccountUsageSummary } from '../types/session';
 import type { AgentPreferences, AppSettings } from '../types/settings';
 import { LANGUAGES, systemLanguage } from '../lib/languages';
+import { useNavigation } from '../nav/NavigationProvider';
 import styles from './GeneralSettings.module.css';
 
 /** Los grupos del raíl. General era un cajón de sastre de once secciones; esto
@@ -59,7 +60,9 @@ function isWizardConfigDir(path: string): boolean {
 export function GeneralSettings() {
   // Arranca en Máquina: es lo que alguien recién instalado necesita, y lo único
   // de esta pantalla que puede estar en rojo.
-  const [pane, setPane] = useState<PaneId>('machine');
+  const { current } = useNavigation();
+  const requestedPane = current.params?.pane as PaneId | undefined;
+  const [pane, setPane] = useState<PaneId>(PANES.some((p) => p.id === requestedPane) ? (requestedPane as PaneId) : 'machine');
   const { theme, resolvedTheme, setTheme, unfocusedTint, setUnfocusedTint } = useTheme();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [usage, setUsage] = useState<Record<string, AccountUsageSummary>>({});
@@ -888,7 +891,7 @@ function RemoteAccessRow() {
           <span className={styles.notifDescription}>
             Desde otra máquina con tu misma cuenta se podrán ver estas terminales en vivo, escribir en ellas y lanzar trabajo. Sin código ni QR: basta con
             la cuenta. Por eso, <strong>quien entre en tu cuenta tendrá una shell en esta máquina</strong>. Actívalo solo en las máquinas que quieras
-            manejar a distancia.
+            manejar a distancia: hay que activarlo en cada máquina que quieras abrir desde otra.
           </span>
         </span>
       </label>
