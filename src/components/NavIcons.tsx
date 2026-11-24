@@ -31,6 +31,17 @@ export function HomeIcon() {
 }
 
 /** A prompt in a window — the thing terminals actually look like. */
+/** Two screens side by side: this machine and another one of yours. */
+export function MachinesIcon() {
+  return (
+    <svg {...base} aria-hidden="true">
+      <rect x="1" y="3" width="8" height="6" rx="1" />
+      <rect x="7" y="7" width="8" height="6" rx="1" />
+      <path d="M3.5 11.5h2" />
+    </svg>
+  );
+}
+
 export function TerminalIcon() {
   return (
     <svg {...base} aria-hidden="true">

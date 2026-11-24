@@ -72,6 +72,11 @@ lanzar    + open_* create_* delete_* worktrees, tareas, borrar sesiones
 La lista blanca es **datos, no código**: un fichero de `nombre → nivel`. Añadir
 una función de Hangar al móvil es añadir una línea.
 
+Hay un cuarto nivel, `machine`, que **un teléfono no puede tener**: es la
+terminal en vivo con los bytes del PTY tal cual (`remote_attach_terminal`,
+`remote_detach_terminal`). Solo lo alcanzan las otras máquinas de la misma
+cuenta; ver §12.14. Emparejar un teléfono con nivel `machine` se rechaza.
+
 ---
 
 ## 3 · Transporte
@@ -148,7 +153,13 @@ Todo mensaje, en las dos direcciones:
 }
 ```
 
-Solo `v`, `id`, `kind` y `nonce` viajan en claro. `name` va **dentro** del
+Entre máquinas de la misma cuenta (§12.14) el sobre lleva además `from` y `to`
+(los `machine_id` de emisor y destinatario). Son opcionales y aditivos: el
+teléfono no los manda ni los recibe, así que su sobre no cambia. `from` es lo
+que dice con qué clave abrir el payload; `to`, que cada máquina en un canal
+compartido ignore lo que no es para ella sin intentar descifrarlo.
+
+Solo `v`, `id`, `kind` y `nonce` viajan en claro (más `from`/`to` entre máquinas). `name` va **dentro** del
 payload cifrado: saber que alguien llamó a `list_account_spend` cada cinco
 minutos ya es información.
 
@@ -474,6 +485,28 @@ Hangar. Ese es el objetivo del documento.
 13. **Autenticación**: el login con Google de la Fase 5, con políticas que solo
     dejan entrar a los canales del propio usuario. **El puente depende de esa
     fase**, que el usuario desbloqueará creando el cliente OAuth.
+
+14. **Máquinas propias: control entre máquinas de la misma cuenta, con
+    terminal en vivo y sin emparejar.** Pedido explícito: manejar desde una
+    máquina las otras de la misma cuenta, con la terminal completa y sin QR.
+    Rompe dos reglas de este documento, **solo para máquinas propias**:
+    - *La clave no viaja fuera de banda (§7).* Cada Hangar publica una clave
+      pública X25519 en `machines.public_key` y dos máquinas derivan la
+      compartida con `crypto_box_beforenm` (`bridge/peers.rs`). Sigue siendo
+      cifrado de punta a punta frente a quien solo observa, pero **la raíz de
+      confianza pasa a ser la cuenta de Supabase**: un Supabase malicioso podría
+      entregar una clave pública falsa (MITM). Lo mitiga, en parte, una huella
+      visible en las dos pantallas.
+    - *Hay volcado crudo del PTY (§6, §12.4).* `remote-terminal-output` lleva
+      los bytes tal cual, sin redactar, troceados a ≤ 64 KB, y solo a la
+      máquina que abrió esa terminal. Nunca al teléfono.
+
+    **Riesgo aceptado en voz alta**: quien entre en la cuenta tiene una shell en
+    toda máquina que tenga esto activado. Por eso está **desactivado por
+    defecto en cada máquina** y solo se activa delante de ella (Ajustes →
+    Teléfono), desactivarlo corta al momento a quien esté mirando, y cada
+    panel marca qué máquina lo está viendo. El teléfono no cambia: sigue siendo
+    uno, con QR, sin nivel `machine`.
 
 ---
 

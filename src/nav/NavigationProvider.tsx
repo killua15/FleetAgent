@@ -35,6 +35,7 @@ export type ScreenName =
   | 'tree-columns'
   | 'tree-outline'
   | 'terminals'
+  | 'machines'
   | 'factory'
   | 'command-palette';
 

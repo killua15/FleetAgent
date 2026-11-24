@@ -6,7 +6,7 @@ import { useNavigation, type ScreenName } from '../nav/NavigationProvider';
 import type { ProjectPrInbox } from '../types/pullRequest';
 import { IconTooltip } from './ui/tooltip';
 import { Spinner } from './Spinner';
-import { AccountsIcon, BellIcon, BranchIcon, CompassIcon, FactoryIcon, FilesIcon, HomeIcon, MenuIcon, PullRequestIcon, QueueIcon, SettingsIcon, TasksIcon, TerminalIcon, UsageIcon } from './NavIcons';
+import { AccountsIcon, BellIcon, BranchIcon, CompassIcon, FactoryIcon, FilesIcon, HomeIcon, MachinesIcon, MenuIcon, PullRequestIcon, QueueIcon, SettingsIcon, TasksIcon, TerminalIcon, UsageIcon } from './NavIcons';
 import { UsageModal } from './UsageModal';
 import { NotificationBell, useUnreadNotifications } from './NotificationBell';
 import { registerTopBar, toggleNotifications } from '../lib/notifications';
@@ -128,6 +128,8 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
          * different kinds of thing. Work first — it's what you're here for. */}
         <NavItem screen="start-here" label="Empieza aquí" icon={<CompassIcon />} badge={stepsLeft} />
         <NavItem screen="terminals" label="Terminals" icon={<TerminalIcon />} />
+        {/* The terminals of your other machines, next to this one's. */}
+        <NavItem screen="machines" label="Machines" icon={<MachinesIcon />} />
         <NavItem screen="task-board" label="Tasks" icon={<TasksIcon />} />
         {/* Next to Tasks because it answers the same question — what is going
          * to run — for work that's already been handed over and is only
@@ -200,6 +202,9 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => navigate('terminals')}>
             <TerminalIcon /> Terminals
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => navigate('machines')}>
+            <MachinesIcon /> Machines
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => navigate('task-board')}>
             <TasksIcon /> Tasks

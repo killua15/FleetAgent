@@ -10,6 +10,7 @@ pub mod crypto;
 pub mod dev_pairing_key;
 pub mod dispatch;
 pub mod pairing;
+pub mod peers;
 pub mod protocol;
 pub mod redact;
 pub mod selection;
@@ -80,7 +81,15 @@ pub fn handle_incoming(envelope: &Envelope, key: &crypto::SharedKey, level: Leve
 pub fn outgoing(kind: Kind, id: String, key: &crypto::SharedKey, body: &impl serde::Serialize) -> Result<Envelope, String> {
     let plaintext = serde_json::to_vec(body).map_err(|e| e.to_string())?;
     let (nonce, payload) = crypto::seal(key, &plaintext)?;
-    Ok(Envelope { v: PROTOCOL_VERSION, id, kind, nonce, payload })
+    Ok(Envelope { v: PROTOCOL_VERSION, id, kind, nonce, payload, from: None, to: None })
+}
+
+/// The same, addressed to one of the user's other machines.
+pub fn outgoing_to_peer(kind: Kind, id: String, key: &crypto::SharedKey, body: &impl serde::Serialize, from: &str, to: &str) -> Result<Envelope, String> {
+    let mut envelope = outgoing(kind, id, key, body)?;
+    envelope.from = Some(from.to_string());
+    envelope.to = Some(to.to_string());
+    Ok(envelope)
 }
 
 #[cfg(test)]

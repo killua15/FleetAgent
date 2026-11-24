@@ -3,6 +3,11 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '../lib/invoke';
 import { supabase } from '../lib/supabase';
 import { Bridge } from './pump';
+import { registerThisMachine, syncMachines } from './machines';
+
+/** How often a host re-reads the account's machines, so a machine added later
+ * (or a key that changed) is known without restarting. */
+const PEER_REFRESH_MS = 60_000;
 
 interface BridgeStatus {
   machineId: string;
@@ -13,7 +18,7 @@ interface BridgeStatus {
 /**
  * Enciende el puente cuando hay con quién hablar, y lo apaga cuando no.
  *
- * Hay **dos** razones para estar encendido, y hacen falta las dos:
+ * Hay **tres** razones para estar encendido (basta una):
  *
  * - Un teléfono emparejado. La obvia.
  * - Una oferta de emparejamiento abierta. Menos obvia y es la que faltaba: el
@@ -21,6 +26,8 @@ interface BridgeStatus {
  *   dispositivo emparejado para abrirlo dejaba el emparejamiento imposible —el
  *   saludo no tenía quién lo contestara, y en el Mac no aparecía ni el diálogo
  *   de aceptar.
+ * - Acceso remoto activado: las otras máquinas de la cuenta llaman a este
+ *   mismo canal (`bridge/peers.rs`).
  *
  * Y una condición por encima de las dos: **sesión de Supabase**. El canal es
  * privado, así que sin sesión no hay a quién autorizar. Antes funcionaba sin
@@ -33,7 +40,7 @@ interface BridgeStatus {
  */
 export function useBridge(): void {
   const bridge = useRef<Bridge | null>(null);
-  const reasons = useRef({ pairing: false, device: false, session: false });
+  const reasons = useRef({ pairing: false, device: false, remoteAccess: false, session: false });
 
   useEffect(() => {
     let cancelled = false;
@@ -45,13 +52,17 @@ export function useBridge(): void {
     const settle = () => {
       settling = settling
         .then(async () => {
-          const { pairing, device, session } = reasons.current;
-          const wanted = !cancelled && session && (pairing || device);
+          const { pairing, device, remoteAccess, session } = reasons.current;
+          const wanted = !cancelled && session && (pairing || device || remoteAccess);
           if (wanted === Boolean(bridge.current)) return;
 
           if (wanted) {
             const status = await invoke<BridgeStatus>('bridge_status');
-            await register(status);
+            await registerThisMachine();
+            // Before the channel opens: a machine calling in is only answered
+            // once its key is known.
+            // Not fatal: a failure here must not take the phone's bridge down.
+            if (remoteAccess) await syncMachines().catch((e) => console.warn('[puente] no se pudieron leer las máquinas:', e));
             const pump = new Bridge();
             await pump.start(status.machineId);
             bridge.current = pump;
@@ -91,6 +102,19 @@ export function useBridge(): void {
       })
       .catch(() => {});
 
+    void invoke<{ remoteAccess: boolean }>('bridge_machine_identity')
+      .then((identity) => {
+        reasons.current.remoteAccess = identity.remoteAccess;
+        settle();
+      })
+      .catch(() => {});
+
+    // Keeps the host's list of the account's machines fresh while it accepts
+    // them. Quiet on failure: being offline is normal.
+    const refresh = window.setInterval(() => {
+      if (bridge.current && reasons.current.remoteAccess) void syncMachines().catch(() => {});
+    }, PEER_REFRESH_MS);
+
     const subscriptions = [
       listen<{ paired: boolean }>('bridge-device-changed', (event) => {
         reasons.current.device = event.payload.paired;
@@ -104,35 +128,21 @@ export function useBridge(): void {
         reasons.current.pairing = false;
         settle();
       }),
+      listen<{ enabled: boolean }>('bridge-remote-access-changed', (event) => {
+        reasons.current.remoteAccess = event.payload.enabled;
+        // Already open for the phone: the channel stays, but the peer keys
+        // have to be loaded now or the first call goes unanswered.
+        if (event.payload.enabled && bridge.current) void syncMachines().catch(() => {});
+        settle();
+      }),
     ];
 
     return () => {
       cancelled = true;
+      window.clearInterval(refresh);
       auth.data.subscription.unsubscribe();
       for (const subscription of subscriptions) void subscription.then((off) => off());
       settle();
     };
   }, []);
-}
-
-/**
- * Declara este Mac como propiedad de la cuenta que ha iniciado sesión.
- *
- * **Es lo que autoriza el canal.** La política de `realtime.messages` deja
- * entrar en `hangar:<id>` solo a quien tenga esa máquina a su nombre, así que
- * sin esta fila el canal privado rechaza la suscripción.
- *
- * Que falle no se traga: si el `machine_id` ya está a nombre de otra cuenta, la
- * fila no se puede escribir, y arrancar de todas formas daría un canal que no
- * suscribe y un error mucho más difícil de leer.
- */
-async function register(status: BridgeStatus): Promise<void> {
-  const { data } = await supabase.auth.getUser();
-  const owner = data.user?.id;
-  if (!owner) throw new Error('sin sesión no se puede registrar la máquina');
-
-  const { error } = await supabase
-    .from('machines')
-    .upsert({ id: status.machineId, owner, name: status.machineName, last_seen_at: new Date().toISOString() }, { onConflict: 'id' });
-  if (error) throw new Error(`no se pudo registrar este Mac: ${error.message}`);
 }

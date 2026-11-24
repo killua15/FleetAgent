@@ -1,0 +1,8 @@
+{
+  "_comment": "Written once by Rust and committed. libsodium crypto_box_beforenm(publicB, secretA) must equal `shared`. Do not regenerate: see crypto.rs.",
+  "publicA": "QElQLbksojQsP5LaxdbefIXbXfVAeltJls458u+36Cc=",
+  "publicB": "Sk+MzeGY1m6ZtMAUQYoyI84lbJiQCuSmgR/RD364TCw=",
+  "secretA": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=",
+  "secretB": "YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI=",
+  "shared": "PRp64EcJQY8BhP1ath7u9Q1Z6/yP2JbaTU3obaQktXs="
+}

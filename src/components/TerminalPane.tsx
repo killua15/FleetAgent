@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { Channel } from '@tauri-apps/api/core';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { invoke } from '../lib/invoke';
 import { toastError } from './ErrorOverlay';
 import { useTheme } from '../theme/ThemeProvider';
-import type { TerminalChunk } from '../types/terminal';
+import { localTransport, type PtySize, type TerminalTransport } from './terminalTransport';
 import styles from './TerminalPane.module.css';
 import '@xterm/xterm/css/xterm.css';
 
@@ -48,7 +47,18 @@ function themeFromTokens(): Record<string, string> {
  * component — unmounting only detaches the output stream (`detach_terminal`),
  * so navigating away and back replays the scrollback and reconnects to the
  * same still-running process rather than starting a new one. */
-export function TerminalPane({ terminalId, className, onFocus }: { terminalId: string; className?: string; onFocus?: () => void }) {
+export function TerminalPane({
+  terminalId,
+  className,
+  onFocus,
+  transport = localTransport,
+}: {
+  terminalId: string;
+  className?: string;
+  onFocus?: () => void;
+  /** Where the PTY lives. Defaults to this process; see `terminalTransport.ts`. */
+  transport?: TerminalTransport;
+}) {
   const [dropping, setDropping] = useState(false);
   // In a ref so a new callback each render doesn't tear the terminal down.
   const onFocusRef = useRef(onFocus);
@@ -87,10 +97,13 @@ export function TerminalPane({ terminalId, className, onFocus }: { terminalId: s
     textarea?.addEventListener('focus', handleFocus);
 
     let disposed = false;
+    const resize = transport.resize;
     // Guards against a fit() that runs after unmount (the ResizeObserver can
     // fire during teardown) invoking a command for a detached terminal.
     const syncSize = () => {
-      if (disposed) return;
+      // A PTY on another machine has that machine's size; this pane follows it
+      // (`follow` below) instead of fitting.
+      if (disposed || !resize) return;
       try {
         fit.fit();
       } catch {
@@ -98,20 +111,37 @@ export function TerminalPane({ terminalId, className, onFocus }: { terminalId: s
         // height mid-transition) — the next observer tick will retry.
         return;
       }
-      invoke('resize_terminal', { id: terminalId, cols: term.cols, rows: term.rows }).catch(() => {});
+      resize(terminalId, { cols: term.cols, rows: term.rows });
+    };
+    const follow = (size?: PtySize) => {
+      if (size && (size.cols !== term.cols || size.rows !== term.rows)) term.resize(size.cols, size.rows);
     };
 
-    const channel = new Channel<TerminalChunk>();
-    channel.onmessage = (chunk) => {
-      if (!disposed) term.write(decodeChunk(chunk.base64));
+    // Output that arrives before the scrollback is drawn waits, or it would be
+    // painted above the history it follows.
+    let ready = false;
+    const early: Array<[string, PtySize | undefined]> = [];
+    const onChunk = (base64: string, size?: PtySize) => {
+      if (disposed) return;
+      if (!ready) {
+        early.push([base64, size]);
+        return;
+      }
+      follow(size);
+      term.write(decodeChunk(base64));
     };
 
-    // `attach_terminal` installs the channel and returns the scrollback in one
-    // atomic step, so nothing printed in between is lost.
-    invoke<string>('attach_terminal', { id: terminalId, channel })
-      .then((scrollback) => {
+    transport
+      .attach(terminalId, onChunk)
+      .then(({ scrollback, size }) => {
         if (disposed) return;
+        follow(size);
         if (scrollback) term.write(decodeChunk(scrollback));
+        ready = true;
+        for (const [base64, chunkSize] of early.splice(0)) {
+          follow(chunkSize);
+          term.write(decodeChunk(base64));
+        }
         syncSize();
         term.focus();
       })
@@ -119,9 +149,7 @@ export function TerminalPane({ terminalId, className, onFocus }: { terminalId: s
         if (!disposed) term.write('\r\n\x1b[31mThis terminal is no longer available.\x1b[0m\r\n');
       });
 
-    const send = (data: string) => {
-      invoke('write_terminal', { id: terminalId, data }).catch(() => {});
-    };
+    const send = (data: string) => transport.write(terminalId, data);
 
     const dataSub = term.onData(send);
 
@@ -154,11 +182,11 @@ export function TerminalPane({ terminalId, className, onFocus }: { terminalId: s
       dataSub.dispose();
       // Stop the stream but leave the shell running — this is an unmount, not
       // a close. `close_terminal` is what actually kills it.
-      invoke('detach_terminal', { id: terminalId }).catch(() => {});
+      transport.detach(terminalId);
       term.dispose();
       termRef.current = null;
     };
-  }, [terminalId]);
+  }, [terminalId, transport]);
 
   // Re-theming an existing terminal in place, rather than keying the effect
   // above on the theme, keeps the scrollback and the running process intact
@@ -181,7 +209,11 @@ export function TerminalPane({ terminalId, className, onFocus }: { terminalId: s
     if (files.length === 0) {
       // Dragged text (a path from another app, a URL) — insert it as typed.
       const text = event.dataTransfer.getData('text/plain');
-      if (text) invoke('write_terminal', { id: terminalId, data: text }).catch(() => {});
+      if (text) transport.write(terminalId, text);
+      return;
+    }
+    if (!transport.acceptsFiles) {
+      toastError('Los ficheros se guardan en esta máquina: la terminal remota no los vería');
       return;
     }
 

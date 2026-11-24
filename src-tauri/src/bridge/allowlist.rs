@@ -23,6 +23,10 @@ pub enum Level {
     Steer,
     /// Abre worktrees y terminales. Crea trabajo.
     Launch,
+    /// The full live terminal, raw PTY bytes included. Only ever granted to
+    /// another machine of the same account, never to a phone: pairing a phone
+    /// tops out at `Launch` (see `pairing.rs`), so a phone cannot reach this.
+    Machine,
 }
 
 const RAW: &str = include_str!("allowlist.json");
@@ -119,6 +123,16 @@ mod tests {
                 "`{peligroso}` no debería alcanzarse desde un teléfono"
             );
         }
+    }
+
+    /// The raw terminal stream is for the user's own machines only.
+    #[test]
+    fn the_raw_terminal_is_out_of_a_phones_reach() {
+        for name in ["remote_attach_terminal", "remote_detach_terminal"] {
+            assert_eq!(authorize(name, Level::Launch).unwrap_err().code, ErrorCode::Permission);
+            assert!(authorize(name, Level::Machine).is_ok());
+        }
+        assert!(!commands_for(Level::Launch).contains(&"remote_attach_terminal".to_string()));
     }
 
     /// El `hello` lleva lo que ese dispositivo puede pedir; si mintiera, la app

@@ -241,6 +241,29 @@ struct TerminalSink {
     pending: Vec<u8>,
 }
 
+/// Everyone a terminal's output is queued for: the local pane, and each of the
+/// account's other machines that attached it over the bridge.
+///
+/// One struct behind one mutex for the same reason `TerminalSink` shares one
+/// with its buffer: `remote_attach_terminal` snapshots the scrollback and
+/// installs an empty queue in a single critical section, so no chunk lands in
+/// both the snapshot and the queue.
+#[derive(Default)]
+struct Sinks {
+    local: Option<TerminalSink>,
+    /// Pending raw bytes per attached machine (`machine_id`).
+    remote: HashMap<String, Vec<u8>>,
+}
+
+/// Bytes of scrollback a remote attach starts with. Smaller than the local
+/// 256 KiB: it has to fit in one encrypted bridge reply (`MAX_PAYLOAD_BYTES`).
+const REMOTE_SNAPSHOT_BYTES: usize = 64 * 1024;
+
+/// Largest slice of output in one `remote-terminal-output` event. Base64 and
+/// encryption grow it by ~1.8x, which keeps each message under the channel's
+/// ~256 KB limit with room to spare.
+const REMOTE_CHUNK_BYTES: usize = 64 * 1024;
+
 struct TerminalHandle {
     /// Kept alive purely so `resize` has something to call: dropping the
     /// master closes the PTY out from under the child.
@@ -262,7 +285,7 @@ struct TerminalHandle {
     /// The channel of whoever is currently displaying this terminal, or
     /// `None` while nobody is. The reader thread keeps filling `scrollback`
     /// either way, so a background terminal never loses output.
-    sink: Arc<Mutex<Option<TerminalSink>>>,
+    sink: Arc<Mutex<Sinks>>,
     /// Live state, written by the reader thread and by the watcher that ages
     /// `Working` into `Waiting`. Shared rather than stored on `info` because
     /// both of those run outside any command.
@@ -1362,7 +1385,7 @@ fn open_terminal_with<R: Runtime>(
     };
 
     let scrollback = Arc::new(Mutex::new(VecDeque::new()));
-    let sink: Arc<Mutex<Option<TerminalSink>>> = Arc::new(Mutex::new(None));
+    let sink: Arc<Mutex<Sinks>> = Arc::new(Mutex::new(Sinks::default()));
     let activity = Arc::new(Mutex::new(Activity::new()));
     let mobile_tail = Arc::new(Mutex::new(crate::bridge::redact::PtyTail::new(rows.max(1), cols.max(1))));
     let auto = Arc::new(Mutex::new(AutoContinue { enabled: auto_continue, ..AutoContinue::default() }));
@@ -1399,13 +1422,23 @@ fn open_terminal_with<R: Runtime>(
                         // Queued, not sent: `tick_terminal_output` does the
                         // sending, one message per tick per terminal, so a
                         // program printing fast can't flood the UI thread.
-                        if let Ok(sink) = sink_guard.as_mut() {
-                            if let Some(sink) = sink.as_mut() {
+                        if let Ok(sinks) = sink_guard.as_mut() {
+                            if let Some(sink) = sinks.local.as_mut() {
                                 sink.pending.extend_from_slice(chunk);
                                 if sink.pending.len() > PENDING_OUTPUT_LIMIT_BYTES {
                                     let excess = sink.pending.len() - PENDING_OUTPUT_LIMIT_BYTES;
                                     sink.pending.drain(..excess);
                                     log::warn!("terminal {id}: dropped {excess} bytes the pane couldn't keep up with");
+                                }
+                            }
+                            // Same cap per remote machine: a slow link must not
+                            // grow memory without bound.
+                            for (peer, pending) in sinks.remote.iter_mut() {
+                                pending.extend_from_slice(chunk);
+                                if pending.len() > PENDING_OUTPUT_LIMIT_BYTES {
+                                    let excess = pending.len() - PENDING_OUTPUT_LIMIT_BYTES;
+                                    pending.drain(..excess);
+                                    log::warn!("terminal {id}: dropped {excess} bytes machine {peer} couldn't keep up with");
                                 }
                             }
                         }
@@ -1574,7 +1607,7 @@ pub fn attach_terminal<R: Runtime>(app: AppHandle<R>, id: String, channel: Chann
     let snapshot: Vec<u8> = buffer.iter().copied().collect();
     // Nothing pending: the snapshot above already carries everything printed so
     // far, and this is the one place where "so far" is unambiguous.
-    *sink = Some(TerminalSink { channel, pending: Vec::new() });
+    sink.local = Some(TerminalSink { channel, pending: Vec::new() });
 
     Ok(base64::engine::general_purpose::STANDARD.encode(snapshot))
 }
@@ -1588,8 +1621,113 @@ pub fn detach_terminal<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), 
     let map = registry.0.lock().map_err(|e| e.to_string())?;
     let Some(handle) = map.get(&id) else { return Ok(()) };
     let mut sink = handle.sink.lock().map_err(|e| e.to_string())?;
-    *sink = None;
+    sink.local = None;
     Ok(())
+}
+
+/// What another machine needs to start showing a terminal.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteAttach {
+    /// The tail of the scrollback, base64.
+    pub snapshot: String,
+    /// The PTY's size. The remote pane renders at this size instead of
+    /// resizing: one PTY has one size, and the machine it runs on owns it.
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// Another machine starts showing this terminal. Only reachable through the
+/// bridge at level `machine`, and `peer` is injected by `dispatch` from the
+/// authenticated sender — never taken from what that machine sent.
+#[tauri::command]
+pub fn remote_attach_terminal<R: Runtime>(app: AppHandle<R>, id: String, peer: String) -> Result<RemoteAttach, String> {
+    let snapshot = {
+        let registry = app.state::<TerminalRegistry>();
+        let map = registry.0.lock().map_err(|e| e.to_string())?;
+        let handle = map.get(&id).ok_or_else(|| format!("no terminal with id {id}"))?;
+        let size = handle.master.get_size().map_err(|e| e.to_string())?;
+
+        let mut sinks = handle.sink.lock().map_err(|e| e.to_string())?;
+        let buffer = handle.scrollback.lock().map_err(|e| e.to_string())?;
+        let skip = buffer.len().saturating_sub(REMOTE_SNAPSHOT_BYTES);
+        let snapshot: Vec<u8> = buffer.iter().skip(skip).copied().collect();
+        sinks.remote.insert(peer, Vec::new());
+
+        RemoteAttach { snapshot: base64::engine::general_purpose::STANDARD.encode(snapshot), cols: size.cols, rows: size.rows }
+    };
+    announce_remote_viewers(&app);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub fn remote_detach_terminal<R: Runtime>(app: AppHandle<R>, id: String, peer: String) -> Result<(), String> {
+    {
+        let registry = app.state::<TerminalRegistry>();
+        let map = registry.0.lock().map_err(|e| e.to_string())?;
+        let Some(handle) = map.get(&id) else { return Ok(()) };
+        handle.sink.lock().map_err(|e| e.to_string())?.remote.remove(&peer);
+    }
+    announce_remote_viewers(&app);
+    Ok(())
+}
+
+/// Cuts every remote machine off every terminal: what turning remote access off
+/// means right now, not on their next message.
+pub fn detach_all_remote<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(registry) = app.try_state::<TerminalRegistry>() {
+        if let Ok(map) = registry.0.lock() {
+            for handle in map.values() {
+                if let Ok(mut sinks) = handle.sink.lock() {
+                    sinks.remote.clear();
+                }
+            }
+        }
+    }
+    announce_remote_viewers(app);
+}
+
+/// Which machines are showing which terminal, by name. A terminal driven from
+/// elsewhere must not look like one nobody is touching (TRD §14).
+fn remote_viewers<R: Runtime>(app: &AppHandle<R>) -> HashMap<String, Vec<String>> {
+    let Some(registry) = app.try_state::<TerminalRegistry>() else { return HashMap::new() };
+    let Ok(map) = registry.0.lock() else { return HashMap::new() };
+    map.iter()
+        .filter_map(|(id, handle)| {
+            let sinks = handle.sink.lock().ok()?;
+            if sinks.remote.is_empty() {
+                return None;
+            }
+            let mut names: Vec<String> = sinks.remote.keys().map(|peer| crate::bridge::peers::name_of(peer).unwrap_or_else(|| "otra máquina".to_string())).collect();
+            names.sort();
+            Some((id.clone(), names))
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub fn list_remote_viewers<R: Runtime>(app: AppHandle<R>) -> HashMap<String, Vec<String>> {
+    remote_viewers(&app)
+}
+
+fn announce_remote_viewers<R: Runtime>(app: &AppHandle<R>) {
+    let _ = app.emit("remote-viewers", remote_viewers(app));
+}
+
+/// One slice of raw output for one machine.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteOutput {
+    peer: String,
+    id: String,
+    base64: String,
+    cols: u16,
+    rows: u16,
+}
+
+/// Splits pending bytes into slices that each fit one bridge message.
+fn remote_chunks(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    bytes.chunks(REMOTE_CHUNK_BYTES)
 }
 
 /// Encola lo tecleado; el hilo escritor de esa terminal lo saca.
@@ -2463,12 +2601,26 @@ pub fn tick_mobile_tail<R: Runtime>(app: &AppHandle<R>) {
 /// stall the reader thread that wants to append the next chunk.
 pub fn tick_terminal_output<R: Runtime>(app: &AppHandle<R>) {
     let Some(registry) = app.try_state::<TerminalRegistry>() else { return };
+    let mut remote_due: Vec<(String, String, Vec<u8>, u16, u16)> = Vec::new();
+    let mut viewers_changed = false;
     let due: Vec<(Channel<TerminalChunk>, Vec<u8>)> = {
         let Ok(map) = registry.0.lock() else { return };
-        map.values()
-            .filter_map(|handle| {
-                let mut sink = handle.sink.lock().ok()?;
-                let sink = sink.as_mut()?;
+        map.iter()
+            .filter_map(|(id, handle)| {
+                let mut sinks = handle.sink.lock().ok()?;
+                // A machine that stopped greeting is gone: stop queueing for it
+                // instead of holding half a megabyte nobody will read.
+                let before = sinks.remote.len();
+                sinks.remote.retain(|peer, _| crate::bridge::peers::is_connected(peer));
+                viewers_changed |= sinks.remote.len() != before;
+                if sinks.remote.values().any(|pending| !pending.is_empty()) {
+                    let size = handle.master.get_size().ok();
+                    for (peer, pending) in sinks.remote.iter_mut().filter(|(_, p)| !p.is_empty()) {
+                        let (cols, rows) = size.map(|s| (s.cols, s.rows)).unwrap_or((80, 24));
+                        remote_due.push((peer.clone(), id.clone(), std::mem::take(pending), cols, rows));
+                    }
+                }
+                let sink = sinks.local.as_mut()?;
                 if sink.pending.is_empty() {
                     return None;
                 }
@@ -2478,6 +2630,23 @@ pub fn tick_terminal_output<R: Runtime>(app: &AppHandle<R>) {
     };
     for (channel, bytes) in due {
         let _ = channel.send(TerminalChunk { base64: base64::engine::general_purpose::STANDARD.encode(bytes) });
+    }
+    // To the webview, which seals each slice for its machine and publishes it
+    // (`bridge_event` keeps it addressed to that machine only).
+    for (peer, id, bytes, cols, rows) in remote_due {
+        for slice in remote_chunks(&bytes) {
+            let output = RemoteOutput {
+                peer: peer.clone(),
+                id: id.clone(),
+                base64: base64::engine::general_purpose::STANDARD.encode(slice),
+                cols,
+                rows,
+            };
+            let _ = app.emit(crate::bridge::dispatch::REMOTE_TERMINAL_OUTPUT, output);
+        }
+    }
+    if viewers_changed {
+        announce_remote_viewers(app);
     }
 }
 
@@ -2992,6 +3161,48 @@ mod digest_tests {
 
 #[cfg(test)]
 mod tests {
+    /// Remote output is cut so every slice fits one bridge message, and the
+    /// slices put back together are exactly the original bytes.
+    #[test]
+    fn remote_output_is_sliced_to_fit_the_channel() {
+        let bytes: Vec<u8> = (0..(REMOTE_CHUNK_BYTES * 2 + 17)).map(|i| (i % 251) as u8).collect();
+        let slices: Vec<&[u8]> = remote_chunks(&bytes).collect();
+        assert_eq!(slices.len(), 3);
+        assert!(slices.iter().all(|slice| slice.len() <= REMOTE_CHUNK_BYTES));
+        assert_eq!(slices.concat(), bytes);
+
+        // And the biggest slice still fits once encoded and sealed.
+        let output = RemoteOutput {
+            peer: "b".into(),
+            id: "t".into(),
+            base64: base64::engine::general_purpose::STANDARD.encode(slices[0]),
+            cols: 80,
+            rows: 24,
+        };
+        let event = crate::bridge::protocol::Event { name: "remote-terminal-output".into(), data: serde_json::to_value(&output).unwrap() };
+        let sealed = crate::bridge::outgoing(crate::bridge::protocol::Kind::Event, "01J".into(), &crate::bridge::crypto::SharedKey::generate(), &event).unwrap();
+        assert!(sealed.payload.len() < 200 * 1024, "a slice became a {} byte message", sealed.payload.len());
+    }
+
+    /// The wire shape the other machine's pane reads.
+    #[test]
+    fn remote_output_is_camel_case_on_the_wire() {
+        let output = RemoteOutput { peer: "b".into(), id: "t".into(), base64: "AA==".into(), cols: 80, rows: 24 };
+        let json = serde_json::to_value(&output).unwrap();
+        for key in ["peer", "id", "base64", "cols", "rows"] {
+            assert!(json.get(key).is_some(), "missing `{key}`");
+        }
+    }
+
+    /// The first screen of a remote attach fits in one bridge reply.
+    #[test]
+    fn a_remote_snapshot_fits_one_reply() {
+        let attach = RemoteAttach { snapshot: base64::engine::general_purpose::STANDARD.encode(vec![b'x'; REMOTE_SNAPSHOT_BYTES]), cols: 80, rows: 24 };
+        let body = serde_json::json!({ "ok": true, "data": attach });
+        let sealed = crate::bridge::outgoing(crate::bridge::protocol::Kind::Result, "01J".into(), &crate::bridge::crypto::SharedKey::generate(), &body).unwrap();
+        assert!(sealed.payload.len() < 200 * 1024, "the snapshot became a {} byte reply", sealed.payload.len());
+    }
+
     use super::*;
 
     /// A pane narrower than this killed opencode outright: its TUI segfaults

@@ -89,3 +89,21 @@ describe('cifrado entre lenguajes', () => {
     expect(() => sodium.crypto_secretbox_open_easy(b64(fixture.ciphertext), b64(fixture.nonce), otra)).toThrow();
   });
 });
+
+/**
+ * Machine-to-machine keys. Each Hangar publishes an X25519 public key and both
+ * ends derive the same secretbox key with `crypto_box_beforenm`. Rust wrote the
+ * fixture; libsodium has to agree byte for byte, or a client built on it could
+ * never talk to a Hangar.
+ */
+describe('peer key derivation across languages', () => {
+  it('libsodium derives the key Rust derived, in both directions', () => {
+    const fixture = JSON.parse(readFileSync(join(FIXTURES, 'peer-key-rust.json'), 'utf8'));
+    const toB64 = (bytes: Uint8Array) => sodium.to_base64(bytes, sodium.base64_variants.ORIGINAL);
+
+    expect(toB64(sodium.crypto_scalarmult_base(b64(fixture.secretA)))).toBe(fixture.publicA);
+    expect(toB64(sodium.crypto_scalarmult_base(b64(fixture.secretB)))).toBe(fixture.publicB);
+    expect(toB64(sodium.crypto_box_beforenm(b64(fixture.publicB), b64(fixture.secretA)))).toBe(fixture.shared);
+    expect(toB64(sodium.crypto_box_beforenm(b64(fixture.publicA), b64(fixture.secretB)))).toBe(fixture.shared);
+  });
+});
