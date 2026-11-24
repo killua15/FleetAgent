@@ -4,7 +4,6 @@ import { Button } from '../components/ui/button';
 import { Spinner } from '../components/Spinner';
 import { TerminalPane } from '../components/TerminalPane';
 import { remoteTransport } from '../components/terminalTransport';
-import { useAuth } from '../auth/AuthProvider';
 import { registerThisMachine, syncMachines, type MachineIdentity, type MachineRow } from '../bridge/machines';
 import { closeRemoteMachine, remoteMachine, RemoteError, type RemoteMachine } from '../bridge/remote';
 import { TERMINAL_STATE_META, type TerminalActivity, type TerminalInfo } from '../types/terminal';
@@ -23,10 +22,9 @@ type Link =
  * public key in `public.machines`, and two machines derive their shared key
  * from each other's (`bridge/peers.rs`). The other machine has to have
  * "Permitir que mis otras máquinas controlen esta" turned on, in front of it.
+ * Free on every plan: these are the user's own machines (TRD §12.14).
  */
 export function Machines() {
-  const { entitlement } = useAuth();
-  const isPro = entitlement != null && entitlement.plan !== 'free';
   const [self, setSelf] = useState<MachineIdentity | null>(null);
   const [machines, setMachines] = useState<MachineRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -46,12 +44,12 @@ export function Machines() {
   };
 
   useEffect(() => {
-    if (isPro) void load();
+    void load();
     const connections = opened.current;
     return () => {
       for (const id of connections) void closeRemoteMachine(id);
     };
-  }, [isPro]);
+  }, []);
 
   const choose = (id: string) => {
     opened.current.add(id);
@@ -67,16 +65,13 @@ export function Machines() {
         <aside className={styles.list}>
           <div className={styles.listHeader}>
             <span className={styles.sectionLabel}>MACHINES</span>
-            {isPro && (
-              <Button size="sm" variant="ghost" onClick={() => void load()}>
-                refresh
-              </Button>
-            )}
+            <Button size="sm" variant="ghost" onClick={() => void load()}>
+              refresh
+            </Button>
           </div>
 
-          {!isPro && <span className={styles.hint}>Controlar tus otras máquinas a distancia es una función Pro.</span>}
-          {isPro && error && <span className={styles.error}>{error}</span>}
-          {isPro && !error && machines === null && <Spinner label="loading…" />}
+          {error && <span className={styles.error}>{error}</span>}
+          {!error && machines === null && <Spinner label="loading…" />}
           {machines?.length === 0 && (
             <span className={styles.hint}>
               No hay otras máquinas en esta cuenta. Abre Hangar con la misma cuenta en otra máquina y activa allí el acceso remoto en Ajustes.

@@ -508,6 +508,10 @@ Hangar. Ese es el objetivo del documento.
     panel marca qué máquina lo está viendo. El teléfono no cambia: sigue siendo
     uno, con QR, sin nivel `machine`.
 
+    **Precio**: gratis en todos los planes, a diferencia del teléfono (punto 7):
+    son máquinas propias de la misma cuenta. El gate Pro de la 0.10.0 se retiró
+    en la 0.10.1 — con él, una cuenta free ni siquiera publicaba su clave.
+
 ---
 
 ## 13 · Modo yolo: lo que sustituye a las notificaciones
