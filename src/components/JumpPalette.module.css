@@ -6,7 +6,8 @@
   justify-content: center;
   align-items: flex-start;
   padding-top: 14vh;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--scrim);
+  animation: fade-in var(--dur-fast) var(--ease);
 }
 
 .panel {
@@ -14,11 +15,12 @@
   max-height: 60vh;
   display: flex;
   flex-direction: column;
-  border-radius: var(--r-md);
+  border-radius: var(--r-xl);
   border: 1px solid var(--overlay-line);
   background: var(--overlay);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
+  animation: modal-enter var(--dur) var(--ease);
 }
 
 .input {

@@ -527,6 +527,7 @@
   border: 1px solid var(--line2);
   border-radius: var(--r-sm);
   padding: 10px 12px;
+  box-shadow: var(--shadow);
 }
 
 .composerInput {

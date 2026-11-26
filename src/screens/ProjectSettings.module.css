@@ -123,6 +123,7 @@
   border: 1px solid var(--line);
   background: var(--panel);
   max-width: 520px;
+  box-shadow: var(--shadow);
 }
 
 .fieldLabel {

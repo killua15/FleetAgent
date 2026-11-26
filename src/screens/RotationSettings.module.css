@@ -162,6 +162,7 @@
   border: 1px solid var(--line);
   background: var(--panel);
   margin-bottom: 18px;
+  box-shadow: var(--shadow);
 }
 
 .policyLabel {

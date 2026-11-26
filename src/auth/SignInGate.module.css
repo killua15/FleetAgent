@@ -73,6 +73,7 @@
   color: var(--txt);
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
+  box-shadow: var(--shadow);
 }
 
 .googleBtn:hover:not(:disabled) {

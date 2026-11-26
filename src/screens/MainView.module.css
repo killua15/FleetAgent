@@ -187,6 +187,7 @@
   align-items: center;
   justify-content: center;
   gap: 3px;
+  box-shadow: var(--shadow);
 }
 
 .railPill:hover {
@@ -272,6 +273,7 @@
   background: var(--panel);
   border-radius: var(--r-sm);
   border: 1px solid var(--line);
+  box-shadow: var(--shadow);
 }
 
 .cardDragging {

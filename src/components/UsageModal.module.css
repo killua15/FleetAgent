@@ -4,8 +4,9 @@
   z-index: 90;
   display: grid;
   place-items: center;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--scrim);
   backdrop-filter: blur(2px);
+  animation: fade-in var(--dur-fast) var(--ease);
 }
 
 .modal {
@@ -14,12 +15,13 @@
   display: flex;
   flex-direction: column;
   border: 1px solid var(--line);
-  border-radius: var(--r-md);
+  border-radius: var(--r-xl);
   /* Opaque, not `--panel`: the glass theme makes that translucent, and a modal
      with the terminals showing through is unreadable. */
   background: var(--overlay);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
+  animation: modal-enter var(--dur) var(--ease);
 }
 
 .head {
@@ -335,4 +337,18 @@
   border: 1px solid var(--bd);
   color: var(--dim);
   font: 500 9px var(--font-mono);
+}
+
+@media (max-width: 760px) {
+  .backdrop {
+    place-items: end stretch;
+  }
+
+  .modal {
+    width: 100%;
+    max-height: 92dvh;
+    border-radius: 20px 20px 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+    animation-name: sheet-enter;
+  }
 }

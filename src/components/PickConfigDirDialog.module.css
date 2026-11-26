@@ -19,6 +19,7 @@
   text-align: left;
   min-width: 0;
   width: 100%;
+  box-shadow: var(--shadow);
 }
 
 .row:hover:not(:disabled) {

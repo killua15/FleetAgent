@@ -161,6 +161,7 @@
   border-radius: var(--r-sm);
   background: var(--panel);
   border: 1px solid var(--line);
+  box-shadow: var(--shadow);
 }
 
 .providerBadge {
@@ -230,6 +231,7 @@
   background: var(--panel);
   border: 1px solid var(--line);
   cursor: pointer;
+  box-shadow: var(--shadow);
 }
 
 .notifInfo {

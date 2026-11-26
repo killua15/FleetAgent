@@ -12,10 +12,10 @@
 .header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg2);
+  padding: 20px 28px 16px;
+  background: var(--bg);
 }
 
 .backBtn {
@@ -25,12 +25,15 @@
 }
 
 .title {
-  font: 600 14px var(--font-ui);
+  font: 600 clamp(22px, 2vw, 28px) var(--font-ui);
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  color: var(--ink);
 }
 
 .subtitle {
-  font: 500 12px var(--font-ui);
-  color: var(--dim);
+  font: 500 var(--fs-base) var(--font-ui);
+  color: var(--mut);
 }
 
 .spacer {
@@ -209,6 +212,7 @@
      it keep its natural content height, clipping everything that doesn't
      fit. This is what was actually cutting content off, not .commentList. */
   flex-shrink: 0;
+  box-shadow: var(--shadow);
 }
 
 .prCardHeader {
@@ -327,4 +331,10 @@
 .commentActions {
   display: flex;
   gap: 8px;
+}
+
+@media (max-width: 999px) {
+  .header {
+    padding: 16px 18px 12px;
+  }
 }

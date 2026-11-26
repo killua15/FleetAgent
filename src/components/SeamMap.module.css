@@ -3,6 +3,7 @@
   border-radius: var(--r-sm);
   background: var(--panel);
   overflow: hidden;
+  box-shadow: var(--shadow);
 }
 
 /* The map is wide by nature — one rail per repo plus the file names — and tall

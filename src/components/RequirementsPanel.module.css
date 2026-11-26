@@ -237,6 +237,7 @@
   border: 1px solid var(--line);
   background: var(--panel);
   min-width: 0;
+  box-shadow: var(--shadow);
 }
 
 /* Missing something essential is the one state worth colouring the whole card

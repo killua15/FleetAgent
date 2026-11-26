@@ -12,10 +12,10 @@
 .header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg2);
+  padding: 20px 28px 16px;
+  background: var(--bg);
 }
 
 .backBtn {
@@ -25,12 +25,15 @@
 }
 
 .title {
-  font: 600 14px var(--font-ui);
+  font: 600 clamp(22px, 2vw, 28px) var(--font-ui);
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  color: var(--ink);
 }
 
 .subtitle {
-  font: 500 12px var(--font-ui);
-  color: var(--dim);
+  font: 500 var(--fs-base) var(--font-ui);
+  color: var(--mut);
 }
 
 .spacer {
@@ -124,6 +127,7 @@
      column-flex child defaults to flex-shrink: 1 and gets squeezed instead
      of showing its full content. */
   flex-shrink: 0;
+  box-shadow: var(--shadow);
 }
 
 .repoCardHeader {
@@ -225,4 +229,10 @@
   align-items: center;
   gap: 8px;
   font: 500 13px var(--font-ui);
+}
+
+@media (max-width: 999px) {
+  .header {
+    padding: 16px 18px 12px;
+  }
 }

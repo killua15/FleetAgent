@@ -10,6 +10,7 @@ import { TasksSidebar } from '../components/TasksSidebar';
 import { toastError } from '../components/ErrorOverlay';
 import { Button } from '../components/ui/button';
 import { IconTooltip } from '../components/ui/tooltip';
+import { SegmentedControl } from '../components/ui/segmented-control';
 import { BaseBranchPicker, useBaseBranch } from '../components/BaseBranchPicker';
 import { useNavigation } from '../nav/NavigationProvider';
 import { autoGridColumns, shouldWarnAboutPanels } from '../lib/gridLayout';
@@ -728,20 +729,19 @@ export function Terminals() {
               <span className={styles.warnDot} />
               <span>{panels.length} panels on screen — hide some from the sidebar; they keep running either way</span>
               <span className={styles.spacer} />
-              <label className={styles.colControl}>
+              <div className={styles.colControl}>
                 columns
-                <select
+                <SegmentedControl
+                  size="sm"
+                  aria-label="Grid columns"
                   value={String(gridColumns)}
-                  onChange={(e) => setGridColumns(e.target.value === 'auto' ? 'auto' : Number(e.target.value))}
-                >
-                  <option value="auto">auto</option>
-                  {[1, 2, 3, 4].map((n) => (
-                    <option key={n} value={n}>
-                      {n}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  onChange={(v) => setGridColumns(v === 'auto' ? 'auto' : Number(v))}
+                  options={[
+                    { value: 'auto', label: 'auto' },
+                    ...[1, 2, 3, 4].map((n) => ({ value: String(n), label: String(n) })),
+                  ]}
+                />
+              </div>
             </div>
           )}
 

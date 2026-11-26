@@ -74,6 +74,7 @@
   color: var(--txt);
   text-align: left;
   cursor: pointer;
+  box-shadow: var(--shadow);
 }
 
 .machineActive {
@@ -154,6 +155,7 @@
   background: var(--panel);
   color: var(--txt);
   cursor: pointer;
+  box-shadow: var(--shadow);
 }
 
 .terminalActive {

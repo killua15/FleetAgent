@@ -12,9 +12,9 @@
 .head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
-  padding: 12px 18px;
-  border-bottom: 1px solid var(--line);
+  padding: 20px 28px 16px;
 }
 
 .backLink,
@@ -37,12 +37,15 @@
 }
 
 .title {
-  font: 600 14px var(--font-ui);
+  font: 600 clamp(22px, 2vw, 28px) var(--font-ui);
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  color: var(--ink);
 }
 
 .subtitle {
-  font: 500 12px var(--font-ui);
-  color: var(--dim);
+  font: 500 var(--fs-base) var(--font-ui);
+  color: var(--mut);
 }
 
 .spacer {
@@ -265,4 +268,10 @@
   background: var(--accD);
   color: var(--acc);
   font: 500 11px var(--font-ui);
+}
+
+@media (max-width: 999px) {
+  .head {
+    padding: 16px 18px 12px;
+  }
 }

@@ -237,6 +237,7 @@
   border-radius: var(--r-sm);
   background: var(--panel);
   border: 1px dashed var(--line);
+  box-shadow: var(--shadow);
 }
 
 .discoveredInfo {

@@ -40,9 +40,13 @@
   min-width: 0;
   min-height: 0;
   border: 1px solid var(--line);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-md);
   background: var(--panel);
+  box-shadow: var(--shadow);
   overflow: hidden;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur) var(--ease);
 }
 
 .cardHeader {
@@ -186,6 +190,7 @@
 
 .pill:hover {
   border-color: var(--acc);
+  background: var(--panel2);
   color: var(--txt);
 }
 
@@ -209,7 +214,9 @@
   gap: 10px;
   margin: 10px;
   padding: 12px 14px;
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  animation: screen-enter var(--dur) var(--ease);
   border: 1px solid var(--overlay-line);
   background: var(--overlay);
   max-height: 40vh;
@@ -685,7 +692,7 @@
 }
 
 .stateDotPulse {
-  animation: statePulse 1.6s ease-in-out infinite;
+  animation: breathe 1.8s var(--ease) infinite;
 }
 
 @keyframes statePulse {
@@ -785,13 +792,13 @@
   border: 1px solid transparent;
 }
 
-.sideRow:hover,
-.sideRowActive {
+.sideRow:hover {
   background: var(--panel2);
 }
 
 .sideRowActive {
-  border-color: var(--acc);
+  background: var(--accD);
+  border-color: color-mix(in srgb, var(--acc) 45%, transparent);
 }
 
 .sideRowMain {
@@ -872,6 +879,7 @@
 .cardFocused {
   composes: card;
   border-color: var(--acc);
+  box-shadow: 0 0 0 3px var(--accD), var(--shadow);
 }
 
 /* One control for the sidebar, in one place, that never moves.

@@ -5,6 +5,7 @@
   background: color-mix(in srgb, var(--bg) 55%, transparent);
   backdrop-filter: blur(2px);
   display: flex;
+  animation: fade-in var(--dur-fast) var(--ease);
 }
 
 .panel {
@@ -14,10 +15,11 @@
   display: flex;
   flex-direction: column;
   border: 1px solid var(--line);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   background: var(--bg);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
+  animation: modal-enter var(--dur) var(--ease);
 }
 
 .head {

@@ -30,6 +30,7 @@
   background: var(--panel);
   color: var(--mut);
   cursor: pointer;
+  box-shadow: var(--shadow);
 }
 
 .floatingActive {

@@ -12,9 +12,9 @@
 .head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
-  padding: 10px 18px;
-  border-bottom: 1px solid var(--line);
+  padding: 20px 28px 16px;
 }
 
 .backLink {
@@ -30,7 +30,10 @@
 }
 
 .title {
-  font: 600 13px var(--font-ui);
+  font: 600 clamp(22px, 2vw, 28px) var(--font-ui);
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  color: var(--ink);
 }
 
 .base,
@@ -115,4 +118,10 @@
 .scopeOff {
   background: transparent;
   color: var(--mut);
+}
+
+@media (max-width: 999px) {
+  .head {
+    padding: 16px 18px 12px;
+  }
 }

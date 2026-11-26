@@ -98,6 +98,7 @@
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   background: var(--panel);
+  box-shadow: var(--shadow);
 }
 
 /* Lo hecho se atenúa en vez de desaparecer o tacharse: sigue siendo consultable
