@@ -25,9 +25,10 @@
 
 .compose {
   padding: 14px 16px;
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--line);
   background: var(--panel);
+  box-shadow: var(--shadow);
 }
 
 .sectionLabel {
@@ -37,7 +38,7 @@
 }
 
 .waitHint {
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   letter-spacing: 0;
   color: var(--amber);
   text-transform: none;
@@ -53,21 +54,21 @@
   flex: 1;
   min-width: 0;
   padding: 6px 9px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: var(--panel2);
   color: var(--txt);
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
 }
 
 .prompt {
   resize: vertical;
   padding: 8px 10px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: var(--panel2);
   color: var(--txt);
-  font: 400 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
   line-height: 1.5;
 }
 
@@ -86,7 +87,7 @@
 
 .hint {
   flex: 1;
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--mut);
   line-height: 1.5;
 }
@@ -97,9 +98,10 @@
   align-items: center;
   gap: 10px;
   padding: 9px 12px;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--line);
   background: var(--panel);
+  box-shadow: var(--shadow);
 }
 
 .runPast {
@@ -148,22 +150,22 @@
 }
 
 .runProject {
-  font: 500 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
   color: var(--txt);
 }
 
 .runBranch {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--teal);
 }
 
 .runAccount {
-  font: 500 10px var(--font-ui);
+  font: 500 11px var(--font-ui);
   color: var(--acc);
 }
 
 .runState {
-  font: 400 10.5px var(--font-ui);
+  font: 500 11.5px var(--font-ui);
   color: var(--mut);
 }
 
@@ -171,17 +173,17 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--mut);
 }
 
 .runError {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--amber);
 }
 
 .dim {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--dim);
 }
 
@@ -197,7 +199,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 400 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
   color: var(--txt);
 }
 
@@ -231,11 +233,11 @@
   flex: none;
   width: 78px;
   padding: 4px 7px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: var(--panel2);
   color: var(--txt);
-  font: 400 11px var(--font-mono);
+  font: 500 11px var(--font-mono);
 }
 
 .budgetInput:focus {

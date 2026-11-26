@@ -7,7 +7,7 @@
   border: none;
   cursor: pointer;
   text-align: left;
-  font: 400 11px var(--font-mono);
+  font: 500 11px var(--font-mono);
   color: var(--txt);
 }
 

@@ -12,25 +12,28 @@
 .header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg2);
+  padding: 20px 28px 16px;
+  background: var(--bg);
 }
 
 .backBtn {
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   padding: 7px 14px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
 }
 
 .title {
-  font: 600 14px var(--font-ui);
+  font: 600 clamp(22px, 2vw, 28px) var(--font-ui);
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  color: var(--ink);
 }
 
 .subtitle {
-  font: 400 11px var(--font-ui);
-  color: var(--dim);
+  font: 500 var(--fs-base) var(--font-ui);
+  color: var(--mut);
 }
 
 .spacer {
@@ -68,7 +71,7 @@
   align-items: center;
   gap: 8px;
   padding: 9px 10px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   border: 1px solid transparent;
   background: transparent;
   cursor: pointer;
@@ -92,7 +95,7 @@
   min-width: 20px;
   height: 20px;
   padding: 0 6px;
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   background: var(--amberD);
   color: var(--amber);
   font: 700 10.5px var(--font-mono);
@@ -101,7 +104,7 @@
 }
 
 .dimText {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--dim);
   padding: 10px;
 }
@@ -117,13 +120,14 @@
 
 .repoCard {
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   background: var(--panel);
   overflow: hidden;
   /* Same flexbox gotcha fixed for .prCard in PrReviews: without this a
      column-flex child defaults to flex-shrink: 1 and gets squeezed instead
      of showing its full content. */
   flex-shrink: 0;
+  box-shadow: var(--shadow);
 }
 
 .repoCardHeader {
@@ -140,7 +144,7 @@
 }
 
 .repoSubtitle {
-  font: 400 11px var(--font-mono);
+  font: 500 11px var(--font-mono);
   color: var(--dim);
 }
 
@@ -224,5 +228,11 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font: 400 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
+}
+
+@media (max-width: 999px) {
+  .header {
+    padding: 16px 18px 12px;
+  }
 }

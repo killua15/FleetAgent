@@ -21,8 +21,91 @@ body {
   background: var(--bg);
   color: var(--txt);
   font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  font-weight: 500;
+  line-height: 1.4;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
   overscroll-behavior: none;
+}
+
+/* Talmo's interaction baseline: colour and surface changes ease in rather than
+   snap. Only paint properties — never layout — so nothing reflows mid-hover
+   and xterm's fit never sees an intermediate size. */
+button,
+a,
+[role='button'],
+[role='menuitem'],
+[role='tab'],
+input,
+select,
+textarea {
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+
+:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--accD);
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.82);
+  }
+}
+
+@keyframes flash {
+  0% {
+    background-color: var(--accD);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+@keyframes screen-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* The whole screen only fades: its blocks do the moving (see revealChildren
+   in lib/motion.ts), and moving both reads as a lurch. */
+@keyframes screen-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    transition-duration: 0.001ms !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
 
 #root {
@@ -48,7 +131,9 @@ button {
 
 ::-webkit-scrollbar-thumb {
   background: var(--line2);
-  border-radius: 6px;
+  border-radius: 99px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-track {
@@ -99,7 +184,7 @@ button {
   --popover: var(--panel2);
   --popover-foreground: var(--txt);
   --primary: var(--acc);
-  --primary-foreground: #15151c;
+  --primary-foreground: var(--acc-ink);
   --secondary: var(--panel2);
   --secondary-foreground: var(--txt);
   --muted: var(--panel2);
@@ -110,7 +195,7 @@ button {
   --border: var(--line);
   --input: var(--line2);
   --ring: var(--acc);
-  --radius: 0.5rem;
+  --radius: 11px;
 }
 
 @layer base {
@@ -157,4 +242,101 @@ button {
 .hangar-stack > :last-child {
   flex: 1;
   min-height: 0;
+}
+
+/* Every screen is its own component under `.hangar-stack`, so a navigation
+   swaps this element and the entrance plays once per screen — never when
+   something inside a screen changes (focusing a terminal, opening a panel). */
+.hangar-stack > :last-child {
+  animation: screen-fade 220ms var(--ease);
+}
+
+/* Under 760px the top bar's destinations live in a tab bar fixed to the
+   bottom edge. The body gives up its height so no screen — the terminal grid
+   least of all — ends up underneath it. */
+@media (max-width: 760px) {
+  .hangar-body:has([data-tabbar]) {
+    padding-bottom: calc(64px + env(safe-area-inset-bottom));
+  }
+}
+
+/* Talmo's overlay motion: scrims fade, modals lift and settle, drawers slide
+   in from their edge, sheets rise from the bottom. */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Talmo's modal: drops in from just above and settles with a slight
+   overshoot (GSAP back.out(1.6)). */
+@keyframes modal-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-18px) scale(0.97);
+  }
+}
+
+@keyframes drawer-enter {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+
+@keyframes sheet-enter {
+  from {
+    transform: translateY(40%);
+    opacity: 0;
+  }
+}
+
+/* ── Talmo effects ─────────────────────────────────────────────────── */
+
+:root {
+  /* GSAP back.out(1.6): the settle with a touch of overshoot. */
+  --ease-back: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* shadcn dialogs use the same drop-and-settle as Hangar's own modals. Only the
+   entrance: closing keeps tw-animate's quick fade. The translate that centres
+   them is the separate `translate` property, so animating `transform` here
+   doesn't fight it. */
+[data-slot='dialog-content'][data-state='open'],
+[data-slot='alert-dialog-content'][data-state='open'] {
+  animation: modal-enter 450ms var(--ease-back);
+}
+
+/* Press: everything you can click gives a little under the pointer. */
+[data-slot='button']:active:not(:disabled),
+[data-slot='chip']:active:not(:disabled),
+[data-slot='segmented-control'] button:active:not(:disabled) {
+  transform: scale(0.97);
+  transition: transform 90ms var(--ease);
+}
+
+/* Lift: clickable cards rise toward the pointer, the way Talmo's [data-lift]
+   cards do. Only clickable ones, and only with a real hover — a card that does
+   nothing shouldn't invite a click, and touch has no hover to end. */
+@media (hover: hover) and (pointer: fine) {
+  :is(button, a, [role='button'])[class*='_card'],
+  [data-lift] {
+    transition:
+      transform 450ms var(--ease),
+      box-shadow 450ms var(--ease),
+      background-color var(--dur-fast) var(--ease),
+      border-color var(--dur-fast) var(--ease);
+  }
+
+  :is(button, a, [role='button'])[class*='_card']:hover:not(:disabled),
+  [data-lift]:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-lg);
+  }
+
+  /* Round icon buttons and the primary button lift a hair on hover. */
+  [data-slot='button'][data-variant='default']:hover:not(:disabled),
+  [data-slot='button'][data-size='icon']:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
 }

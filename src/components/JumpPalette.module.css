@@ -6,7 +6,8 @@
   justify-content: center;
   align-items: flex-start;
   padding-top: 14vh;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--scrim);
+  animation: fade-in var(--dur-fast) var(--ease);
 }
 
 .panel {
@@ -14,11 +15,12 @@
   max-height: 60vh;
   display: flex;
   flex-direction: column;
-  border-radius: 12px;
+  border-radius: var(--r-xl);
   border: 1px solid var(--overlay-line);
   background: var(--overlay);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-lg);
   overflow: hidden;
+  animation: modal-enter var(--dur) var(--ease);
 }
 
 .input {
@@ -28,7 +30,7 @@
   border-bottom: 1px solid var(--line);
   background: transparent;
   color: var(--txt);
-  font: 400 14px var(--font-ui);
+  font: 500 14px var(--font-ui);
 }
 
 .input:focus {
@@ -47,7 +49,7 @@
   gap: 9px;
   width: 100%;
   padding: 8px 10px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: 1px solid transparent;
   background: transparent;
   cursor: pointer;
@@ -74,7 +76,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 400 12.5px var(--font-ui);
+  font: 500 13.5px var(--font-ui);
   color: var(--txt);
 }
 
@@ -87,7 +89,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 400 11px var(--font-mono);
+  font: 500 11px var(--font-mono);
   color: var(--dim);
 }
 
@@ -97,13 +99,13 @@
 
 .account {
   flex: none;
-  font: 500 10px var(--font-ui);
+  font: 500 11px var(--font-ui);
   color: var(--acc);
 }
 
 .empty {
   display: block;
   padding: 14px;
-  font: 400 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
   color: var(--dim);
 }

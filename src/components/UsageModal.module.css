@@ -4,8 +4,9 @@
   z-index: 90;
   display: grid;
   place-items: center;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--scrim);
   backdrop-filter: blur(2px);
+  animation: fade-in var(--dur-fast) var(--ease);
 }
 
 .modal {
@@ -14,12 +15,13 @@
   display: flex;
   flex-direction: column;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--r-xl);
   /* Opaque, not `--panel`: the glass theme makes that translucent, and a modal
      with the terminals showing through is unreadable. */
   background: var(--overlay);
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-lg);
   overflow: hidden;
+  animation: modal-enter var(--dur) var(--ease);
 }
 
 .head {
@@ -37,7 +39,7 @@
 
 .subtitle,
 .dim {
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--dim);
 }
 
@@ -62,7 +64,7 @@
   gap: 10px;
   padding: 11px 12px;
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   background: var(--bg2);
 }
 
@@ -80,11 +82,11 @@
 }
 
 .name {
-  font: 600 12.5px var(--font-ui);
+  font: 600 13.5px var(--font-ui);
 }
 
 .provider {
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   color: var(--dim);
 }
 
@@ -92,7 +94,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   color: var(--dim);
 }
 
@@ -116,7 +118,7 @@
 }
 
 .hours {
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   color: var(--amber);
 }
 
@@ -141,7 +143,7 @@
 }
 
 .tokens {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
 }
 
@@ -152,13 +154,13 @@
 
 /* The word that stops someone thinking they owe this. */
 .equivalent {
-  font: 400 9.5px var(--font-ui);
+  font: 500 10.5px var(--font-ui);
   color: var(--dim);
 }
 
 .calibration {
   padding-top: 3px;
-  font: 400 10.5px var(--font-ui);
+  font: 500 11.5px var(--font-ui);
   color: var(--dim);
   line-height: 1.45;
 }
@@ -199,11 +201,11 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
 }
 
 .rowValue {
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   color: var(--dim);
 }
 
@@ -217,7 +219,7 @@
 
 .note {
   flex-basis: 100%;
-  font: 400 10px var(--font-ui);
+  font: 500 11px var(--font-ui);
   color: var(--dim);
 }
 
@@ -225,7 +227,7 @@
   display: flex;
   flex-direction: column;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   overflow: hidden;
 }
 
@@ -256,7 +258,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
 }
 
 .colAccount {
@@ -265,7 +267,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
 }
 
 /* Right-aligned and monospaced: numbers in a column are compared, and ragged
@@ -274,7 +276,7 @@
   width: 58px;
   flex: none;
   text-align: right;
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
 }
 
@@ -335,4 +337,18 @@
   border: 1px solid var(--bd);
   color: var(--dim);
   font: 500 9px var(--font-mono);
+}
+
+@media (max-width: 760px) {
+  .backdrop {
+    place-items: end stretch;
+  }
+
+  .modal {
+    width: 100%;
+    max-height: 92dvh;
+    border-radius: 20px 20px 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+    animation-name: sheet-enter;
+  }
 }

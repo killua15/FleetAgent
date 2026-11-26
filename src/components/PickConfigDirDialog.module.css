@@ -12,13 +12,14 @@
   align-items: flex-start;
   gap: 3px;
   padding: 9px 11px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--line);
   background: var(--panel);
   cursor: pointer;
   text-align: left;
   min-width: 0;
   width: 100%;
+  box-shadow: var(--shadow);
 }
 
 .row:hover:not(:disabled) {
@@ -41,7 +42,7 @@
 }
 
 .meta {
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--mut);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -52,21 +53,21 @@
 .loading,
 .empty {
   padding: 14px 4px;
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--dim);
 }
 
 .empty code {
-  font: 400 11px var(--font-mono);
+  font: 500 11px var(--font-mono);
   color: var(--mut);
 }
 
 .error {
   padding: 9px 11px;
   margin-bottom: 8px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   background: var(--redD);
   border: 1px solid var(--red);
   color: var(--red);
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
 }

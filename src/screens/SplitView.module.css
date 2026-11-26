@@ -24,7 +24,7 @@
 }
 
 .note {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--amber);
 }
 
@@ -40,7 +40,7 @@
 }
 
 .paneWrap {
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--line);
   overflow: hidden;
   min-width: 0;

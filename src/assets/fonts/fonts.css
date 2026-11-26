@@ -55,3 +55,12 @@
   font-display: swap;
   src: url('./jetbrains-mono-700.woff2') format('woff2');
 }
+
+/* Urbanist (SIL Open Font License 1.1), variable weight 400–700, Latin subset. */
+@font-face {
+  font-family: 'Urbanist';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('./urbanist-latin.woff2') format('woff2');
+}

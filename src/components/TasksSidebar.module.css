@@ -25,7 +25,7 @@
 }
 
 .title {
-  font: 600 12px var(--font-ui);
+  font: 600 13px var(--font-ui);
 }
 
 .spacer {
@@ -37,7 +37,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
 }
 
@@ -46,7 +46,7 @@
   background: none;
   padding: 0;
   color: var(--acc);
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   cursor: pointer;
 }
 
@@ -67,13 +67,13 @@
   padding: 2px 8px;
   background: var(--bg);
   color: var(--txt);
-  font: 400 10.5px var(--font-ui);
+  font: 500 11.5px var(--font-ui);
   cursor: pointer;
 }
 
 .tab,
 .tabOn {
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   font-weight: 600;
 }
 
@@ -103,7 +103,7 @@
 .error {
   display: block;
   padding: 14px 10px;
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--dim);
 }
 
@@ -118,7 +118,7 @@
   gap: 4px;
   padding: 8px 9px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--r-xs);
 }
 
 .rowTop,
@@ -138,7 +138,7 @@
   padding: 0 6px;
   border-radius: 999px;
   border: 1px solid var(--line);
-  font: 400 10px var(--font-ui);
+  font: 500 11px var(--font-ui);
   white-space: nowrap;
 }
 
@@ -153,7 +153,7 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  font: 500 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
   color: var(--txt);
 }
 
@@ -161,11 +161,11 @@
 .inTerminal {
   flex: none;
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   padding: 2px 7px;
   background: var(--bg);
   color: var(--txt);
-  font: 400 10.5px var(--font-ui);
+  font: 500 11.5px var(--font-ui);
   cursor: pointer;
 }
 
@@ -184,10 +184,10 @@
   min-width: 0;
   padding: 3px 6px;
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   background: var(--bg);
   color: var(--txt);
-  font: 400 10.5px var(--font-ui);
+  font: 500 11.5px var(--font-ui);
 }
 
 .worktree {
@@ -200,5 +200,5 @@
   border-radius: 999px;
   background: var(--accD);
   color: var(--acc);
-  font: 400 10px var(--font-ui);
+  font: 500 11px var(--font-ui);
 }

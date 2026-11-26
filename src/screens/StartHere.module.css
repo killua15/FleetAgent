@@ -43,7 +43,7 @@
 }
 
 .subtitle {
-  font: 400 13px var(--font-ui);
+  font: 500 13px var(--font-ui);
   color: var(--mut);
   margin: 0;
   max-width: 60ch;
@@ -84,7 +84,7 @@
 }
 
 .groupNote {
-  font: 400 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
   color: var(--dim);
   margin: 0 0 6px;
 }
@@ -96,8 +96,9 @@
   gap: 12px;
   padding: 12px 14px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: var(--panel);
+  box-shadow: var(--shadow);
 }
 
 /* Lo hecho se atenúa en vez de desaparecer o tacharse: sigue siendo consultable
@@ -118,7 +119,7 @@
 
 .mark,
 .markDone {
-  font: 400 13px var(--font-mono);
+  font: 500 13px var(--font-mono);
   line-height: 1.5;
   flex: none;
   width: 14px;
@@ -161,7 +162,7 @@
 }
 
 .why {
-  font: 400 12.5px var(--font-ui);
+  font: 500 13.5px var(--font-ui);
   color: var(--mut);
   line-height: 1.5;
   max-width: 62ch;
@@ -169,11 +170,11 @@
 
 .go {
   flex: none;
-  font: 500 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--acc);
   background: transparent;
   border: 1px solid var(--line2);
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   padding: 4px 9px;
   cursor: pointer;
   white-space: nowrap;

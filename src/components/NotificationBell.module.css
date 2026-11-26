@@ -5,7 +5,7 @@
   min-width: 15px;
   height: 15px;
   padding: 0 4px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: var(--amber);
   color: #1a1300;
   font: 700 9.5px var(--font-mono);
@@ -26,10 +26,11 @@
   display: grid;
   place-items: center;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: var(--panel);
   color: var(--mut);
   cursor: pointer;
+  box-shadow: var(--shadow);
 }
 
 .floatingActive {

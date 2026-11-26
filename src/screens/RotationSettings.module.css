@@ -40,7 +40,7 @@
   align-items: center;
   gap: 2px;
   padding: 4px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   border: 1px solid transparent;
   background: transparent;
 }
@@ -61,7 +61,7 @@
   align-items: center;
   gap: 10px;
   padding: 5px 6px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   cursor: pointer;
   border: none;
   background: transparent;
@@ -72,7 +72,7 @@
   flex: none;
   width: 22px;
   height: 22px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   border: none;
   background: transparent;
   color: var(--dim);
@@ -96,7 +96,7 @@
 .projectIcon {
   width: 26px;
   height: 26px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   flex: none;
   display: grid;
   place-items: center;
@@ -122,7 +122,7 @@
 }
 
 .footnote {
-  font: 400 10.5px var(--font-ui);
+  font: 500 11.5px var(--font-ui);
   color: var(--dim);
   line-height: 1.55;
   padding: 0 8px;
@@ -146,22 +146,23 @@
 }
 
 .checklistHint {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--mut);
   margin: 0 0 18px;
 }
 
 .dimText {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--dim);
 }
 
 .policyBox {
   padding: 12px 14px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--line);
   background: var(--panel);
   margin-bottom: 18px;
+  box-shadow: var(--shadow);
 }
 
 .policyLabel {
@@ -184,7 +185,7 @@
   align-items: flex-start;
   gap: 10px;
   padding: 7px 9px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   border: 1px solid transparent;
   cursor: pointer;
 }
@@ -206,12 +207,12 @@
 }
 
 .policyOptionLabel {
-  font: 500 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
   color: var(--txt);
 }
 
 .policyOptionHint {
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--mut);
 }
 
@@ -220,12 +221,12 @@
   align-items: center;
   gap: 10px;
   padding: 10px 14px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: var(--amberD);
   border: 1px solid var(--amber);
   margin-bottom: 16px;
   color: var(--amber);
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
 }
 
 .group {
@@ -262,7 +263,7 @@
   align-items: center;
   gap: 12px;
   padding: 11px 14px;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   cursor: pointer;
   background: transparent;
   border: 1px dashed var(--line);
@@ -278,7 +279,7 @@
 .accountBadge {
   width: 20px;
   height: 20px;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   flex: none;
   display: grid;
   place-items: center;
@@ -295,5 +296,5 @@
 }
 
 .accountName {
-  font: 600 12.5px var(--font-ui);
+  font: 600 13.5px var(--font-ui);
 }

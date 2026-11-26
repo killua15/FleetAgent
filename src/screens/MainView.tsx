@@ -841,7 +841,7 @@ function NewSessionControl({
     <div className={styles.newSessionWrap} ref={wrapRef}>
       <Button
         onClick={() => setOpen((v) => !v)}
-        style={{ font: "600 11.5px 'IBM Plex Sans', sans-serif", padding: '6px 13px', borderRadius: 6 }}
+        style={{ font: "600 12.5px 'Urbanist', system-ui, sans-serif", padding: '6px 13px', borderRadius: 6 }}
       >
         + New session
       </Button>

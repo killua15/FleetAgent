@@ -23,7 +23,7 @@
 }
 
 .dimText {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
   padding: 0 8px;
 }
@@ -53,7 +53,7 @@
   align-items: center;
   gap: 2px;
   padding: 4px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   border: 1px solid transparent;
   background: transparent;
 }
@@ -74,7 +74,7 @@
   align-items: center;
   gap: 10px;
   padding: 6px 6px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   cursor: pointer;
   border: none;
   background: transparent;
@@ -86,7 +86,7 @@
   flex: none;
   width: 22px;
   height: 22px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   border: none;
   background: transparent;
   color: var(--dim);
@@ -120,11 +120,11 @@
 }
 
 .groupName {
-  font: 600 12.5px var(--font-ui);
+  font: 600 13.5px var(--font-ui);
 }
 
 .groupSub {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
 }
 
@@ -144,7 +144,7 @@
 }
 
 .footnote {
-  font: 400 10.5px var(--font-ui);
+  font: 500 11.5px var(--font-ui);
   color: var(--dim);
   line-height: 1.55;
   padding: 0 8px;
@@ -167,7 +167,7 @@
 }
 
 .membershipHint {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--mut);
   margin-bottom: 12px;
 }
@@ -184,7 +184,7 @@
 }
 
 .discoveredHint {
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--mut);
   margin-bottom: 8px;
   line-height: 1.5;
@@ -234,9 +234,10 @@
   align-items: center;
   gap: 10px;
   padding: 9px 10px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: var(--panel);
   border: 1px dashed var(--line);
+  box-shadow: var(--shadow);
 }
 
 .discoveredInfo {
@@ -256,7 +257,7 @@
 }
 
 .discoveredProject {
-  font: 400 9.5px var(--font-mono);
+  font: 500 9.5px var(--font-mono);
   color: var(--dim);
 }
 
@@ -266,7 +267,7 @@
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   cursor: pointer;
   background: transparent;
   border: 1px dashed var(--line);
@@ -282,7 +283,7 @@
 .memberIcon {
   width: 24px;
   height: 24px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   flex: none;
   display: grid;
   place-items: center;
@@ -301,12 +302,12 @@
   display: flex;
   gap: 8px;
   padding: 9px 12px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: var(--amberD);
   border: 1px solid var(--amber);
   margin-top: 8px;
   color: var(--amber);
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   line-height: 1.5;
 }
 
@@ -346,7 +347,7 @@
   align-items: center;
   gap: 2px;
   padding: 3px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   width: 100%;
   border: 1px solid transparent;
   background: transparent;
@@ -363,7 +364,7 @@
   align-items: center;
   gap: 9px;
   padding: 5px 6px;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   cursor: pointer;
   border: none;
   background: transparent;
@@ -399,7 +400,7 @@
 }
 
 .fileMeta {
-  font: 400 9.5px var(--font-mono);
+  font: 500 9.5px var(--font-mono);
   color: var(--dim);
 }
 
@@ -439,7 +440,7 @@
   border: none;
   border-radius: 0;
   resize: none;
-  font: 400 11.5px var(--font-mono) !important;
+  font: 500 11.5px var(--font-mono) !important;
   line-height: 1.75;
   color: var(--mut);
 }
@@ -449,5 +450,5 @@
   display: grid;
   place-items: center;
   color: var(--dim);
-  font: 400 12px var(--font-mono);
+  font: 500 12px var(--font-mono);
 }

@@ -13,24 +13,26 @@
   display: flex;
   align-items: baseline;
   gap: 12px;
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg2);
+  padding: 20px 28px 16px;
+  background: var(--bg);
 }
 
 .backBtn {
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   padding: 7px 14px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
 }
 
 .title {
-  font: 600 14px var(--font-ui);
+  font: 600 clamp(22px, 2vw, 28px) var(--font-ui);
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  color: var(--ink);
 }
 
 .subtitle {
-  font: 400 11px var(--font-mono);
-  color: var(--dim);
+  font: 500 11px var(--font-mono);
+  color: var(--mut);
 }
 
 .spacer {
@@ -51,7 +53,7 @@
 }
 
 .dimText {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--dim);
   padding: 10px;
 }
@@ -75,7 +77,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: 1px solid transparent;
   background: transparent;
 }
@@ -176,7 +178,7 @@
 }
 
 .commitSubject {
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -193,13 +195,13 @@
 }
 
 .commitAuthor {
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   color: var(--dim);
   flex: none;
 }
 
 .commitDate {
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   color: var(--dim);
   flex: none;
 }
@@ -235,12 +237,12 @@
 }
 
 .commitMetaLine {
-  font: 400 11px var(--font-mono);
+  font: 500 11px var(--font-mono);
   color: var(--dim);
 }
 
 .commitHashFull {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
 }
 
@@ -256,7 +258,7 @@
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   border: 1px solid transparent;
   background: transparent;
   cursor: pointer;
@@ -280,7 +282,7 @@
 }
 
 .filePath {
-  font: 400 11.5px var(--font-mono);
+  font: 500 11.5px var(--font-mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -288,8 +290,15 @@
 
 .diffPanel {
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: var(--panel);
   overflow: auto;
   padding: 8px 0;
+  box-shadow: var(--shadow);
+}
+
+@media (max-width: 999px) {
+  .header {
+    padding: 16px 18px 12px;
+  }
 }

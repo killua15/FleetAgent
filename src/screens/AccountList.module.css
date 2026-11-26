@@ -11,14 +11,17 @@
 .header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg2);
+  padding: 20px 28px 16px;
+  background: var(--bg);
 }
 
 .title {
-  font: 600 14px var(--font-ui);
+  font: 600 clamp(22px, 2vw, 28px) var(--font-ui);
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  color: var(--ink);
 }
 
 .spacer {
@@ -26,9 +29,9 @@
 }
 
 .backBtn {
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   padding: 7px 14px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: transparent;
   color: var(--mut);
@@ -36,9 +39,9 @@
 }
 
 .addBtn {
-  font: 600 11.5px var(--font-ui);
+  font: 600 12.5px var(--font-ui);
   padding: 7px 16px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: none;
   background: var(--acc);
   color: #15151c;
@@ -56,7 +59,7 @@
 
 .empty {
   color: var(--dim);
-  font: 400 12px var(--font-mono);
+  font: 500 12px var(--font-mono);
   padding: 30px 0;
   text-align: center;
 }
@@ -66,15 +69,16 @@
   align-items: center;
   gap: 12px;
   padding: 12px 14px;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--line);
   background: var(--panel);
+  box-shadow: var(--shadow);
 }
 
 .badge {
   width: 28px;
   height: 28px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   display: grid;
   place-items: center;
   font: 700 13px var(--font-mono);
@@ -89,18 +93,18 @@
 }
 
 .name {
-  font: 600 12.5px var(--font-ui);
+  font: 600 13.5px var(--font-ui);
 }
 
 .meta {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
 }
 
 /* The config dir is what decides which login an account actually uses, so it
    reads as a value rather than as more dim metadata. */
 .configDir {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--mut);
 }
 
@@ -123,7 +127,7 @@
 .deleteBtn {
   font: 500 11px var(--font-mono);
   padding: 5px 10px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: transparent;
   color: var(--dim);
@@ -134,4 +138,10 @@
 .deleteBtn:hover {
   border-color: var(--red);
   color: var(--red);
+}
+
+@media (max-width: 999px) {
+  .header {
+    padding: 16px 18px 12px;
+  }
 }

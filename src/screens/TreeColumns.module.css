@@ -21,15 +21,15 @@
 }
 
 .backBtn {
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   padding: 6px 12px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
 }
 
 .badge {
   width: 22px;
   height: 22px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   background: var(--accD);
   color: var(--acc);
   display: grid;
@@ -59,7 +59,7 @@
 .viewSwitcher {
   display: flex;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   overflow: hidden;
   flex: none;
 }
@@ -151,14 +151,14 @@
 }
 
 .emptyStateText {
-  font: 400 12.5px var(--font-ui);
+  font: 500 13.5px var(--font-ui);
   color: var(--dim);
 }
 
 .nodeCard {
   position: absolute;
   background: var(--panel);
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   cursor: pointer;
   user-select: none;
   border: 1px solid var(--line);
@@ -192,7 +192,7 @@
 }
 
 .nodeRole {
-  font: 600 12.5px var(--font-ui);
+  font: 600 13.5px var(--font-ui);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -201,7 +201,7 @@
 .addChildBtn {
   width: 18px;
   height: 18px;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: var(--bg2);
   color: var(--acc);
@@ -219,7 +219,7 @@
 
 .nodePromptPreview {
   padding: 0 12px 5px;
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
   white-space: nowrap;
   overflow: hidden;
@@ -328,7 +328,7 @@
 }
 
 .drawerHint {
-  font: 400 10px var(--font-ui);
+  font: 500 11px var(--font-ui);
   color: var(--dim);
   line-height: 1.5;
 }
@@ -339,7 +339,7 @@
 }
 
 .editorError {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--red);
 }
 

@@ -35,7 +35,7 @@
 
 .empty,
 .hint {
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--dim);
   line-height: 1.5;
 }
@@ -47,17 +47,17 @@
   gap: 10px;
   padding: 7px 10px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   background: var(--bg2);
 }
 
 .sourceName {
-  font: 500 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
 }
 
 .sourceKind,
 .sourceLogin {
-  font: 400 10.5px var(--font-ui);
+  font: 500 11.5px var(--font-ui);
   color: var(--dim);
 }
 
@@ -85,7 +85,7 @@
   border: 0;
   background: transparent;
   color: var(--dim);
-  font: 400 10.5px var(--font-ui);
+  font: 500 11.5px var(--font-ui);
   cursor: pointer;
 }
 
@@ -105,12 +105,12 @@
   gap: 8px;
   padding: 12px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: var(--bg2);
 }
 
 .formTitle {
-  font: 500 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
 }
 
 .formRow {
@@ -123,10 +123,10 @@
 .select {
   padding: 5px 8px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   background: var(--bg);
   color: var(--txt);
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
 }
 
 .input {
@@ -157,6 +157,6 @@
   align-items: center;
   gap: 7px;
   min-width: 180px;
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   cursor: pointer;
 }

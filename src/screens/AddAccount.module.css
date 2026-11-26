@@ -26,7 +26,7 @@
   width: 620px;
   background: var(--panel);
   border: 1px solid var(--line2);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
@@ -93,7 +93,7 @@
 }
 
 .hint {
-  font: 400 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
   color: var(--mut);
 }
 
@@ -112,13 +112,13 @@
   flex-direction: column;
   gap: 10px;
   padding: 14px;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--grn);
   background: var(--grnD);
 }
 
 .importedPath {
-  font: 400 11.5px var(--font-mono);
+  font: 500 11.5px var(--font-mono);
   color: var(--txt);
   word-break: break-all;
 }
@@ -137,13 +137,14 @@
   align-items: flex-start;
   gap: 3px;
   padding: 9px 11px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--line);
   background: var(--panel);
   cursor: pointer;
   text-align: left;
   width: 100%;
   min-width: 0;
+  box-shadow: var(--shadow);
 }
 
 .loginRow:hover {
@@ -161,7 +162,7 @@
 }
 
 .loginMeta {
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--mut);
   max-width: 100%;
   overflow: hidden;
@@ -174,7 +175,7 @@
   background: transparent;
   border: none;
   color: var(--acc);
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   cursor: pointer;
   padding: 2px 0;
 }
@@ -207,7 +208,7 @@
   align-items: flex-start;
   gap: 7px;
   padding: 16px;
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   cursor: pointer;
   text-align: left;
   background: var(--bg2);
@@ -235,7 +236,7 @@
 .providerIcon {
   width: 34px;
   height: 34px;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   display: grid;
   place-items: center;
   font: 700 15px var(--font-mono);
@@ -247,7 +248,7 @@
 }
 
 .providerCli {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
 }
 
@@ -257,17 +258,17 @@
 }
 
 .billingDesc {
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--mut);
   line-height: 1.5;
 }
 
 .terminal {
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--line2);
   background: #0b0b10;
   padding: 14px 16px;
-  font: 400 11.5px var(--font-mono);
+  font: 500 11.5px var(--font-mono);
   line-height: 1.8;
   color: #c9c9d8;
 }
@@ -285,7 +286,7 @@
   align-self: flex-start;
   font: 500 11px var(--font-mono);
   padding: 6px 12px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: var(--panel2);
   color: var(--mut);
@@ -300,7 +301,7 @@
 .input {
   font: 500 12px var(--font-mono);
   padding: 10px 12px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: var(--bg2);
   color: var(--txt);
@@ -335,7 +336,7 @@
 .nameInput {
   font: 600 13px var(--font-ui);
   padding: 9px 11px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: var(--bg2);
   color: var(--txt);
@@ -349,7 +350,7 @@
 .select {
   font: 500 12px var(--font-mono);
   padding: 8px 10px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: var(--bg2);
   color: var(--txt);
@@ -357,11 +358,11 @@
 }
 
 .note {
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--dim);
   line-height: 1.6;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: var(--bg2);
   border: 1px dashed var(--line);
 }
@@ -378,10 +379,10 @@
   gap: 10px;
   margin-top: 4px;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: var(--amberD);
   color: var(--amber);
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   line-height: 1.6;
 }
 
@@ -390,7 +391,7 @@
   align-items: center;
   gap: 8px;
   color: var(--txt);
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   cursor: pointer;
 }
 
@@ -404,9 +405,9 @@
 }
 
 .backBtn {
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   padding: 7px 14px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: transparent;
   color: var(--mut);
@@ -414,9 +415,9 @@
 }
 
 .nextBtn {
-  font: 600 12px var(--font-ui);
+  font: 600 13px var(--font-ui);
   padding: 7px 18px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: none;
   cursor: pointer;
   background: var(--acc);

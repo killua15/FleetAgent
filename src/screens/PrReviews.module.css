@@ -12,25 +12,28 @@
 .header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg2);
+  padding: 20px 28px 16px;
+  background: var(--bg);
 }
 
 .backBtn {
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   padding: 7px 14px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
 }
 
 .title {
-  font: 600 14px var(--font-ui);
+  font: 600 clamp(22px, 2vw, 28px) var(--font-ui);
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  color: var(--ink);
 }
 
 .subtitle {
-  font: 400 11px var(--font-ui);
-  color: var(--dim);
+  font: 500 var(--fs-base) var(--font-ui);
+  color: var(--mut);
 }
 
 .spacer {
@@ -38,7 +41,7 @@
 }
 
 .countdown {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
 }
 
@@ -73,7 +76,7 @@
   align-items: center;
   gap: 8px;
   padding: 9px 10px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   border: 1px solid transparent;
   background: transparent;
   cursor: pointer;
@@ -94,7 +97,7 @@
 }
 
 .prCountDim {
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   color: var(--dim);
 }
 
@@ -102,7 +105,7 @@
   min-width: 20px;
   height: 20px;
   padding: 0 6px;
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   background: var(--amberD);
   color: var(--amber);
   font: 700 10.5px var(--font-mono);
@@ -117,7 +120,7 @@
   min-width: 20px;
   height: 20px;
   padding: 0 6px;
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   background: var(--grnD);
   color: var(--grn);
   font: 700 11px var(--font-mono);
@@ -126,7 +129,7 @@
 }
 
 .dimText {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--dim);
   padding: 10px;
 }
@@ -160,11 +163,11 @@
   align-items: center;
   gap: 7px;
   padding: 5px 11px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: transparent;
   color: var(--mut);
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   cursor: pointer;
 }
 
@@ -188,7 +191,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 500 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
   color: var(--txt);
 }
 
@@ -200,7 +203,7 @@
 
 .prCard {
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   background: var(--panel);
   overflow: hidden;
   /* Without this, a flex child in a column flex container defaults to
@@ -209,6 +212,7 @@
      it keep its natural content height, clipping everything that doesn't
      fit. This is what was actually cutting content off, not .commentList. */
   flex-shrink: 0;
+  box-shadow: var(--shadow);
 }
 
 .prCardHeader {
@@ -256,13 +260,13 @@
 
 .noComments {
   padding: 10px 14px;
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--dim);
 }
 
 .checkError {
   padding: 10px 14px;
-  font: 400 11px var(--font-mono);
+  font: 500 11px var(--font-mono);
   color: var(--red);
   background: var(--redD);
   overflow: hidden;
@@ -304,7 +308,7 @@
 }
 
 .commentDate {
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   color: var(--dim);
 }
 
@@ -317,7 +321,7 @@
 }
 
 .commentBody {
-  font: 400 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
   color: var(--mut);
   line-height: 1.5;
   margin: 0;
@@ -327,4 +331,10 @@
 .commentActions {
   display: flex;
   gap: 8px;
+}
+
+@media (max-width: 999px) {
+  .header {
+    padding: 16px 18px 12px;
+  }
 }

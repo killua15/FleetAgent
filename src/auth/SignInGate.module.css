@@ -32,7 +32,7 @@
 .mark {
   width: 64px;
   height: 64px;
-  border-radius: 18px;
+  border-radius: var(--r-lg);
   background: var(--accD);
   border: 1px solid var(--acc);
   display: grid;
@@ -54,7 +54,7 @@
 }
 
 .blurb {
-  font: 400 13.5px var(--font-ui);
+  font: 500 13.5px var(--font-ui);
   color: var(--mut);
   line-height: 1.6;
 }
@@ -67,12 +67,13 @@
   gap: 10px;
   font: 600 14px var(--font-ui);
   padding: 11px 22px;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--txt);
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
+  box-shadow: var(--shadow);
 }
 
 .googleBtn:hover:not(:disabled) {
@@ -86,9 +87,9 @@
 }
 
 .secondaryBtn {
-  font: 500 12.5px var(--font-ui);
+  font: 500 13.5px var(--font-ui);
   padding: 7px 16px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--line);
   background: transparent;
   color: var(--mut);
@@ -107,7 +108,7 @@
 }
 
 .email {
-  font: 400 12px var(--font-mono);
+  font: 500 12px var(--font-mono);
   color: var(--txt);
   padding: 5px 12px;
   border-radius: 99px;
@@ -116,14 +117,14 @@
 }
 
 .error {
-  font: 400 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
   color: var(--amber);
   max-width: 340px;
   line-height: 1.5;
 }
 
 .footNote {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
   line-height: 1.7;
 }

@@ -9,7 +9,7 @@
   display: flex;
   align-self: flex-start;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   overflow: hidden;
 }
 
@@ -17,7 +17,7 @@
 .toggleOff {
   border: 0;
   padding: 2px 9px;
-  font: 400 10.5px var(--font-ui);
+  font: 500 11.5px var(--font-ui);
   cursor: pointer;
 }
 
@@ -47,7 +47,7 @@
   padding: 1px 8px;
   background: var(--bg);
   color: var(--txt);
-  font: 400 10.5px var(--font-ui);
+  font: 500 11.5px var(--font-ui);
   cursor: pointer;
 }
 
