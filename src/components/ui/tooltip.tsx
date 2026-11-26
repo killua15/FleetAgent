@@ -31,13 +31,13 @@ function TooltipContent({ className, sideOffset = 6, children, ...props }: React
         data-slot="tooltip-content"
         sideOffset={sideOffset}
         className={cn(
-          'z-50 max-w-64 rounded-md border border-[var(--line)] bg-[var(--panel)] px-2.5 py-1.5 text-[11.5px] text-[var(--txt)] shadow-[var(--shadow)] data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95',
+          'z-50 max-w-64 rounded-[9px] bg-[var(--ink)] px-2.5 py-1.5 text-[length:var(--fs-xs)] font-semibold text-[var(--bg)] shadow-[var(--shadow)] duration-150 ease-[var(--ease)] data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95',
           className,
         )}
         {...props}
       >
         {children}
-        <TooltipPrimitive.Arrow className="fill-[var(--panel)]" />
+        <TooltipPrimitive.Arrow className="fill-[var(--ink)]" />
       </TooltipPrimitive.Content>
     </TooltipPrimitive.Portal>
   );
