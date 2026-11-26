@@ -1,201 +1,368 @@
+/* Talmo's top bar: brand, the destinations in one raised pill, round icon
+   buttons, then the screen's own actions. Shorter than Talmo's 80px — the bar
+   sits above the terminal grid, and every pixel it takes is a terminal row. */
 .bar {
-  height: 44px;
+  height: 58px;
   flex: none;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 0 14px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg2);
+  padding: 0 18px;
+  background: var(--bg);
+  box-shadow: 0 1px 0 var(--line);
+  position: relative;
+  z-index: 20;
+}
+
+/* ── Brand ─────────────────────────────────────────────────────────── */
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: none;
+}
+
+.mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  background: var(--acc);
+  color: var(--acc-ink);
+  font: 700 17px var(--font-mono);
+  box-shadow: 0 8px 16px -10px color-mix(in srgb, var(--acc) 80%, transparent);
+}
+
+.brandText {
+  display: flex;
+  flex-direction: column;
+  line-height: 1;
 }
 
 .wordmark {
-  font: 700 13px var(--font-mono);
-  color: var(--acc);
+  font-size: var(--fs-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ink);
 }
 
 .version {
-  font: 400 10.5px var(--font-mono);
+  margin-top: 3px;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
   color: var(--dim);
+  white-space: nowrap;
 }
 
 .busyIndicator {
   color: var(--dim);
+  flex: none;
 }
 
+/* ── Nav pill (tnav) ──────────────────────────────────────────────── */
+
 .icons {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 2px;
-  margin-left: 10px;
   min-width: 0;
+  max-width: max-content;
+  flex: 0 1 auto;
+  padding: 4px;
+  border-radius: 99px;
+  background: var(--raised);
+  box-shadow: inset 0 0 0 1px var(--line), var(--shadow);
+  overflow: hidden;
+}
+
+/* The marker behind the current destination; `useSlidingIndicator` sizes
+   and moves it, so it starts invisible at the pill's corner. */
+.navPill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border-radius: 99px;
+  background: var(--acc);
+  box-shadow: 0 8px 16px -10px color-mix(in srgb, var(--acc) 80%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease);
 }
 
 /* Separates work / inspect / configure. A hairline rather than a gap: a gap
    alone reads as "these didn't fit", a rule reads as a decision. */
 .navRule {
   width: 1px;
-  height: 16px;
-  margin: 0 7px;
-  background: var(--line);
+  height: 18px;
+  margin: 0 5px;
+  background: var(--line2);
   flex: none;
 }
 
 .navItem,
-.navItemActive,
-.navBtn,
-.navBtnActive {
+.navItemActive {
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 26px;
-  padding: 0 8px;
-  border: 1px solid transparent;
-  border-radius: 6px;
+  gap: 7px;
+  height: 34px;
+  padding: 0 13px 0 10px;
+  border: 0;
+  border-radius: 99px;
   background: transparent;
-  color: var(--dim);
-  font: 400 11.5px var(--font-ui);
+  color: var(--mut);
+  font-size: var(--fs-md);
+  font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
-  position: relative;
-  transition: color 0.12s, background 0.12s, border-color 0.12s;
+  flex: none;
 }
 
-.navBtn,
-.navBtnActive {
-  padding: 0 6px;
-}
-
-.navItem:hover,
-.navBtn:hover {
+.navItem:hover {
   color: var(--txt);
-  background: var(--panel);
 }
 
-/* The only coloured item on the bar, and it means one thing: you are here. */
-.navItemActive,
-.navBtnActive {
-  color: var(--acc);
-  background: var(--accD);
-  border-color: color-mix(in srgb, var(--acc) 35%, transparent);
+/* The only coloured item on the bar, and it means one thing: you are here.
+   The colour comes from the sliding marker behind it. */
+.navItemActive {
+  color: var(--acc-ink);
+}
+
+.navItem svg,
+.navItemActive svg {
+  width: 17px;
+  height: 17px;
 }
 
 .navLabel {
-  font: 500 11.5px var(--font-ui);
-}
-
-/* Narrow windows drop the labels rather than pushing the terminal actions off
-   the bar — the icons still carry their tooltips. */
-@media (max-width: 1180px) {
-  .navLabel {
-    display: none;
-  }
-
-  .navItem,
-  .navItemActive {
-    padding: 0 6px;
-  }
+  font: inherit;
 }
 
 .navBadge {
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
-  border-radius: 8px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 99px;
   background: var(--amber);
   color: #1a1300;
-  font: 700 9.5px var(--font-mono);
-  display: grid;
-  place-items: center;
-}
-
-.iconBtn {
-  width: 26px;
-  height: 26px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
-  background: var(--panel);
-  display: grid;
-  place-items: center;
-  font: 600 12px var(--font-mono);
-  text-decoration: none;
-  transition: border-color 0.12s;
-}
-
-.iconBtn:hover {
-  border-color: var(--line2);
-}
-
-.iconBtnWrap {
-  position: relative;
-  display: inline-flex;
-}
-
-.iconBadge {
-  position: absolute;
-  top: -5px;
-  right: -6px;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 3px;
-  border-radius: 7px;
-  background: var(--red);
-  color: #fff;
-  font: 700 9px var(--font-mono);
-  display: grid;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  display: inline-grid;
   place-items: center;
   line-height: 1;
+}
+
+.navItemActive .navBadge {
+  background: var(--acc-ink);
+  color: var(--acc);
+}
+
+/* ── Round icon buttons (ibtn) ────────────────────────────────────── */
+
+.tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.navBtn,
+.navBtnActive {
+  position: relative;
+  z-index: 1;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: var(--raised);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--line), var(--shadow);
+  cursor: pointer;
+}
+
+/* Inside the pill (the "back to terminals" home button) the round button
+   drops its own surface — it already sits on one. */
+.icons .navBtn {
+  width: 34px;
+  height: 34px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--mut);
+}
+
+.navBtn:hover {
+  background: var(--card-2);
+  color: var(--txt);
+}
+
+.navBtnActive {
+  background: var(--acc);
+  color: var(--acc-ink);
+  box-shadow: 0 8px 16px -10px color-mix(in srgb, var(--acc) 80%, transparent);
+}
+
+.navBtn svg,
+.navBtnActive svg {
+  width: 17px;
+  height: 17px;
+}
+
+/* The bell's unread count, placed the way Talmo places `ibtn__badge`. */
+.navBtn > span:last-child:not(:first-child),
+.navBtnActive > span:last-child:not(:first-child) {
+  top: 1px;
+  right: -2px;
+  box-shadow: 0 0 0 2px var(--bg);
 }
 
 .spacer {
   flex: 1;
 }
 
-/* Hidden until the row above no longer fits (see the media query below) —
-   this is the collapsed stand-in for the whole `.icons` nav. */
-.navMenuTrigger {
-  display: none;
-  position: relative;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--dim);
-  cursor: pointer;
-  flex: none;
-}
-
-.navMenuTrigger:hover {
-  color: var(--txt);
-  background: var(--panel);
-}
-
-/* Below this, the icon row doesn't wrap (no flex-wrap) and every item is
-   already at its icon-only minimum — it would overlap instead of shrinking
-   further, so it collapses into the single menu button instead. */
-@media (max-width: 760px) {
-  .icons {
-    display: none;
-  }
-
-  .navMenuTrigger {
-    display: inline-flex;
-  }
-}
-
 /* No es decoración: una máquina en yolo ejecuta sin preguntar, y eso tiene que
    verse sin abrir Settings. */
 .yoloBadge {
   flex: none;
-  padding: 2px 8px;
-  border-radius: 5px;
-  border: 1px solid var(--amber);
+  padding: 3px 9px;
+  border-radius: 99px;
   background: color-mix(in srgb, var(--amber) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--amber) 55%, transparent);
   color: var(--amber);
-  font: 600 10px var(--font-mono);
+  font: 700 10px var(--font-mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+/* ── Responsive ───────────────────────────────────────────────────── */
+
+/* Narrow windows drop the labels rather than pushing the terminal actions off
+   the bar — the icons still carry their tooltips, and the count moves onto
+   the icon's corner. */
+@media (max-width: 1279px) {
+  .navLabel {
+    display: none;
+  }
+
+  .navItem,
+  .navItemActive {
+    padding: 0 10px;
+  }
+
+  .navBadge {
+    position: absolute;
+    top: 1px;
+    right: 0;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    font-size: 10px;
+  }
+
+  .brandText {
+    display: none;
+  }
+}
+
+@media (max-width: 999px) {
+  .bar {
+    gap: 10px;
+    padding: 0 14px;
+  }
+}
+
+/* ── Tab bar (≤ 760px) ────────────────────────────────────────────── */
+
+.tabbar {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .icons,
+  .tools {
+    display: none;
+  }
+
+  .bar {
+    height: 52px;
+  }
+
+  .tabbar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 40;
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+    background: var(--card);
+    box-shadow: 0 -1px 0 var(--line);
+  }
+
+  .tabPill {
+    position: absolute;
+    top: 0;
+    left: 0;
+    border-radius: 12px;
+    background: var(--accD);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .tab {
+    position: relative;
+    z-index: 1;
+    height: 52px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--mut);
+    font-size: var(--fs-2xs);
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .tab[aria-current='page'] {
+    color: var(--acc);
+  }
+
+  .tabIco {
+    position: relative;
+    display: grid;
+    place-items: center;
+  }
+
+  .tabIco svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .tabCount {
+    position: absolute;
+    top: -6px;
+    right: -12px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 99px;
+    background: var(--amber);
+    color: #1a1300;
+    font-size: 10px;
+    font-weight: 700;
+    display: grid;
+    place-items: center;
+    box-shadow: 0 0 0 2px var(--card);
+  }
 }

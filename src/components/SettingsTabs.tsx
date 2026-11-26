@@ -1,4 +1,6 @@
+import { useRef } from 'react';
 import { useNavigation, type ScreenName } from '../nav/NavigationProvider';
+import { useSlidingIndicator } from '../lib/motion';
 import styles from './SettingsTabs.module.css';
 
 // The `shared-memory` tab is deliberately absent: the screen is a complete
@@ -30,30 +32,41 @@ interface SettingsTabsProps {
  * and the "← workspace" link back to MainView. */
 export function SettingsTabs({ active, title, subtitle }: SettingsTabsProps) {
   const { navigate } = useNavigation();
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const thumbRef = useRef<HTMLSpanElement>(null);
+  useSlidingIndicator(tabsRef, thumbRef, active);
 
   return (
     <div className={styles.header}>
-      <span className={styles.crumb}>settings /</span>
-      <span className={styles.title}>{title}</span>
-      {subtitle && <span className={styles.subtitle}>— {subtitle}</span>}
-      <span className={styles.spacer} />
-      <div className={styles.tabs}>
-        {TABS.map((t) => (
-          <button
-            key={t.screen}
-            className={t.screen === active ? styles.tabActive : styles.tab}
-            onClick={() => navigate(t.screen)}
-          >
-            {t.label}
-          </button>
-        ))}
+      <div className={styles.headText}>
+        <span className={styles.crumb}>Settings</span>
+        <h1 className={styles.title}>{title}</h1>
+        {subtitle && <p className={styles.subtitle}>{subtitle}</p>}
       </div>
-      {/* Always jumps straight to the terminals home — `back()` would just
-       * undo one tab switch (general→rotation all push their own history
-       * entry), landing on another settings tab instead of leaving Settings. */}
-      <button className={styles.backLink} onClick={() => navigate('terminals')}>
-        ← terminals
-      </button>
+      <div className={styles.side}>
+        {/* Always jumps straight to the terminals home — `back()` would just
+         * undo one tab switch (general→rotation all push their own history
+         * entry), landing on another settings tab instead of leaving Settings. */}
+        <button className={styles.backLink} onClick={() => navigate('terminals')}>
+          ← terminals
+        </button>
+        {/* Talmo's segmented tabs: a well with a thumb that slides to the
+         * settings page you're on. */}
+        <div ref={tabsRef} className={styles.tabs} role="tablist">
+          <span ref={thumbRef} className={styles.thumb} aria-hidden />
+          {TABS.map((t) => (
+            <button
+              key={t.screen}
+              role="tab"
+              aria-selected={t.screen === active}
+              className={t.screen === active ? styles.tabActive : styles.tab}
+              onClick={() => navigate(t.screen)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

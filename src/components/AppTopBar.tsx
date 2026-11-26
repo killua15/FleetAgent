@@ -1,11 +1,12 @@
 import type { ReactNode } from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke, useInFlightCount } from '../lib/invoke';
 import { useNavigation, type ScreenName } from '../nav/NavigationProvider';
 import type { ProjectPrInbox } from '../types/pullRequest';
 import { IconTooltip } from './ui/tooltip';
 import { Spinner } from './Spinner';
+import { useSlidingIndicator } from '../lib/motion';
 import { AccountsIcon, BellIcon, BranchIcon, CompassIcon, FactoryIcon, FilesIcon, HomeIcon, MachinesIcon, MenuIcon, PullRequestIcon, QueueIcon, SettingsIcon, TasksIcon, TerminalIcon, UsageIcon } from './NavIcons';
 import { UsageModal } from './UsageModal';
 import { NotificationBell, useUnreadNotifications } from './NotificationBell';
@@ -24,11 +25,53 @@ function NavItem({ screen, label, icon, badge = 0 }: { screen: ScreenName; label
   const { current, navigate } = useNavigation();
   const active = current.screen === screen;
   return (
-    <button className={active ? styles.navItemActive : styles.navItem} onClick={() => navigate(screen)} aria-current={active ? 'page' : undefined}>
+    <button className={active ? styles.navItemActive : styles.navItem} onClick={() => navigate(screen)} aria-current={active ? 'page' : undefined} title={label}>
       {icon}
       <span className={styles.navLabel}>{label}</span>
       {badge > 0 && <span className={styles.navBadge}>{badge > 99 ? '99+' : badge}</span>}
     </button>
+  );
+}
+
+/** Talmo's `tnav`: the destinations in one raised pill, with a marker that
+ * slides to whichever one you're on. */
+function NavPill({ children }: { children: ReactNode }) {
+  const { current } = useNavigation();
+  const ref = useRef<HTMLElement>(null);
+  const pill = useRef<HTMLSpanElement>(null);
+  useSlidingIndicator(ref, pill, current.screen);
+  return (
+    <nav ref={ref} className={styles.icons}>
+      <span ref={pill} className={styles.navPill} aria-hidden />
+      {children}
+    </nav>
+  );
+}
+
+function TabItem({ screen, label, icon, badge = 0 }: { screen: ScreenName; label: string; icon: ReactNode; badge?: number }) {
+  const { current, navigate } = useNavigation();
+  const active = current.screen === screen;
+  return (
+    <button className={styles.tab} onClick={() => navigate(screen)} aria-current={active ? 'page' : undefined}>
+      <span className={styles.tabIco}>
+        {icon}
+        {badge > 0 && <span className={styles.tabCount}>{badge > 99 ? '99+' : badge}</span>}
+      </span>
+      {label}
+    </button>
+  );
+}
+
+function TabBar({ children }: { children: ReactNode }) {
+  const { current } = useNavigation();
+  const ref = useRef<HTMLElement>(null);
+  const pill = useRef<HTMLSpanElement>(null);
+  useSlidingIndicator(ref, pill, current.screen);
+  return (
+    <nav ref={ref} className={styles.tabbar} data-tabbar>
+      <span ref={pill} className={styles.tabPill} aria-hidden />
+      {children}
+    </nav>
   );
 }
 
@@ -100,19 +143,27 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
   }, []);
 
   return (
+    <>
     <div className={styles.bar}>
       {/* A screen's own layout controls belong at the far left, ahead of the
        * wordmark — the place every editor puts them, and more importantly a
        * place that doesn't move when the thing they control disappears. */}
       {leading}
-      <span className={styles.wordmark}>⌥ hangar</span>
-      <span className={styles.version}>v0.1</span>
+      <span className={styles.brand}>
+        <span className={styles.mark} aria-hidden>
+          ⌥
+        </span>
+        <span className={styles.brandText}>
+          <b className={styles.wordmark}>hangar</b>
+          <small className={styles.version}>v0.1</small>
+        </span>
+      </span>
       {showBusy && (
         <span className={styles.busyIndicator} title="A background request is in progress">
           <Spinner label="working…" />
         </span>
       )}
-      <nav className={styles.icons}>
+      <NavPill>
         {/* Home first and alone: it's the only one that isn't a destination so
          * much as a way back. Hidden on Terminals, which *is* home. */}
         {current.screen !== 'terminals' && (
@@ -147,25 +198,26 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
 
         <NavItem screen="git-panel" label="Git" icon={<BranchIcon />} />
         <NavItem screen="files" label="Files" icon={<FilesIcon />} />
+      </NavPill>
+
+      {/* Talmo's round icon buttons: things you open rather than places you
+       * go, so they sit outside the pill and its sliding marker. */}
+      <div className={styles.tools}>
         {/* A modal, not a screen: it answers a question and hands you back to
             what you were doing. Navigating away would close the terminals you
             were watching while you checked. */}
         <IconTooltip label="Usage — what each account has spent, this window and this week">
-          <button className={usageOpen ? styles.navItemActive : styles.navItem} onClick={() => setUsageOpen(true)}>
+          <button className={usageOpen ? styles.navBtnActive : styles.navBtn} onClick={() => setUsageOpen(true)} aria-label="Usage">
             <UsageIcon />
-            <span className={styles.navLabel}>Usage</span>
           </button>
         </IconTooltip>
-
-        <span className={styles.navRule} />
-
         {/* What Hangar notified about, readable even when Do Not Disturb kept
          * the OS notifications away. */}
         <NotificationBell className={styles.navBtn} activeClassName={styles.navBtnActive} />
         {/* Icon-only: a person and a gear are the two symbols nobody needs
          * taught, and they're the two you press least. */}
         <IconTooltip label="Accounts — add one or point it at a login">
-          <button className={current.screen === 'account-list' ? styles.navBtnActive : styles.navBtn} onClick={() => navigate('account-list')}>
+          <button className={current.screen === 'account-list' ? styles.navBtnActive : styles.navBtn} onClick={() => navigate('account-list')} aria-label="Accounts">
             <AccountsIcon />
           </button>
         </IconTooltip>
@@ -173,25 +225,52 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
           <button
             className={current.screen.endsWith('-settings') ? styles.navBtnActive : styles.navBtn}
             onClick={() => navigate('general-settings')}
+            aria-label="Settings"
           >
             <SettingsIcon />
           </button>
         </IconTooltip>
-      </nav>
-      {/* Below `.navMenu`'s breakpoint the row above overlaps rather than
-       * wrapping (no flex-wrap, and every item already at its minimum
-       * width), so instead of shrinking further it collapses into this one
-       * button — same destinations, same order, as a dropdown. */}
+      </div>
+      <span className={styles.spacer} />
+      {mode === 'yolo' && (
+        <span className={styles.yoloBadge} title="Las terminales de este Mac ejecutan sin pedir permiso — Settings → modo de las terminales">
+          yolo
+        </span>
+      )}
+      {/* The ⌘K command palette is hidden: it searches `list_workspace_sessions`
+       * rows that never get pruned when a terminal closes, so closed ones
+       * lingered forever — and the sidebar's own filter already covers the
+       * same "find a terminal" job against live data. `CommandPalette.tsx`,
+       * its route, and the ⌘K shortcut in `App.tsx` are untouched; restoring
+       * this is putting the button back and fixing the underlying query. */}
+      {/* Who is signed in used to sit here. It lives in Settings → general now,
+       * with the plan and the way out — the bar is for where you're going, not
+       * for who you are. */}
+      {primaryAction}
+      {usageOpen && <UsageModal onClose={() => setUsageOpen(false)} />}
+    </div>
+    {/* Talmo's tab bar: below 760px the pill no longer fits, so the five
+     * destinations you use most move to the bottom edge, and everything —
+     * same destinations, same order as before — stays one tap away in More. */}
+    <TabBar>
+      <TabItem screen="terminals" label="Terminals" icon={<TerminalIcon />} />
+      <TabItem screen="machines" label="Machines" icon={<MachinesIcon />} />
+      <TabItem screen="task-board" label="Tasks" icon={<TasksIcon />} />
+      <TabItem screen="pr-reviews" label="PRs" icon={<PullRequestIcon />} badge={pendingPrComments} />
+      <TabItem screen="factory" label="Factory" icon={<FactoryIcon />} />
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button className={styles.navMenuTrigger} aria-label="Menu">
-            <MenuIcon />
-            {pendingPrComments + unreadNotifications > 0 && (
-              <span className={styles.navBadge}>{pendingPrComments + unreadNotifications > 99 ? '99+' : pendingPrComments + unreadNotifications}</span>
-            )}
+          <button className={styles.tab} aria-label="Menu">
+            <span className={styles.tabIco}>
+              <MenuIcon />
+              {pendingPrComments + unreadNotifications > 0 && (
+                <span className={styles.tabCount}>{pendingPrComments + unreadNotifications > 99 ? '99+' : pendingPrComments + unreadNotifications}</span>
+              )}
+            </span>
+            More
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent>
+        <DropdownMenuContent side="top">
           {current.screen !== 'terminals' && (
             <DropdownMenuItem onClick={() => navigate('terminals')}>
               <HomeIcon /> Back to terminals
@@ -238,23 +317,7 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      <span className={styles.spacer} />
-      {mode === 'yolo' && (
-        <span className={styles.yoloBadge} title="Las terminales de este Mac ejecutan sin pedir permiso — Settings → modo de las terminales">
-          yolo
-        </span>
-      )}
-      {/* The ⌘K command palette is hidden: it searches `list_workspace_sessions`
-       * rows that never get pruned when a terminal closes, so closed ones
-       * lingered forever — and the sidebar's own filter already covers the
-       * same "find a terminal" job against live data. `CommandPalette.tsx`,
-       * its route, and the ⌘K shortcut in `App.tsx` are untouched; restoring
-       * this is putting the button back and fixing the underlying query. */}
-      {/* Who is signed in used to sit here. It lives in Settings → general now,
-       * with the plan and the way out — the bar is for where you're going, not
-       * for who you are. */}
-      {primaryAction}
-      {usageOpen && <UsageModal onClose={() => setUsageOpen(false)} />}
-    </div>
+    </TabBar>
+    </>
   );
 }
