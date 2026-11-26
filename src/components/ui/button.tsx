@@ -5,7 +5,8 @@ import { Slot } from "radix-ui"
 import { cn } from "@/lib/utils"
 
 // Talmo's button family: `btn` (40px, r11, inset hairline), `btn--dark` for the
-// one primary action, `btn--ghost`, and `ibtn` — the round icon button. Sizes
+// one primary action, `btn--ghost`, and `ibtn` — the round icon button
+// (`size="icon-round"`). Sizes
 // are a step denser than Talmo's (sm 32 / default 38) because Hangar's bars sit
 // above terminals and every pixel they take is a terminal row.
 const buttonVariants = cva(
@@ -31,7 +32,13 @@ const buttonVariants = cva(
         xs: "h-6 gap-1 rounded-[8px] px-2 text-[length:var(--fs-xs)] [&_svg:not([class*='size-'])]:size-3",
         sm: "h-8 gap-1.5 rounded-[9px] px-3 text-[length:var(--fs-sm)] has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2 [&_svg:not([class*='size-'])]:size-4",
         lg: "h-[46px] gap-2 rounded-[13px] px-5 text-[length:var(--fs-lg)]",
-        icon: "size-10 rounded-full bg-[var(--raised)] shadow-[inset_0_0_0_1px_var(--line),var(--shadow)]",
+        // Quiet and square: it closes terminals and removes rows, and it takes
+        // its colour from the variant — a `ghost` one must stay transparent.
+        icon: "size-8 rounded-[9px]",
+        // Talmo's `ibtn`: raised and round. A size of its own, because its
+        // surface would override any variant's background.
+        "icon-round":
+          "size-10 rounded-full bg-[var(--raised)] shadow-[inset_0_0_0_1px_var(--line),var(--shadow)]",
         "icon-xs":
           "size-6 rounded-[8px] [&_svg:not([class*='size-'])]:size-3",
         "icon-sm":

@@ -143,7 +143,8 @@ const REVEAL_MAX = 28;
  * Talmo's arrival: the screen's blocks rise into place one after another
  * (opacity 0 → 1, 12px up, 40ms apart). Only outermost matches move — a card
  * rises with its rows, not under them — only what's on screen, and never more
- * than a few dozen, so a long list doesn't spend a second arriving.
+ * than a few dozen, so a long list doesn't spend a second arriving. What's on
+ * screen past that cap shows at once and is marked as arrived.
  */
 export function revealChildren(root: HTMLElement, seen: WeakSet<Element> = new WeakSet()) {
   if (prefersReducedMotion() || typeof root.animate !== 'function') return;
@@ -151,7 +152,6 @@ export function revealChildren(root: HTMLElement, seen: WeakSet<Element> = new W
   const all = Array.from(root.querySelectorAll<HTMLElement>(REVEAL_SELECTOR));
   const picked: HTMLElement[] = [];
   for (const el of all) {
-    if (picked.length >= REVEAL_MAX) break;
     if (picked.some((p) => p.contains(el))) continue;
     // Already arrived (an earlier pass), or inside something that did.
     if (seen.has(el)) continue;
@@ -162,6 +162,12 @@ export function revealChildren(root: HTMLElement, seen: WeakSet<Element> = new W
     if (el.closest('[data-no-reveal]')) continue;
     const r = el.getBoundingClientRect();
     if (r.width === 0 || r.height === 0 || r.top > view || r.bottom < 0) continue;
+    // Past the cap it is already on screen, so it counts as arrived: a later
+    // pass must not pull it back to opacity 0 and play it a second time.
+    if (picked.length >= REVEAL_MAX) {
+      seen.add(el);
+      continue;
+    }
     picked.push(el);
   }
   picked.forEach((el, i) => {
