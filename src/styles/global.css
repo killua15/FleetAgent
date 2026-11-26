@@ -21,8 +21,86 @@ body {
   background: var(--bg);
   color: var(--txt);
   font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  font-weight: 500;
+  line-height: 1.4;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
   overscroll-behavior: none;
+}
+
+/* Talmo's interaction baseline: colour and surface changes ease in rather than
+   snap. Only paint properties — never layout — so nothing reflows mid-hover
+   and xterm's fit never sees an intermediate size. */
+button,
+a,
+[role='button'],
+[role='menuitem'],
+[role='tab'],
+input,
+select,
+textarea {
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+
+:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--accD);
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.82);
+  }
+}
+
+@keyframes flash {
+  0% {
+    background-color: var(--accD);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+@keyframes screen-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    transition-duration: 0.001ms !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
 
 #root {
@@ -48,7 +126,9 @@ button {
 
 ::-webkit-scrollbar-thumb {
   background: var(--line2);
-  border-radius: 6px;
+  border-radius: 99px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-track {
@@ -99,7 +179,7 @@ button {
   --popover: var(--panel2);
   --popover-foreground: var(--txt);
   --primary: var(--acc);
-  --primary-foreground: #15151c;
+  --primary-foreground: var(--acc-ink);
   --secondary: var(--panel2);
   --secondary-foreground: var(--txt);
   --muted: var(--panel2);
@@ -110,7 +190,7 @@ button {
   --border: var(--line);
   --input: var(--line2);
   --ring: var(--acc);
-  --radius: 0.5rem;
+  --radius: 11px;
 }
 
 @layer base {
@@ -157,4 +237,20 @@ button {
 .hangar-stack > :last-child {
   flex: 1;
   min-height: 0;
+}
+
+/* Every screen is its own component under `.hangar-stack`, so a navigation
+   swaps this element and the entrance plays once per screen — never when
+   something inside a screen changes (focusing a terminal, opening a panel). */
+.hangar-stack > :last-child {
+  animation: screen-enter var(--dur) var(--ease);
+}
+
+/* Under 760px the top bar's destinations live in a tab bar fixed to the
+   bottom edge. The body gives up its height so no screen — the terminal grid
+   least of all — ends up underneath it. */
+@media (max-width: 760px) {
+  .hangar-body:has([data-tabbar]) {
+    padding-bottom: calc(64px + env(safe-area-inset-bottom));
+  }
 }
