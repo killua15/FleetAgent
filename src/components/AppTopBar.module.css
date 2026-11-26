@@ -1,8 +1,9 @@
 /* Talmo's top bar: brand, the destinations in one raised pill, round icon
-   buttons, then the screen's own actions. Shorter than Talmo's 80px — the bar
-   sits above the terminal grid, and every pixel it takes is a terminal row. */
+   buttons, then the screen's own actions. Much shorter than Talmo's 80px — the
+   bar sits above the terminal grid, and every pixel it takes is a terminal
+   row, so everything on it is scaled to fit 48px. */
 .bar {
-  height: 58px;
+  height: 48px;
   flex: none;
   display: flex;
   align-items: center;
@@ -24,14 +25,14 @@
 }
 
 .mark {
-  width: 34px;
-  height: 34px;
-  border-radius: 11px;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
   display: grid;
   place-items: center;
   background: var(--acc);
   color: var(--acc-ink);
-  font: 700 17px var(--font-mono);
+  font: 700 15px var(--font-mono);
   box-shadow: 0 8px 16px -10px color-mix(in srgb, var(--acc) 80%, transparent);
 }
 
@@ -71,7 +72,7 @@
   min-width: 0;
   max-width: max-content;
   flex: 0 1 auto;
-  padding: 4px;
+  padding: 3px;
   border-radius: 99px;
   background: var(--raised);
   box-shadow: inset 0 0 0 1px var(--line), var(--shadow);
@@ -109,7 +110,7 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  height: 34px;
+  height: 30px;
   padding: 0 13px 0 10px;
   border: 0;
   border-radius: 99px;
@@ -174,8 +175,8 @@
 .navBtnActive {
   position: relative;
   z-index: 1;
-  width: 38px;
-  height: 38px;
+  width: 34px;
+  height: 34px;
   flex: none;
   display: grid;
   place-items: center;
@@ -190,8 +191,8 @@
 /* Inside the pill (the "back to terminals" home button) the round button
    drops its own surface — it already sits on one. */
 .icons .navBtn {
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   background: transparent;
   box-shadow: none;
   color: var(--mut);
@@ -287,10 +288,6 @@
   .icons,
   .tools {
     display: none;
-  }
-
-  .bar {
-    height: 52px;
   }
 
   .tabbar {

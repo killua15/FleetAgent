@@ -336,7 +336,7 @@ button {
 
   /* Round icon buttons and the primary button lift a hair on hover. */
   [data-slot='button'][data-variant='default']:hover:not(:disabled),
-  [data-slot='button'][data-size='icon']:hover:not(:disabled) {
+  [data-slot='button'][data-size='icon-round']:hover:not(:disabled) {
     transform: translateY(-1px);
   }
 }
