@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke, useInFlightCount } from '../lib/invoke';
 import { useNavigation, type ScreenName } from '../nav/NavigationProvider';
@@ -7,6 +7,7 @@ import type { ProjectPrInbox } from '../types/pullRequest';
 import { IconTooltip } from './ui/tooltip';
 import { Spinner } from './Spinner';
 import { useSlidingIndicator } from '../lib/motion';
+import { fitCount } from '../lib/navOverflow';
 import { AccountsIcon, BellIcon, BranchIcon, CompassIcon, FactoryIcon, FilesIcon, HomeIcon, MachinesIcon, MenuIcon, PullRequestIcon, QueueIcon, SettingsIcon, TasksIcon, TerminalIcon, UsageIcon } from './NavIcons';
 import { UsageModal } from './UsageModal';
 import { NotificationBell, useUnreadNotifications } from './NotificationBell';
@@ -33,18 +34,121 @@ function NavItem({ screen, label, icon, badge = 0 }: { screen: ScreenName; label
   );
 }
 
-/** Talmo's `tnav`: the destinations in one raised pill, with a marker that
- * slides to whichever one you're on. */
-function NavPill({ children }: { children: ReactNode }) {
-  const { current } = useNavigation();
-  const ref = useRef<HTMLElement>(null);
+type NavEntry = { kind: 'item'; screen: ScreenName; label: string; icon: ReactNode; badge?: number } | { kind: 'rule' };
+
+/** What the trailing "More" button costs when it has to appear — measured
+ * from the live element once rendered; this covers the first pass. */
+const MORE_FALLBACK_WIDTH = 44;
+
+/**
+ * Talmo's `tnav`: the destinations in one raised pill, with a marker that
+ * slides to whichever one you're on.
+ *
+ * When the bar is too narrow for all of them, the ones that don't fit — from
+ * the end — move into a "More" dropdown at the end of the pill rather than
+ * being clipped. Widths come from an invisible copy of every item, so they
+ * stay right as labels collapse at breakpoints and as badges come and go.
+ */
+function NavPill({ lead, entries }: { lead?: ReactNode; entries: NavEntry[] }) {
+  const { current, navigate } = useNavigation();
+  const slotRef = useRef<HTMLDivElement>(null);
+  const navRef = useRef<HTMLElement>(null);
   const pill = useRef<HTMLSpanElement>(null);
-  useSlidingIndicator(ref, pill, current.screen);
+  const measureRef = useRef<HTMLDivElement>(null);
+  const moreRef = useRef<HTMLButtonElement>(null);
+  const [visible, setVisible] = useState(entries.length);
+
+  const signature = entries.map((e) => (e.kind === 'item' ? `${e.screen}:${e.badge ?? 0}` : '|')).join(',');
+
+  useLayoutEffect(() => {
+    const slot = slotRef.current;
+    const measure = measureRef.current;
+    if (!slot || !measure) return;
+    const recompute = () => {
+      // Hidden below the tab-bar breakpoint: nothing to fit.
+      if (slot.offsetParent === null) return;
+      const nodes = Array.from(measure.children) as HTMLElement[];
+      const leadEl = nodes[0];
+      const itemNodes = nodes.slice(1);
+      const widths = itemNodes.map((n) => n.offsetWidth);
+      const kinds = entries.map((e) => e.kind);
+      const gap = 2;
+      // The pill's own padding (4px a side) plus the home button when shown.
+      const chrome = 8 + (lead && leadEl ? leadEl.offsetWidth + gap : 0);
+      const more = moreRef.current?.offsetWidth || MORE_FALLBACK_WIDTH;
+      setVisible(fitCount(widths, kinds, slot.clientWidth, chrome, gap, more));
+    };
+    recompute();
+    const ro = new ResizeObserver(recompute);
+    ro.observe(slot);
+    ro.observe(measure);
+    return () => ro.disconnect();
+    // `signature` stands in for `entries`, which is a new array every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signature, lead !== undefined]);
+
+  const shown = entries.slice(0, visible);
+  const hidden = entries.slice(visible).filter((e): e is Extract<NavEntry, { kind: 'item' }> => e.kind === 'item');
+  const hiddenActive = hidden.some((e) => e.screen === current.screen);
+  const hiddenBadges = hidden.reduce((sum, e) => sum + (e.badge ?? 0), 0);
+
+  useSlidingIndicator(navRef, pill, `${current.screen}:${visible}`);
+
+  const render = (e: NavEntry, i: number) =>
+    e.kind === 'rule' ? <span key={`rule-${i}`} className={styles.navRule} /> : <NavItem key={e.screen} screen={e.screen} label={e.label} icon={e.icon} badge={e.badge} />;
+
   return (
-    <nav ref={ref} className={styles.icons}>
-      <span ref={pill} className={styles.navPill} aria-hidden />
-      {children}
-    </nav>
+    <div ref={slotRef} className={styles.navSlot}>
+      <nav ref={navRef} className={styles.icons}>
+        <span ref={pill} className={styles.navPill} aria-hidden />
+        {lead}
+        {shown.map(render)}
+        {hidden.length > 0 && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                ref={moreRef}
+                className={hiddenActive ? styles.navItemActive : styles.navItem}
+                data-active={hiddenActive ? 'true' : undefined}
+                aria-label={`More — ${hidden.map((e) => e.label).join(', ')}`}
+                title="More"
+              >
+                <MenuIcon />
+                {hiddenBadges > 0 && <span className={styles.navBadge}>{hiddenBadges > 99 ? '99+' : hiddenBadges}</span>}
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              {hidden.map((e) => (
+                <DropdownMenuItem
+                  key={e.screen}
+                  onClick={() => navigate(e.screen)}
+                  className={e.screen === current.screen ? styles.moreItemActive : undefined}
+                >
+                  {e.icon} {e.label}
+                  {(e.badge ?? 0) > 0 && <span className={styles.moreCount}>{e.badge}</span>}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </nav>
+      {/* An invisible copy of every item at its natural width — what the fit
+       * is computed from, since the real ones may not be rendered at all. */}
+      <div ref={measureRef} className={styles.navMeasure} aria-hidden inert>
+        <span>{lead}</span>
+        {entries.map((e, i) =>
+          e.kind === 'rule' ? (
+            <span key={`m-rule-${i}`} className={styles.navRule} />
+          ) : (
+            <span key={`m-${e.screen}`} className={styles.navItem}>
+              {e.icon}
+              <span className={styles.navLabel}>{e.label}</span>
+              {(e.badge ?? 0) > 0 && <span className={styles.navBadge}>{(e.badge ?? 0) > 99 ? '99+' : e.badge}</span>}
+            </span>
+          ),
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -163,42 +267,43 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
           <Spinner label="working…" />
         </span>
       )}
-      <NavPill>
-        {/* Home first and alone: it's the only one that isn't a destination so
-         * much as a way back. Hidden on Terminals, which *is* home. */}
-        {current.screen !== 'terminals' && (
-          <IconTooltip label="Back to terminals">
-            <button className={styles.navBtn} onClick={() => navigate('terminals')}>
-              <HomeIcon />
-            </button>
-          </IconTooltip>
-        )}
-
-        {/* Grouped by what you're doing, with a rule between groups, because a
+      <NavPill
+        lead={
+          /* Home first and alone: it's the only one that isn't a destination so
+           * much as a way back. Hidden on Terminals, which *is* home. */
+          current.screen !== 'terminals' ? (
+            <IconTooltip label="Back to terminals">
+              <button className={styles.navBtn} onClick={() => navigate('terminals')}>
+                <HomeIcon />
+              </button>
+            </IconTooltip>
+          ) : undefined
+        }
+        /* Grouped by what you're doing, with a rule between groups, because a
          * flat row of nine gives no clue that "Git" and "Settings" are
-         * different kinds of thing. Work first — it's what you're here for. */}
-        <NavItem screen="start-here" label="Empieza aquí" icon={<CompassIcon />} badge={stepsLeft} />
-        <NavItem screen="terminals" label="Terminals" icon={<TerminalIcon />} />
-        {/* The terminals of your other machines, next to this one's. */}
-        <NavItem screen="machines" label="Machines" icon={<MachinesIcon />} />
-        <NavItem screen="task-board" label="Tasks" icon={<TasksIcon />} />
-        {/* Next to Tasks because it answers the same question — what is going
-         * to run — for work that's already been handed over and is only
-         * waiting on quota. */}
-        <NavItem screen="queue" label="Queue" icon={<QueueIcon />} />
-        <NavItem screen="pr-reviews" label="PRs" icon={<PullRequestIcon />} badge={pendingPrComments} />
-
-        <span className={styles.navRule} />
-
-        {/* A group of its own: the line runs work end to end on its own,
-         * which is a different kind of thing from the screens you drive. */}
-        <NavItem screen="factory" label="Factory" icon={<FactoryIcon />} />
-
-        <span className={styles.navRule} />
-
-        <NavItem screen="git-panel" label="Git" icon={<BranchIcon />} />
-        <NavItem screen="files" label="Files" icon={<FilesIcon />} />
-      </NavPill>
+         * different kinds of thing. Work first — it's what you're here for,
+         * and it's also what stays when the bar is too narrow for everything:
+         * the tail of this list is what moves into More first. */
+        entries={[
+          { kind: 'item', screen: 'start-here', label: 'Empieza aquí', icon: <CompassIcon />, badge: stepsLeft },
+          { kind: 'item', screen: 'terminals', label: 'Terminals', icon: <TerminalIcon /> },
+          // The terminals of your other machines, next to this one's.
+          { kind: 'item', screen: 'machines', label: 'Machines', icon: <MachinesIcon /> },
+          { kind: 'item', screen: 'task-board', label: 'Tasks', icon: <TasksIcon /> },
+          // Next to Tasks because it answers the same question — what is going
+          // to run — for work that's already been handed over and is only
+          // waiting on quota.
+          { kind: 'item', screen: 'queue', label: 'Queue', icon: <QueueIcon /> },
+          { kind: 'item', screen: 'pr-reviews', label: 'PRs', icon: <PullRequestIcon />, badge: pendingPrComments },
+          { kind: 'rule' },
+          // A group of its own: the line runs work end to end on its own,
+          // which is a different kind of thing from the screens you drive.
+          { kind: 'item', screen: 'factory', label: 'Factory', icon: <FactoryIcon /> },
+          { kind: 'rule' },
+          { kind: 'item', screen: 'git-panel', label: 'Git', icon: <BranchIcon /> },
+          { kind: 'item', screen: 'files', label: 'Files', icon: <FilesIcon /> },
+        ]}
+      />
 
       {/* Talmo's round icon buttons: things you open rather than places you
        * go, so they sit outside the pill and its sliding marker. */}
@@ -231,7 +336,6 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
           </button>
         </IconTooltip>
       </div>
-      <span className={styles.spacer} />
       {mode === 'yolo' && (
         <span className={styles.yoloBadge} title="Las terminales de este Mac ejecutan sin pedir permiso — Settings → modo de las terminales">
           yolo

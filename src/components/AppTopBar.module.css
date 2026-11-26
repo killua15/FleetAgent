@@ -366,3 +366,65 @@
     box-shadow: 0 0 0 2px var(--card);
   }
 }
+
+/* ── Overflow ─────────────────────────────────────────────────────── */
+
+/* The room between the brand and the round buttons. The pill sits at its
+   start and gets only what fits; the rest goes into More. */
+.navSlot {
+  position: relative;
+  flex: 1 1 0;
+  /* Never narrower than home + More inside the pill, so the way to every
+     destination stays on screen however much the screen's actions take. */
+  min-width: 92px;
+  display: flex;
+  align-items: center;
+}
+
+.navSlot .icons {
+  max-width: 100%;
+}
+
+/* Every item at its natural width, never shown: what the fit is measured
+   from. `max-content` so the slot's own width can't squeeze it. */
+.navMeasure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: max-content;
+  height: 0;
+  display: flex;
+  gap: 2px;
+  visibility: hidden;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.navMeasure > * {
+  flex: none;
+}
+
+.moreItemActive {
+  background: var(--accD);
+  color: var(--acc);
+}
+
+.moreCount {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 99px;
+  background: var(--amber);
+  color: #1a1300;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  display: inline-grid;
+  place-items: center;
+}
+
+@media (max-width: 760px) {
+  .navSlot {
+    display: none;
+  }
+}
