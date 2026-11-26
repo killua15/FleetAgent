@@ -24,7 +24,7 @@
   right: 10px;
   bottom: 8px;
   padding: 2px 8px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   background: var(--accD);
   color: var(--acc);
   font: 500 10px var(--font-mono);

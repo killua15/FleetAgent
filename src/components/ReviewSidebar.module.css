@@ -25,7 +25,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 600 12px var(--font-ui);
+  font: 600 13px var(--font-ui);
 }
 
 .spacer {
@@ -33,7 +33,7 @@
 }
 
 .dim {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
 }
 
@@ -42,10 +42,10 @@
   min-width: 0;
   padding: 3px 6px;
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   background: var(--bg);
   color: var(--txt);
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
 }
 
 .body {
@@ -58,7 +58,7 @@
 .empty {
   display: block;
   padding: 14px 10px;
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--dim);
 }
 
@@ -66,7 +66,7 @@
   display: flex;
   flex: none;
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   overflow: hidden;
 }
 
@@ -74,7 +74,7 @@
 .layoutOff {
   border: 0;
   padding: 2px 7px;
-  font: 400 10px var(--font-ui);
+  font: 500 11px var(--font-ui);
   cursor: pointer;
 }
 

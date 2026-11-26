@@ -33,7 +33,7 @@
 .badge {
   width: 22px;
   height: 22px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   background: var(--accD);
   color: var(--acc);
   display: grid;
@@ -67,10 +67,10 @@
   align-items: center;
   gap: 8px;
   padding: 5px 12px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   background: var(--panel2);
   border: 1px solid var(--line);
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--mut);
   white-space: nowrap;
 }
@@ -95,9 +95,9 @@
 }
 
 .stopBtn {
-  font: 600 12px var(--font-ui);
+  font: 600 13px var(--font-ui);
   padding: 7px 14px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--red);
   background: transparent;
   color: var(--red);
@@ -171,7 +171,7 @@
 }
 
 .pillName {
-  font: 600 11px var(--font-ui);
+  font: 600 12px var(--font-ui);
   color: var(--txt);
   flex: 1;
   white-space: nowrap;
@@ -185,7 +185,7 @@
 }
 
 .railHint {
-  font: 400 10.5px var(--font-ui);
+  font: 500 11.5px var(--font-ui);
   color: var(--dim);
   line-height: 1.5;
   padding: 0 4px;
@@ -209,7 +209,7 @@
   min-height: 0;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--r-sm);
 }
 
 .cardReviewing {
@@ -224,7 +224,7 @@
   padding: 8px 12px;
   border-bottom: 1px solid var(--line);
   background: var(--panel2);
-  border-radius: 10px 10px 0 0;
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
 }
 
 .provBadge {
@@ -238,12 +238,12 @@
 }
 
 .roleName {
-  font: 600 12.5px var(--font-ui);
+  font: 600 13.5px var(--font-ui);
   white-space: nowrap;
 }
 
 .reportsTo {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
   white-space: nowrap;
 }
@@ -265,7 +265,7 @@
 .collapseBtn {
   width: 20px;
   height: 20px;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: transparent;
   color: var(--dim);
@@ -290,14 +290,14 @@
 }
 
 .notStarted {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--dim);
   font-style: italic;
 }
 
 .blockRow {
   padding: 2px 10px 6px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border-left: 2px solid var(--line2);
 }
 
@@ -329,12 +329,12 @@
 }
 
 .blockTime {
-  font: 400 9.5px var(--font-mono);
+  font: 500 9.5px var(--font-mono);
   color: var(--dim);
 }
 
 .blockText {
-  font: 400 11px var(--font-mono);
+  font: 500 11px var(--font-mono);
   line-height: 1.6;
   white-space: pre-wrap;
 }
@@ -360,7 +360,7 @@
 }
 
 .activity {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
   flex: 1;
   white-space: nowrap;
@@ -369,7 +369,7 @@
 }
 
 .modelMeta {
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   color: var(--dim);
 }
 
@@ -379,5 +379,5 @@
   align-items: center;
   justify-content: center;
   color: var(--dim);
-  font: 400 12.5px var(--font-ui);
+  font: 500 13.5px var(--font-ui);
 }

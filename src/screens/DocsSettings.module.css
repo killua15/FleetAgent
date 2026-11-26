@@ -9,12 +9,12 @@
   display: flex;
   align-items: center;
   gap: 5px;
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--txt);
 }
 
 .mcpUrl {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -23,7 +23,7 @@
 }
 
 .scope {
-  font: 400 10.5px var(--font-ui);
+  font: 500 11.5px var(--font-ui);
   color: var(--mut);
 }
 
@@ -39,7 +39,7 @@
   gap: 6px;
   padding: 12px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
 }
 
 .cardHead {
@@ -49,18 +49,18 @@
 }
 
 .cardName {
-  font: 600 12.5px var(--font-ui);
+  font: 600 13.5px var(--font-ui);
   color: var(--txt);
 }
 
 .cardSummary {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--mut);
   line-height: 1.45;
 }
 
 .how {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--txt);
 }
 

@@ -10,7 +10,7 @@
    here so the file scrolls inside it instead of stretching the page. */
 .host :global(.cm-editor) {
   height: 100%;
-  font: 400 12px var(--font-mono);
+  font: 500 12px var(--font-mono);
 }
 
 .host :global(.cm-scroller) {
@@ -28,7 +28,7 @@
 .host :global(.cm-mergeView) {
   height: 100%;
   overflow: auto;
-  font: 400 12px var(--font-mono);
+  font: 500 12px var(--font-mono);
 }
 
 .host :global(.cm-mergeView .cm-editor) {

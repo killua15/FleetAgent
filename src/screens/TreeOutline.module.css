@@ -21,15 +21,15 @@
 }
 
 .backBtn {
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   padding: 6px 12px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
 }
 
 .badge {
   width: 22px;
   height: 22px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   background: var(--accD);
   color: var(--acc);
   display: grid;
@@ -59,7 +59,7 @@
 .viewSwitcher {
   display: flex;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   overflow: hidden;
   flex: none;
 }
@@ -127,12 +127,12 @@
 }
 
 .emptyStateText {
-  font: 400 12.5px var(--font-ui);
+  font: 500 13.5px var(--font-ui);
   color: var(--dim);
 }
 
 .rowWrap {
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   margin-bottom: 3px;
   border: 1px solid transparent;
 }
@@ -147,7 +147,7 @@
   grid-template-columns: 1fr 150px 150px 130px 90px;
   gap: 12px;
   padding: 9px 10px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   cursor: pointer;
   user-select: none;
   min-width: 0;
@@ -197,12 +197,12 @@
 }
 
 .role {
-  font: 600 12.5px var(--font-ui);
+  font: 600 13.5px var(--font-ui);
   flex: none;
 }
 
 .promptPreview {
-  font: 400 11px var(--font-mono);
+  font: 500 11px var(--font-mono);
   color: var(--dim);
   white-space: nowrap;
   overflow: hidden;
@@ -222,7 +222,7 @@
 }
 
 .reportsTo {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
   align-self: center;
   white-space: nowrap;
@@ -240,7 +240,7 @@
 .actionBtn {
   width: 20px;
   height: 20px;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: var(--bg2);
   color: var(--acc);
@@ -296,7 +296,7 @@
 }
 
 .editError {
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--red);
   margin-top: 6px;
 }
@@ -320,14 +320,14 @@
   padding: 10px 24px;
   border-top: 1px solid var(--line);
   background: var(--bg2);
-  font: 400 11px var(--font-mono);
+  font: 500 11px var(--font-mono);
   color: var(--dim);
 }
 
 .depthBadge {
   font: 600 10.5px var(--font-mono);
   padding: 3px 8px;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   background: var(--panel2);
   color: var(--mut);
 }

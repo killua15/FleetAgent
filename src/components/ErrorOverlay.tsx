@@ -148,12 +148,12 @@ class RenderErrorBoundary extends Component<{ children: ReactNode }, BoundarySta
             alignItems: 'center',
             justifyContent: 'center',
             gap: 12,
-            fontFamily: "'IBM Plex Sans', sans-serif",
+            fontFamily: "'Urbanist', system-ui, sans-serif",
             padding: 24,
             textAlign: 'center',
           }}
         >
-          <span style={{ font: "600 16px 'IBM Plex Sans', sans-serif" }}>Something crashed while rendering</span>
+          <span style={{ font: "600 16px 'Urbanist', system-ui, sans-serif" }}>Something crashed while rendering</span>
           <pre
             style={{
               font: "400 11px 'JetBrains Mono', monospace",
@@ -171,7 +171,7 @@ class RenderErrorBoundary extends Component<{ children: ReactNode }, BoundarySta
           <Button
             onClick={() => this.setState({ error: null })}
             style={{
-              font: "600 12px 'IBM Plex Sans', sans-serif",
+              font: "600 12px 'Urbanist', system-ui, sans-serif",
               padding: '8px 18px',
               borderRadius: 7,
               background: '#b48cff',

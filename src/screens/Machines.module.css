@@ -36,13 +36,13 @@
 }
 
 .hint {
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--mut);
   line-height: 1.5;
 }
 
 .error {
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--red);
   line-height: 1.5;
 }
@@ -55,10 +55,10 @@
   align-items: flex-start;
   gap: 8px;
   padding: 8px 10px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   background: var(--amberD);
   color: var(--amber);
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   line-height: 1.5;
 }
 
@@ -68,7 +68,7 @@
   flex-direction: column;
   gap: 3px;
   padding: 9px 11px;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--txt);
@@ -86,11 +86,11 @@
 }
 
 .machineName {
-  font: 600 12px var(--font-ui);
+  font: 600 13px var(--font-ui);
 }
 
 .machineMeta {
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   color: var(--dim);
 }
 
@@ -123,7 +123,7 @@
 }
 
 .linkState {
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   color: var(--dim);
 }
 
@@ -149,7 +149,7 @@
   gap: 7px;
   max-width: 320px;
   padding: 6px 10px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--txt);
@@ -161,7 +161,7 @@
 }
 
 .terminalTitle {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -182,5 +182,5 @@
   overflow: auto;
   display: flex;
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: var(--r-sm);
 }

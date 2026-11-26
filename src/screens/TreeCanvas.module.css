@@ -22,15 +22,15 @@
 }
 
 .backBtn {
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   padding: 6px 12px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
 }
 
 .badge {
   width: 22px;
   height: 22px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   background: var(--accD);
   color: var(--acc);
   display: grid;
@@ -60,7 +60,7 @@
 .viewSwitcher {
   display: flex;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   overflow: hidden;
   flex: none;
 }
@@ -98,7 +98,7 @@
 .depthBadge {
   font: 600 10.5px var(--font-mono);
   padding: 4px 9px;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: var(--panel2);
   color: var(--mut);
@@ -153,7 +153,7 @@
 }
 
 .emptyStateText {
-  font: 400 12.5px var(--font-ui);
+  font: 500 13.5px var(--font-ui);
   color: var(--dim);
 }
 
@@ -163,7 +163,7 @@
   position: absolute;
   width: 218px;
   background: var(--panel);
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   cursor: pointer;
   user-select: none;
   border: 1px solid var(--line);
@@ -197,7 +197,7 @@
 }
 
 .nodeRole {
-  font: 600 12.5px var(--font-ui);
+  font: 600 13.5px var(--font-ui);
   color: var(--txt);
   white-space: nowrap;
   overflow: hidden;
@@ -213,7 +213,7 @@
 
 .nodePromptPreview {
   padding: 0 11px 4px;
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
   white-space: nowrap;
   overflow: hidden;
@@ -282,7 +282,7 @@
   bottom: 14px;
   display: flex;
   gap: 14px;
-  font: 400 11px var(--font-mono);
+  font: 500 11px var(--font-mono);
   color: var(--dim);
   pointer-events: none;
 }
@@ -363,7 +363,7 @@
 }
 
 .editorFieldHint {
-  font: 400 10.5px var(--font-ui);
+  font: 500 11.5px var(--font-ui);
   color: var(--dim);
 }
 
@@ -376,7 +376,7 @@
 .editorHint {
   border-top: 1px solid var(--line);
   padding-top: 12px;
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--mut);
   line-height: 1.6;
 }
@@ -392,6 +392,6 @@
 }
 
 .editorError {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--red);
 }

@@ -19,9 +19,9 @@
 }
 
 .backBtn {
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   padding: 7px 14px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
 }
 
 .title {
@@ -29,7 +29,7 @@
 }
 
 .subtitle {
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--dim);
 }
 
@@ -38,7 +38,7 @@
 }
 
 .countdown {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
 }
 
@@ -73,7 +73,7 @@
   align-items: center;
   gap: 8px;
   padding: 9px 10px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   border: 1px solid transparent;
   background: transparent;
   cursor: pointer;
@@ -94,7 +94,7 @@
 }
 
 .prCountDim {
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   color: var(--dim);
 }
 
@@ -102,7 +102,7 @@
   min-width: 20px;
   height: 20px;
   padding: 0 6px;
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   background: var(--amberD);
   color: var(--amber);
   font: 700 10.5px var(--font-mono);
@@ -117,7 +117,7 @@
   min-width: 20px;
   height: 20px;
   padding: 0 6px;
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   background: var(--grnD);
   color: var(--grn);
   font: 700 11px var(--font-mono);
@@ -126,7 +126,7 @@
 }
 
 .dimText {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--dim);
   padding: 10px;
 }
@@ -160,11 +160,11 @@
   align-items: center;
   gap: 7px;
   padding: 5px 11px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: transparent;
   color: var(--mut);
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   cursor: pointer;
 }
 
@@ -188,7 +188,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 500 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
   color: var(--txt);
 }
 
@@ -200,7 +200,7 @@
 
 .prCard {
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   background: var(--panel);
   overflow: hidden;
   /* Without this, a flex child in a column flex container defaults to
@@ -256,13 +256,13 @@
 
 .noComments {
   padding: 10px 14px;
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--dim);
 }
 
 .checkError {
   padding: 10px 14px;
-  font: 400 11px var(--font-mono);
+  font: 500 11px var(--font-mono);
   color: var(--red);
   background: var(--redD);
   overflow: hidden;
@@ -304,7 +304,7 @@
 }
 
 .commentDate {
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   color: var(--dim);
 }
 
@@ -317,7 +317,7 @@
 }
 
 .commentBody {
-  font: 400 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
   color: var(--mut);
   line-height: 1.5;
   margin: 0;

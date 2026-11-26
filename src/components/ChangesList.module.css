@@ -31,18 +31,18 @@
 }
 
 .sectionHint {
-  font: 400 9.5px var(--font-ui);
+  font: 500 10.5px var(--font-ui);
   color: var(--dim);
 }
 
 .sectionEmpty {
   padding: 3px 6px;
-  font: 400 10.5px var(--font-ui);
+  font: 500 11.5px var(--font-ui);
   color: var(--dim);
 }
 
 .counts {
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
 }
 
 .file,
@@ -53,7 +53,7 @@
   width: 100%;
   padding: 4px 6px;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   background: transparent;
   color: var(--txt);
   text-align: left;
@@ -97,7 +97,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
 }
 
 /* Truncated from the left: the tail of a path is what identifies it, the head
@@ -110,13 +110,13 @@
   white-space: nowrap;
   direction: rtl;
   text-align: left;
-  font: 400 9.5px var(--font-mono);
+  font: 500 9.5px var(--font-mono);
   color: var(--dim);
 }
 
 .fileCounts {
   flex: none;
-  font: 400 9.5px var(--font-mono);
+  font: 500 9.5px var(--font-mono);
 }
 
 
@@ -130,7 +130,7 @@
 }
 
 .treeCount {
-  font: 400 9.5px var(--font-mono);
+  font: 500 9.5px var(--font-mono);
   color: var(--dim);
 }
 
@@ -138,7 +138,7 @@
   border: 0;
   background: transparent;
   color: var(--dim);
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   padding: 0 3px;
   cursor: pointer;
 }

@@ -19,9 +19,9 @@
 }
 
 .backBtn {
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   padding: 7px 14px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
 }
 
 .title {
@@ -29,7 +29,7 @@
 }
 
 .subtitle {
-  font: 400 11px var(--font-mono);
+  font: 500 11px var(--font-mono);
   color: var(--dim);
 }
 
@@ -51,7 +51,7 @@
 }
 
 .dimText {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--dim);
   padding: 10px;
 }
@@ -75,7 +75,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: 1px solid transparent;
   background: transparent;
 }
@@ -176,7 +176,7 @@
 }
 
 .commitSubject {
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -193,13 +193,13 @@
 }
 
 .commitAuthor {
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   color: var(--dim);
   flex: none;
 }
 
 .commitDate {
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   color: var(--dim);
   flex: none;
 }
@@ -235,12 +235,12 @@
 }
 
 .commitMetaLine {
-  font: 400 11px var(--font-mono);
+  font: 500 11px var(--font-mono);
   color: var(--dim);
 }
 
 .commitHashFull {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
 }
 
@@ -256,7 +256,7 @@
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   border: 1px solid transparent;
   background: transparent;
   cursor: pointer;
@@ -280,7 +280,7 @@
 }
 
 .filePath {
-  font: 400 11.5px var(--font-mono);
+  font: 500 11.5px var(--font-mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -288,7 +288,7 @@
 
 .diffPanel {
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: var(--panel);
   overflow: auto;
   padding: 8px 0;

@@ -22,7 +22,7 @@
   border: 0;
   background: transparent;
   color: var(--dim);
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   cursor: pointer;
 }
 
@@ -41,7 +41,7 @@
 }
 
 .subtitle {
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--dim);
 }
 
@@ -52,10 +52,10 @@
 .select {
   padding: 5px 8px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   background: var(--bg2);
   color: var(--txt);
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   min-width: 170px;
 }
 
@@ -69,10 +69,10 @@
 .tabActive {
   padding: 4px 11px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   background: transparent;
   color: var(--dim);
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   cursor: pointer;
 }
 
@@ -95,14 +95,14 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--dim);
 }
 
 .count {
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--dim);
 }
 
@@ -123,7 +123,7 @@
 
 .empty,
 .error {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--dim);
   padding: 8px 2px;
 }
@@ -139,7 +139,7 @@
   gap: 10px;
   padding: 7px 10px;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   cursor: pointer;
 }
 
@@ -164,14 +164,14 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 400 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
 }
 
 .container,
 .status,
 .branch {
   flex: none;
-  font: 400 10px var(--font-ui);
+  font: 500 11px var(--font-ui);
   color: var(--dim);
 }
 
@@ -231,7 +231,7 @@
   max-height: 120px;
   padding: 6px 8px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   background: var(--bg2);
   color: var(--txt);
   font: 400 11.5px/1.45 var(--font-ui);
@@ -250,7 +250,7 @@
 }
 
 .barCount {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--dim);
 }
 
@@ -264,5 +264,5 @@
   border-radius: 999px;
   background: var(--accD);
   color: var(--acc);
-  font: 400 10px var(--font-ui);
+  font: 500 11px var(--font-ui);
 }

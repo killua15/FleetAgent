@@ -8,7 +8,7 @@
   padding: 7px 14px;
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--amber) 16%, transparent);
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--txt);
 }
 

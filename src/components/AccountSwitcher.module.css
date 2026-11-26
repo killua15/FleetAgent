@@ -7,11 +7,11 @@
   align-items: center;
   gap: 4px;
   padding: 1px 6px 1px 7px;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   border: 1px solid transparent;
   background: var(--accD);
   color: var(--acc);
-  font: 500 10.5px var(--font-ui);
+  font: 500 11.5px var(--font-ui);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -44,10 +44,10 @@
   max-height: 60vh;
   overflow: auto;
   padding: 10px;
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--overlay-line);
   background: var(--overlay);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-lg);
   z-index: 40;
 }
 
@@ -64,7 +64,7 @@
   align-items: center;
   gap: 8px;
   padding: 7px 8px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: 1px solid transparent;
   background: transparent;
   cursor: pointer;
@@ -102,7 +102,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 500 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
   color: var(--txt);
 }
 
@@ -143,7 +143,7 @@
 .note,
 .footer {
   padding: 6px 8px;
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--mut);
   line-height: 1.45;
 }
@@ -155,7 +155,7 @@
 
 .error {
   padding: 6px 8px;
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--amber);
 }
 
@@ -165,7 +165,7 @@
   border: none;
   padding: 2px 8px 0;
   color: var(--acc);
-  font: 500 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   cursor: pointer;
 }
 

@@ -26,15 +26,15 @@
   margin: 24px;
   padding: 16px;
   border: 1px dashed var(--line2);
-  border-radius: 8px;
-  font: 400 12.5px var(--font-ui);
+  border-radius: var(--r-sm);
+  font: 500 13.5px var(--font-ui);
   color: var(--mut);
   line-height: 1.6;
   max-width: 62ch;
 }
 
 .empty {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--dim);
   padding: 8px;
   line-height: 1.55;
@@ -59,7 +59,7 @@
   align-items: center;
   gap: 10px;
   padding: 8px 8px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   border: 1px solid transparent;
   background: transparent;
   cursor: pointer;
@@ -94,11 +94,11 @@
 }
 
 .groupName {
-  font: 600 12.5px var(--font-ui);
+  font: 600 13.5px var(--font-ui);
 }
 
 .groupSub {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--dim);
   font-variant-numeric: tabular-nums;
 }
@@ -115,7 +115,7 @@
   background: var(--bg);
   border: 1px solid var(--line);
   color: var(--txt);
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   padding: 6px 9px;
   font: 500 11px var(--font-mono);
 }
@@ -126,9 +126,9 @@
 
 .btn,
 .btnPrimary {
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   padding: 7px 12px;
-  font: 500 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   cursor: pointer;
   border: 1px solid var(--line2);
   background: var(--panel2);
@@ -159,7 +159,7 @@
 }
 
 .footnote {
-  font: 400 10.5px var(--font-ui);
+  font: 500 11.5px var(--font-ui);
   color: var(--dim);
   line-height: 1.55;
   padding: 0 8px;
@@ -182,7 +182,7 @@
 }
 
 .membershipHint {
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--mut);
   margin-bottom: 8px;
 }
@@ -193,7 +193,7 @@
   align-items: center;
   gap: 9px;
   padding: 7px 8px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: transparent;
   cursor: pointer;
@@ -207,7 +207,7 @@
 .memberIcon {
   width: 20px;
   height: 20px;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   flex: none;
   display: grid;
   place-items: center;
@@ -224,30 +224,30 @@
 }
 
 .memberName {
-  font: 500 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
 }
 
 .memberSha {
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   color: var(--dim);
 }
 
 .note {
   padding: 9px 10px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: var(--panel2);
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--mut);
   line-height: 1.55;
 }
 
 .warn {
   padding: 9px 10px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--amber);
   background: var(--amberD);
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--txt);
   line-height: 1.55;
 }
@@ -267,12 +267,12 @@
   justify-content: space-between;
   gap: 10px;
   align-items: baseline;
-  font: 400 11.5px var(--font-ui);
+  font: 500 12.5px var(--font-ui);
   color: var(--mut);
 }
 
 .num {
-  font: 400 10.5px var(--font-mono);
+  font: 500 10.5px var(--font-mono);
   color: var(--txt);
   font-variant-numeric: tabular-nums;
 }
@@ -289,7 +289,7 @@
 }
 
 .bridgeHint {
-  font: 400 11px var(--font-ui);
+  font: 500 12px var(--font-ui);
   color: var(--mut);
   margin-bottom: 6px;
   line-height: 1.5;

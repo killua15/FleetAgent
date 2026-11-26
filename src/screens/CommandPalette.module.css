@@ -29,7 +29,7 @@
   max-height: 70vh;
   background: var(--overlay);
   border: 1px solid var(--line2);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
@@ -51,7 +51,7 @@
 
 .searchInput {
   flex: 1;
-  font: 400 13px var(--font-mono);
+  font: 500 13px var(--font-mono);
   border: none;
   background: none;
   color: var(--txt);
@@ -59,7 +59,7 @@
 }
 
 .escBadge {
-  font: 400 9.5px var(--font-mono);
+  font: 500 9.5px var(--font-mono);
   padding: 2px 6px;
   border-radius: 4px;
   background: var(--panel2);
@@ -89,7 +89,7 @@
   align-items: center;
   gap: 9px;
   padding: 8px 9px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   cursor: pointer;
   text-decoration: none;
   color: inherit;
@@ -127,7 +127,7 @@
 }
 
 .rowProject {
-  font: 400 9.5px var(--font-mono);
+  font: 500 9.5px var(--font-mono);
   padding: 1px 6px;
   border-radius: 4px;
   background: var(--panel2);
@@ -140,12 +140,12 @@
 }
 
 .rowAccount {
-  font: 400 10px var(--font-mono);
+  font: 500 10px var(--font-mono);
   white-space: nowrap;
 }
 
 .rowStatus {
-  font: 400 9.5px var(--font-mono);
+  font: 500 9.5px var(--font-mono);
   color: var(--dim);
   white-space: nowrap;
 }
@@ -159,11 +159,11 @@
 }
 
 .actionName {
-  font: 500 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
 }
 
 .emptyText {
-  font: 400 12px var(--font-ui);
+  font: 500 13px var(--font-ui);
   color: var(--dim);
   padding: 14px 9px;
 }
@@ -175,7 +175,7 @@
   padding: 9px 15px;
   border-top: 1px solid var(--line);
   background: var(--bg2);
-  font: 400 9.5px var(--font-mono);
+  font: 500 9.5px var(--font-mono);
   color: var(--dim);
   flex: none;
 }
