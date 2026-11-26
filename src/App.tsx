@@ -52,11 +52,20 @@ import { CommandPalette } from './screens/CommandPalette';
 import { Placeholder } from './components/Placeholder';
 import { AppErrorOverlay } from './components/ErrorOverlay';
 import { TooltipProvider } from './components/ui/tooltip';
+import { useScreenReveal } from './lib/motion';
 import './styles/global.css';
 
 /** App-wide keyboard shortcuts that don't belong to any one screen. */
 /** El puente vive aquí, dentro de los proveedores y fuera del router: un cambio
  * de pantalla no debe cortar la conexión del móvil. */
+/** Talmo's arrival on every screen change: the screen's cards and rows rise
+ * into place one after another. */
+function ScreenReveal() {
+  const { current } = useNavigation();
+  useScreenReveal(current.screen, () => document.querySelector<HTMLElement>('.hangar-stack > :last-child'));
+  return null;
+}
+
 function MobileBridge() {
   useBridge();
   return null;
@@ -205,6 +214,7 @@ export default function App() {
                 <SignInGate>
                   <NavigationProvider>
                     <GlobalShortcuts />
+                    <ScreenReveal />
                     <MobileBridge />
                     {/* One element, not two siblings. `.hangar-body > *` gives
                         every direct child `height: 100%`, and neither the gate

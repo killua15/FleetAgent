@@ -34,7 +34,7 @@ export function SettingsTabs({ active, title, subtitle }: SettingsTabsProps) {
   const { navigate } = useNavigation();
   const tabsRef = useRef<HTMLDivElement>(null);
   const thumbRef = useRef<HTMLSpanElement>(null);
-  useSlidingIndicator(tabsRef, thumbRef, active);
+  useSlidingIndicator(tabsRef, thumbRef, active, 'settings-tabs');
 
   return (
     <div className={styles.header}>
@@ -52,7 +52,7 @@ export function SettingsTabs({ active, title, subtitle }: SettingsTabsProps) {
         </button>
         {/* Talmo's segmented tabs: a well with a thumb that slides to the
          * settings page you're on. */}
-        <div ref={tabsRef} className={styles.tabs} role="tablist">
+        <div ref={tabsRef} className={styles.tabs} role="tablist" data-no-reveal>
           <span ref={thumbRef} className={styles.thumb} aria-hidden />
           {TABS.map((t) => (
             <button

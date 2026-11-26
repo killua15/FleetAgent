@@ -34,6 +34,8 @@ function NavItem({ screen, label, icon, badge = 0 }: { screen: ScreenName; label
   );
 }
 
+let lastVisibleCount: number | undefined;
+
 type NavEntry = { kind: 'item'; screen: ScreenName; label: string; icon: ReactNode; badge?: number } | { kind: 'rule' };
 
 /** What the trailing "More" button costs when it has to appear — measured
@@ -56,7 +58,10 @@ function NavPill({ lead, entries }: { lead?: ReactNode; entries: NavEntry[] }) {
   const pill = useRef<HTMLSpanElement>(null);
   const measureRef = useRef<HTMLDivElement>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
-  const [visible, setVisible] = useState(entries.length);
+  // Starts from what fitted on the last screen: the bar is remounted on every
+  // navigation, and starting from "everything" would make the pill's marker
+  // slide from a layout that never gets painted.
+  const [visible, setVisible] = useState(() => lastVisibleCount ?? entries.length);
 
   const signature = entries.map((e) => (e.kind === 'item' ? `${e.screen}:${e.badge ?? 0}` : '|')).join(',');
 
@@ -76,7 +81,9 @@ function NavPill({ lead, entries }: { lead?: ReactNode; entries: NavEntry[] }) {
       // The pill's own padding (4px a side) plus the home button when shown.
       const chrome = 8 + (lead && leadEl ? leadEl.offsetWidth + gap : 0);
       const more = moreRef.current?.offsetWidth || MORE_FALLBACK_WIDTH;
-      setVisible(fitCount(widths, kinds, slot.clientWidth, chrome, gap, more));
+      const n = fitCount(widths, kinds, slot.clientWidth, chrome, gap, more);
+      lastVisibleCount = n;
+      setVisible(n);
     };
     recompute();
     const ro = new ResizeObserver(recompute);
@@ -92,7 +99,7 @@ function NavPill({ lead, entries }: { lead?: ReactNode; entries: NavEntry[] }) {
   const hiddenActive = hidden.some((e) => e.screen === current.screen);
   const hiddenBadges = hidden.reduce((sum, e) => sum + (e.badge ?? 0), 0);
 
-  useSlidingIndicator(navRef, pill, `${current.screen}:${visible}`);
+  useSlidingIndicator(navRef, pill, `${current.screen}:${visible}`, 'top-nav');
 
   const render = (e: NavEntry, i: number) =>
     e.kind === 'rule' ? <span key={`rule-${i}`} className={styles.navRule} /> : <NavItem key={e.screen} screen={e.screen} label={e.label} icon={e.icon} badge={e.badge} />;
@@ -170,9 +177,9 @@ function TabBar({ children }: { children: ReactNode }) {
   const { current } = useNavigation();
   const ref = useRef<HTMLElement>(null);
   const pill = useRef<HTMLSpanElement>(null);
-  useSlidingIndicator(ref, pill, current.screen);
+  useSlidingIndicator(ref, pill, current.screen, 'tab-bar');
   return (
-    <nav ref={ref} className={styles.tabbar} data-tabbar>
+    <nav ref={ref} className={styles.tabbar} data-tabbar data-no-reveal>
       <span ref={pill} className={styles.tabPill} aria-hidden />
       {children}
     </nav>
@@ -248,7 +255,7 @@ export function AppTopBar({ leading, primaryAction }: { leading?: ReactNode; pri
 
   return (
     <>
-    <div className={styles.bar}>
+    <div className={styles.bar} data-no-reveal>
       {/* A screen's own layout controls belong at the far left, ahead of the
        * wordmark — the place every editor puts them, and more importantly a
        * place that doesn't move when the thing they control disappears. */}
